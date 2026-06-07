@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{% block title %}TickTick{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  {# apply saved theme before first paint to avoid a flash #}
+  <script>
+    (function () {
+      var t = localStorage.getItem("al-theme") || "light";
+      document.documentElement.setAttribute("data-theme", t);
+    })();
+  </script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  {% import "_icons.html" as ic %}
+  {% set R = rail | default('tasks') %}
+  <div class="tt-shell">
+    <nav class="rail" aria-label="Sections">
+      <span class="rail-avatar" title="Premium account">🙂</span>
+
+      <a class="rail-ico {% if R == 'tasks' %}active{% endif %}" href="/today" title="Tasks">{{ ic.icon('tasks') }}</a>
+      <a class="rail-ico {% if R == 'calendar' %}active{% endif %}" href="/calendar" title="Calendar">{{ ic.icon('calendar') }}</a>
+      <a class="rail-ico {% if R == 'focus' %}active{% endif %}" href="/focus" title="Focus">{{ ic.icon('focus') }}</a>
+      <a class="rail-ico {% if R == 'matrix' %}active{% endif %}" href="/matrix" title="Eisenhower Matrix">{{ ic.icon('matrix') }}</a>
+      <a class="rail-ico {% if R == 'habit' %}active{% endif %}" href="/habits" title="Habit">{{ ic.icon('habit') }}</a>
+      <a class="rail-ico {% if R == 'countdown' %}active{% endif %}" href="/countdown" title="Countdown">{{ ic.icon('countdown') }}</a>
+      <a class="rail-ico {% if R == 'search' %}active{% endif %}" href="/search" title="Search">{{ ic.icon('search') }}</a>
+
+      <span class="rail-spacer"></span>
+      <div class="rail-foot">
+        <button type="button" class="rail-ico" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">{{ ic.icon('moon') }}</button>
+        <a class="rail-ico {% if R == 'export' %}active{% endif %}" href="/export" title="Export">{{ ic.icon('download') }}</a>
+        <a class="rail-ico {% if R == 'items' %}active{% endif %}" href="/items" title="Manage">{{ ic.icon('settings') }}</a>
+      </div>
+    </nav>
+
+    {% block middle %}{% endblock %}
+
+    <main class="content {% block content_class %}{% endblock %}">
+      <div class="content-inner">{% block content %}{% endblock %}</div>
+    </main>
+
+    {% block detail %}<aside class="detail detail-empty" aria-hidden="true"></aside>{% endblock %}
+  </div>
+
+  <nav class="bottom-nav" aria-label="Primary">
+    <a href="/today" class="nav-link {% if R == 'tasks' %}active{% endif %}">{{ ic.icon('tasks') }}<span>Tasks</span></a>
+    <a href="/calendar" class="nav-link {% if R == 'calendar' %}active{% endif %}">{{ ic.icon('calendar') }}<span>Calendar</span></a>
+    <a href="/focus" class="nav-link {% if R == 'focus' %}active{% endif %}">{{ ic.icon('focus') }}<span>Focus</span></a>
+    <a href="/matrix" class="nav-link {% if R == 'matrix' %}active{% endif %}">{{ ic.icon('matrix') }}<span>Matrix</span></a>
+    <a href="/habits" class="nav-link {% if R == 'habit' %}active{% endif %}">{{ ic.icon('habit') }}<span>Habit</span></a>
+  </nav>
+</body>
+</html>

@@ -1,0 +1,34 @@
+{# One habit row in the Habit tab (binary, TickTick): emoji avatar · name ·
+   "⚡total Day  🔥streak Day" · a circular check-in ring on the right (toggles
+   today's check-in). Body links to the detail pane (?sel=habit-{id}); selected row
+   gets a blue border. Context: it (enriched: id/title/emoji/status/current_streak/
+   total), sel, sel_id, today. #}
+{% set a = avatar(it.title) %}
+<div class="habit-row{% if sel == 'habit' and sel_id == it.id %} sel{% endif %}"
+     id="item-{{ it.id }}" data-item="{{ it.id }}" data-date="{{ today }}" data-status="{{ it.status or '' }}">
+
+  {# external form lets the ring submit a full_done toggle with no JS (Mode A) #}
+  <form id="dot-{{ it.id }}" method="post" action="/checkins" hidden>
+    <input type="hidden" name="date" value="{{ today }}">
+    <input type="hidden" name="routine_item_id" value="{{ it.id }}">
+    <input type="hidden" name="status" value="full_done">
+    <input type="hidden" name="return_to" value="/habits">
+  </form>
+
+  <a class="hl-main" href="?sel=habit-{{ it.id }}">
+    <span class="avatar" {% if not (it.emoji or a.emoji) %}style="background:hsl({{ a.hue }} 55% 55%)"{% endif %}>
+      {{ it.emoji or a.emoji or a.letter }}
+    </span>
+    <span class="hl-text">
+      <span class="hl-title">{{ it.title }}</span>
+      <span class="hl-sub">
+        <span>⚡ <b data-total>{{ it.total }}</b> Day</span>
+        <span>🔥 <b data-streak-cur>{{ it.current_streak }}</b> Day</span>
+      </span>
+    </span>
+  </a>
+
+  <button type="submit" form="dot-{{ it.id }}" data-dot
+          class="hl-check{% if it.status %} done{% endif %}"
+          aria-label="Check in {{ it.title }} for today"><span class="wd-glyph">✓</span></button>
+</div>

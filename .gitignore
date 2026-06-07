@@ -1,0 +1,48 @@
+# --- Browser automation / Playwright output (may contain PRIVATE data) ---
+.playwright-mcp/
+playwright/.auth/
+test-results/
+playwright-report/
+
+# --- Local agent/tool state (may contain prompts, paths, or private context) ---
+.agents/
+.claude/
+.codex/
+
+# --- TickTick UX-reference captures: keep LOCAL, never commit (private data) ---
+docs/reference/screenshots/
+ticktick-*.png
+ticktick-*.jpeg
+ticktick-*.jpg
+tt-*.png
+tt-*.jpeg
+tt-*.jpg
+
+# --- Local visual-QA captures of our own app (working artifacts) ---
+my-*.png
+my-*.jpeg
+
+# --- Review working artifacts (intermediate; final report is committed) ---
+docs/reviews/.work/
+
+# --- App data / source of truth (private by default; never commit raw data) ---
+data/
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.jsonl
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# --- OS / editor noise ---
+.DS_Store
+*.swp

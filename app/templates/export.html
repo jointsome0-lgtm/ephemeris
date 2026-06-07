@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ic %}
+{% block title %}Export - TickTick{% endblock %}
+{% block content %}
+<header class="page-head"><h1>Export</h1></header>
+
+<div class="export-card">
+  <p class="export-lead">
+    Download your full activity ledger as <strong>JSONL</strong> — every check-in,
+    task, habit and note, recorded as an append-only event stream. SQLite stays the
+    source of truth; this file is a private portable backup, not public Git content.
+  </p>
+
+  <div class="export-meta">
+    <span class="export-count">{{ event_count }}</span>
+    <span class="export-count-label">event{{ '' if event_count == 1 else 's' }} ready to export</span>
+  </div>
+
+  <form method="post" action="/export/jsonl" class="export-actions">
+    <button type="submit" class="export-btn">{{ ic.icon('download') }} Export JSONL</button>
+  </form>
+
+  <p class="export-path">Saved to <code>data/exports/</code> — git-ignored; may contain private notes.</p>
+
+  {% if recent %}
+  <div class="export-recent">
+    <h2>Recent exports</h2>
+    <ul class="export-file-list">
+      {% for f in recent %}
+      <li class="export-file"><span class="ef-name">{{ f.name }}</span><span class="ef-size">{{ f.size_h }}</span></li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

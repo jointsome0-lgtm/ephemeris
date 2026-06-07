@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Today' if is_today else weekday }} - TickTick{% endblock %}
+{% block content %}
+<header class="page-head">
+  <h1>{{ 'Today' if is_today else weekday }}</h1>
+</header>
+
+<nav class="week-strip" aria-label="Week">
+  {% for d in week %}
+    {% if d.is_future %}
+      <span class="day future"><span class="dow">{{ d.dow }}</span><span class="num">{{ d.day }}</span><span class="ring"></span></span>
+    {% else %}
+      <a class="day{% if d.is_active %} active{% endif %}{% if d.is_today %} today{% endif %}{% if not d.is_active and not d.logged %} past{% endif %}"
+         href="{% if d.is_today %}/habits{% else %}/history?date={{ d.date }}{% endif %}">
+        <span class="dow">{{ d.dow }}</span><span class="num">{{ d.day }}</span>
+        <span class="ring{% if d.logged %} done{% endif %}">{% if d.logged %}✓{% endif %}</span>
+      </a>
+    {% endif %}
+  {% endfor %}
+</nav>
+
+<div class="date-chip">🎗 {{ pretty_date }}{% if not is_today %} · {{ weekday }}{% endif %}</div>
+{% if flash %}<p class="flash" role="status">{{ flash }}</p>{% endif %}
+
+{% if groups %}
+  {% for group_name, items in groups %}
+  <details class="tsection" open>
+    <summary class="tsection-head"><span class="chev">⌄</span><span class="tsection-name">{{ group_name }}</span><span class="tsection-count">{{ items|length }}</span></summary>
+    <div class="tsection-body">
+      {% for it in items %}
+      {% set a = avatar(it.title) %}
+      <div class="habit-row" id="item-{{ it.id }}" data-item="{{ it.id }}" data-date="{{ date }}" data-status="{{ it.status or '' }}">
+        <form id="dot-{{ it.id }}" method="post" action="/checkins" hidden>
+          <input type="hidden" name="date" value="{{ date }}">
+          <input type="hidden" name="routine_item_id" value="{{ it.id }}">
+          <input type="hidden" name="status" value="full_done">
+          <input type="hidden" name="return_to" value="/history?date={{ date }}">
+        </form>
+        <a class="hl-main" href="/habit/{{ it.id }}">
+          <span class="avatar" {% if not (it.emoji or a.emoji) %}style="background:hsl({{ a.hue }} 55% 55%)"{% endif %}>{{ it.emoji or a.emoji or a.letter }}</span>
+          <span class="hl-text"><span class="hl-title">{{ it.title }}</span>
+            <span class="hl-sub"><span>🔥 <b data-streak-cur>{{ it.current_streak }}</b> Day</span></span></span>
+        </a>
+        <button type="submit" form="dot-{{ it.id }}" data-dot class="hl-check{% if it.status %} done{% endif %}" aria-label="Check in {{ it.title }}"><span class="wd-glyph">✓</span></button>
+      </div>
+      {% endfor %}
+    </div>
+  </details>
+  {% endfor %}
+{% else %}
+  <p class="empty">No active habits. <a href="/habits">Add some.</a></p>
+{% endif %}
+
+<details class="daily-note-fold"{% if daily_note %} open{% endif %}>
+  <summary>📝 Daily note</summary>
+  <form method="post" action="/daily-note" class="daily-note-form" id="daily-note" data-date="{{ date }}">
+    <input type="hidden" name="date" value="{{ date }}">
+    <textarea name="text" rows="3" placeholder="How did this day go?">{{ daily_note }}</textarea>
+    <button type="submit" class="btn-primary">Save note</button>
+  </form>
+</details>
+{% endblock %}

@@ -1,0 +1,30 @@
+{# One task row (TickTick): rounded-square priority checkbox · title · right meta
+   (due date / list tag) · faint note icon when the task has a note. Body opens the
+   detail pane (?sel=task-{id}). Countdown tasks show an emoji chip + days pill.
+   Context: t, sel, sel_id, in_list, cur_path. #}
+{% import "_icons.html" as ic %}
+<div class="trow{% if t.completed_at %} done{% endif %}{% if t.kind == 'countdown' %} trow-cd{% endif %}{% if sel == 'task' and sel_id == t.id %} sel{% endif %}" id="task-{{ t.id }}">
+  {% if t.kind == 'countdown' %}
+    <span class="cd-chip" aria-hidden="true">⏳</span>
+  {% else %}
+  <form class="trow-check" method="post" action="/tasks/{{ t.id }}/complete">
+    <input type="hidden" name="return_to" value="{{ cur_path }}">
+    <button type="submit" class="checkbox p{{ t.priority }}{% if t.completed_at %} on{% endif %}"
+            aria-label="{% if t.completed_at %}Reopen{% else %}Complete{% endif %} {{ t.title }}">
+      <span class="cbx-tick">✓</span>
+    </button>
+  </form>
+  {% endif %}
+  <a class="trow-main" href="?sel=task-{{ t.id }}">
+    <span class="trow-title">{{ t.title }}</span>
+    <span class="trow-meta">
+      {% if t.kind == 'countdown' %}
+        <span class="cd-pill">{{ countdown_label(t.due_date) }}</span>
+      {% elif t.due_date %}
+        <span class="due{% if t.due_date == today %} today{% elif t.due_date < today and not t.completed_at %} overdue{% endif %}">{{ due_label(t.due_date) }}</span>
+      {% endif %}
+      {% if t.list_emoji and not in_list %}<span class="trow-tag">{{ t.list_emoji }} {{ t.list_name }}</span>{% endif %}
+      {% if t.note %}<span class="trow-note-ico" aria-hidden="true">{{ ic.icon('note') }}</span>{% endif %}
+    </span>
+  </a>
+</div>

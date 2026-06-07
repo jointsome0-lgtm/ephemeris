@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ic %}
+{% block title %}{{ page_title }} - TickTick{% endblock %}
+
+{% block middle %}{% include "_listbar.html" %}{% endblock %}
+
+{% block content %}
+  <header class="page-head">
+    <h1>{{ page_title }}</h1>
+    <div class="head-actions">
+      <button class="head-btn head-btn-chip" title="Sort">{{ ic.icon('sort') }}</button>
+      <button class="head-btn" title="More">{{ ic.icon('more') }}</button>
+    </div>
+  </header>
+
+  {% if show_add %}
+  <form class="quick-add" method="post" action="/tasks" autocomplete="off">
+    <input type="hidden" name="return_to" value="{{ cur_path }}">
+    <input type="hidden" name="list_id" value="{{ add_list_id }}">
+    {% if add_due %}<input type="hidden" name="due_date" value="{{ add_due }}">{% endif %}
+    {% if add_kind and add_kind != 'task' %}<input type="hidden" name="kind" value="{{ add_kind }}">{% endif %}
+    <span class="qa-plus" aria-hidden="true">+</span>
+    <input type="text" name="title" class="qa-input" placeholder="Add task{% if add_list_name %} to “{{ add_list_name }}”{% endif %}" required>
+  </form>
+  {% endif %}
+
+  {% if flash %}<p class="flash" role="status">{{ flash }}</p>{% endif %}
+
+  {% set ns = namespace(any=false) %}
+  {% for sec in sections %}
+    {% if sec.rows %}
+    {% set ns.any = true %}
+    <details class="tsection" open>
+      <summary class="tsection-head">
+        <span class="chev" aria-hidden="true">⌄</span>
+        <span class="tsection-name">{{ sec.title }}</span>
+        <span class="tsection-count">{{ sec.rows|length }}</span>
+      </summary>
+      <div class="tsection-body">
+        {% if sec.kind == 'habit' %}
+          {% for it in sec.rows %}{% include "_habitrow.html" %}{% endfor %}
+        {% else %}
+          {% for t in sec.rows %}{% include "_task_row.html" %}{% endfor %}
+        {% endif %}
+      </div>
+    </details>
+    {% endif %}
+  {% endfor %}
+
+  {% if not ns.any %}
+    <div class="empty-state es-full">
+      <svg class="es-illus" viewBox="0 0 130 104" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M22 54l10-28a6 6 0 0 1 5.6-4h54.8a6 6 0 0 1 5.6 4l10 28"/>
+        <path d="M22 54v26a6 6 0 0 0 6 6h74a6 6 0 0 0 6-6V54"/>
+        <path d="M22 54h26l6 10h22l6-10h26"/>
+      </svg>
+      <div class="es-title">No tasks</div>
+      <div>{% if show_add %}Captures all your tasks and ideas.{% endif %}</div>
+    </div>
+  {% endif %}
+{% endblock %}
+
+{% block detail %}
+<aside class="detail{% if not sel %} detail-empty{% endif %}"{% if not sel %} aria-hidden="true"{% endif %}>
+  {% if sel %}<div class="detail-inner">
+  {% if sel == 'task' %}{% include "_task_detail.html" %}
+  {% elif sel == 'habit' %}{% include "_habit_detail.html" %}
+  {% endif %}
+  </div>{% endif %}
+</aside>
+{% endblock %}

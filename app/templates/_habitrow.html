@@ -1,0 +1,19 @@
+{# Compact habit row inside Today's Habit section (binary): a square checkbox that
+   toggles today's check-in (data-native → Mode A reload) + title + streak/Today
+   meta. Body opens the habit detail pane. Context: it, sel, sel_id, today, cur_path. #}
+<div class="trow habitrow{% if it.status %} done{% endif %}{% if sel == 'habit' and sel_id == it.id %} sel{% endif %}" id="hrow-{{ it.id }}">
+  <form class="trow-check" method="post" action="/checkins" data-native>
+    <input type="hidden" name="date" value="{{ today }}">
+    <input type="hidden" name="routine_item_id" value="{{ it.id }}">
+    <input type="hidden" name="status" value="full_done">
+    <input type="hidden" name="return_to" value="{{ cur_path }}">
+    <button type="submit" class="checkbox{% if it.status %} on{% endif %}" aria-label="Check in {{ it.title }}"><span class="cbx-tick">✓</span></button>
+  </form>
+  <a class="trow-main" href="?sel=habit-{{ it.id }}">
+    <span class="trow-title">{{ it.title }}</span>
+    <span class="trow-meta">
+      {% if it.current_streak %}<span class="streak-pill">🔥 {{ it.current_streak }}</span>{% endif %}
+      <span class="due today">Today</span>
+    </span>
+  </a>
+</div>

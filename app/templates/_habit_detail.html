@@ -1,0 +1,95 @@
+{# Habit detail (binary, TickTick): header + 4 stat cards + monthly calendar + log.
+   In the pane it adds a close ×, a ⋯ menu (Edit/Archive/Delete) and the edit form.
+   Shared by the full page (habit.html, pane unset) and the inline pane. Context:
+   item, total, current_streak, month_stats, month_label, weeks, can_next,
+   month_prev_url, month_next_url, log, today, today_status, pane, edit, sections. #}
+{% import "_icons.html" as ic %}
+{% set a = avatar(item.title) %}
+<div class="hd">
+  <header class="hd-head">
+    <span class="avatar avatar-lg" {% if not (item.emoji or a.emoji) %}style="background:hsl({{ a.hue }} 55% 55%)"{% endif %}>
+      {{ item.emoji or a.emoji or a.letter }}
+    </span>
+    <div class="hd-titles">
+      {# always a subordinate region: under the page "Habit" h1 in the pane, or
+         under habit.html's page-head h1 on the full page — so use h2, not h1 #}
+      <h2>{{ item.title }}</h2>
+      <p class="subtitle">{{ item.group_name }}{% if not item.active %} · archived{% endif %}</p>
+    </div>
+    {% if pane %}
+    <details class="rowmenu">
+      <summary aria-label="More">⋯</summary>
+      <div class="rowmenu-pop">
+        <a href="/habits?sel=habit-{{ item.id }}&edit=1">✏️ Edit</a>
+        <a href="/habit/{{ item.id }}">⤢ Open full page</a>
+        <form method="post" action="/habits/{{ item.id }}/archive">
+          <input type="hidden" name="return_to" value="/habits"><button type="submit">📦 Archive</button>
+        </form>
+        <form method="post" action="/habits/{{ item.id }}/delete"
+              onsubmit="return confirm('Delete “{{ item.title }}” and its check-ins?');">
+          <input type="hidden" name="return_to" value="/habits"><button type="submit" class="danger">🗑 Delete</button>
+        </form>
+      </div>
+    </details>
+    {% endif %}
+    {% if pane %}<a class="dp-close" href="{{ close_url }}" aria-label="Close">×</a>{% endif %}
+  </header>
+
+  {% if edit %}
+    {% with action="/habits/" ~ item.id ~ "/edit", cancel_url=pane_return %}{% include "_habit_form.html" %}{% endwith %}
+  {% else %}
+
+  {# binary today check-in — full page only; in the pane the list row's ring is the
+     check-in affordance (matches TickTick, whose pane has no check-in button) #}
+  {% if not pane %}
+  <form method="post" action="/checkins" data-native style="margin-bottom:16px">
+    <input type="hidden" name="date" value="{{ today }}">
+    <input type="hidden" name="routine_item_id" value="{{ item.id }}">
+    <input type="hidden" name="status" value="full_done">
+    <input type="hidden" name="return_to" value="{{ pane_return }}">
+    <button type="submit" class="{% if today_status %}btn-text{% else %}btn-primary{% endif %}" style="width:100%;justify-content:center;display:flex;align-items:center;height:40px;{% if today_status %}border:1px solid var(--border){% endif %}">
+      {% if today_status %}✓ Checked in today — tap to undo{% else %}Check in for today{% endif %}
+    </button>
+  </form>
+  {% endif %}
+
+  <section class="stat-grid">
+    <div class="stat-card"><span class="stat-top"><span class="stat-ico">✅</span>Monthly check-ins</span><span class="stat-val">{{ month_stats.kept }}<small>Day</small></span></div>
+    <div class="stat-card"><span class="stat-top"><span class="stat-ico">⚡</span>Total Check-Ins</span><span class="stat-val">{{ total }}<small>Day</small></span></div>
+    <div class="stat-card"><span class="stat-top"><span class="stat-ico">🎯</span>Monthly check-in rate</span><span class="stat-val">{{ month_stats.rate }}<small>%</small></span></div>
+    <div class="stat-card"><span class="stat-top"><span class="stat-ico">🔥</span>Current Streak</span><span class="stat-val">{{ current_streak }}<small>Day</small></span></div>
+  </section>
+
+  <section class="cal">
+    <div class="cal-nav">
+      <a class="cal-arrow" href="{{ month_prev_url }}" aria-label="Previous month">{{ ic.icon('chev-left') }}</a>
+      <span class="cal-title">{{ month_label }}</span>
+      {% if can_next %}<a class="cal-arrow" href="{{ month_next_url }}" aria-label="Next month">{{ ic.icon('chev-right') }}</a>
+      {% else %}<span class="cal-arrow disabled">{{ ic.icon('chev-right') }}</span>{% endif %}
+    </div>
+    <div class="cal-grid">
+      {% for d in ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'] %}<span class="cal-dow-cell">{{ d }}</span>{% endfor %}
+    </div>
+    <div class="cal-grid">
+      {% for week in weeks %}{% for c in week %}
+        <div class="cal-cell{% if not c.in_month %} out{% endif %}{% if c.is_today %} today{% endif %}{% if c.status in ('full_done','light_done') %} done{% endif %}"
+             {% if c.in_month %}title="{{ c.date }}"{% endif %}>
+          <span class="cal-day">{{ c.day }}</span><span class="cal-mark"></span>
+        </div>
+      {% endfor %}{% endfor %}
+    </div>
+  </section>
+
+  <h3 class="log-head">Habit Log on {{ month_label.split(" ")[0] }}</h3>
+  {% if log %}
+    <ul class="log-list">
+      {% for e in log %}
+      <li class="log-item"><span class="log-dot"></span>
+        <span class="log-body"><span class="log-date">{{ e.date }}</span><span class="log-note">{{ e.note }}</span></span>
+      </li>{% endfor %}
+    </ul>
+  {% else %}
+    <p class="empty" style="padding:18px 0;text-align:left">No check-in thoughts to share this month yet</p>
+  {% endif %}
+  {% endif %}
+</div>

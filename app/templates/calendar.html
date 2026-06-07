@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ic %}
+{% block title %}Calendar - TickTick{% endblock %}
+{% block content_class %}wide{% endblock %}
+{% block content %}
+<header class="cal-view-head">
+  <button class="head-btn" title="Toggle sidebar">{{ ic.icon('panel') }}</button>
+  <h1>{{ month_label }}</h1>
+  <a class="head-btn" href="#new-task-cal" title="Add">{{ ic.icon('plus') }}</a>
+  <span class="cal-pillbtn">Month ⌄</span>
+  <a class="cal-arrow" href="{{ prev_url }}">{{ ic.icon('chev-left') }}</a>
+  <a class="cal-pillbtn" href="/calendar">Today</a>
+  <a class="cal-arrow" href="{{ next_url }}">{{ ic.icon('chev-right') }}</a>
+  <button class="head-btn" title="More">{{ ic.icon('more') }}</button>
+</header>
+
+<div class="cal-month">
+  <div class="cal-month-dow">
+    {% for d in ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'] %}<div class="cmw-dow">{{ d }}</div>{% endfor %}
+  </div>
+  {% for week in weeks %}{% for c in week %}
+    <div class="cm-cell{% if not c.in_month %} out{% endif %}{% if c.is_today %} today{% endif %}">
+      <span class="cm-num">{% if c.day == 1 %}{{ c.month_abbr }} {% endif %}{{ c.day }}</span>
+      {% for ev in c.events %}
+        <span class="cm-event {% if ev.kind == 'countdown' %}cd{% elif ev.completed %}done{% elif ev.priority == 3 %}hi{% elif ev.priority == 2 %}med{% endif %}" title="{{ ev.title }}">{{ ev.title }}</span>
+      {% endfor %}
+    </div>
+  {% endfor %}{% endfor %}
+</div>
+{% endblock %}

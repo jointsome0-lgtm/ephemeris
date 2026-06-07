@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ic %}
+{% block title %}Eisenhower Matrix - TickTick{% endblock %}
+{% block content_class %}wide{% endblock %}
+{% block content %}
+<header class="page-head"><h1>Eisenhower Matrix</h1><div class="head-actions"><button class="head-btn">{{ ic.icon('more') }}</button></div></header>
+
+<div class="matrix-grid">
+  {% for q in quadrants %}
+  <section class="quad q{{ loop.index }}">
+    <div class="quad-head"><span class="quad-badge">{{ ['I','II','III','IV'][loop.index0] }}</span><span class="quad-title">{{ q.title }}</span>{% if q.rows %}<span class="quad-count">{{ q.rows|length }}</span>{% endif %}</div>
+    <div class="quad-body">
+      {% if q.rows %}
+        {% for t in q.rows %}
+        <div class="trow{% if t.completed_at %} done{% endif %}">
+          <form class="trow-check" method="post" action="/tasks/{{ t.id }}/complete">
+            <input type="hidden" name="return_to" value="/matrix">
+            <button type="submit" class="checkbox p{{ t.priority }}{% if t.completed_at %} on{% endif %}" aria-label="Complete"><span class="cbx-tick">✓</span></button>
+          </form>
+          <a class="trow-main" href="/today?sel=task-{{ t.id }}">
+            <span class="trow-title">{{ t.title }}</span>
+            <span class="trow-meta">{% if t.due_date %}<span class="due">{{ due_label(t.due_date) }}</span>{% endif %}<span class="trow-tag">{{ t.list_emoji or '📥' }} {{ t.list_name }}</span></span>
+          </a>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="quad-empty">No Tasks</div>
+      {% endif %}
+    </div>
+  </section>
+  {% endfor %}
+</div>
+{% endblock %}

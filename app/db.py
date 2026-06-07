@@ -1,0 +1,274 @@
+"""Database access, schema, migrations, and the ledger clock.
+
+Implements system-design.md sec13.1 (schema) and sec13.3 (connection policy,
+timezone rule, deterministic ordering, PRAGMA user_version migrations).
+
+The typed tables are the source of truth; the events table is an append-only
+audit/derived feed (sec14.1).
+"""
+from __future__ import annotations
+
+import os
+import re
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+# --- paths -----------------------------------------------------------------
+
+DATA_DIR = Path(os.environ.get("ACTIVITY_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
+DB_PATH = Path(os.environ.get("ACTIVITY_DB", DATA_DIR / "activity.sqlite"))
+EXPORTS_DIR = DATA_DIR / "exports"
+
+# --- status enum (sec13.2) -------------------------------------------------
+
+STATUSES = ("full_done", "light_done", "skipped", "failed")
+
+# --- ledger clock (sec13.3): the server owns "today" -----------------------
+
+
+def app_tz() -> ZoneInfo | None:
+    """Configured APP_TIMEZONE, or None to mean 'host local zone'."""
+    name = os.environ.get("APP_TIMEZONE")
+    return ZoneInfo(name) if name else None
+
+
+def _now() -> datetime:
+    """Offset-aware 'now' in the ledger zone (APP_TIMEZONE or host local)."""
+    tz = app_tz()
+    return datetime.now(tz) if tz is not None else datetime.now().astimezone()
+
+
+def today_str() -> str:
+    """Server-authoritative 'today' as 'YYYY-MM-DD' (sec13.3)."""
+    return _now().date().isoformat()
+
+
+def now_iso() -> str:
+    """ISO-8601 timestamp with offset, e.g. 2026-06-06T21:10:00+03:00."""
+    return _now().isoformat(timespec="seconds")
+
+
+def now_stamp() -> str:
+    """Compact, filename-safe local timestamp, e.g. 2026-06-06-211000 (sec18.1)."""
+    return _now().strftime("%Y-%m-%d-%H%M%S")
+
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def is_valid_date(s: str | None) -> bool:
+    """True if s is a real 'YYYY-MM-DD' calendar date."""
+    if not s or not _DATE_RE.match(s):
+        return False
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
+
+
+def is_not_future(s: str) -> bool:
+    """True if date string s is today or earlier (lexicographic works for ISO)."""
+    return s <= today_str()
+
+
+# --- connections (sec13.3 connection policy) -------------------------------
+
+
+def get_conn() -> sqlite3.Connection:
+    """A configured SQLite connection. PRAGMAs are set before any transaction."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    # foreign_keys is OFF by default in SQLite and is per-connection; required
+    # for the checkins -> routine_items FK. journal_mode=WAL lets the phone read
+    # while the desktop writes. busy_timeout briefly waits out writer contention.
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    return conn
+
+
+# --- schema + migrations (sec13.1 / sec13.3) -------------------------------
+
+SCHEMA_VERSION = 4
+
+_INITIAL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS routine_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL CHECK(length(trim(title)) > 0),
+  group_name TEXT NOT NULL DEFAULT 'Core Routine'
+             CHECK(length(trim(group_name)) > 0),
+  active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT,
+  deactivated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS checkins (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,
+  routine_item_id INTEGER NOT NULL,
+  status TEXT NOT NULL
+         CHECK(status IN ('full_done','light_done','skipped','failed')),
+  note TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(date, routine_item_id),
+  FOREIGN KEY(routine_item_id) REFERENCES routine_items(id)
+);
+
+CREATE TABLE IF NOT EXISTS daily_notes (
+  date TEXT PRIMARY KEY,
+  text TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp TEXT NOT NULL,
+  type TEXT NOT NULL,
+  payload_version INTEGER NOT NULL DEFAULT 1,
+  payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_checkins_date ON checkins(date);
+"""
+
+
+def _migrate_to_1(conn: sqlite3.Connection) -> None:
+    conn.executescript(_INITIAL_SCHEMA)
+
+
+# v2 — task-manager layer (lists / tasks / tags) added alongside the habit tables.
+# Habits (routine_items + checkins) are unchanged; tasks are a separate entity that
+# also surfaces in the Today list. (sec13.1 extended; sec21 task model.)
+_SCHEMA_V2 = """
+CREATE TABLE IF NOT EXISTS lists (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL CHECK(length(trim(name)) > 0),
+  emoji TEXT,
+  kind TEXT NOT NULL DEFAULT 'list' CHECK(kind IN ('inbox','list')),
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT,
+  archived_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL CHECK(length(trim(title)) > 0),
+  list_id INTEGER REFERENCES lists(id),
+  note TEXT,
+  due_date TEXT,
+  priority INTEGER NOT NULL DEFAULT 0 CHECK(priority IN (0,1,2,3)),
+  kind TEXT NOT NULL DEFAULT 'task' CHECK(kind IN ('task','countdown')),
+  completed_at TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tags (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE CHECK(length(trim(name)) > 0),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS task_tags (
+  task_id INTEGER NOT NULL REFERENCES tasks(id),
+  tag_id INTEGER NOT NULL REFERENCES tags(id),
+  PRIMARY KEY (task_id, tag_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due_date);
+CREATE INDEX IF NOT EXISTS idx_tasks_list ON tasks(list_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks(completed_at);
+"""
+
+
+def _migrate_to_2(conn: sqlite3.Connection) -> None:
+    conn.executescript(_SCHEMA_V2)
+
+
+# v3 — habit attributes for the TickTick-style Habit tab (sec31). The habit IS a
+# routine_item; these columns add the Create-Habit fields (frequency / goal /
+# start date / reminder / section is the existing group_name). Reminders are
+# stored for parity; firing them needs a scheduler (out of scope, noted sec31).
+_SCHEMA_V3 = """
+ALTER TABLE routine_items ADD COLUMN emoji TEXT;
+ALTER TABLE routine_items ADD COLUMN frequency TEXT NOT NULL DEFAULT 'daily';
+ALTER TABLE routine_items ADD COLUMN goal TEXT NOT NULL DEFAULT 'achieve_all';
+ALTER TABLE routine_items ADD COLUMN goal_days TEXT NOT NULL DEFAULT 'forever';
+ALTER TABLE routine_items ADD COLUMN start_date TEXT;
+ALTER TABLE routine_items ADD COLUMN reminder TEXT;
+ALTER TABLE routine_items ADD COLUMN constant_reminder INTEGER NOT NULL DEFAULT 0;
+"""
+
+
+def _migrate_to_3(conn: sqlite3.Connection) -> None:
+    # ADD COLUMN isn't idempotent, but the user_version gate runs this exactly
+    # once; guard anyway so a half-applied upgrade can be re-run safely.
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(routine_items)")}
+    for stmt in _SCHEMA_V3.strip().split(";"):
+        stmt = stmt.strip()
+        if not stmt:
+            continue
+        col = stmt.split("ADD COLUMN", 1)[1].split()[0]
+        if col not in have:
+            conn.execute(stmt)
+
+
+# v4 — focus_sessions: persist completed Pomodoro / Stopwatch sessions so the
+# Focus view's Overview stats + Focus Record stop being static 0s. A session is a
+# finished span of focused time; `mode='pomo'` rows also count as one Pomodoro.
+# Read-only derived stats (today/total pomo + focus duration) come from here.
+_SCHEMA_V4 = """
+CREATE TABLE IF NOT EXISTS focus_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mode TEXT NOT NULL DEFAULT 'pomo' CHECK(mode IN ('pomo','stopwatch')),
+  seconds INTEGER NOT NULL CHECK(seconds >= 0),
+  note TEXT,
+  date TEXT NOT NULL,
+  started_at TEXT,
+  ended_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_focus_date ON focus_sessions(date);
+"""
+
+
+def _migrate_to_4(conn: sqlite3.Connection) -> None:
+    conn.executescript(_SCHEMA_V4)
+
+
+# Ordered, idempotent steps. A schema change must NEVER require deleting the
+# ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
+_MIGRATIONS = [
+    (1, _migrate_to_1),
+    (2, _migrate_to_2),
+    (3, _migrate_to_3),
+    (4, _migrate_to_4),
+]
+
+
+def init_db() -> None:
+    """Create/upgrade the schema using PRAGMA user_version (sec13.3)."""
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    conn = get_conn()
+    try:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        for target, migrate in _MIGRATIONS:
+            if version < target:
+                migrate(conn)          # idempotent (CREATE ... IF NOT EXISTS)
+                conn.commit()          # persist schema before bumping the version
+                conn.execute(f"PRAGMA user_version = {target}")
+                conn.commit()
+                version = target
+    finally:
+        conn.close()

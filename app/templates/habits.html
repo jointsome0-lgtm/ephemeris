@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ic %}
+{% block title %}Habit - TickTick{% endblock %}
+{% block content_class %}habit-page{% endblock %}
+
+{% block content %}
+<div class="habit-tab-body">
+  <header class="page-head">
+    <h1 class="head-title">Habit <span class="head-caret" aria-hidden="true">{{ ic.icon('caret-down') }}</span></h1>
+    <div class="head-actions">
+      <button class="head-btn" title="Switch view">{{ ic.icon('grid') }}</button>
+      <a class="head-btn" href="#new-habit" title="Create habit">{{ ic.icon('plus') }}</a>
+      <button class="head-btn" title="More">{{ ic.icon('more') }}</button>
+    </div>
+  </header>
+
+  <nav class="week-strip" aria-label="Week">
+    {% for d in week %}
+      {% if d.is_future %}
+        <span class="day future"><span class="dow">{{ d.dow }}</span><span class="num">{{ d.day }}</span><span class="ring"></span></span>
+      {% else %}
+        <a class="day{% if d.is_today %} today active{% endif %}{% if not d.is_today and not d.logged %} past{% endif %}"
+           href="{% if d.is_today %}/habits{% else %}/history?date={{ d.date }}{% endif %}">
+          <span class="dow">{{ d.dow }}</span><span class="num">{{ d.day }}</span>
+          <span class="ring{% if d.logged %} done{% endif %}">{% if d.logged %}✓{% endif %}</span>
+        </a>
+      {% endif %}
+    {% endfor %}
+  </nav>
+
+  <div class="date-chip"><span class="dc-ico" aria-hidden="true">🎗</span> {{ pretty_date }} <a class="x" href="/habits" aria-label="Clear date">×</a></div>
+
+  {% if flash %}<p class="flash" role="status">{{ flash }}</p>{% endif %}
+
+  {% if groups %}
+    {% for section_name, habits in groups %}
+    <details class="tsection" open>
+      <summary class="tsection-head">
+        <span class="chev" aria-hidden="true">⌄</span>
+        <span class="tsection-name">{{ section_name }}</span>
+        <span class="tsection-count">{{ habits|length }}</span>
+      </summary>
+      <div class="tsection-body">
+        {% for it in habits %}{% include "_habit_listrow.html" %}{% endfor %}
+      </div>
+    </details>
+    {% endfor %}
+  {% else %}
+    <div class="empty-state"><div class="es-title">No habits yet</div><a href="#new-habit">Create your first habit.</a></div>
+  {% endif %}
+
+  <details class="daily-note-fold">
+    <summary>📝 Daily note</summary>
+    <form method="post" action="/daily-note" class="daily-note-form" id="daily-note" data-date="{{ date }}">
+      <input type="hidden" name="date" value="{{ date }}">
+      <textarea name="text" rows="3" placeholder="How did today go?">{{ daily_note }}</textarea>
+      <button type="submit" class="btn-primary">Save note</button>
+    </form>
+  </details>
+</div>
+
+<div class="modal-overlay" id="new-habit">
+  <div class="modal" role="dialog" aria-label="Create habit">
+    <header class="modal-head"><h2>Create Habit</h2><a class="dp-close" href="#">×</a></header>
+    {% with action="/habits", item=None %}{% include "_habit_form.html" %}{% endwith %}
+  </div>
+</div>
+{% endblock %}
+
+{% block detail %}
+{% if sel == 'habit' %}
+<aside class="detail detail-habit">
+  <div class="detail-inner">{% include "_habit_detail.html" %}</div>
+</aside>
+{% else %}
+{# empty-state: faint original "habit checklist" doodle filling the reserved pane (TickTick keeps this column present) #}
+<aside class="detail detail-habit detail-illus" aria-hidden="true">
+  <svg class="illus" viewBox="0 0 240 200" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="42" y="30" width="156" height="140" rx="16"/>
+    <path d="M42 64h156"/>
+    <circle cx="66" cy="98" r="9"/><path d="M62 98l3 3 5-6"/><path d="M86 98h84"/>
+    <circle cx="66" cy="126" r="9"/><path d="M62 126l3 3 5-6"/><path d="M86 126h64"/>
+    <circle cx="66" cy="154" r="9"/><path d="M86 154h74"/>
+  </svg>
+</aside>
+{% endif %}
+{% endblock %}

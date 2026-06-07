@@ -1,0 +1,44 @@
+{# Task detail pane (TickTick): top bar [check · due pill · flag · close], then an
+   editable title/note + Date/Priority/List fields. Writes go through Mode A forms
+   returning to ?sel=task-{id}. Context: task, lists, close_url, cur_path. #}
+{% import "_icons.html" as ic %}
+{% set pr = {0:'None',1:'Low',2:'Medium',3:'High'} %}
+<div class="td">
+  <header class="dp-top">
+    <form class="trow-check" method="post" action="/tasks/{{ task.id }}/complete">
+      <input type="hidden" name="return_to" value="{{ cur_path }}?sel=task-{{ task.id }}">
+      <button type="submit" class="checkbox p{{ task.priority }}{% if task.completed_at %} on{% endif %}"
+              aria-label="{% if task.completed_at %}Reopen{% else %}Complete{% endif %} task"><span class="cbx-tick">✓</span></button>
+    </form>
+    <span class="dp-pill">{{ ic.icon('calendar') }}{{ due_label(task.due_date) if task.due_date else 'Due Date' }}</span>
+    <span class="dp-spacer"></span>
+    <span class="dp-flag" style="{% if task.priority %}color:var(--prio-{{ 'high' if task.priority==3 else 'medium' if task.priority==2 else 'low' }}){% endif %}">{{ ic.icon('flag') }}</span>
+    <a class="dp-close" href="{{ close_url }}" aria-label="Close">×</a>
+  </header>
+
+  <form class="dp-form" method="post" action="/tasks/{{ task.id }}/update">
+    <input type="hidden" name="return_to" value="{{ cur_path }}?sel=task-{{ task.id }}">
+    <input class="dp-title{% if task.completed_at %} done{% endif %}" type="text" name="title"
+           value="{{ task.title }}" autocomplete="off" required placeholder="What would you like to do?">
+    <textarea class="dp-note" name="note" rows="4" placeholder="Description">{{ task.note or '' }}</textarea>
+
+    <div class="dp-fields">
+      <label class="dp-field"><span>{{ ic.icon('calendar') }} Date</span>
+        <input type="date" name="due_date" value="{{ task.due_date or '' }}"></label>
+      <label class="dp-field"><span>{{ ic.icon('flag') }} Priority</span>
+        <select name="priority">
+          {% for p, lbl in pr.items() %}<option value="{{ p }}" {% if task.priority == p %}selected{% endif %}>{{ lbl }}</option>{% endfor %}
+        </select></label>
+      <label class="dp-field"><span>{{ ic.icon('inbox') }} List</span>
+        <select name="list_id">
+          {% for l in lists %}<option value="{{ l.id }}" {% if task.list_id == l.id %}selected{% endif %}>{{ l.emoji or '📥' }} {{ l.name }}</option>{% endfor %}
+        </select></label>
+    </div>
+
+    <div class="dp-bottom">
+      <span class="trow-tag">{{ task.list_emoji or '📥' }} {{ task.list_name }}</span>
+      <span class="dp-spacer"></span>
+      <button class="btn-primary" type="submit">Save</button>
+    </div>
+  </form>
+</div>

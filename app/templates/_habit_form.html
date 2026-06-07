@@ -1,0 +1,98 @@
+{# Create / edit a habit — mirrors TickTick's "Create Habit" modal (two-column
+   rows, no priority). Shared by the create modal (action=/habits, item=None) and
+   the edit pane (action=/habits/{id}/edit). Context: action, item (row|None),
+   today, sections, default_section, return_to, cancel_url. Reminders are stored
+   for parity; firing them needs a scheduler (out of scope). #}
+{% import "_icons.html" as ic %}
+{% set sec = item.group_name if item else (default_section or '') %}
+<form class="habit-form" method="post" action="{{ action }}" autocomplete="off">
+  <input type="hidden" name="return_to" value="{{ return_to or '/habits' }}">
+
+  <div class="hf-name">
+    <span class="hf-emoji">
+      <input type="text" name="emoji" maxlength="8" aria-label="Emoji"
+             value="{{ item.emoji if item and item.emoji else '' }}" placeholder="🙂">
+    </span>
+    <input type="text" name="title" class="hf-title" required autofocus
+           value="{{ item.title if item else '' }}" placeholder="Daily Check-in">
+  </div>
+
+  <div class="hf-row">
+    <span class="hf-label">Frequency</span>
+    <span class="hf-control hf-select">
+      <select name="frequency" aria-label="Frequency">
+        {% for v, l in [('daily', 'Daily'), ('weekdays', 'Specific weekdays'), ('weekly', 'X times / week')] %}
+        <option value="{{ v }}" {% if (item.frequency if item else 'daily') == v %}selected{% endif %}>{{ l }}</option>
+        {% endfor %}
+      </select>
+      <span class="hf-caret" aria-hidden="true">{{ ic.icon('caret-down') }}</span>
+    </span>
+  </div>
+
+  <div class="hf-row">
+    <span class="hf-label">Goal</span>
+    <span class="hf-control hf-select">
+      <select name="goal" aria-label="Goal">
+        <option value="achieve_all" {% if not item or item.goal == 'achieve_all' %}selected{% endif %}>Achieve it all</option>
+        <option value="custom" {% if item and item.goal == 'custom' %}selected{% endif %}>Custom</option>
+      </select>
+      <span class="hf-caret" aria-hidden="true">{{ ic.icon('caret-down') }}</span>
+    </span>
+  </div>
+
+  <div class="hf-row">
+    <span class="hf-label">Start Date</span>
+    <span class="hf-control">
+      <input type="date" name="start_date" aria-label="Start date"
+             value="{{ (item.start_date if item and item.start_date else today) }}">
+    </span>
+  </div>
+
+  <div class="hf-row">
+    <span class="hf-label">Goal Days <span class="hf-help" title="How long to keep this habit going">{{ ic.icon('help') }}</span></span>
+    <span class="hf-control hf-select">
+      <select name="goal_days" aria-label="Goal days">
+        {% for v, l in [('forever', 'Forever'), ('21', '21 Days'), ('30', '30 Days'), ('66', '66 Days'), ('100', '100 Days')] %}
+        <option value="{{ v }}" {% if (item.goal_days if item else 'forever') == v %}selected{% endif %}>{{ l }}</option>
+        {% endfor %}
+      </select>
+      <span class="hf-caret" aria-hidden="true">{{ ic.icon('caret-down') }}</span>
+    </span>
+  </div>
+
+  <div class="hf-row">
+    <span class="hf-label">Section</span>
+    <span class="hf-control hf-select">
+      <input type="text" name="group_name" list="hf-sections" placeholder="Others"
+             value="{{ sec }}" aria-label="Section">
+      <span class="hf-caret" aria-hidden="true">{{ ic.icon('caret-down') }}</span>
+    </span>
+  </div>
+
+  <div class="hf-row">
+    <span class="hf-label">Reminder</span>
+    {# empty = a "+" button (TickTick default); opening it reveals the time field, no JS needed #}
+    <details class="hf-reminder"{% if item and item.reminder %} open{% endif %}>
+      <summary class="hf-add" aria-label="Add reminder">{{ ic.icon('plus') }}</summary>
+      <span class="hf-control">
+        <input type="time" name="reminder" aria-label="Reminder time"
+               value="{{ item.reminder if item and item.reminder else '' }}">
+      </span>
+    </details>
+  </div>
+
+  <div class="hf-row hf-row-toggle">
+    <span class="hf-label">Constant Reminder</span>
+    <label class="hf-switch">
+      <input type="checkbox" name="constant_reminder" value="1" {% if item and item.constant_reminder %}checked{% endif %}>
+      <span class="hf-track" aria-hidden="true"></span>
+    </label>
+  </div>
+
+  <datalist id="hf-sections">{% for s in sections %}<option value="{{ s }}">{% endfor %}</datalist>
+
+  <div class="hf-actions">
+    <a class="hf-cancel" href="{{ cancel_url or '#' }}">Cancel</a>
+    <button class="hf-save" type="submit">Save</button>
+  </div>
+</form>

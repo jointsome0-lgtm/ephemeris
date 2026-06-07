@@ -1,0 +1,88 @@
+{# One routine-item card — TickTick-style habit row (sec16.2): avatar · name +
+   streak stats · 7-day status dots. Our four-status entry stays one tap away in a
+   reveal panel (ux-primitives P3/P6). The whole card is a <details> so the panel
+   works with no JS (Mode A); Mode B enhances it. Context: item (enriched dict with
+   current_streak / best_streak / week_dots), date, plus globals avatar /
+   status_glyph / status_meta. #}
+{% set a = avatar(item.title) %}
+<details class="row {% if item.status %}logged status-{{ item.status }}{% endif %}"
+         id="item-{{ item.id }}" data-item="{{ item.id }}" data-date="{{ date }}"
+         data-group="{{ item.group_name }}" data-status="{{ item.status or '' }}">
+
+  {# external form lets the active-day dot submit full_done from inside <summary> #}
+  <form id="dot-{{ item.id }}" method="post" action="/checkins" hidden>
+    <input type="hidden" name="date" value="{{ date }}">
+    <input type="hidden" name="routine_item_id" value="{{ item.id }}">
+    <input type="hidden" name="status" value="full_done">
+  </form>
+
+  <summary class="row-summary">
+    <span class="avatar" {% if not (item.emoji or a.emoji) %}style="background:hsl({{ a.hue }} 42% 38%)"{% endif %}>
+      {{ item.emoji or a.emoji or a.letter }}
+    </span>
+
+    <span class="row-text">
+      <span class="row-title">{{ item.title }}</span>
+      <span class="streak">
+        <span class="streak-cur {% if item.current_streak %}on{% endif %}">
+          <span class="flame" aria-hidden="true">🔥</span>
+          <b data-streak-cur>{{ item.current_streak }}</b>
+          <span class="unit">{{ 'day' if item.current_streak == 1 else 'days' }}</span>
+        </span>
+        <span class="streak-best">best <b data-streak-best>{{ item.best_streak }}</b></span>
+      </span>
+    </span>
+
+    <span class="week-dots">
+      {% for d in item.week_dots %}
+        {% if d.is_active %}
+          <button type="submit" form="dot-{{ item.id }}"
+                  class="wd wd-active status-{{ item.status or 'none' }}" data-dot
+                  aria-label="Mark {{ item.title }} done for {{ d.date }}">
+            <span class="wd-glyph">{{ status_glyph(item.status) }}</span>
+          </button>
+        {% elif d.is_future %}
+          <span class="wd wd-future" aria-hidden="true"></span>
+        {% else %}
+          <span class="wd status-{{ d.status or 'none' }}" aria-hidden="true" title="{{ d.date }}">
+            <span class="wd-glyph">{{ status_glyph(d.status) }}</span>
+          </span>
+        {% endif %}
+      {% endfor %}
+    </span>
+
+    <span class="more-mark" aria-hidden="true">⋮</span>
+  </summary>
+
+  <div class="row-panel">
+    <a class="panel-link" href="/habit/{{ item.id }}">📊 Stats &amp; calendar →</a>
+    <div class="choices">
+      {% for s in status_meta %}
+      <form method="post" action="/checkins" class="choice-form">
+        <input type="hidden" name="date" value="{{ date }}">
+        <input type="hidden" name="routine_item_id" value="{{ item.id }}">
+        <input type="hidden" name="status" value="{{ s.key }}">
+        <button type="submit" class="choice status-{{ s.key }}{% if item.status == s.key %} on{% endif %}"
+                data-status="{{ s.key }}">
+          <span class="choice-glyph">{{ s.glyph }}</span>{{ s.label }}
+        </button>
+      </form>
+      {% endfor %}
+      {% if item.status %}
+      <form method="post" action="/checkins" class="choice-form">
+        <input type="hidden" name="date" value="{{ date }}">
+        <input type="hidden" name="routine_item_id" value="{{ item.id }}">
+        <input type="hidden" name="status" value="{{ item.status }}">
+        <button type="submit" class="choice clear" data-clear>⌫ Clear</button>
+      </form>
+      {% endif %}
+    </div>
+    <form method="post" action="/checkins" class="note-form">
+      <input type="hidden" name="date" value="{{ date }}">
+      <input type="hidden" name="routine_item_id" value="{{ item.id }}">
+      <input type="text" name="note" class="note-input" autocomplete="off"
+             value="{{ item.note or '' }}" placeholder="note…">
+      <button type="submit" class="btn-save">Save</button>
+    </form>
+  </div>
+</details>

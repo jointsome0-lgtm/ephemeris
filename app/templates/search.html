@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ic %}
+{% block title %}Search - TickTick{% endblock %}
+{% block content %}
+<header class="page-head"><h1>Search</h1></header>
+
+<form class="search-bar" method="get" action="/search" role="search">
+  <span class="search-ico" aria-hidden="true">{{ ic.icon('search') }}</span>
+  <input type="text" name="q" class="search-input" value="{{ q }}" autofocus
+         placeholder="Search tasks, notes…" autocomplete="off">
+</form>
+
+<div class="search-filters" aria-hidden="true">
+  {% for f in ['All Dates', 'All Lists', 'All Tags', 'All Status', 'More'] %}
+  <span class="filter-pill">{{ f }} <span class="filter-caret">{{ ic.icon('caret-down') }}</span></span>
+  {% endfor %}
+</div>
+
+{% if q %}
+  {% if results %}
+    <div class="tsection-head" style="padding:14px 4px 6px">
+      <span class="tsection-name">Results</span>
+      <span class="tsection-count">{{ results|length }}</span>
+    </div>
+    <div class="tsection-body">
+      {% for t in results %}{% include "_task_row.html" %}{% endfor %}
+    </div>
+  {% else %}
+    <div class="empty-state es-full">
+      {% include "_search_illus.html" %}
+      <div class="es-title">Nothing found</div>
+      <div>No tasks or notes match “{{ q }}”.</div>
+    </div>
+  {% endif %}
+{% else %}
+  <div class="empty-state es-full">
+    {% include "_search_illus.html" %}
+    <div class="es-title">Search everything</div>
+    <div>Find tasks and notes across all your lists.</div>
+  </div>
+{% endif %}
+{% endblock %}

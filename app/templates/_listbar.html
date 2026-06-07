@@ -1,0 +1,57 @@
+{# List sidebar (TickTick): smart lists -> Lists -> Filters -> Tags -> Completed/Trash.
+   Context: lists (inbox + user lists, open_count), today_count, next7_count, active. #}
+{% import "_icons.html" as ic %}
+<aside class="listbar" aria-label="Lists">
+  <div class="listbar-inner">
+    <a class="lb-link {% if active == 'today' %}active{% endif %}" href="/today">
+      <span class="lb-ico">{{ ic.icon('today') }}</span><span class="lb-name">Today</span>
+      {% if today_count %}<span class="lb-count">{{ today_count }}</span>{% endif %}
+    </a>
+    <a class="lb-link {% if active == 'next7' %}active{% endif %}" href="/next7">
+      <span class="lb-ico">{{ ic.icon('next7') }}</span><span class="lb-name">Next 7 Days</span>
+      {% if next7_count %}<span class="lb-count">{{ next7_count }}</span>{% endif %}
+    </a>
+    {% for l in lists if l.kind == 'inbox' %}
+    <a class="lb-link {% if active == 'list-' ~ l.id %}active{% endif %}" href="/list/{{ l.id }}">
+      <span class="lb-ico">{{ ic.icon('inbox') }}</span><span class="lb-name">{{ l.name }}</span>
+      {% if l.open_count %}<span class="lb-count">{{ l.open_count }}</span>{% endif %}
+    </a>
+    {% endfor %}
+
+    <div class="lb-section"><span>Lists</span><a class="lb-add" href="#new-list" title="Add list">+</a></div>
+    {% for l in lists if l.kind == 'list' %}
+    <a class="lb-link {% if active == 'list-' ~ l.id %}active{% endif %}" href="/list/{{ l.id }}">
+      <span class="lb-ico">{{ l.emoji or '•' }}</span><span class="lb-name">{{ l.name }}</span>
+      {% if l.open_count %}<span class="lb-count">{{ l.open_count }}</span>{% endif %}
+    </a>
+    {% endfor %}
+
+    <div class="lb-section"><span>Filters</span></div>
+    <p class="lb-desc">Display tasks filtered by list, date, priority, tag, and more.</p>
+
+    <div class="lb-section"><span>Tags</span></div>
+    <p class="lb-desc">Categorize your tasks with tags. Type “#” when adding a task.</p>
+
+    <div class="lb-divider"></div>
+    <a class="lb-link {% if active == 'completed' %}active{% endif %}" href="/completed">
+      <span class="lb-ico">{{ ic.icon('completed') }}</span><span class="lb-name">Completed</span>
+    </a>
+    <a class="lb-link {% if active == 'trash' %}active{% endif %}" href="/trash">
+      <span class="lb-ico">{{ ic.icon('trash') }}</span><span class="lb-name">Trash</span>
+    </a>
+  </div>
+</aside>
+
+{# create-list modal (no-JS :target overlay) #}
+<div class="modal-overlay" id="new-list">
+  <div class="modal" role="dialog" aria-label="Add list">
+    <header class="modal-head"><h2>Add List</h2><a class="dp-close" href="#">×</a></header>
+    <form method="post" action="/lists" class="habit-form" autocomplete="off">
+      <div class="hf-name">
+        <input type="text" name="emoji" class="emoji-input" maxlength="8" placeholder="📁" aria-label="Emoji">
+        <input type="text" name="name" class="text-input" required autofocus placeholder="List name">
+      </div>
+      <div class="hf-actions"><a class="btn-text" href="#">Cancel</a><button class="btn-primary" type="submit">Save</button></div>
+    </form>
+  </div>
+</div>
