@@ -5,20 +5,33 @@ Jinja2 + vanilla HTML/CSS. TickTick-like execution speed, our own data model.
 
 See [`docs/system-design.md`](docs/system-design.md) for the full design.
 
-**Status:** Milestone 0–1 (Today page + check-in write contract, Mode A no-JS).
-History / Manage Items / Export and the Mode B progressive enhancement are next.
+**Status:** v0 feature-complete — Today/Tasks, Calendar (month), Eisenhower
+Matrix, Focus (Pomodoro + persisted stats), Habits, Countdown, Search and JSONL
+Export, with light/dark themes and Mode A (no-JS PRG) + Mode B (fetch)
+progressive enhancement. `python verify.py` covers the write contracts.
 
 ## Run locally
 
+This project uses [uv](https://docs.astral.sh/uv/) for dependency management;
+`uv.lock` pins the exact, tested version set.
+
 ```bash
-pip install -r requirements.txt
+uv sync                      # build .venv from uv.lock
 
 # Desktop-only (safe default — not reachable from other devices):
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 Open <http://localhost:8000>. The SQLite file and seed items are created on first
 start under `data/activity.sqlite`.
+
+No uv? A pinned `requirements.txt` (generated from `uv.lock`) is the pip fallback:
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
 
 ## Open from your phone (same Wi-Fi)
 
@@ -27,12 +40,30 @@ The app has **no auth** — only do this on a network you trust (see
 
 ```bash
 # Trusted home Wi-Fi only — lets other devices on the LAN connect:
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 hostname -I    # find your Linux box's LAN IP
 ```
 
 Then on the phone browse to `http://<linux-lan-ip>:8000`.
+
+## Run as a background service (systemd)
+
+To keep the ledger running across reboots, install the user service from the
+committed template:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/tick-like.service.example ~/.config/systemd/user/tick-like.service
+# For phone/LAN access, change --host to 0.0.0.0 in the copy (trusted Wi-Fi only).
+systemctl --user daemon-reload
+systemctl --user enable --now tick-like
+loginctl enable-linger "$USER"        # keep running after logout / across reboots
+```
+
+Status: `systemctl --user status tick-like` · logs: `journalctl --user -u tick-like -f`.
+The template ships with `127.0.0.1`; copy-and-edit (don't symlink) so your local
+host choice never lands back in Git.
 
 ## Configuration
 
