@@ -80,12 +80,12 @@
   });
 
   // --- theme: tri-state (system | light | dark); default follows the OS --------
-  // The storage key + read/resolve rules live in ONE place: window.alTheme,
-  // defined by base.html's pre-paint head script (which always runs before us).
+  // The storage key, resolve rule and system media query live in ONE place:
+  // window.alTheme, defined by base.html's pre-paint head script (which always
+  // runs before us) — this block only drives the toggle through it.
   (() => {
     const btns = document.querySelectorAll(".theme-toggle");
-    const mq = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
-    const { ORDER, read, resolve } = window.alTheme;
+    const { ORDER, read, save, resolve, mq } = window.alTheme;
     const LABEL = { system: "System", light: "Light", dark: "Dark" };
     function apply(pref) {
       document.documentElement.setAttribute("data-theme", resolve(pref));
@@ -94,15 +94,14 @@
         b.title = "Theme: " + LABEL[pref];
         b.setAttribute("aria-label", "Theme: " + LABEL[pref] + " — tap to change");
       });
-      try { localStorage.setItem("al-theme", pref); } catch (_) {}
+      save(pref);
     }
     btns.forEach((b) => b.addEventListener("click", () =>
       apply(ORDER[(ORDER.indexOf(read()) + 1) % ORDER.length])));
     // live-react to OS theme changes while in "system" mode
-    if (mq) {
-      const onChange = () => { if (read() === "system") apply("system"); };
-      mq.addEventListener ? mq.addEventListener("change", onChange) : mq.addListener(onChange);
-    }
+    const onSystemChange = () => { if (read() === "system") apply("system"); };
+    if (mq.addEventListener) mq.addEventListener("change", onSystemChange);
+    else if (mq.addListener) mq.addListener(onSystemChange);
     apply(read());  // sync data-theme + button UI on load
   })();
 

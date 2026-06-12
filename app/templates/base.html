@@ -6,21 +6,26 @@
   <title>{% block title %}TickTick{% endblock %}</title>
   <link rel="stylesheet" href="{{ static_url('style.css') }}">
   {# resolve theme before first paint to avoid a flash (tri-state: system|light|dark).
-     window.alTheme is the ONE owner of the storage key + resolve rule; the deferred
-     app.js reuses it for the toggle, so the two can never drift. #}
+     window.alTheme is the ONE owner of the storage key, the resolve rule and the
+     system media query; the deferred app.js drives the toggle only through it
+     (read/save/resolve/mq), so the two can never drift. #}
   <script>
     window.alTheme = (function () {
+      var KEY = "al-theme";
       var ORDER = ["system", "light", "dark"];
+      var mq = window.matchMedia
+        ? window.matchMedia("(prefers-color-scheme: dark)")
+        : { matches: false, addEventListener: null, addListener: null };
       function read() {
-        var v = localStorage.getItem("al-theme");
+        var v = localStorage.getItem(KEY);
         return ORDER.indexOf(v) >= 0 ? v : "system";
       }
+      function save(v) { try { localStorage.setItem(KEY, v); } catch (e) {} }
       function resolve(p) {
-        return p === "dark" || (p === "system" && window.matchMedia &&
-          window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+        return p === "dark" || (p === "system" && mq.matches) ? "dark" : "light";
       }
       document.documentElement.setAttribute("data-theme", resolve(read()));
-      return { ORDER: ORDER, read: read, resolve: resolve };
+      return { ORDER: ORDER, read: read, save: save, resolve: resolve, mq: mq };
     })();
   </script>
   <script src="{{ static_url('app.js') }}" defer></script>
@@ -72,7 +77,11 @@
 
   {% if client_is_local(request) %}
   {# Desktop / localhost-only terminal — a GCP-style bottom drawer docked over the content. #}
-  <div id="term-drawer" class="term-drawer" hidden aria-hidden="true">
+  {# the vendored xterm assets ride static_url() cache-busting like every other asset #}
+  <div id="term-drawer" class="term-drawer" hidden aria-hidden="true"
+       data-xterm-css="{{ static_url('vendor/xterm.min.css') }}"
+       data-xterm-js="{{ static_url('vendor/xterm.min.js') }}"
+       data-fit-js="{{ static_url('vendor/xterm-addon-fit.min.js') }}">
     <div class="term-resize" id="term-resize" title="Drag to resize"></div>
     <div class="term-head">
       <span class="term-dot" id="term-dot"></span>

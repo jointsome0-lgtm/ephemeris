@@ -13,6 +13,7 @@ import json
 import re
 import sqlite3
 from datetime import date as _date, timedelta
+from typing import NamedTuple
 
 from ..db import append_event, is_valid_date, now_iso
 from . import lists as lists_svc
@@ -28,17 +29,9 @@ class CalendarEventError(ValueError):
 
 
 # --- recurrence engine (sec32 §4) — pure & reusable ------------------------
-# Deliberately free of DB/Row coupling so a future "recurring tasks" feature can
-# reuse it: `ev` is any mapping (sqlite3.Row or dict) carrying start_date, end_date,
-# exdates, freq, byweekday, interval_n. Missing keys are treated as None.
-
-
-def _field(ev, key):
-    """Read a field from a sqlite3.Row or a plain dict; missing/unknown → None."""
-    try:
-        return ev[key]
-    except (KeyError, IndexError):
-        return None
+# Deliberately free of DB coupling so a future "recurring tasks" feature can
+# reuse it: a series is any mapping (sqlite3.Row or dict) carrying the fields
+# _parse_rule reads — start_date, end_date, exdates, freq, byweekday, interval_n.
 
 
 def _as_date(v) -> _date:
@@ -50,51 +43,51 @@ def _monday(d: _date) -> _date:
     return d - timedelta(days=d.weekday())
 
 
-def _exdates_set(raw) -> set[str]:
-    """Normalise stored exdates (JSON text | list | None) → a set of 'YYYY-MM-DD'."""
-    if not raw:
-        return set()
-    if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except ValueError:
-            return set()
-    return {str(x) for x in raw}
+def _exdates_set(raw: str | None) -> set[str]:
+    """Stored exdates (JSON text | NULL) → a set of 'YYYY-MM-DD'."""
+    return set(json.loads(raw)) if raw else set()
+
+
+class _Rule(NamedTuple):
+    """A series' recurrence fields parsed once, so the day-by-day expansion walk
+    doesn't redo the date + exdates-JSON parsing on every probed day."""
+    start: _date
+    end: _date | None
+    freq: str
+    interval: int
+    mask: str            # 7-char Mon..Sun '01' mask; only meaningful for weekly
+    exdates: set[str]
+
+
+def _parse_rule(ev) -> _Rule:
+    end = ev["end_date"]
+    return _Rule(start=_as_date(ev["start_date"]),
+                 end=_as_date(end) if end else None,
+                 freq=ev["freq"], interval=ev["interval_n"],
+                 mask=ev["byweekday"] or "", exdates=_exdates_set(ev["exdates"]))
+
+
+def _occurs(r: _Rule, d: _date) -> bool:
+    """The heart of the feature (sec32 §4) — cheapest rejects first."""
+    if d < r.start or (r.end is not None and d > r.end):
+        return False
+    if r.freq == "once":
+        ok = d == r.start
+    elif r.freq == "daily":
+        ok = (d - r.start).days % r.interval == 0
+    elif r.freq == "weekly":
+        # interval counts *weeks*, anchored to the Monday of start_date's week
+        ok = (len(r.mask) == 7 and r.mask[d.weekday()] == "1"
+              and (_monday(d) - _monday(r.start)).days // 7 % r.interval == 0)
+    else:
+        ok = False
+    return ok and d.isoformat() not in r.exdates
 
 
 def occurs_on(ev, d: _date) -> bool:
     """Pure predicate: does series `ev` have a concrete occurrence on date `d`?
-
-    The heart of the feature (sec32 §4) — cheapest rejects first."""
-    start = _as_date(_field(ev, "start_date"))
-    if d < start:
-        return False
-    end = _field(ev, "end_date")
-    if end and d > _as_date(end):
-        return False
-    if d.isoformat() in _exdates_set(_field(ev, "exdates")):
-        return False
-
-    freq = _field(ev, "freq") or "once"
-    if freq == "once":
-        return d == start
-
-    interval = int(_field(ev, "interval_n") or 1)
-    if interval < 1:
-        interval = 1
-
-    if freq == "daily":
-        return (d - start).days % interval == 0
-
-    if freq == "weekly":
-        mask = _field(ev, "byweekday") or ""
-        if len(mask) != 7 or mask[d.weekday()] != "1":
-            return False
-        # interval counts *weeks*, anchored to the Monday of start_date's week
-        weeks = (_monday(d) - _monday(start)).days // 7
-        return weeks % interval == 0
-
-    return False
+    One-shot parse + check; the expansion loop parses once and calls _occurs."""
+    return _occurs(_parse_rule(ev), d)
 
 
 # --- read API (sec32 §4) — lightweight dicts the templates consume ----------
@@ -134,9 +127,10 @@ def occurrences_between(conn: sqlite3.Connection, start: str, end: str) -> list[
     ).fetchall()
     out: list[dict] = []
     for row in rows:
+        rule = _parse_rule(row)  # dates + exdates parse once, not once per probed day
         d = s
         while d <= e:
-            if occurs_on(row, d):
+            if _occurs(rule, d):
                 out.append(_occurrence(row, d))
             d += timedelta(days=1)
     # all_day first (not False < not True), then chronological by start_time
@@ -165,13 +159,20 @@ def _min_of(hhmm: str | None) -> int | None:
     return int(h) * 60 + int(m)
 
 
+def is_timed(o) -> bool:
+    """Does this occurrence render in the timed grid (vs the sticky all-day row)?
+    The one owner of that boundary — the week route buckets with it and
+    layout_day filters with it, so the two can never disagree."""
+    return bool(not o["all_day"] and o["start_time"])
+
+
 def layout_day(occs: list[dict]) -> list[dict]:
     """Assign overlap columns to ONE day's timed occurrences (sec32 §6.1).
 
     All-day / time-less items are dropped (they live in the sticky all-day row).
     A NULL or non-positive end defaults to a 30-minute block so events still
     collide correctly. Mutates and returns the surviving dicts."""
-    items = [o for o in occs if not o["all_day"] and o["start_time"]]
+    items = [o for o in occs if is_timed(o)]
     for o in items:
         s = _min_of(o["start_time"])
         e = _min_of(o["end_time"])
@@ -216,12 +217,6 @@ def layout_day(occs: list[dict]) -> list[dict]:
 # --- validation ------------------------------------------------------------
 
 
-def _truthy(v) -> bool:
-    if isinstance(v, str):
-        return v.strip().lower() in ("1", "true", "on", "yes")
-    return bool(v)
-
-
 def _clean(conn, *, title, start_date, freq, byweekday, interval_n, all_day,
            start_time, end_time, end_date, list_id, emoji, note, color) -> dict:
     title = (title or "").strip()
@@ -256,7 +251,8 @@ def _clean(conn, *, title, start_date, freq, byweekday, interval_n, all_day,
     else:
         byweekday = None  # only meaningful when freq='weekly'
 
-    all_day = _truthy(all_day)
+    # checkbox decoding (on/None → bool) is the route's job, same as every sibling
+    all_day = bool(all_day)
     if all_day:
         start_time = end_time = None
     else:

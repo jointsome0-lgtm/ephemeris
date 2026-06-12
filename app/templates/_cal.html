@@ -1,7 +1,8 @@
 {# Shared calendar-view pieces (month + week grids).
    head(): the view header — title, Month/Week switch, prev/Today/next paging.
    chip_class(): the one owner of the task-chip modifier ladder
-   (countdown → cd, completed → done, priority 3/2 → hi/med). #}
+   (countdown → cd, completed → done, priority 3/2 → hi/med).
+   ev_label(): emoji-prefixed event label (month cell, week all-day, week block). #}
 {% import "_icons.html" as ic %}
 
 {%- macro head(label, view, prev_url, next_url) -%}
@@ -18,3 +19,5 @@
 {%- endmacro -%}
 
 {%- macro chip_class(t) -%}{% if t.kind == 'countdown' %} cd{% elif t.completed %} done{% elif t.priority == 3 %} hi{% elif t.priority == 2 %} med{% endif %}{%- endmacro -%}
+
+{%- macro ev_label(ev) -%}{% if ev.emoji %}{{ ev.emoji }} {% endif %}{{ ev.title }}{%- endmacro -%}

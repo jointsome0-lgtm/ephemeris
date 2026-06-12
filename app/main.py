@@ -24,7 +24,7 @@ from fastapi.templating import Jinja2Templates
 
 from .db import get_conn, init_db, is_not_future, is_valid_date, today_str
 from .services import calendar_events, checkins, export, focus, items, lists, stats, tasks
-from .terminal import setup_terminal, shutdown_terminal
+from .terminal import client_is_local, setup_terminal, shutdown_terminal
 
 log = logging.getLogger("activity_ledger")
 
@@ -172,10 +172,11 @@ templates.env.globals.update(
     status_meta=STATUS_META,
     due_label=due_label,
     countdown_label=countdown_label,
+    client_is_local=client_is_local,  # gates the terminal drawer in base.html
 )
 
 # Desktop / localhost-only terminal tab (app/terminal.py): PTY ↔ xterm.js over WS.
-setup_terminal(app, templates)
+setup_terminal(app)
 
 
 # --- security / validation (sec20, sec13.3) --------------------------------
@@ -649,11 +650,11 @@ _WEEK_MIN_BLOCK_PX = 22     # floor so a 15-min slot stays legible (sec32 §6.1)
 _WEEK_BAND = (6, 23)        # default visible band 06:00–23:00, expands to fit
 
 
-def _week_ctx(conn, anchor: _date) -> dict:
-    """Build the Sunday-start week (firstweekday=6, matching the month grid) that
-    contains `anchor`: 7 day columns, an all-day row (all-day events + due tasks),
-    and the timed grid with overlap columns (sec32 §6/§6.1)."""
-    sun = _sunday_of(anchor)
+def _week_ctx(conn, sun: _date) -> dict:
+    """Build the Sunday-start week beginning at `sun` — the caller snaps via
+    _sunday_of (firstweekday=6, matching the month grid): 7 day columns, an
+    all-day row (all-day events + due tasks), and the timed grid with overlap
+    columns (sec32 §6/§6.1)."""
     week_days = [sun + timedelta(days=i) for i in range(7)]
     start_iso, end_iso = week_days[0].isoformat(), week_days[-1].isoformat()
     occs = calendar_events.occurrences_between(conn, start_iso, end_iso)
@@ -665,7 +666,7 @@ def _week_ctx(conn, anchor: _date) -> dict:
     allday: dict[str, list] = {}
     timed: dict[str, list] = {}
     for o in occs:
-        (allday if (o["all_day"] or not o["start_time"]) else timed) \
+        (timed if calendar_events.is_timed(o) else allday) \
             .setdefault(o["date"], []).append(o)
 
     # Lay each day out first — the engine owns all minute math (layout_day drops
@@ -680,8 +681,7 @@ def _week_ctx(conn, anchor: _date) -> dict:
     for o in (b for blocks in laid.values() for b in blocks):
         band_start = min(band_start, o["start_min"] // 60 * 60)
         band_end = max(band_end, -(-o["end_min"] // 60) * 60)  # ceil to the hour
-    band_start = max(0, band_start)
-    band_end = min(24 * 60, max(band_end, band_start + 60))
+    band_end = min(24 * 60, band_end)  # an open-ended 23:5x event (+30 min) ceils past midnight
     ppm = _WEEK_HOUR_PX / 60.0
 
     today_iso = today_str()

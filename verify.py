@@ -549,7 +549,8 @@ with TestClient(app) as c:
     check("occurs_on: end_date inclusive (Wed 04-14 yes)", ce.occurs_on(bounded, _d(2027, 4, 14)))
     check("occurs_on: past end_date excluded (Fri 04-16 no)", not ce.occurs_on(bounded, _d(2027, 4, 16)))
 
-    exd = _rule(start_date="2027-04-07", freq="weekly", byweekday="1010100", exdates=["2027-04-09"])
+    exd = _rule(start_date="2027-04-07", freq="weekly", byweekday="1010100",
+                exdates='["2027-04-09"]')  # JSON text, exactly as the column stores it
     check("occurs_on: exdate removes that day only",
           not ce.occurs_on(exd, _d(2027, 4, 9)) and ce.occurs_on(exd, _d(2027, 4, 7)))
 

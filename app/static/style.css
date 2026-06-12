@@ -48,6 +48,8 @@ html[data-theme="light"] {
   --radius:    8px;
   --radius-lg: 12px;
   --radius-pill: 999px;
+
+  --rail-w: 50px;   /* far-left icon rail — the terminal drawer's left edge tracks it */
 }
 
 html[data-theme="dark"] {
@@ -103,9 +105,9 @@ button { font: inherit; }
 /* ===== shell ============================================================= */
 .tt-shell { display: flex; min-height: 100vh; }
 
-/* --- icon rail (50px) --- */
+/* --- icon rail --- */
 .rail {
-  flex: 0 0 50px; width: 50px;
+  flex: 0 0 var(--rail-w); width: var(--rail-w);
   display: flex; flex-direction: column; align-items: center;
   padding: 9px 0 8px; gap: 2px;
   background: var(--rail-bg);
@@ -151,13 +153,17 @@ button { font: inherit; }
 .theme-toggle[data-pref="light"]  .ti-light,
 .theme-toggle[data-pref="dark"]   .ti-dark  { display: inline-flex; }
 
+/* --- full-height scroll columns --- */
+/* Each one subtracts --term-h (the open terminal drawer's live height, set on
+   <body> by terminal.js; unset = 0) so nothing can hide behind the drawer.
+   A new full-height column just joins this list. */
+.listbar, .content, .detail, .focus-side {
+  height: calc(100vh - var(--term-h, 0px)); overflow-y: auto;
+}
+
 /* --- list sidebar (305px) --- */
-/* Full-height scroll columns subtract --term-h (the open terminal drawer's live
-   height, set on <body> by terminal.js; unset = 0) so nothing can hide behind the
-   drawer. Any new full-height column should use the same calc to get that free. */
 .listbar {
   flex: 0 0 305px; width: 305px;
-  height: calc(100vh - var(--term-h, 0px)); overflow-y: auto;
   background: var(--bg);
   border-right: 1px solid var(--border);
 }
@@ -185,13 +191,13 @@ button { font: inherit; }
 .lb-divider { height: 1px; background: var(--border); margin: 10px 6px; }
 
 /* --- content --- */
-.content { flex: 1 1 auto; min-width: 0; height: calc(100vh - var(--term-h, 0px)); overflow-y: auto; background: var(--bg); }
+.content { flex: 1 1 auto; min-width: 0; background: var(--bg); }
 .content-inner { max-width: 620px; margin: 0; padding: 18px 28px 80px; }
 .content.wide .content-inner { max-width: none; }
 
 /* Terminal — desktop/localhost-only, GCP-style bottom drawer docked over the content. */
 .term-drawer {
-  position: fixed; left: 50px; right: 0; bottom: 0; z-index: 60;
+  position: fixed; left: var(--rail-w); right: 0; bottom: 0; z-index: 60;
   height: 42vh; min-height: 120px;
   display: flex; flex-direction: column;
   background: #16181d; color: #cfcfcf;
@@ -213,7 +219,8 @@ button { font: inherit; }
   padding: 7px 10px 7px 14px; font-size: 13px; background: #1b1e25;
   border-bottom: 1px solid rgba(255,255,255,.07);
 }
-.term-dot { width: 9px; height: 9px; border-radius: 50%; background: #2ecc71; flex: 0 0 auto; }
+.term-dot { width: 9px; height: 9px; border-radius: 50%; background: #888; flex: 0 0 auto; }
+.term-dot.on { background: #2ecc71; }   /* socket connected — toggled by terminal.js */
 .term-title { font-weight: 600; color: #e6e6e6; cursor: default; }
 .term-meta { margin-left: auto; opacity: .5; font-size: 12px; }
 .term-btn {
@@ -226,14 +233,9 @@ button { font: inherit; }
 .term-status { flex: 0 0 auto; padding: 8px 14px; color: #ff8585; font-size: 13px;
   background: #16181d; border-top: 1px solid rgba(255,255,255,.07); }
 @media (max-width: 860px) {
-  .term-drawer { left: 0; }
-  /* Single-column layout: the document scrolls, so pad it instead of shrinking
-     columns (neutralise the inherited --term-h on the columns themselves). */
-  .listbar, .content, .detail, .focus-side { --term-h: 0px; }
-  body.term-open .listbar,
-  body.term-open .content,
-  body.term-open .detail,
-  body.term-open .focus-side { height: auto; }
+  .term-drawer { left: 0; }   /* the rail is hidden here */
+  /* Single-column layout: the columns are height:auto below (the document
+     scrolls), so pad the document under the drawer instead of shrinking them. */
   body.term-open { padding-bottom: var(--term-h, 0px); }
 }
 
@@ -251,7 +253,7 @@ button { font: inherit; }
 
 /* --- detail pane --- */
 .detail {
-  flex: 0 0 400px; width: 400px; height: calc(100vh - var(--term-h, 0px)); overflow-y: auto;
+  flex: 0 0 400px; width: 400px;
   background: var(--bg); border-left: 1px solid var(--border);
 }
 .detail.detail-empty { display: none; }
@@ -580,11 +582,13 @@ button { font: inherit; }
 .cm-num { font-size: 13px; color: var(--text); align-self: flex-start; padding: 0 2px; }
 .cm-cell.today .cm-num { background: var(--primary); color: #fff; border-radius: 50%; width: 22px; height: 22px; display: grid; place-items: center; font-weight: 600; }
 .cm-event { font-size: 12px; padding: 2px 6px; border-radius: 5px; color: #fff; background: var(--primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cm-event.cd { background: var(--orange); }
-.cm-event.done { background: var(--card-bg); color: var(--faint); text-decoration: line-through; }
-.cm-event.hi { background: var(--prio-high); }
-.cm-event.med { background: var(--prio-medium); }
-.cm-event.ev { background: var(--card-bg); color: var(--text); border-left: 3px solid var(--primary); }
+/* chip state ladder shared by the month chip (.cm-event) and the week all-day
+   chip (.cw-chip) — one owner, mirroring the chip_class() macro in _cal.html */
+.cm-event.cd, .cw-chip.cd { background: var(--orange); }
+.cm-event.done, .cw-chip.done { background: var(--card-bg); color: var(--faint); text-decoration: line-through; }
+.cm-event.hi, .cw-chip.hi { background: var(--prio-high); }
+.cm-event.med, .cw-chip.med { background: var(--prio-medium); }
+.cm-event.ev, .cw-chip.ev { background: var(--card-bg); color: var(--text); border-left: 3px solid var(--primary); }
 .cm-event.ev .cm-time { color: var(--primary); font-weight: 600; }
 
 /* Month/Week segmented switch */
@@ -611,11 +615,7 @@ button { font: inherit; }
 .cw-allday-cell:last-child { border-right: 0; }
 .cw-allday-cell.today { background: var(--hover); }
 .cw-chip { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: var(--primary); color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cw-chip.ev { background: var(--card-bg); color: var(--text); border-left: 3px solid var(--primary); }
-.cw-chip.cd { background: var(--orange); }
-.cw-chip.done { background: var(--card-bg); color: var(--faint); text-decoration: line-through; }
-.cw-chip.hi { background: var(--prio-high); }
-.cw-chip.med { background: var(--prio-medium); }
+/* its .ev/.cd/.done/.hi/.med states live in the shared ladder beside .cm-event */
 
 .cw-body { height: var(--cw-h); position: relative; }
 .cw-gutter, .cw-daycol { position: relative; height: 100%; }
@@ -662,7 +662,7 @@ button { font: inherit; }
 .focus-end { height: 44px; padding: 0 28px; border-radius: 999px; border: 1px solid var(--border-2); background: var(--bg); color: var(--muted); font-size: 15px; font-weight: 600; cursor: pointer; }
 .focus-end:hover { border-color: var(--faint); color: var(--text); }
 .focus-end[hidden] { display: none; }
-.focus-side { flex: 0 0 360px; width: 360px; border-left: 1px solid var(--border); height: calc(100vh - var(--term-h, 0px)); overflow-y: auto; padding: 18px 22px; }
+.focus-side { flex: 0 0 360px; width: 360px; border-left: 1px solid var(--border); padding: 18px 22px; }
 .focus-side h2 { font-size: 16px; font-weight: 600; margin: 0 0 14px; }
 .focus-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .focus-rec-head { display: flex; align-items: center; justify-content: space-between; margin-top: 24px; }
@@ -746,7 +746,7 @@ button { font: inherit; }
   .content-inner { padding: 14px 16px 84px; max-width: 620px; }
   .content.habit-page .content-inner { max-width: 620px; margin: 0 auto; padding: 14px 16px 84px; }
   .detail.detail-empty, .detail.detail-illus { display: none; }
-  .detail:not(.detail-empty) { position: fixed; inset: 0; z-index: 100; width: auto; flex: none; border: none; }
+  .detail:not(.detail-empty) { position: fixed; inset: 0; z-index: 100; width: auto; height: auto; flex: none; border: none; }
   .stat-grid, .focus-stat-grid { grid-template-columns: 1fr 1fr; }
   .matrix-grid { grid-template-columns: 1fr; grid-template-rows: none; }
   .focus-layout { flex-direction: column; }

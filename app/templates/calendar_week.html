@@ -21,7 +21,7 @@
     {% for d in days %}
     <div class="cw-allday-cell{% if d.is_today %} today{% endif %}">
       {% for ev in d.allday %}
-        <span class="cw-chip ev" title="{{ ev.title }}">{% if ev.emoji %}{{ ev.emoji }} {% endif %}{{ ev.title }}</span>
+        <span class="cw-chip ev" title="{{ ev.title }}">{{ cal.ev_label(ev) }}</span>
       {% endfor %}
       {% for t in d.tasks %}
         <span class="cw-chip{{ cal.chip_class(t) }}" title="{{ t.title }}">{{ t.title }}</span>
@@ -41,7 +41,7 @@
          style="top:{{ b.top }}px; height:{{ b.height }}px; left:{{ b.left }}%; width:{{ b.width }}%;"
          title="{{ b.start_time }}{% if b.end_time %}–{{ b.end_time }}{% endif %} {{ b.title }}">
         <span class="cw-block-time">{{ b.start_time }}</span>
-        <span class="cw-block-title">{% if b.emoji %}{{ b.emoji }} {% endif %}{{ b.title }}</span>
+        <span class="cw-block-title">{{ cal.ev_label(b) }}</span>
       </a>
       {% endfor %}
     </div>

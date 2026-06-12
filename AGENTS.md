@@ -20,6 +20,13 @@ Never add to Git:
 
 Do not copy real task titles, habit names, notes, dates, screenshots, export rows, or database rows into docs, tests, prompts, fixtures, review reports, or issue text. If an example is needed, invent it from scratch.
 
+## Automated Fix Passes (/simplify, review --fix, and similar)
+
+- `app/agent/` is learning code, written by the user by hand. Report findings there as explanations; never auto-edit the files.
+- A previous pass's deliberate skip ("skipped, with reason") is a decision, not a suggestion. Do not apply it in a later cleanup pass; it may return only as its own separate change.
+- The terminal PTY/WS core (`app/terminal.py`) is delicate (detach/reattach + fd lifecycle): changes to it go through their own dedicated review, never a ride-along cleanup pass.
+- Scope passes to a fresh, small target (a path or the latest commit). Do not re-run a pass over the same accumulated unpushed pile.
+
 ## Public-Safety Check
 
 Before finishing any change that touches storage, exports, docs, screenshots, tests, fixtures, or agent instructions, run:

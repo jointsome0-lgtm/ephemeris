@@ -14,7 +14,7 @@
       <span class="cm-num">{% if c.day == 1 %}{{ c.month_abbr }} {% endif %}{{ c.day }}</span>
       {% for ev in c.events %}
         {% if ev.kind == 'event' %}
-        <span class="cm-event ev" title="{{ ev.title }}">{% if not ev.all_day and ev.start_time %}<span class="cm-time">{{ ev.start_time }}</span> {% elif ev.emoji %}{{ ev.emoji }} {% endif %}{{ ev.title }}</span>
+        <span class="cm-event ev" title="{{ ev.title }}">{% if not ev.all_day and ev.start_time %}<span class="cm-time">{{ ev.start_time }}</span> {{ ev.title }}{% else %}{{ cal.ev_label(ev) }}{% endif %}</span>
         {% else %}
         <span class="cm-event{{ cal.chip_class(ev) }}" title="{{ ev.title }}">{{ ev.title }}</span>
         {% endif %}

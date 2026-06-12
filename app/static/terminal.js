@@ -6,9 +6,9 @@
   var drawer = document.getElementById('term-drawer');
   var toggle = document.getElementById('term-toggle');
   if (!drawer || !toggle) return;
-  var CSS = '/static/vendor/xterm.min.css';            // vendored locally (no remote CDN in the RCE surface)
-  var XJS = '/static/vendor/xterm.min.js';
-  var FJS = '/static/vendor/xterm-addon-fit.min.js';
+  // vendored xterm assets (no remote CDN in the RCE surface) — base.html stamps the
+  // URLs on the drawer with static_url(), so they get cache-busted like every asset
+  var CSS = drawer.dataset.xtermCss, XJS = drawer.dataset.xtermJs, FJS = drawer.dataset.fitJs;
   var OPEN_KEY = 'al-term-open', SID_KEY = 'al-term-sid', H_KEY = 'al-term-h', MIN_KEY = 'al-term-min';
   var statusEl = document.getElementById('term-status');
   var dotEl = document.getElementById('term-dot');
@@ -68,7 +68,7 @@
     ws = new WebSocket(proto + '://' + location.host + '/terminal/ws' + (sid ? ('?sid=' + encodeURIComponent(sid)) : ''));
     ws.binaryType = 'arraybuffer';
     sentRows = sentCols = 0;           // fresh socket (maybe a fresh PTY): always send the first resize
-    ws.onopen = function () { if (dotEl) dotEl.style.background = '#2ecc71'; sendResize(); if (term) term.focus(); };
+    ws.onopen = function () { if (dotEl) dotEl.classList.add('on'); sendResize(); if (term) term.focus(); };
     ws.onmessage = function (e) {
       if (typeof e.data === 'string') {                                    // control frame (JSON)
         try { var m = JSON.parse(e.data); if (m && m.type === 'session' && m.sid) localStorage.setItem(SID_KEY, m.sid); } catch (_) {}
@@ -76,7 +76,7 @@
       }
       if (term) term.write(new Uint8Array(e.data));                        // pty output
     };
-    ws.onclose = function () { if (dotEl) dotEl.style.background = '#888'; };
+    ws.onclose = function () { if (dotEl) dotEl.classList.remove('on'); };
     ws.onerror = function () { fail('WebSocket error — the terminal is localhost-only.'); };
   }
 
@@ -108,7 +108,7 @@
     localStorage.removeItem(SID_KEY);
     if (ws) { try { ws.close(); } catch (e) {} }
     ws = null;
-    if (dotEl) dotEl.style.background = '';
+    if (dotEl) dotEl.classList.remove('on');
     hide();
   }
 

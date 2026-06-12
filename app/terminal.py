@@ -35,7 +35,6 @@ from secrets import token_urlsafe
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.templating import Jinja2Templates
 
 # Repo root: a sensible cwd so agents/commands run against the project by default.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -56,8 +55,9 @@ def is_local_host(host: str | None) -> bool:
     return ip.is_loopback
 
 
-def _client_is_local(request: Request) -> bool:
-    """Template helper: is this request from the local machine? (gates the rail link)"""
+def client_is_local(request: Request) -> bool:
+    """Template helper (registered with the globals in main.py): is this request
+    from the local machine? Gates the rail link + drawer markup in base.html."""
     return bool(request.client) and is_local_host(request.client.host)
 
 
@@ -107,11 +107,12 @@ def _child_setup() -> None:
 
 
 # --- egress proxy for agent CLIs -------------------------------------------------
-# Common loopback ports for popular local proxy clients:
-#   xray / v2ray 10808 (socks) + 10809 (http), Clash / mihomo 7890 / 7891,
-#   sing-box 2080 (socks/mixed), plus generic 1080 / 8080 / 8118.
-_HTTP_PROXY_PORTS = (10809, 7890, 8118, 8080, 8889)
-_SOCKS_PROXY_PORTS = (10808, 7891, 1080, 2080)
+# Auto-detection probes ONLY the xray client the user actually runs (10809 http /
+# 10808 socks). Any other setup must be named via TICKLIKE_TERM_PROXY or the
+# service env — a wider port scan (8080 & friends) too easily latches onto some
+# unrelated dev server and silently breaks the shell's egress.
+_HTTP_PROXY_PORT = 10809
+_SOCKS_PROXY_PORT = 10808
 # Loopback literals are honored by every client and cover this app's own calls; the
 # CIDR LAN ranges are best-effort (only some clients parse CIDR in NO_PROXY).
 _NO_PROXY = "localhost,127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12"
@@ -146,7 +147,7 @@ def _detect_proxy_env() -> dict[str, str]:
       1. ``TICKLIKE_TERM_PROXY=off``   -> force a direct connection (no proxy);
       2. ``TICKLIKE_TERM_PROXY=<url>`` -> use exactly this (``http://…`` / ``socks5h://…``);
       3. a proxy already in the service env -> inherit it verbatim;
-      4. else auto-detect a proxy on a common loopback port.
+      4. else auto-detect the xray client on its default loopback ports.
 
     Contract: the return value is the COMPLETE set of proxy vars the child shell
     should have. The caller clears any ambient proxy vars first, then applies this,
@@ -166,14 +167,10 @@ def _detect_proxy_env() -> dict[str, str]:
         # already configured upstream — preserve it verbatim (incl. NO_PROXY)
         return {k: os.environ[k] for k in _PROXY_ENV_VARS if k in os.environ}
     else:
-        for p in _HTTP_PROXY_PORTS:
-            if _port_open(p):
-                http_url = f"http://127.0.0.1:{p}"
-                break
-        for p in _SOCKS_PROXY_PORTS:
-            if _port_open(p):
-                socks_url = f"socks5h://127.0.0.1:{p}"
-                break
+        if _port_open(_HTTP_PROXY_PORT):
+            http_url = f"http://127.0.0.1:{_HTTP_PROXY_PORT}"
+        if _port_open(_SOCKS_PROXY_PORT):
+            socks_url = f"socks5h://127.0.0.1:{_SOCKS_PROXY_PORT}"
 
     if not (http_url or socks_url):
         return {}
@@ -220,6 +217,9 @@ class _TermSession:
         self._chunks: deque[bytes] = deque()
         self._buf_len = 0
         self._pump: asyncio.Task | None = None
+        self._reader_active = False
+        self._writer_active = False
+        self._writer_waiter: asyncio.Future | None = None
         self._send_lock = asyncio.Lock()  # serialize replay vs pump sends on one socket
         self._attach_lock = asyncio.Lock()  # serialize boot-old + attach so one PTY has one reader
 
@@ -244,13 +244,55 @@ class _TermSession:
     def start(self) -> None:
         self._pump = asyncio.create_task(self._run())
 
+    def _remove_reader(self, loop=None) -> None:
+        if not self._reader_active:
+            return
+        try:
+            (loop or asyncio.get_running_loop()).remove_reader(self.master_fd)
+        except (OSError, RuntimeError, ValueError):
+            pass
+        self._reader_active = False
+
+    def _remove_writer(self, loop=None, exc: BaseException | None = None) -> None:
+        if self._writer_active:
+            try:
+                (loop or asyncio.get_running_loop()).remove_writer(self.master_fd)
+            except (OSError, RuntimeError, ValueError):
+                pass
+            self._writer_active = False
+        waiter, self._writer_waiter = self._writer_waiter, None
+        if waiter is not None and not waiter.done():
+            if exc is not None:
+                waiter.set_exception(exc)
+            else:
+                waiter.set_result(None)
+
     async def _run(self) -> None:
-        """Drain the PTY into the ring buffer (and the attached ws) until EOF."""
+        """Drain the PTY into the ring buffer (and the attached ws) until EOF.
+        Event-driven via add_reader on the non-blocking master fd — a silent shell
+        costs nothing (no executor thread parked in a blocking read per session),
+        and awaiting the ws send before the next read keeps the backpressure."""
+        if self.closed:
+            return
         loop = asyncio.get_running_loop()
+        readable = asyncio.Event()
+        try:
+            loop.add_reader(self.master_fd, readable.set)
+        except (OSError, ValueError):
+            await self.close()
+            return
+        self._reader_active = True
         try:
             while True:
-                data = await loop.run_in_executor(None, os.read, self.master_fd, 65536)
-                if not data:  # shell exited → EOF
+                await readable.wait()
+                readable.clear()
+                try:
+                    data = os.read(self.master_fd, 65536)
+                except BlockingIOError:
+                    continue  # raced an already-drained wakeup
+                except OSError:
+                    break     # EIO — slave side fully closed (shell exited)
+                if not data:  # EOF
                     break
                 self.remember(data)
                 ws = self.ws
@@ -261,9 +303,11 @@ class _TermSession:
                                 await ws.send_bytes(data)
                     except (RuntimeError, WebSocketDisconnect, OSError):
                         self.detach(ws)  # only detaches the socket that actually failed
-        except (OSError, RuntimeError):
-            pass
         finally:
+            # Unregister before closing the fd. The selector keeps its own fd map,
+            # so relying on close() alone can poison a later session that reuses the
+            # same integer fd.
+            self._remove_reader(loop)
             await self.close()
 
     async def close(self) -> None:
@@ -271,6 +315,8 @@ class _TermSession:
             return
         self.closed = True
         _SESSIONS.pop(self.sid, None)
+        self._remove_reader()
+        self._remove_writer(exc=OSError("terminal session closed"))
         if self.proc.returncode is None:
             try:
                 self.proc.send_signal(signal.SIGHUP)
@@ -313,13 +359,17 @@ def _reap_idle(force_oldest: bool = False) -> None:
 
 async def _reaper_loop() -> None:
     """Periodic idle sweep so a lone detached session is reaped at its TTL even when no
-    new connection arrives (the lazy on-connect _reap_idle would otherwise never fire)."""
+    new connection arrives (the lazy on-connect _reap_idle would otherwise never fire).
+    Parks itself once nothing is left to watch — _ensure_reaper() re-arms it on the
+    next connect — so an idle server isn't woken every 5 minutes forever."""
     while True:
         await asyncio.sleep(_REAP_INTERVAL)
         try:
             _reap_idle()
         except Exception:
             pass  # a transient reap error must not kill the periodic sweep
+        if not _SESSIONS:
+            return
 
 
 def _ensure_reaper() -> None:
@@ -354,6 +404,7 @@ async def _create_session() -> "_TermSession | None":
         env.update(proxy)
 
         master_fd, slave_fd = pty.openpty()
+        os.set_blocking(master_fd, False)  # pump + input writes are add_reader/add_writer-driven
         try:
             proc = await asyncio.create_subprocess_exec(
                 shell, "-i",
@@ -380,14 +431,35 @@ async def _create_session() -> "_TermSession | None":
         return sess
 
 
-async def _write_all(fd: int, data: bytes) -> None:
-    """Write all of `data` to `fd` off the event loop (a PTY master can briefly block
-    if the program at the slave end has stopped draining stdin)."""
+async def _write_all(sess: _TermSession, data: bytes) -> None:
+    """Write all of `data` to the non-blocking PTY master. The fast path is one
+    plain os.write on the event loop; only when the program at the slave end has
+    stopped draining stdin (buffer full) do we wait for writability."""
     loop = asyncio.get_running_loop()
+    fd = sess.master_fd
     mv = memoryview(data)
     while mv:
-        n = await loop.run_in_executor(None, os.write, fd, mv)
-        mv = mv[n:]
+        if sess.closed:
+            raise OSError("terminal session closed")
+        try:
+            n = os.write(fd, mv)
+        except BlockingIOError:
+            n = 0
+        if n:
+            mv = mv[n:]
+            continue
+        writable = loop.create_future()
+        sess._writer_waiter = writable
+        try:
+            loop.add_writer(fd, lambda: not writable.done() and writable.set_result(None))
+        except (OSError, ValueError):
+            sess._writer_waiter = None
+            raise
+        sess._writer_active = True
+        try:
+            await writable
+        finally:
+            sess._remove_writer(loop)
 
 
 async def _read_input(ws: WebSocket, sess: "_TermSession") -> None:
@@ -401,7 +473,7 @@ async def _read_input(ws: WebSocket, sess: "_TermSession") -> None:
             if data is not None:
                 if sess.ws is not ws:  # booted by a newer attach to this sid — stop writing
                     break
-                await _write_all(sess.master_fd, data)
+                await _write_all(sess, data)
                 continue
             text = msg.get("text")
             if not text:
@@ -498,10 +570,10 @@ async def shutdown_terminal() -> None:
                              return_exceptions=True)
 
 
-def setup_terminal(app: FastAPI, templates: Jinja2Templates) -> None:
-    """Register the localhost-only terminal websocket + the `client_is_local`
-    template helper (which gates the drawer UI rendered in base.html)."""
-    templates.env.globals.setdefault("client_is_local", _client_is_local)
+def setup_terminal(app: FastAPI) -> None:
+    """Register the localhost-only terminal websocket. (The drawer UI it serves is
+    gated in base.html by `client_is_local`, registered with the other template
+    globals in main.py.)"""
 
     @app.websocket("/terminal/ws")
     async def terminal_ws(ws: WebSocket):
