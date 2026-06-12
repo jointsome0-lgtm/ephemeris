@@ -7,10 +7,9 @@ deactivated_at) so check-in history stays joinable — items are NEVER hard-dele
 """
 from __future__ import annotations
 
-import json
 import sqlite3
 
-from ..db import now_iso
+from ..db import append_event, now_iso
 
 DEFAULT_GROUP = "Core Routine"
 
@@ -25,14 +24,6 @@ _UNSET = object()  # update_item sentinel: distinguishes "leave alone" from "set
 
 class ItemError(ValueError):
     """A management write was rejected (empty title, unknown id, …)."""
-
-
-def _event(conn: sqlite3.Connection, type_: str, payload: dict) -> None:
-    conn.execute(
-        "INSERT INTO events (timestamp, type, payload_version, payload_json) "
-        "VALUES (?, ?, 1, ?)",
-        (now_iso(), type_, json.dumps(payload, ensure_ascii=False)),
-    )
 
 
 def list_items(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -111,7 +102,7 @@ def create_item(
              h["goal_days"], h["start_date"], h["reminder"], int(bool(constant_reminder))),
         )
         item_id = cur.lastrowid
-        _event(conn, "routine_item_created", {
+        append_event(conn, "routine_item_created", {
             "routine_item_id": item_id, "title": title, "group_name": group_name,
             "sort_order": nxt, **h, "constant_reminder": int(bool(constant_reminder)),
         })
@@ -152,7 +143,7 @@ def update_item(
             (title, group_name, h["emoji"], h["frequency"], h["goal"], h["goal_days"],
              h["start_date"], h["reminder"], const, ts, item_id),
         )
-        _event(conn, "routine_item_updated", {
+        append_event(conn, "routine_item_updated", {
             "routine_item_id": item_id, "title": title, "group_name": group_name,
             "sort_order": row["sort_order"], **h, "constant_reminder": const,
         })
@@ -170,7 +161,7 @@ def deactivate_item(conn: sqlite3.Connection, item_id: int) -> None:
             "UPDATE routine_items SET active = 0, deactivated_at = ? WHERE id = ?",
             (ts, item_id),
         )
-        _event(conn, "routine_item_deactivated", {
+        append_event(conn, "routine_item_deactivated", {
             "routine_item_id": item_id,
             "title": row["title"],
         })
@@ -188,7 +179,7 @@ def reactivate_item(conn: sqlite3.Connection, item_id: int) -> None:
             "UPDATE routine_items SET active = 1, deactivated_at = NULL, updated_at = ? WHERE id = ?",
             (ts, item_id),
         )
-        _event(conn, "routine_item_updated", {
+        append_event(conn, "routine_item_updated", {
             "routine_item_id": item_id,
             "title": row["title"],
             "group_name": row["group_name"],
@@ -212,7 +203,7 @@ def delete_item(conn: sqlite3.Connection, item_id: int) -> None:
             "DELETE FROM checkins WHERE routine_item_id = ?", (item_id,)
         ).rowcount
         conn.execute("DELETE FROM routine_items WHERE id = ?", (item_id,))
-        _event(conn, "routine_item_deleted", {
+        append_event(conn, "routine_item_deleted", {
             "routine_item_id": item_id,
             "title": row["title"],
             "checkins_removed": n,

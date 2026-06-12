@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 
 # Reuse the app's path resolution + timestamp so backups follow ACTIVITY_DB and
@@ -33,15 +34,10 @@ def backup(dest: Path) -> Path:
     if not DB_PATH.exists():
         raise SystemExit(f"no database at {DB_PATH}")
     dest.parent.mkdir(parents=True, exist_ok=True)
-    src = sqlite3.connect(DB_PATH)
-    try:
-        out = sqlite3.connect(dest)
-        try:
-            src.backup(out)          # atomic, consistent even under concurrent writes
-        finally:
-            out.close()
-    finally:
-        src.close()
+    # closing(), not `with sqlite3.connect(...)` — sqlite3's connection context
+    # manager scopes a transaction, it does NOT close the connection.
+    with closing(sqlite3.connect(DB_PATH)) as src, closing(sqlite3.connect(dest)) as out:
+        src.backup(out)              # atomic, consistent even under concurrent writes
     return dest
 
 

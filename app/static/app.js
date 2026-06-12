@@ -80,17 +80,13 @@
   });
 
   // --- theme: tri-state (system | light | dark); default follows the OS --------
+  // The storage key + read/resolve rules live in ONE place: window.alTheme,
+  // defined by base.html's pre-paint head script (which always runs before us).
   (() => {
     const btns = document.querySelectorAll(".theme-toggle");
     const mq = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
-    const ORDER = ["system", "light", "dark"];
+    const { ORDER, read, resolve } = window.alTheme;
     const LABEL = { system: "System", light: "Light", dark: "Dark" };
-    const read = () => {
-      const v = localStorage.getItem("al-theme");
-      return ORDER.includes(v) ? v : "system";
-    };
-    const resolve = (p) =>
-      p === "dark" || (p === "system" && mq && mq.matches) ? "dark" : "light";
     function apply(pref) {
       document.documentElement.setAttribute("data-theme", resolve(pref));
       btns.forEach((b) => {

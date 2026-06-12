@@ -8,6 +8,7 @@ audit/derived feed (sec14.1).
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -72,6 +73,20 @@ def is_valid_date(s: str | None) -> bool:
 def is_not_future(s: str) -> bool:
     """True if date string s is today or earlier (lexicographic works for ISO)."""
     return s <= today_str()
+
+
+# --- event ledger (sec14.1): append-only audit feed -------------------------
+
+
+def append_event(conn: sqlite3.Connection, type_: str, payload: dict) -> None:
+    """Append one audit event — call inside the same transaction as the write it
+    describes. One owner of the ledger write contract (payload_version, JSON form,
+    timestamp source) for every service."""
+    conn.execute(
+        "INSERT INTO events (timestamp, type, payload_version, payload_json) "
+        "VALUES (?, ?, 1, ?)",
+        (now_iso(), type_, json.dumps(payload, ensure_ascii=False)),
+    )
 
 
 # --- connections (sec13.3 connection policy) -------------------------------

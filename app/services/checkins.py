@@ -9,10 +9,9 @@ closing it; each write here is wrapped in its own `with conn:` transaction.
 """
 from __future__ import annotations
 
-import json
 import sqlite3
 
-from ..db import STATUSES, now_iso
+from ..db import STATUSES, append_event, now_iso
 
 
 class CheckinError(ValueError):
@@ -30,14 +29,6 @@ SEED_ITEMS = [
 ]
 
 
-def _append_event(conn: sqlite3.Connection, type_: str, payload: dict) -> None:
-    conn.execute(
-        "INSERT INTO events (timestamp, type, payload_version, payload_json) "
-        "VALUES (?, ?, 1, ?)",
-        (now_iso(), type_, json.dumps(payload, ensure_ascii=False)),
-    )
-
-
 def seed_if_empty(conn: sqlite3.Connection) -> int:
     """Insert the seed habits if there are no routine items yet."""
     n = conn.execute("SELECT COUNT(*) FROM routine_items").fetchone()[0]
@@ -52,7 +43,7 @@ def seed_if_empty(conn: sqlite3.Connection) -> int:
                 "VALUES (?, ?, 1, ?, ?)",
                 (title, group, order, ts),
             )
-            _append_event(conn, "routine_item_created", {
+            append_event(conn, "routine_item_created", {
                 "routine_item_id": cur.lastrowid,
                 "title": title,
                 "group_name": group,
@@ -166,7 +157,7 @@ def upsert_checkin(
                 "UPDATE checkins SET status = ?, note = ?, updated_at = ? WHERE id = ?",
                 (final_status, final_note, ts, existing["id"]),
             )
-        _append_event(conn, "routine_checkin_upserted", {
+        append_event(conn, "routine_checkin_upserted", {
             "date": date,
             "routine_item_id": item_id,
             "item_title": item["title"],  # immutable snapshot at event time
@@ -187,7 +178,7 @@ def clear_checkin(conn: sqlite3.Connection, date: str, item_id: int) -> bool:
         return False
     with conn:
         conn.execute("DELETE FROM checkins WHERE id = ?", (existing["id"],))
-        _append_event(conn, "routine_checkin_cleared", {
+        append_event(conn, "routine_checkin_cleared", {
             "date": date,
             "routine_item_id": item_id,
             "item_title": item["title"],
@@ -232,4 +223,4 @@ def upsert_daily_note(conn: sqlite3.Connection, date: str, text: str) -> None:
                 "UPDATE daily_notes SET text = ?, updated_at = ? WHERE date = ?",
                 (text, ts, date),
             )
-        _append_event(conn, "daily_note_updated", {"date": date, "text": text})
+        append_event(conn, "daily_note_updated", {"date": date, "text": text})

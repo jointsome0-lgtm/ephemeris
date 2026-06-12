@@ -32,28 +32,18 @@ BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
-def _static_version() -> str:
-    """Cache-busting token = newest mtime of the assets we hand-edit, so a deploy
-    never serves stale CSS/JS. StaticFiles sends no Cache-Control, so browsers
-    cache heuristically; bumping ?v= on the /static links forces a refetch."""
-    static_dir = BASE_DIR / "static"
+def static_url(path: str) -> str:
+    """Versioned URL for a static asset: /static/<path>?v=<mtime>. StaticFiles
+    sends no Cache-Control, so browsers cache heuristically; keying the URL on the
+    file's own mtime forces a refetch after an edit/deploy. A render-time call
+    (not a frozen global), so it stays fresh on a running server, and each asset
+    gets its own token — adding one needs no registry, just {{ static_url(...) }}."""
     try:
-        return str(int(max(
-            (static_dir / "style.css").stat().st_mtime,
-            (static_dir / "app.js").stat().st_mtime,
-        )))
+        v = int((BASE_DIR / "static" / path).stat().st_mtime)
     except OSError:
-        return "0"
+        v = 0
+    return f"/static/{path}?v={v}"
 
-
-class _LazyToken:
-    """`templates.env.globals` is evaluated once at import, so a bare
-    `static_v=_static_version()` would FREEZE the cache-bust token until the next
-    restart — meaning a CSS/JS edit on a running server keeps serving the stale URL.
-    Wrapping it so `{{ static_v }}` re-stats the assets on every render fixes that."""
-
-    def __str__(self) -> str:
-        return _static_version()
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
@@ -175,7 +165,7 @@ def countdown_label(date_str: str | None, today: str | None = None) -> str:
 
 
 templates.env.globals.update(
-    static_v=_LazyToken(),
+    static_url=static_url,
     avatar=item_avatar,
     status_glyph=status_glyph,
     status_desc=status_desc,
@@ -234,11 +224,17 @@ def _safe_return(to: str | None, default: str = "/today") -> str:
 # --- day view (shared by Today + History) ----------------------------------
 
 
+def _sunday_of(d: _date) -> _date:
+    """The Sunday starting d's week — weeks are Sunday-first everywhere (the week
+    strip, the month grid's firstweekday=6, and the calendar week view)."""
+    return d - timedelta(days=(d.weekday() + 1) % 7)
+
+
 def _week_strip(conn, active: str) -> list[dict]:
     """Sunday-start week containing `active`, with a per-day logged count."""
     d = _date.fromisoformat(active)
     today = _date.fromisoformat(today_str())
-    start = d - timedelta(days=(d.weekday() + 1) % 7)  # back up to Sunday
+    start = _sunday_of(d)
     days = [start + timedelta(days=i) for i in range(7)]
     iso = [x.isoformat() for x in days]
     rows = conn.execute(
@@ -582,6 +578,15 @@ def get_search(request: Request, q: str = ""):
 # --- Calendar (month grid) + Eisenhower Matrix (sec: premium views) ---------
 
 
+def _task_chip(t) -> dict:
+    """A due task/countdown as a calendar chip — shared by the month + week views
+    (the templates' chip class ladder reads exactly these keys)."""
+    return {
+        "title": t["title"], "kind": t["kind"],
+        "completed": t["completed_at"] is not None, "priority": t["priority"],
+    }
+
+
 def _month_grid(conn, year: int, month: int) -> list[list[dict]]:
     """Always six Sunday-start weeks for the month (TickTick fixes the grid at 6
     rows so its height never jumps), each cell carrying its day's task events."""
@@ -595,17 +600,9 @@ def _month_grid(conn, year: int, month: int) -> list[list[dict]]:
     # Calendar events first so they sort above tasks in a cell (sec32 §13.6);
     # occurrences_between already returns all-day-first then by start_time.
     for o in calendar_events.occurrences_between(conn, win_start, win_end):
-        by_date.setdefault(o["date"], []).append({
-            "title": o["title"], "kind": "event", "emoji": o["emoji"],
-            "all_day": o["all_day"], "start_time": o["start_time"],
-            "end_time": o["end_time"], "completed": False, "priority": 0,
-        })
+        by_date.setdefault(o["date"], []).append({**o, "kind": "event"})
     for t in tasks.due_between(conn, win_start, win_end):
-        by_date.setdefault(t["due_date"], []).append({
-            "title": t["title"], "kind": t["kind"], "emoji": None,
-            "all_day": True, "start_time": None, "end_time": None,
-            "completed": t["completed_at"] is not None, "priority": t["priority"],
-        })
+        by_date.setdefault(t["due_date"], []).append(_task_chip(t))
     weeks: list[list[dict]] = []
     for w in range(6):
         cells = []
@@ -656,17 +653,14 @@ def _week_ctx(conn, anchor: _date) -> dict:
     """Build the Sunday-start week (firstweekday=6, matching the month grid) that
     contains `anchor`: 7 day columns, an all-day row (all-day events + due tasks),
     and the timed grid with overlap columns (sec32 §6/§6.1)."""
-    sun = anchor - timedelta(days=(anchor.weekday() + 1) % 7)  # back to Sunday
+    sun = _sunday_of(anchor)
     week_days = [sun + timedelta(days=i) for i in range(7)]
     start_iso, end_iso = week_days[0].isoformat(), week_days[-1].isoformat()
     occs = calendar_events.occurrences_between(conn, start_iso, end_iso)
 
     tasks_by_date: dict[str, list] = {}
     for t in tasks.due_between(conn, start_iso, end_iso):
-        tasks_by_date.setdefault(t["due_date"], []).append({
-            "title": t["title"], "kind": t["kind"],
-            "completed": t["completed_at"] is not None, "priority": t["priority"],
-        })
+        tasks_by_date.setdefault(t["due_date"], []).append(_task_chip(t))
 
     allday: dict[str, list] = {}
     timed: dict[str, list] = {}
@@ -674,16 +668,18 @@ def _week_ctx(conn, anchor: _date) -> dict:
         (allday if (o["all_day"] or not o["start_time"]) else timed) \
             .setdefault(o["date"], []).append(o)
 
+    # Lay each day out first — the engine owns all minute math (layout_day drops
+    # all-day items and annotates canonical start_min/end_min, defaulting an open
+    # end to +30 min) — so the band below always covers what actually renders.
+    laid = {d.isoformat(): calendar_events.layout_day(timed.get(d.isoformat(), []))
+            for d in week_days}
+
     # Visible band: default 06:00–23:00, widened (floor/ceil to the hour) to fit
     # any earlier/later timed occurrence anywhere in the week.
     band_start, band_end = _WEEK_BAND[0] * 60, _WEEK_BAND[1] * 60
-    for o in occs:
-        if o["all_day"] or not o["start_time"]:
-            continue
-        s = calendar_events._min_of(o["start_time"])
-        e = calendar_events._min_of(o["end_time"]) or (s + 30)
-        band_start = min(band_start, s // 60 * 60)
-        band_end = max(band_end, -(-e // 60) * 60)  # ceil to the hour
+    for o in (b for blocks in laid.values() for b in blocks):
+        band_start = min(band_start, o["start_min"] // 60 * 60)
+        band_end = max(band_end, -(-o["end_min"] // 60) * 60)  # ceil to the hour
     band_start = max(0, band_start)
     band_end = min(24 * 60, max(band_end, band_start + 60))
     ppm = _WEEK_HOUR_PX / 60.0
@@ -693,7 +689,7 @@ def _week_ctx(conn, anchor: _date) -> dict:
     for d in week_days:
         iso = d.isoformat()
         blocks = []
-        for o in calendar_events.layout_day(timed.get(iso, [])):
+        for o in laid[iso]:
             top = (o["start_min"] - band_start) * ppm
             height = max((o["end_min"] - o["start_min"]) * ppm, _WEEK_MIN_BLOCK_PX)
             blocks.append({
@@ -718,24 +714,19 @@ def _week_ctx(conn, anchor: _date) -> dict:
 
 
 def _parse_date(s: str | None) -> _date:
-    """Parse ?date=YYYY-MM-DD, defaulting to today; reject garbage."""
-    if s:
-        try:
-            return _date.fromisoformat(s)
-        except ValueError:
-            pass
-    return _date.fromisoformat(today_str())
+    """Parse ?date=YYYY-MM-DD, defaulting to today; reject garbage (same canonical
+    date check as every other route — db.is_valid_date)."""
+    return _date.fromisoformat(s if is_valid_date(s) else today_str())
 
 
 @app.get("/calendar/week")
 def get_calendar_week(request: Request, date: str | None = None):
-    anchor = _parse_date(date)
+    sun = _sunday_of(_parse_date(date))
     conn = get_conn()
     try:
-        ctx = _week_ctx(conn, anchor)
+        ctx = _week_ctx(conn, sun)
     finally:
         conn.close()
-    sun = anchor - timedelta(days=(anchor.weekday() + 1) % 7)
     last = sun + timedelta(days=6)
     if sun.month == last.month:
         label = f"{sun.strftime('%b')} {sun.day}–{last.day}, {sun.year}"

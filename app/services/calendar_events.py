@@ -14,7 +14,7 @@ import re
 import sqlite3
 from datetime import date as _date, timedelta
 
-from ..db import is_valid_date, now_iso
+from ..db import append_event, is_valid_date, now_iso
 from . import lists as lists_svc
 
 FREQS = ("once", "daily", "weekly")
@@ -25,14 +25,6 @@ _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 class CalendarEventError(ValueError):
     """A calendar-event write was rejected (empty title, bad time/date/weekday mask, …)."""
-
-
-def _event(conn: sqlite3.Connection, type_: str, payload: dict) -> None:
-    conn.execute(
-        "INSERT INTO events (timestamp, type, payload_version, payload_json) "
-        "VALUES (?, ?, 1, ?)",
-        (now_iso(), type_, json.dumps(payload, ensure_ascii=False)),
-    )
 
 
 # --- recurrence engine (sec32 §4) — pure & reusable ------------------------
@@ -302,6 +294,12 @@ def _clean(conn, *, title, start_date, freq, byweekday, interval_n, all_day,
 
 # --- writes ----------------------------------------------------------------
 
+# The editable columns, in one place: _clean validates exactly these, and the
+# INSERT/UPDATE SQL is generated from the same tuple, so adding an event field
+# is a single-listing change. exdates/created_at/updated_at are managed apart.
+_COLS = ("title", "emoji", "list_id", "note", "all_day", "start_time", "end_time",
+         "freq", "byweekday", "interval_n", "start_date", "end_date", "color")
+
 
 def create_event(conn: sqlite3.Connection, title: str, *, start_date: str,
                  freq: str = "once", byweekday: str | None = None, interval_n: int = 1,
@@ -316,16 +314,12 @@ def create_event(conn: sqlite3.Connection, title: str, *, start_date: str,
     ts = now_iso()
     with conn:
         cur = conn.execute(
-            "INSERT INTO calendar_events "
-            "(title, emoji, list_id, note, all_day, start_time, end_time, freq, "
-            " byweekday, interval_n, start_date, end_date, exdates, color, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
-            (c["title"], c["emoji"], c["list_id"], c["note"], c["all_day"],
-             c["start_time"], c["end_time"], c["freq"], c["byweekday"],
-             c["interval_n"], c["start_date"], c["end_date"], c["color"], ts),
+            f"INSERT INTO calendar_events ({', '.join(_COLS)}, created_at) "
+            f"VALUES ({', '.join('?' * (len(_COLS) + 1))})",
+            [*(c[k] for k in _COLS), ts],
         )
         event_id = cur.lastrowid
-        _event(conn, "calendar_event_created", {
+        append_event(conn, "calendar_event_created", {
             "calendar_event_id": event_id, "title": c["title"], "freq": c["freq"],
             "byweekday": c["byweekday"], "interval_n": c["interval_n"],
             "start_date": c["start_date"], "end_date": c["end_date"],
@@ -340,23 +334,15 @@ def update_event(conn: sqlite3.Connection, event_id: int, **fields) -> None:
     row = get_event(conn, event_id)
     if row is None:
         raise CalendarEventError("unknown event")
-    pick = lambda k: fields[k] if k in fields else row[k]  # noqa: E731
-    c = _clean(conn, title=pick("title"), start_date=pick("start_date"), freq=pick("freq"),
-               byweekday=pick("byweekday"), interval_n=pick("interval_n"),
-               all_day=pick("all_day"), start_time=pick("start_time"), end_time=pick("end_time"),
-               end_date=pick("end_date"), list_id=pick("list_id"), emoji=pick("emoji"),
-               note=pick("note"), color=pick("color"))
+    c = _clean(conn, **{k: fields.get(k, row[k]) for k in _COLS})
     ts = now_iso()
     with conn:
         conn.execute(
-            "UPDATE calendar_events SET title=?, emoji=?, list_id=?, note=?, all_day=?, "
-            "start_time=?, end_time=?, freq=?, byweekday=?, interval_n=?, start_date=?, "
-            "end_date=?, color=?, updated_at=? WHERE id=?",
-            (c["title"], c["emoji"], c["list_id"], c["note"], c["all_day"],
-             c["start_time"], c["end_time"], c["freq"], c["byweekday"], c["interval_n"],
-             c["start_date"], c["end_date"], c["color"], ts, event_id),
+            f"UPDATE calendar_events SET {', '.join(k + '=?' for k in _COLS)}, "
+            "updated_at=? WHERE id=?",
+            [*(c[k] for k in _COLS), ts, event_id],
         )
-        _event(conn, "calendar_event_updated", {"calendar_event_id": event_id, "title": c["title"]})
+        append_event(conn, "calendar_event_updated", {"calendar_event_id": event_id, "title": c["title"]})
 
 
 def archive_event(conn: sqlite3.Connection, event_id: int) -> None:
@@ -367,7 +353,7 @@ def archive_event(conn: sqlite3.Connection, event_id: int) -> None:
     ts = now_iso()
     with conn:
         conn.execute("UPDATE calendar_events SET archived_at = ? WHERE id = ?", (ts, event_id))
-        _event(conn, "calendar_event_archived", {"calendar_event_id": event_id, "title": row["title"]})
+        append_event(conn, "calendar_event_archived", {"calendar_event_id": event_id, "title": row["title"]})
 
 
 def get_event(conn: sqlite3.Connection, event_id: int) -> sqlite3.Row | None:
@@ -400,7 +386,7 @@ def skip_occurrence(conn: sqlite3.Connection, event_id: int, date: str) -> None:
     with conn:
         conn.execute("UPDATE calendar_events SET exdates = ?, updated_at = ? WHERE id = ?",
                      (json.dumps(sorted(ex)), ts, event_id))
-        _event(conn, "calendar_occurrence_skipped", {"calendar_event_id": event_id, "date": date})
+        append_event(conn, "calendar_occurrence_skipped", {"calendar_event_id": event_id, "date": date})
 
 
 def unskip_occurrence(conn: sqlite3.Connection, event_id: int, date: str) -> None:
@@ -416,4 +402,4 @@ def unskip_occurrence(conn: sqlite3.Connection, event_id: int, date: str) -> Non
     with conn:
         conn.execute("UPDATE calendar_events SET exdates = ?, updated_at = ? WHERE id = ?",
                      (json.dumps(sorted(ex)) if ex else None, ts, event_id))
-        _event(conn, "calendar_occurrence_unskipped", {"calendar_event_id": event_id, "date": date})
+        append_event(conn, "calendar_occurrence_unskipped", {"calendar_event_id": event_id, "date": date})

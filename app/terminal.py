@@ -200,7 +200,7 @@ _MAX_SESSIONS = 8               # bound the number of live shells
 _RING_BYTES = 256 * 1024        # scrollback bytes replayed on reattach
 _REAP_INTERVAL = 5 * 60         # background idle sweep, so a lone session is reaped without new traffic
 _SESSIONS: dict[str, "_TermSession"] = {}
-_CREATE_LOCK: "asyncio.Lock | None" = None  # serialize creation so the cap check is atomic
+_CREATE_LOCK = asyncio.Lock()  # serialize creation so the cap check is atomic (loop-lazy since 3.10)
 _REAPER_TASK: "asyncio.Task | None" = None  # periodic _reap_idle sweep (lazy-started on first connect)
 
 
@@ -260,9 +260,7 @@ class _TermSession:
                             if self.ws is ws:
                                 await ws.send_bytes(data)
                     except (RuntimeError, WebSocketDisconnect, OSError):
-                        if self.ws is ws:  # only detach the socket that actually failed
-                            self.ws = None
-                            self.detached_at = time.monotonic()
+                        self.detach(ws)  # only detaches the socket that actually failed
         except (OSError, RuntimeError):
             pass
         finally:
@@ -335,9 +333,6 @@ def _ensure_reaper() -> None:
 async def _create_session() -> "_TermSession | None":
     """Spawn a fresh shell on a PTY and register it. Returns None at capacity or on a
     spawn failure. Serialized via _CREATE_LOCK so the capacity check is atomic."""
-    global _CREATE_LOCK
-    if _CREATE_LOCK is None:
-        _CREATE_LOCK = asyncio.Lock()
     async with _CREATE_LOCK:
         if len(_SESSIONS) >= _MAX_SESSIONS:
             _reap_idle(force_oldest=True)
@@ -351,9 +346,11 @@ async def _create_session() -> "_TermSession | None":
         env["PATH"] = f"{home}/.local/bin:/usr/local/bin:" + env.get("PATH", "/usr/bin:/bin")
         # Route agent CLIs around country-level blocks via the user's local proxy (if any).
         # Clear the ambient proxy slate first so TICKLIKE_TERM_PROXY=off truly means direct.
+        # Detection runs in a worker thread: its socket probes block (up to ~0.15s/port),
+        # which must not stall the event loop (and every other PTY pump) mid-detect.
         for _k in _PROXY_ENV_VARS:
             env.pop(_k, None)
-        proxy = _detect_proxy_env()
+        proxy = await asyncio.to_thread(_detect_proxy_env)
         env.update(proxy)
 
         master_fd, slave_fd = pty.openpty()
@@ -494,8 +491,11 @@ async def shutdown_terminal() -> None:
     if _REAPER_TASK is not None:
         _REAPER_TASK.cancel()
         _REAPER_TASK = None
-    for sess in list(_SESSIONS.values()):
-        await sess.close()
+    # Concurrently: each close() can wait up to 2s for a shell that ignores SIGHUP,
+    # so a serial loop would add up to _MAX_SESSIONS × 2s to every service restart.
+    if _SESSIONS:
+        await asyncio.gather(*(s.close() for s in list(_SESSIONS.values())),
+                             return_exceptions=True)
 
 
 def setup_terminal(app: FastAPI, templates: Jinja2Templates) -> None:

@@ -9,11 +9,10 @@ keeping with the recovery-not-shame goal (sec16.5). Each write appends its event
 """
 from __future__ import annotations
 
-import json
 import sqlite3
 from datetime import date as _date, timedelta
 
-from ..db import is_valid_date, now_iso, today_str
+from ..db import append_event, is_valid_date, now_iso, today_str
 from . import lists as lists_svc
 
 PRIORITIES = (0, 1, 2, 3)
@@ -31,14 +30,6 @@ SEED_TASKS = [
 
 class TaskError(ValueError):
     """A task write was rejected (empty title, bad date, unknown id, …)."""
-
-
-def _event(conn: sqlite3.Connection, type_: str, payload: dict) -> None:
-    conn.execute(
-        "INSERT INTO events (timestamp, type, payload_version, payload_json) "
-        "VALUES (?, ?, 1, ?)",
-        (now_iso(), type_, json.dumps(payload, ensure_ascii=False)),
-    )
 
 
 # --- writes ----------------------------------------------------------------
@@ -89,7 +80,7 @@ def create_task(
             (title, list_id, note, due_date, priority, kind, nxt, ts),
         )
         task_id = cur.lastrowid
-        _event(conn, "task_created", {
+        append_event(conn, "task_created", {
             "task_id": task_id, "title": title, "list_id": list_id,
             "due_date": due_date, "kind": kind, "priority": priority,
         })
@@ -136,8 +127,8 @@ def toggle_complete(conn: sqlite3.Connection, task_id: int) -> bool:
             "UPDATE tasks SET completed_at = ?, updated_at = ? WHERE id = ?",
             (ts if now_completed else None, ts, task_id),
         )
-        _event(conn, "task_completed" if now_completed else "task_reopened",
-               {"task_id": task_id, "title": row["title"]})
+        append_event(conn, "task_completed" if now_completed else "task_reopened",
+                     {"task_id": task_id, "title": row["title"]})
     return now_completed
 
 
@@ -160,7 +151,7 @@ def update_task(conn: sqlite3.Connection, task_id: int, **fields) -> None:
             "UPDATE tasks SET title=?, note=?, due_date=?, priority=?, list_id=?, updated_at=? WHERE id=?",
             (title, note, due_date, priority, list_id, ts, task_id),
         )
-        _event(conn, "task_updated", {"task_id": task_id, "title": title})
+        append_event(conn, "task_updated", {"task_id": task_id, "title": title})
 
 
 # --- reads (smart lists + per-list) ----------------------------------------

@@ -7,10 +7,9 @@ stays joinable. Each write appends its event (sec14.1) in one transaction.
 """
 from __future__ import annotations
 
-import json
 import sqlite3
 
-from ..db import now_iso
+from ..db import append_event, now_iso
 
 INBOX_NAME = "Inbox"
 
@@ -26,14 +25,6 @@ SEED_LISTS = [
 
 class ListError(ValueError):
     """A list write was rejected (empty name, unknown id, deleting Inbox, …)."""
-
-
-def _event(conn: sqlite3.Connection, type_: str, payload: dict) -> None:
-    conn.execute(
-        "INSERT INTO events (timestamp, type, payload_version, payload_json) "
-        "VALUES (?, ?, 1, ?)",
-        (now_iso(), type_, json.dumps(payload, ensure_ascii=False)),
-    )
 
 
 def seed_if_empty(conn: sqlite3.Connection) -> int:
@@ -106,7 +97,7 @@ def create_list(conn: sqlite3.Connection, name: str, emoji: str | None = None) -
             (name, emoji, nxt, ts),
         )
         list_id = cur.lastrowid
-        _event(conn, "list_created", {"list_id": list_id, "name": name, "emoji": emoji})
+        append_event(conn, "list_created", {"list_id": list_id, "name": name, "emoji": emoji})
     return list_id
 
 
@@ -122,7 +113,7 @@ def rename_list(conn: sqlite3.Connection, list_id: int, name: str, emoji: str | 
             "UPDATE lists SET name = ?, emoji = ?, updated_at = ? WHERE id = ?",
             (name, emoji, ts, list_id),
         )
-        _event(conn, "list_updated", {"list_id": list_id, "name": name, "emoji": emoji})
+        append_event(conn, "list_updated", {"list_id": list_id, "name": name, "emoji": emoji})
 
 
 def archive_list(conn: sqlite3.Connection, list_id: int) -> None:
@@ -137,4 +128,4 @@ def archive_list(conn: sqlite3.Connection, list_id: int) -> None:
     with conn:
         conn.execute("UPDATE tasks SET list_id = ? WHERE list_id = ?", (inbox, list_id))
         conn.execute("UPDATE lists SET archived_at = ? WHERE id = ?", (ts, list_id))
-        _event(conn, "list_archived", {"list_id": list_id, "name": row["name"]})
+        append_event(conn, "list_archived", {"list_id": list_id, "name": row["name"]})

@@ -1,18 +1,9 @@
 {% extends "base.html" %}
-{% import "_icons.html" as ic %}
+{% import "_cal.html" as cal %}
 {% block title %}Calendar - TickTick{% endblock %}
 {% block content_class %}wide{% endblock %}
 {% block content %}
-<header class="cal-view-head">
-  <button class="head-btn" title="Toggle sidebar">{{ ic.icon('panel') }}</button>
-  <h1>{{ month_label }}</h1>
-  <a class="head-btn" href="#new-task-cal" title="Add">{{ ic.icon('plus') }}</a>
-  <span class="cal-switch"><span class="on">Month</span><a href="/calendar/week">Week</a></span>
-  <a class="cal-arrow" href="{{ prev_url }}">{{ ic.icon('chev-left') }}</a>
-  <a class="cal-pillbtn" href="/calendar">Today</a>
-  <a class="cal-arrow" href="{{ next_url }}">{{ ic.icon('chev-right') }}</a>
-  <button class="head-btn" title="More">{{ ic.icon('more') }}</button>
-</header>
+{{ cal.head(month_label, 'month', prev_url, next_url) }}
 
 <div class="cal-month">
   <div class="cal-month-dow">
@@ -25,7 +16,7 @@
         {% if ev.kind == 'event' %}
         <span class="cm-event ev" title="{{ ev.title }}">{% if not ev.all_day and ev.start_time %}<span class="cm-time">{{ ev.start_time }}</span> {% elif ev.emoji %}{{ ev.emoji }} {% endif %}{{ ev.title }}</span>
         {% else %}
-        <span class="cm-event {% if ev.kind == 'countdown' %}cd{% elif ev.completed %}done{% elif ev.priority == 3 %}hi{% elif ev.priority == 2 %}med{% endif %}" title="{{ ev.title }}">{{ ev.title }}</span>
+        <span class="cm-event{{ cal.chip_class(ev) }}" title="{{ ev.title }}">{{ ev.title }}</span>
         {% endif %}
       {% endfor %}
     </div>

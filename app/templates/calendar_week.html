@@ -1,18 +1,9 @@
 {% extends "base.html" %}
-{% import "_icons.html" as ic %}
+{% import "_cal.html" as cal %}
 {% block title %}Calendar - TickTick{% endblock %}
 {% block content_class %}wide{% endblock %}
 {% block content %}
-<header class="cal-view-head">
-  <button class="head-btn" title="Toggle sidebar">{{ ic.icon('panel') }}</button>
-  <h1>{{ week_label }}</h1>
-  <a class="head-btn" href="#new-task-cal" title="Add">{{ ic.icon('plus') }}</a>
-  <span class="cal-switch"><a href="/calendar">Month</a><span class="on">Week</span></span>
-  <a class="cal-arrow" href="{{ prev_url }}">{{ ic.icon('chev-left') }}</a>
-  <a class="cal-pillbtn" href="/calendar/week">Today</a>
-  <a class="cal-arrow" href="{{ next_url }}">{{ ic.icon('chev-right') }}</a>
-  <button class="head-btn" title="More">{{ ic.icon('more') }}</button>
-</header>
+{{ cal.head(week_label, 'week', prev_url, next_url) }}
 
 <div class="cw">
   <div class="cw-head">
@@ -33,7 +24,7 @@
         <span class="cw-chip ev" title="{{ ev.title }}">{% if ev.emoji %}{{ ev.emoji }} {% endif %}{{ ev.title }}</span>
       {% endfor %}
       {% for t in d.tasks %}
-        <span class="cw-chip{% if t.kind == 'countdown' %} cd{% elif t.completed %} done{% elif t.priority == 3 %} hi{% elif t.priority == 2 %} med{% endif %}" title="{{ t.title }}">{{ t.title }}</span>
+        <span class="cw-chip{{ cal.chip_class(t) }}" title="{{ t.title }}">{{ t.title }}</span>
       {% endfor %}
     </div>
     {% endfor %}

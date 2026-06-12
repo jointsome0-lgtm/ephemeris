@@ -9,10 +9,9 @@ never recompute them elsewhere. Each write appends its event (sec14.1) in one tx
 """
 from __future__ import annotations
 
-import json
 import sqlite3
 
-from ..db import now_iso, today_str
+from ..db import append_event, now_iso, today_str
 
 MODES = ("pomo", "stopwatch")
 # A single session can't reasonably exceed a day; clamp bogus client values so a
@@ -22,14 +21,6 @@ MAX_SECONDS = 24 * 60 * 60
 
 class FocusError(ValueError):
     """A focus-session write was rejected (bad mode / non-positive duration)."""
-
-
-def _event(conn: sqlite3.Connection, type_: str, payload: dict) -> None:
-    conn.execute(
-        "INSERT INTO events (timestamp, type, payload_version, payload_json) "
-        "VALUES (?, ?, 1, ?)",
-        (now_iso(), type_, json.dumps(payload, ensure_ascii=False)),
-    )
 
 
 # --- write -----------------------------------------------------------------
@@ -56,8 +47,8 @@ def record_session(conn: sqlite3.Connection, mode: str, seconds, note: str | Non
             (mode, seconds, note, day, ts, ts),
         )
         session_id = cur.lastrowid
-        _event(conn, "focus_session_recorded",
-               {"session_id": session_id, "mode": mode, "seconds": seconds})
+        append_event(conn, "focus_session_recorded",
+                     {"session_id": session_id, "mode": mode, "seconds": seconds})
     return session_id
 
 

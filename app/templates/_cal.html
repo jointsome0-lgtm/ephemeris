@@ -1,0 +1,20 @@
+{# Shared calendar-view pieces (month + week grids).
+   head(): the view header — title, Month/Week switch, prev/Today/next paging.
+   chip_class(): the one owner of the task-chip modifier ladder
+   (countdown → cd, completed → done, priority 3/2 → hi/med). #}
+{% import "_icons.html" as ic %}
+
+{%- macro head(label, view, prev_url, next_url) -%}
+<header class="cal-view-head">
+  <button class="head-btn" title="Toggle sidebar">{{ ic.icon('panel') }}</button>
+  <h1>{{ label }}</h1>
+  <a class="head-btn" href="#new-task-cal" title="Add">{{ ic.icon('plus') }}</a>
+  <span class="cal-switch">{% if view == 'month' %}<span class="on">Month</span><a href="/calendar/week">Week</a>{% else %}<a href="/calendar">Month</a><span class="on">Week</span>{% endif %}</span>
+  <a class="cal-arrow" href="{{ prev_url }}">{{ ic.icon('chev-left') }}</a>
+  <a class="cal-pillbtn" href="{{ '/calendar' if view == 'month' else '/calendar/week' }}">Today</a>
+  <a class="cal-arrow" href="{{ next_url }}">{{ ic.icon('chev-right') }}</a>
+  <button class="head-btn" title="More">{{ ic.icon('more') }}</button>
+</header>
+{%- endmacro -%}
+
+{%- macro chip_class(t) -%}{% if t.kind == 'countdown' %} cd{% elif t.completed %} done{% elif t.priority == 3 %} hi{% elif t.priority == 2 %} med{% endif %}{%- endmacro -%}

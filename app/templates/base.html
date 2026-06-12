@@ -4,23 +4,32 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>{% block title %}TickTick{% endblock %}</title>
-  <link rel="stylesheet" href="/static/style.css?v={{ static_v }}">
-  {# resolve theme before first paint to avoid a flash (tri-state: system|light|dark) #}
+  <link rel="stylesheet" href="{{ static_url('style.css') }}">
+  {# resolve theme before first paint to avoid a flash (tri-state: system|light|dark).
+     window.alTheme is the ONE owner of the storage key + resolve rule; the deferred
+     app.js reuses it for the toggle, so the two can never drift. #}
   <script>
-    (function () {
-      var pref = localStorage.getItem("al-theme") || "system";
-      var dark = pref === "dark" || (pref === "system" && window.matchMedia &&
-        window.matchMedia("(prefers-color-scheme: dark)").matches);
-      document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+    window.alTheme = (function () {
+      var ORDER = ["system", "light", "dark"];
+      function read() {
+        var v = localStorage.getItem("al-theme");
+        return ORDER.indexOf(v) >= 0 ? v : "system";
+      }
+      function resolve(p) {
+        return p === "dark" || (p === "system" && window.matchMedia &&
+          window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+      }
+      document.documentElement.setAttribute("data-theme", resolve(read()));
+      return { ORDER: ORDER, read: read, resolve: resolve };
     })();
   </script>
-  <script src="/static/app.js?v={{ static_v }}" defer></script>
+  <script src="{{ static_url('app.js') }}" defer></script>
 </head>
 <body>
   {% import "_icons.html" as ic %}
   {% set R = rail | default('tasks') %}
-  {%- macro theme_toggle(cls, with_label=false, id='') -%}
-<button type="button" {% if id %}id="{{ id }}" {% endif %}class="{{ cls }} theme-toggle" data-pref="system" title="Toggle theme" aria-label="Toggle theme"><span class="ti ti-system">{{ ic.icon('monitor') }}</span><span class="ti ti-light">{{ ic.icon('sun') }}</span><span class="ti ti-dark">{{ ic.icon('moon') }}</span>{% if with_label %}<span>Theme</span>{% endif %}</button>
+  {%- macro theme_toggle(cls, with_label=false) -%}
+<button type="button" class="{{ cls }} theme-toggle" data-pref="system" title="Toggle theme" aria-label="Toggle theme"><span class="ti ti-system">{{ ic.icon('monitor') }}</span><span class="ti ti-light">{{ ic.icon('sun') }}</span><span class="ti ti-dark">{{ ic.icon('moon') }}</span>{% if with_label %}<span>Theme</span>{% endif %}</button>
   {%- endmacro -%}
   <div class="tt-shell">
     <nav class="rail" aria-label="Sections">
@@ -36,7 +45,7 @@
 
       <span class="rail-spacer"></span>
       <div class="rail-foot">
-        {{ theme_toggle('rail-ico', id='theme-toggle') }}
+        {{ theme_toggle('rail-ico') }}
         {% if client_is_local(request) %}<button type="button" class="rail-ico" id="term-toggle" title="Terminal — local only (Ctrl+`)" aria-label="Toggle terminal">{{ ic.icon('terminal') }}</button>{% endif %}
         <a class="rail-ico {% if R == 'export' %}active{% endif %}" href="/export" title="Export">{{ ic.icon('download') }}</a>
         <a class="rail-ico {% if R == 'items' %}active{% endif %}" href="/items" title="Manage">{{ ic.icon('settings') }}</a>
@@ -75,150 +84,7 @@
     <div id="term" class="term-screen"></div>
     <div id="term-status" class="term-status" hidden></div>
   </div>
-  <script>
-  (function () {
-    var drawer = document.getElementById('term-drawer');
-    var toggle = document.getElementById('term-toggle');
-    if (!drawer || !toggle) return;
-    var CSS = '/static/vendor/xterm.min.css';            // vendored locally (no remote CDN in the RCE surface)
-    var XJS = '/static/vendor/xterm.min.js';
-    var FJS = '/static/vendor/xterm-addon-fit.min.js';
-    var OPEN_KEY = 'al-term-open', SID_KEY = 'al-term-sid', H_KEY = 'al-term-h', MIN_KEY = 'al-term-min';
-    var statusEl = document.getElementById('term-status');
-    var dotEl = document.getElementById('term-dot');
-    var screenEl = document.getElementById('term');
-    var enc = new TextEncoder();
-    var loaded = null, term = null, fit = null, ws = null, ro = null, refit = null;
-
-    function fail(m) { statusEl.hidden = false; statusEl.textContent = m; }
-    function sendResize() { if (term && ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols })); }
-
-    function loadAssets() {
-      if (loaded) return loaded;
-      loaded = new Promise(function (res, rej) {
-        if (window.Terminal && window.FitAddon) return res();
-        var l = document.createElement('link'); l.rel = 'stylesheet'; l.href = CSS; document.head.appendChild(l);
-        var s = document.createElement('script'); s.src = XJS;
-        s.onload = function () {
-          var f = document.createElement('script'); f.src = FJS;
-          f.onload = res; f.onerror = rej; document.head.appendChild(f);
-        };
-        s.onerror = rej; document.head.appendChild(s);
-      });
-      return loaded;
-    }
-
-    function ready(cb) {                 // ensure xterm + the Terminal instance exist, then run cb
-      loadAssets().then(function () {
-        if (!term) {
-          term = new Terminal({
-            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
-            fontSize: 13, cursorBlink: true, scrollback: 5000,
-            theme: { background: '#16181d', foreground: '#e6e6e6', cursor: '#e6e6e6' }
-          });
-          fit = new FitAddon.FitAddon(); term.loadAddon(fit);
-          term.open(screenEl); try { fit.fit(); } catch (e) {}
-          refit = function () { try { fit.fit(); } catch (e) {} sendResize(); };
-          term.onData(function (d) { if (ws && ws.readyState === 1) ws.send(enc.encode(d)); });
-          ro = new ResizeObserver(function () { if (refit) refit(); }); ro.observe(screenEl);
-        }
-        cb();
-      }).catch(function () { fail('Failed to load xterm.js (local asset missing).'); });
-    }
-
-    function connect() {                 // (re)attach the websocket to our persistent session
-      if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
-      var proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      var sid = localStorage.getItem(SID_KEY);
-      ws = new WebSocket(proto + '://' + location.host + '/terminal/ws' + (sid ? ('?sid=' + encodeURIComponent(sid)) : ''));
-      ws.binaryType = 'arraybuffer';
-      ws.onopen = function () { if (dotEl) dotEl.style.background = '#2ecc71'; sendResize(); if (term) term.focus(); };
-      ws.onmessage = function (e) {
-        if (typeof e.data === 'string') {                                    // control frame (JSON)
-          try { var m = JSON.parse(e.data); if (m && m.type === 'session' && m.sid) localStorage.setItem(SID_KEY, m.sid); } catch (_) {}
-          return;
-        }
-        if (term) term.write(new Uint8Array(e.data));                        // pty output
-      };
-      ws.onclose = function () { if (dotEl) dotEl.style.background = '#888'; };
-      ws.onerror = function () { fail('WebSocket error — the terminal is localhost-only.'); };
-    }
-
-    function syncInset() {               // reserve page space so content can scroll above the drawer
-      if (drawer.hidden) {
-        document.body.classList.remove('term-open');
-        document.body.style.removeProperty('--term-h');
-      } else {
-        document.body.classList.add('term-open');
-        document.body.style.setProperty('--term-h', drawer.offsetHeight + 'px');
-      }
-    }
-    function open() {                    // show + (re)connect; the shell persists across pages
-      drawer.hidden = false; drawer.setAttribute('aria-hidden', 'false');
-      var min = localStorage.getItem(MIN_KEY) === '1';
-      drawer.classList.toggle('minimized', min);   // restore the prior collapsed/expanded state
-      toggle.classList.add('active');
-      localStorage.setItem(OPEN_KEY, '1'); statusEl.hidden = true;
-      syncInset();
-      ready(function () { connect(); if (!min) setTimeout(function () { if (refit) refit(); if (term) term.focus(); }, 60); });
-    }
-    function hide() {                    // collapse the panel; the shell keeps running, reattaches later
-      drawer.hidden = true; drawer.setAttribute('aria-hidden', 'true');
-      toggle.classList.remove('active'); localStorage.setItem(OPEN_KEY, '0');
-      syncInset();
-    }
-    function kill() {                    // ✕ — end the session: stop the shell and forget it
-      try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'kill' })); } catch (e) {}
-      localStorage.removeItem(SID_KEY); localStorage.setItem(OPEN_KEY, '0');
-      if (ws) { try { ws.close(); } catch (e) {} }
-      ws = null;
-      drawer.hidden = true; drawer.setAttribute('aria-hidden', 'true'); toggle.classList.remove('active');
-      if (dotEl) dotEl.style.background = '';
-      syncInset();
-    }
-
-    toggle.addEventListener('click', function () { drawer.hidden ? open() : hide(); });
-    var killBtn = document.getElementById('term-close'); if (killBtn) killBtn.addEventListener('click', kill);
-    var minBtn = document.getElementById('term-min');
-    if (minBtn) minBtn.addEventListener('click', function () {
-      var min = drawer.classList.toggle('minimized');
-      localStorage.setItem(MIN_KEY, min ? '1' : '0');   // remember collapsed state across pages
-      syncInset();
-      if (!min) setTimeout(function () { if (refit) refit(); if (term) term.focus(); }, 60);
-    });
-    var titleEl = document.querySelector('.term-title');
-    if (titleEl && minBtn) titleEl.addEventListener('dblclick', function () { minBtn.click(); });
-
-    var H = localStorage.getItem(H_KEY); if (H) drawer.style.height = H;
-
-    // drag-to-resize from the top edge
-    var handle = document.getElementById('term-resize'), dragging = false;
-    if (handle) {
-      handle.addEventListener('mousedown', function (e) { dragging = true; e.preventDefault(); document.body.style.userSelect = 'none'; });
-      window.addEventListener('mousemove', function (e) {
-        if (!dragging) return;
-        var h = Math.max(120, Math.min(window.innerHeight - 80, window.innerHeight - e.clientY));
-        drawer.style.height = h + 'px';
-        document.body.style.setProperty('--term-h', h + 'px');   // keep the content lift in sync while dragging
-        if (refit) refit();
-      });
-      window.addEventListener('mouseup', function () {
-        if (!dragging) return; dragging = false; document.body.style.userSelect = '';
-        if (drawer.style.height) localStorage.setItem(H_KEY, drawer.style.height);
-      });
-    }
-
-    // Ctrl+` toggles show/hide, like GCP Cloud Shell / VS Code
-    window.addEventListener('keydown', function (e) {
-      if (e.ctrlKey && !e.altKey && !e.metaKey && e.key === '`') { e.preventDefault(); drawer.hidden ? open() : hide(); }
-    });
-    // Keep the reserved space correct when the viewport changes (42vh drawer, window resize).
-    window.addEventListener('resize', function () { if (!drawer.hidden) syncInset(); });
-
-    // Reattach automatically on every page if the drawer was left open (survives navigation).
-    if (localStorage.getItem(OPEN_KEY) === '1') open();
-  })();
-  </script>
+  <script src="{{ static_url('terminal.js') }}" defer></script>
   {% endif %}
 </body>
 </html>
