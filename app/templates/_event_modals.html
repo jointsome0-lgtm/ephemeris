@@ -1,0 +1,50 @@
+{# Event create + edit modals, shared by the month and week calendar views (M3).
+   Create opens via :target (#new-event from the header +); edit is server-opened
+   (`.open`) when the route resolves ?ev=<id>, with ?on=<date> carrying the
+   clicked occurrence for Skip. Context: self_url (this view, no ev/on params),
+   today, cal_lists, edit_ev (row|None), edit_exdates (list), on (date|None).
+
+   Guarded on cal_lists: templates are read from disk per render, so a running
+   server older than this feature would otherwise 500 the calendar (its routes
+   don't pass the modal context). It just skips the modals until restarted. #}
+{% if cal_lists is defined %}
+<div class="modal-overlay" id="new-event">
+  <div class="modal" role="dialog" aria-label="New event">
+    <header class="modal-head"><h2>New Event</h2><a class="dp-close" href="{{ self_url }}">×</a></header>
+    {% with action="/calendar/events", ev=None, return_to=self_url, cancel_url=self_url %}
+      {% include "_event_form.html" %}
+    {% endwith %}
+  </div>
+</div>
+
+{% if edit_ev %}
+<div class="modal-overlay open" id="edit-event">
+  <div class="modal" role="dialog" aria-label="Edit event">
+    <header class="modal-head"><h2>Edit Event</h2><a class="dp-close" href="{{ self_url }}">×</a></header>
+    {% with action="/calendar/events/" ~ edit_ev.id, ev=edit_ev, return_to=self_url, cancel_url=self_url %}
+      {% include "_event_form.html" %}
+    {% endwith %}
+    <div class="ef-extra">
+      {% if on %}
+      <form method="post" action="/calendar/events/{{ edit_ev.id }}/skip">
+        <input type="hidden" name="date" value="{{ on }}">
+        <input type="hidden" name="return_to" value="{{ self_url }}">
+        <button type="submit">Skip this occurrence ({{ on }})</button>
+      </form>
+      {% endif %}
+      {% for x in edit_exdates %}
+      <form method="post" action="/calendar/events/{{ edit_ev.id }}/unskip">
+        <input type="hidden" name="date" value="{{ x }}">
+        <input type="hidden" name="return_to" value="{{ self_url }}&ev={{ edit_ev.id }}">
+        <button type="submit">Restore skipped {{ x }}</button>
+      </form>
+      {% endfor %}
+      <form method="post" action="/calendar/events/{{ edit_ev.id }}/archive">
+        <input type="hidden" name="return_to" value="{{ self_url }}">
+        <button type="submit" class="danger">Delete series</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endif %}

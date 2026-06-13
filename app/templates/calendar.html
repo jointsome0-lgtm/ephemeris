@@ -4,6 +4,7 @@
 {% block content_class %}wide{% endblock %}
 {% block content %}
 {{ cal.head(month_label, 'month', prev_url, next_url) }}
+{% if flash %}<p class="flash" role="status">{{ flash }}</p>{% endif %}
 
 <div class="cal-month">
   <div class="cal-month-dow">
@@ -14,7 +15,7 @@
       <span class="cm-num">{% if c.day == 1 %}{{ c.month_abbr }} {% endif %}{{ c.day }}</span>
       {% for ev in c.events %}
         {% if ev.kind == 'event' %}
-        <span class="cm-event ev" title="{{ ev.title }}">{% if not ev.all_day and ev.start_time %}<span class="cm-time">{{ ev.start_time }}</span> {{ ev.title }}{% else %}{{ cal.ev_label(ev) }}{% endif %}</span>
+        <a class="cm-event ev" href="{{ self_url }}&ev={{ ev.event_id }}&on={{ ev.date }}" title="{{ ev.title }}">{% if not ev.all_day and ev.start_time %}<span class="cm-time">{{ ev.start_time }}</span> {{ ev.title }}{% else %}{{ cal.ev_label(ev) }}{% endif %}</a>
         {% else %}
         <span class="cm-event{{ cal.chip_class(ev) }}" title="{{ ev.title }}">{{ ev.title }}</span>
         {% endif %}
@@ -22,4 +23,6 @@
     </div>
   {% endfor %}{% endfor %}
 </div>
+
+{% include "_event_modals.html" %}
 {% endblock %}

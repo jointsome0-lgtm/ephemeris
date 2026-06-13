@@ -607,6 +607,10 @@ with TestClient(app) as c:
         wk1b = [(o["date"], o["title"]) for o in ce.occurrences_between(cconn, "2027-04-04", "2027-04-10")]
         check("skip removes exactly that occurrence",
               wk1b == [("2027-04-07", "Orbit Drill"), ("2027-04-08", "Signal Lab")], str(wk1b))
+        _rejects("reject skip date that is not an occurrence",
+                 lambda: ce.skip_occurrence(cconn, oid, "2027-04-10"))
+        _rejects("reject malformed unskip date",
+                 lambda: ce.unskip_occurrence(cconn, oid, "not-a-date"))
         ce.unskip_occurrence(cconn, oid, "2027-04-09")
         check("unskip restores the occurrence",
               len(ce.occurrences_between(cconn, "2027-04-04", "2027-04-10")) == 3)
@@ -656,6 +660,107 @@ with TestClient(app) as c:
               c.get("/calendar/week?date=not-a-date").status_code == 200)
     finally:
         cconn.close()
+
+    # --- Calendar events: write path — form POSTs + edit modal (M3, sec32 §6/§10)
+    base = "/calendar?month=2027-06"
+    r = c.get(base)
+    check("calendar has create-event modal + header link",
+          'id="new-event"' in r.text and 'href="#new-event"' in r.text)
+    check("event form: repeat select + weekday boxes + all-day toggle",
+          'class="habit-form event-form"' in r.text and 'name="freq"' in r.text
+          and 'name="wd"' in r.text and 'name="all_day"' in r.text)
+
+    # create a timed weekly series via the form route (invented demo data)
+    r = c.post("/calendar/events", data={
+        "title": "Vector Sync", "start_date": "2027-06-01", "freq": "weekly",
+        "wd": ["1", "3"], "start_time": "18:30", "end_time": "19:15",
+        "interval_n": "1", "return_to": base}, follow_redirects=False)
+    check("POST /calendar/events -> 303 back to the view",
+          r.status_code == 303 and r.headers.get("location") == base,
+          f"{r.status_code} {r.headers.get('location')}")
+    rcal = c.get(base)
+    check("created event renders in the month grid",
+          "Vector Sync" in rcal.text and "18:30" in rcal.text)
+
+    vconn = get_conn()
+    try:
+        vid = vconn.execute(
+            "SELECT id FROM calendar_events WHERE title = 'Vector Sync'").fetchone()["id"]
+        nrows = vconn.execute("SELECT COUNT(*) AS n FROM calendar_events").fetchone()["n"]
+    finally:
+        vconn.close()
+
+    # invalid form: weekly without any weekday box → flash redirect, no row
+    r = c.post("/calendar/events", data={
+        "title": "Bad Weekly", "start_date": "2027-06-01", "freq": "weekly",
+        "start_time": "08:00", "return_to": base}, follow_redirects=False)
+    vconn = get_conn()
+    try:
+        n_after = vconn.execute("SELECT COUNT(*) AS n FROM calendar_events").fetchone()["n"]
+    finally:
+        vconn.close()
+    check("weekly-without-days rejected with flash, no row created",
+          r.status_code == 303 and "flash=" in r.headers.get("location", "")
+          and n_after == nrows, r.headers.get("location", ""))
+
+    # chips link to the edit modal; ?ev= opens it prefilled, ?on= offers Skip
+    check("month event chip links to edit (?ev= & ?on=)",
+          f"ev={vid}" in rcal.text and "on=2027-06-01" in rcal.text)
+    redit = c.get(f"{base}&ev={vid}&on=2027-06-03")
+    check("edit modal opens prefilled",
+          'id="edit-event"' in redit.text and 'value="Vector Sync"' in redit.text
+          and f'action="/calendar/events/{vid}"' in redit.text)
+    check("edit modal offers skip-this-occurrence for the clicked date",
+          f'action="/calendar/events/{vid}/skip"' in redit.text
+          and 'value="2027-06-03"' in redit.text)
+    check("garbage ?ev is ignored", 'id="edit-event"' not in c.get(f"{base}&ev=zzz").text)
+
+    # update the whole series: rename + drop Thursday from the mask
+    r = c.post(f"/calendar/events/{vid}", data={
+        "title": "Vector Sync II", "start_date": "2027-06-01", "freq": "weekly",
+        "wd": ["1"], "start_time": "18:30", "end_time": "19:15",
+        "interval_n": "1", "return_to": base}, follow_redirects=False)
+    rcal = c.get(base)
+    check("series update renames + reshapes the rule (Thu occurrences gone)",
+          r.status_code == 303 and "Vector Sync II" in rcal.text
+          and "on=2027-06-01" in rcal.text and "on=2027-06-03" not in rcal.text)
+
+    # skip one occurrence via the route; restore it from the edit modal's list
+    c.post(f"/calendar/events/{vid}/skip", data={"date": "2027-06-08", "return_to": base},
+           follow_redirects=False)
+    rcal = c.get(base)
+    check("skip route hides exactly that occurrence",
+          "on=2027-06-01" in rcal.text and "on=2027-06-08" not in rcal.text)
+    redit = c.get(f"{base}&ev={vid}")
+    check("edit modal lists the skipped date with a restore button",
+          f'action="/calendar/events/{vid}/unskip"' in redit.text
+          and 'value="2027-06-08"' in redit.text)
+    c.post(f"/calendar/events/{vid}/unskip", data={"date": "2027-06-08", "return_to": base},
+           follow_redirects=False)
+    check("unskip route restores the occurrence", "on=2027-06-08" in c.get(base).text)
+
+    # all-day create lands in the week view's all-day row (modal present there too)
+    c.post("/calendar/events", data={
+        "title": "Quiet Block", "start_date": "2027-06-02", "all_day": "1",
+        "return_to": "/calendar/week?date=2027-06-02"}, follow_redirects=False)
+    rwk = c.get("/calendar/week?date=2027-06-02")
+    check("all-day event lands in the week all-day row",
+          "Quiet Block" in rwk.text and 'id="new-event"' in rwk.text)
+    check("week timed block links to the edit modal",
+          "date=2027-05-30&ev=" in rwk.text)
+
+    # archive: series vanishes from views; its edit link goes inert
+    r = c.post(f"/calendar/events/{vid}/archive", data={"return_to": base},
+               follow_redirects=False)
+    check("archive route removes the series from the view",
+          r.status_code == 303 and "Vector Sync II" not in c.get(base).text)
+    check("edit link for an archived series is ignored",
+          'id="edit-event"' not in c.get(f"{base}&ev={vid}").text)
+
+    r = c.post("/calendar/events", data={"title": "X", "start_date": "2027-06-01", "all_day": "1"},
+               headers={"Origin": "http://evil.example", "Host": "testserver"},
+               follow_redirects=False)
+    check("cross-origin POST /calendar/events -> 403", r.status_code == 403, str(r.status_code))
 
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

@@ -4,6 +4,7 @@
 {% block content_class %}wide{% endblock %}
 {% block content %}
 {{ cal.head(week_label, 'week', prev_url, next_url) }}
+{% if flash %}<p class="flash" role="status">{{ flash }}</p>{% endif %}
 
 <div class="cw">
   <div class="cw-head">
@@ -21,7 +22,7 @@
     {% for d in days %}
     <div class="cw-allday-cell{% if d.is_today %} today{% endif %}">
       {% for ev in d.allday %}
-        <span class="cw-chip ev" title="{{ ev.title }}">{{ cal.ev_label(ev) }}</span>
+        <a class="cw-chip ev" href="{{ self_url }}&ev={{ ev.event_id }}&on={{ ev.date }}" title="{{ ev.title }}">{{ cal.ev_label(ev) }}</a>
       {% endfor %}
       {% for t in d.tasks %}
         <span class="cw-chip{{ cal.chip_class(t) }}" title="{{ t.title }}">{{ t.title }}</span>
@@ -37,7 +38,7 @@
     {% for d in days %}
     <div class="cw-daycol{% if d.is_today %} today{% endif %}">
       {% for b in d.blocks %}
-      <a class="cw-block" href="#event-{{ b.event_id }}"
+      <a class="cw-block" href="{{ self_url }}&ev={{ b.event_id }}&on={{ d.date }}"
          style="top:{{ b.top }}px; height:{{ b.height }}px; left:{{ b.left }}%; width:{{ b.width }}%;"
          title="{{ b.start_time }}{% if b.end_time %}–{{ b.end_time }}{% endif %} {{ b.title }}">
         <span class="cw-block-time">{{ b.start_time }}</span>
@@ -48,4 +49,6 @@
     {% endfor %}
   </div>
 </div>
+
+{% include "_event_modals.html" %}
 {% endblock %}

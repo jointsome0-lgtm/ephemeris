@@ -621,12 +621,36 @@ def _month_grid(conn, year: int, month: int) -> list[list[dict]]:
     return weeks
 
 
+def _event_modal_ctx(conn, self_url: str, ev: str | None, on: str | None) -> dict:
+    """Context for the event modals on both calendar views (sec32 M3): the create
+    modal always needs lists + today; ?ev=<id> opens the edit modal for that series
+    (silently ignored if unknown/archived/garbage), with ?on=<date> carrying the
+    clicked occurrence so the modal can offer Skip for exactly that day."""
+    ctx = {"self_url": self_url, "today": today_str(),
+           "cal_lists": lists.list_lists(conn),
+           "edit_ev": None, "edit_exdates": [], "on": None}
+    try:
+        event_id = int(ev) if ev else None
+    except ValueError:
+        event_id = None
+    if event_id is not None:
+        row = calendar_events.get_event(conn, event_id)
+        if row is not None and row["archived_at"] is None:
+            ctx.update(edit_ev=row,
+                       edit_exdates=calendar_events.exdates_of(row),
+                       on=on if is_valid_date(on) else None)
+    return ctx
+
+
 @app.get("/calendar")
-def get_calendar(request: Request, month: str | None = None):
+def get_calendar(request: Request, month: str | None = None, ev: str | None = None,
+                 on: str | None = None, flash: str | None = None):
     year, mon = _parse_month(month)
+    self_url = f"/calendar?month={year:04d}-{mon:02d}"
     conn = get_conn()
     try:
         weeks = _month_grid(conn, year, mon)
+        modal = _event_modal_ctx(conn, self_url, ev, on)
     finally:
         conn.close()
     first = _date(year, mon, 1)
@@ -637,7 +661,7 @@ def get_calendar(request: Request, month: str | None = None):
         {
             "request": request, "rail": "calendar",
             "month_label": first.strftime("%B %Y"),
-            "weeks": weeks,
+            "weeks": weeks, "flash": flash, **modal,
             "prev_url": f"/calendar?month={prev_first.strftime('%Y-%m')}",
             "next_url": f"/calendar?month={next_first.strftime('%Y-%m')}",
         },
@@ -720,11 +744,14 @@ def _parse_date(s: str | None) -> _date:
 
 
 @app.get("/calendar/week")
-def get_calendar_week(request: Request, date: str | None = None):
+def get_calendar_week(request: Request, date: str | None = None, ev: str | None = None,
+                      on: str | None = None, flash: str | None = None):
     sun = _sunday_of(_parse_date(date))
+    self_url = f"/calendar/week?date={sun.isoformat()}"
     conn = get_conn()
     try:
         ctx = _week_ctx(conn, sun)
+        ctx.update(_event_modal_ctx(conn, self_url, ev, on), flash=flash)
     finally:
         conn.close()
     last = sun + timedelta(days=6)
@@ -740,6 +767,130 @@ def get_calendar_week(request: Request, date: str | None = None):
         "next_url": f"/calendar/week?date={(sun + timedelta(days=7)).isoformat()}",
     })
     return templates.TemplateResponse(request, "calendar_week.html", ctx)
+
+
+# --- Calendar-event writes (sec32 M3): create / update / archive / skip ----
+
+
+def _wd_mask(wd: list[str]) -> str:
+    """The form's 7 weekday checkboxes (values '0'..'6', Mon..Sun) → the stored
+    byweekday mask. The service nulls it for non-weekly freqs and rejects an
+    all-zero mask on weekly, so the route just assembles."""
+    return "".join("1" if str(i) in wd else "0" for i in range(7))
+
+
+@app.post("/calendar/events")
+def post_event_create(
+    request: Request,
+    title: str = Form(...),
+    emoji: str = Form(""),
+    list_id: str = Form(""),
+    note: str = Form(""),
+    all_day: str | None = Form(None),
+    start_time: str = Form(""),
+    end_time: str = Form(""),
+    freq: str = Form("once"),
+    wd: list[str] = Form([]),
+    interval_n: str = Form("1"),
+    start_date: str = Form(...),
+    end_date: str = Form(""),
+    return_to: str = Form("/calendar"),
+):
+    _check_origin(request)
+    conn = get_conn()
+    try:
+        calendar_events.create_event(
+            conn, title, start_date=start_date, freq=freq, byweekday=_wd_mask(wd),
+            interval_n=interval_n, all_day=bool(all_day), start_time=start_time,
+            end_time=end_time, end_date=end_date, list_id=list_id, emoji=emoji, note=note,
+        )
+    except calendar_events.CalendarEventError as exc:
+        return RedirectResponse(
+            _with_flash(_safe_return(return_to, "/calendar"), str(exc)), status_code=303)
+    finally:
+        conn.close()
+    return RedirectResponse(_safe_return(return_to, "/calendar"), status_code=303)
+
+
+@app.post("/calendar/events/{event_id}")
+def post_event_update(
+    request: Request,
+    event_id: int,
+    title: str = Form(...),
+    emoji: str = Form(""),
+    list_id: str = Form(""),
+    note: str = Form(""),
+    all_day: str | None = Form(None),
+    start_time: str = Form(""),
+    end_time: str = Form(""),
+    freq: str = Form("once"),
+    wd: list[str] = Form([]),
+    interval_n: str = Form("1"),
+    start_date: str = Form(...),
+    end_date: str = Form(""),
+    return_to: str = Form("/calendar"),
+):
+    """Update the whole series ("All events" — v1 has no per-occurrence override;
+    use Skip for one day). exdates survive the edit (the service preserves them)."""
+    _check_origin(request)
+    conn = get_conn()
+    try:
+        calendar_events.update_event(
+            conn, event_id, title=title, emoji=emoji, list_id=list_id, note=note,
+            all_day=bool(all_day), start_time=start_time, end_time=end_time,
+            freq=freq, byweekday=_wd_mask(wd), interval_n=interval_n,
+            start_date=start_date, end_date=end_date,
+        )
+    except calendar_events.CalendarEventError as exc:
+        return RedirectResponse(
+            _with_flash(_safe_return(return_to, "/calendar"), str(exc)), status_code=303)
+    finally:
+        conn.close()
+    return RedirectResponse(_safe_return(return_to, "/calendar"), status_code=303)
+
+
+@app.post("/calendar/events/{event_id}/archive")
+def post_event_archive(request: Request, event_id: int, return_to: str = Form("/calendar")):
+    _check_origin(request)
+    conn = get_conn()
+    try:
+        calendar_events.archive_event(conn, event_id)  # soft: series stays in the ledger
+    except calendar_events.CalendarEventError as exc:
+        return RedirectResponse(
+            _with_flash(_safe_return(return_to, "/calendar"), str(exc)), status_code=303)
+    finally:
+        conn.close()
+    return RedirectResponse(_safe_return(return_to, "/calendar"), status_code=303)
+
+
+@app.post("/calendar/events/{event_id}/skip")
+def post_event_skip(request: Request, event_id: int, date: str = Form(...),
+                    return_to: str = Form("/calendar")):
+    _check_origin(request)
+    conn = get_conn()
+    try:
+        calendar_events.skip_occurrence(conn, event_id, date)
+    except calendar_events.CalendarEventError as exc:
+        return RedirectResponse(
+            _with_flash(_safe_return(return_to, "/calendar"), str(exc)), status_code=303)
+    finally:
+        conn.close()
+    return RedirectResponse(_safe_return(return_to, "/calendar"), status_code=303)
+
+
+@app.post("/calendar/events/{event_id}/unskip")
+def post_event_unskip(request: Request, event_id: int, date: str = Form(...),
+                      return_to: str = Form("/calendar")):
+    _check_origin(request)
+    conn = get_conn()
+    try:
+        calendar_events.unskip_occurrence(conn, event_id, date)
+    except calendar_events.CalendarEventError as exc:
+        return RedirectResponse(
+            _with_flash(_safe_return(return_to, "/calendar"), str(exc)), status_code=303)
+    finally:
+        conn.close()
+    return RedirectResponse(_safe_return(return_to, "/calendar"), status_code=303)
 
 
 # Eisenhower quadrants keyed by our priority field (high→urgent+important … none→neither)

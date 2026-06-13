@@ -9,7 +9,7 @@
 <header class="cal-view-head">
   <button class="head-btn" title="Toggle sidebar">{{ ic.icon('panel') }}</button>
   <h1>{{ label }}</h1>
-  <a class="head-btn" href="#new-task-cal" title="Add">{{ ic.icon('plus') }}</a>
+  <a class="head-btn" href="#new-event" title="New event">{{ ic.icon('plus') }}</a>
   <span class="cal-switch">{% if view == 'month' %}<span class="on">Month</span><a href="/calendar/week">Week</a>{% else %}<a href="/calendar">Month</a><span class="on">Week</span>{% endif %}</span>
   <a class="cal-arrow" href="{{ prev_url }}">{{ ic.icon('chev-left') }}</a>
   <a class="cal-pillbtn" href="{{ '/calendar' if view == 'month' else '/calendar/week' }}">Today</a>

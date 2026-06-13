@@ -1,0 +1,110 @@
+{# Create / edit a calendar-event series (sec32 §7 / M3) — reuses the habit-form
+   row styles. Shared by the create modal (action=/calendar/events, ev=None) and
+   the edit modal (action=/calendar/events/{id}, ev=row). Context: action, ev,
+   today, cal_lists, return_to, cancel_url. The weekday boxes / interval / time
+   rows show only when relevant (CSS :has; degrades to always-visible). #}
+{% import "_icons.html" as ic %}
+<form class="habit-form event-form" method="post" action="{{ action }}" autocomplete="off">
+  <input type="hidden" name="return_to" value="{{ return_to }}">
+
+  <div class="hf-name">
+    <span class="hf-emoji">
+      <input type="text" name="emoji" maxlength="8" aria-label="Emoji"
+             value="{{ ev.emoji if ev and ev.emoji else '' }}" placeholder="📅">
+    </span>
+    <input type="text" name="title" class="hf-title" required
+           value="{{ ev.title if ev else '' }}" placeholder="Event title">
+  </div>
+
+  <div class="hf-row hf-row-toggle">
+    <span class="hf-label">All-day</span>
+    <label class="hf-switch">
+      <input type="checkbox" name="all_day" value="1" {% if ev and ev.all_day %}checked{% endif %}>
+      <span class="hf-track" aria-hidden="true"></span>
+    </label>
+  </div>
+
+  <div class="hf-row ef-times">
+    <span class="hf-label">Time</span>
+    <span class="hf-control">
+      <input type="time" name="start_time" aria-label="Start time"
+             value="{{ ev.start_time if ev and ev.start_time else '' }}">
+      <span class="ef-dash" aria-hidden="true">–</span>
+      <input type="time" name="end_time" aria-label="End time"
+             value="{{ ev.end_time if ev and ev.end_time else '' }}">
+    </span>
+  </div>
+
+  <div class="hf-row">
+    <span class="hf-label">Start Date</span>
+    <span class="hf-control">
+      <input type="date" name="start_date" required aria-label="Start date"
+             value="{{ ev.start_date if ev else today }}">
+    </span>
+  </div>
+
+  <div class="hf-row">
+    <span class="hf-label">Repeat</span>
+    <span class="hf-control hf-select">
+      <select name="freq" aria-label="Repeat">
+        {% for v, l in [('once', 'None'), ('daily', 'Daily'), ('weekly', 'Weekly')] %}
+        <option value="{{ v }}" {% if (ev.freq if ev else 'once') == v %}selected{% endif %}>{{ l }}</option>
+        {% endfor %}
+      </select>
+      <span class="hf-caret" aria-hidden="true">{{ ic.icon('caret-down') }}</span>
+    </span>
+  </div>
+
+  {% set mask = ev.byweekday if ev and ev.byweekday else '0000000' %}
+  <div class="hf-row ef-days-row">
+    <span class="hf-label">On days</span>
+    <span class="ef-days">
+      {% for d in ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'] %}
+      <label class="ef-day"><input type="checkbox" name="wd" value="{{ loop.index0 }}"
+        {% if mask[loop.index0] == '1' %}checked{% endif %}><span>{{ d }}</span></label>
+      {% endfor %}
+    </span>
+  </div>
+
+  <div class="hf-row ef-interval-row">
+    <span class="hf-label">Every</span>
+    <span class="hf-control ef-interval">
+      <input type="number" name="interval_n" min="1" max="52" aria-label="Interval"
+             value="{{ ev.interval_n if ev else 1 }}">
+      <span class="ef-unit">day(s) / week(s)</span>
+    </span>
+  </div>
+
+  <div class="hf-row">
+    <span class="hf-label">Ends</span>
+    <span class="hf-control">
+      <input type="date" name="end_date" aria-label="End date"
+             value="{{ ev.end_date if ev and ev.end_date else '' }}">
+    </span>
+  </div>
+
+  <div class="hf-row">
+    <span class="hf-label">List</span>
+    <span class="hf-control hf-select">
+      <select name="list_id" aria-label="List">
+        <option value="">None</option>
+        {% for l in cal_lists %}
+        <option value="{{ l.id }}" {% if ev and ev.list_id == l.id %}selected{% endif %}>{{ l.name }}</option>
+        {% endfor %}
+      </select>
+      <span class="hf-caret" aria-hidden="true">{{ ic.icon('caret-down') }}</span>
+    </span>
+  </div>
+
+  <div class="hf-row ef-note">
+    <span class="hf-label">Note</span>
+    <span class="hf-control">
+      <textarea name="note" rows="2" placeholder="Note">{{ ev.note if ev and ev.note else '' }}</textarea>
+    </span>
+  </div>
+
+  <div class="hf-actions">
+    <a class="hf-cancel" href="{{ cancel_url }}">Cancel</a>
+    <button class="hf-save" type="submit">Save</button>
+  </div>
+</form>

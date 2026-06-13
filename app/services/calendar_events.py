@@ -356,6 +356,12 @@ def get_event(conn: sqlite3.Connection, event_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM calendar_events WHERE id = ?", (event_id,)).fetchone()
 
 
+def exdates_of(ev) -> list[str]:
+    """A series row's skipped dates, sorted — the edit modal lists these with
+    per-date Restore buttons (a skipped occurrence has no chip to click)."""
+    return sorted(_exdates_set(ev["exdates"]))
+
+
 def list_events(conn: sqlite3.Connection, include_archived: bool = False) -> list[sqlite3.Row]:
     q = "SELECT * FROM calendar_events"
     if not include_archived:
@@ -372,11 +378,13 @@ def skip_occurrence(conn: sqlite3.Connection, event_id: int, date: str) -> None:
     if not is_valid_date(date):
         raise CalendarEventError("invalid date (expected YYYY-MM-DD)")
     row = get_event(conn, event_id)
-    if row is None:
+    if row is None or row["archived_at"] is not None:
         raise CalendarEventError("unknown event")
     ex = _exdates_set(row["exdates"])
     if date in ex:
         return  # already skipped — idempotent, no event
+    if not occurs_on(row, _date.fromisoformat(date)):
+        raise CalendarEventError("date is not an occurrence of this event")
     ex.add(date)
     ts = now_iso()
     with conn:
@@ -387,8 +395,10 @@ def skip_occurrence(conn: sqlite3.Connection, event_id: int, date: str) -> None:
 
 def unskip_occurrence(conn: sqlite3.Connection, event_id: int, date: str) -> None:
     """Restore a previously-skipped occurrence (remove it from exdates)."""
+    if not is_valid_date(date):
+        raise CalendarEventError("invalid date (expected YYYY-MM-DD)")
     row = get_event(conn, event_id)
-    if row is None:
+    if row is None or row["archived_at"] is not None:
         raise CalendarEventError("unknown event")
     ex = _exdates_set(row["exdates"])
     if date not in ex:
