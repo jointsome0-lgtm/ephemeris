@@ -612,6 +612,11 @@ CREATE TABLE events (
 CREATE INDEX idx_checkins_date ON checkins(date);
 ```
 
+Later schema versions add the task-manager tables (`lists`, `tasks`, `tags`,
+`task_tags` — v2, sec30.1), habit fields on `routine_items` (v3, sec31),
+`focus_sessions` (v4, sec15.4), and `calendar_events` (v5, sec32 §3 — the row IS
+the recurring series; occurrences are expanded on read, never materialized).
+
 ### 13.2 Status Enum
 
 Allowed check-in statuses:
@@ -1207,6 +1212,12 @@ derivable from it and are NOT separately exported in v0. Each line carries
 `payload_version` for forward-compatibility. (Future option: a discriminated
 full-table snapshot with `record_type` + `schema_version`.)
 
+One exception to "events only" (sec32 §8): the export also appends one
+`calendar_event_series` line per `calendar_events` row (including soft-archived
+ones), because series-update audit events journal only id+title — the audit
+stream alone can't rebuild a recurrence rule. The series rows are the source of
+truth; expanded occurrences are never exported.
+
 `POST /export/jsonl` writes the file above AND streams it back as a download so
 the Samsung client can save it; `GET /export` renders a one-button page. (The
 stop-loss fallback in sec24 replaces this with a script and no page.)
@@ -1801,6 +1812,9 @@ Added alongside the unchanged habit tables (`routine_items`, `checkins`):
   (recovery-not-shame, §16.5).
 - `tags(id, name UNIQUE)`, `task_tags(task_id, tag_id)` — wiring present; Tags/Filters
   UI is a later milestone (T4).
+- (v5, sec32) `calendar_events` — timed/recurring calendar series, deliberately
+  SEPARATE from `tasks` (no completion semantics; spec §13.1): the row is the
+  series, occurrences expand on read in `services/calendar_events.py`.
 
 Migrations stay append-only (`PRAGMA user_version`, now 2). Each task/list write
 appends its `events` row (task_created / task_completed / task_reopened /

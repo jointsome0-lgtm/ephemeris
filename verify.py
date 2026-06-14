@@ -762,5 +762,48 @@ with TestClient(app) as c:
                follow_redirects=False)
     check("cross-origin POST /calendar/events -> 403", r.status_code == 403, str(r.status_code))
 
+    # --- Calendar events: M4 polish — slot-create, now-line, series export (sec32 §8/§12)
+    wk = "/calendar/week?date=2027-06-02"
+    rwk = c.get(wk)
+    check("week grid offers empty-slot create links",
+          "date=2027-05-30&add=2027-06-02&at=06:00" in rwk.text)
+    rpre = c.get(f"{wk}&add=2027-06-04&at=14:00")
+    check("slot link opens the create modal prefilled",
+          'class="modal-overlay open" id="new-event"' in rpre.text
+          and 'value="2027-06-04"' in rpre.text and 'value="14:00"' in rpre.text)
+    check("garbage ?add/?at are ignored",
+          'class="modal-overlay open"' not in c.get(f"{wk}&add=junk&at=99:99").text)
+    vconn = get_conn()
+    try:
+        oid2 = vconn.execute(
+            "SELECT id FROM calendar_events WHERE title = 'Orbit Drill'").fetchone()["id"]
+    finally:
+        vconn.close()
+    rboth = c.get(f"{wk}&ev={oid2}&add=2027-06-04&at=14:00")
+    check("?ev= wins over ?add= (edit opens, create stays closed)",
+          'id="edit-event"' in rboth.text
+          and 'class="modal-overlay open" id="new-event"' not in rboth.text)
+
+    # current-time line: in today's week only, and only while now is in the band
+    from app.db import now_iso as _now_iso
+    hhmm = _now_iso()[11:16]
+    in_band = 6 * 60 <= int(hhmm[:2]) * 60 + int(hhmm[3:]) <= 23 * 60
+    check("now-line on today's week iff now is inside the band",
+          ("cw-now" in c.get("/calendar/week").text) == in_band, hhmm)
+    check("no now-line on another week", "cw-now" not in rwk.text)
+
+    # JSONL export now snapshots the series rows (source of truth, incl. archived)
+    lines = [_json.loads(line) for line in c.post("/export/jsonl").text.splitlines()]
+    series = [l for l in lines if l["type"] == "calendar_event_series"]
+    titles = {s["payload"]["title"] for s in series}
+    check("export carries calendar_event_series snapshot lines",
+          {"Orbit Drill", "Vector Sync II", "Quiet Block"} <= titles, str(sorted(titles)))
+    check("series snapshot keeps the rule + archived flag",
+          any(s["payload"]["byweekday"] == "1010100" for s in series)
+          and any(s["payload"]["archived_at"] for s in series))
+    check("occurrences are never exported",
+          not any("occurrence" in l["type"] and "skipped" not in l["type"]
+                  and "unskipped" not in l["type"] for l in lines))
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

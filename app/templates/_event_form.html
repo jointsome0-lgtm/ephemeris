@@ -28,7 +28,7 @@
     <span class="hf-label">Time</span>
     <span class="hf-control">
       <input type="time" name="start_time" aria-label="Start time"
-             value="{{ ev.start_time if ev and ev.start_time else '' }}">
+             value="{{ ev.start_time if ev and ev.start_time else (new_time or '') }}">
       <span class="ef-dash" aria-hidden="true">–</span>
       <input type="time" name="end_time" aria-label="End time"
              value="{{ ev.end_time if ev and ev.end_time else '' }}">
@@ -39,7 +39,7 @@
     <span class="hf-label">Start Date</span>
     <span class="hf-control">
       <input type="date" name="start_date" required aria-label="Start date"
-             value="{{ ev.start_date if ev else today }}">
+             value="{{ ev.start_date if ev else (new_date or today) }}">
     </span>
   </div>
 

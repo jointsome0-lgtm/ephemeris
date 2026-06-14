@@ -625,9 +625,15 @@ button { font: inherit; }
 .cw-daycol:last-child { border-right: 0; }
 .cw-daycol.today { background-color: var(--hover); }
 .cw-hourlabel { position: absolute; right: 6px; font-size: 10px; color: var(--faint); padding-top: 1px; }
-.cw-block { position: absolute; box-sizing: border-box; border-radius: 6px; padding: 2px 6px; background: var(--primary); color: #fff; overflow: hidden; display: flex; flex-direction: column; line-height: 1.2; border: 1px solid var(--bg); text-decoration: none; }
+.cw-block { position: absolute; z-index: 2; box-sizing: border-box; border-radius: 6px; padding: 2px 6px; background: var(--primary); color: #fff; overflow: hidden; display: flex; flex-direction: column; line-height: 1.2; border: 1px solid var(--bg); text-decoration: none; }
 .cw-block-time { font-size: 10px; opacity: .85; }
 .cw-block-title { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* empty hour slots (under the blocks) → create modal prefilled (sec32 M4) */
+.cw-slot { position: absolute; left: 0; right: 0; display: block; }
+.cw-slot:hover { background: var(--hover); }
+/* current-time line, today's column only (sec32 M4) */
+.cw-now { position: absolute; left: 0; right: 0; z-index: 3; height: 2px; background: var(--prio-high); pointer-events: none; }
+.cw-now::before { content: ""; position: absolute; left: -4px; top: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--prio-high); }
 
 /* ===== event form + modals (sec32 M3) =================================== */
 .ef-times .hf-control { gap: 8px; }

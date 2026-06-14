@@ -28,6 +28,12 @@ class CalendarEventError(ValueError):
     """A calendar-event write was rejected (empty title, bad time/date/weekday mask, …)."""
 
 
+def is_valid_hhmm(s: str | None) -> bool:
+    """True for a real 'HH:MM' wall-clock string (00:00..23:59) — the same rule
+    _clean enforces; public for routes validating time-shaped query params."""
+    return bool(s and _TIME_RE.match(s))
+
+
 # --- recurrence engine (sec32 §4) — pure & reusable ------------------------
 # Deliberately free of DB coupling so a future "recurring tasks" feature can
 # reuse it: a series is any mapping (sqlite3.Row or dict) carrying the fields

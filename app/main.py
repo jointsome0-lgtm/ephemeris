@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .db import get_conn, init_db, is_not_future, is_valid_date, today_str
+from .db import get_conn, init_db, is_not_future, is_valid_date, now_iso, today_str
 from .services import calendar_events, checkins, export, focus, items, lists, stats, tasks
 from .terminal import client_is_local, setup_terminal, shutdown_terminal
 
@@ -621,14 +621,18 @@ def _month_grid(conn, year: int, month: int) -> list[list[dict]]:
     return weeks
 
 
-def _event_modal_ctx(conn, self_url: str, ev: str | None, on: str | None) -> dict:
+def _event_modal_ctx(conn, self_url: str, ev: str | None, on: str | None,
+                     add: str | None = None, at: str | None = None) -> dict:
     """Context for the event modals on both calendar views (sec32 M3): the create
     modal always needs lists + today; ?ev=<id> opens the edit modal for that series
     (silently ignored if unknown/archived/garbage), with ?on=<date> carrying the
-    clicked occurrence so the modal can offer Skip for exactly that day."""
+    clicked occurrence so the modal can offer Skip for exactly that day.
+    ?add=<date>&at=<HH:MM> (the week grid's empty slots, M4) opens the CREATE modal
+    prefilled instead — ignored when an edit modal is already being opened."""
     ctx = {"self_url": self_url, "today": today_str(),
            "cal_lists": lists.list_lists(conn),
-           "edit_ev": None, "edit_exdates": [], "on": None}
+           "edit_ev": None, "edit_exdates": [], "on": None,
+           "new_date": None, "new_time": None}
     try:
         event_id = int(ev) if ev else None
     except ValueError:
@@ -639,6 +643,9 @@ def _event_modal_ctx(conn, self_url: str, ev: str | None, on: str | None) -> dic
             ctx.update(edit_ev=row,
                        edit_exdates=calendar_events.exdates_of(row),
                        on=on if is_valid_date(on) else None)
+    if ctx["edit_ev"] is None and is_valid_date(add):
+        ctx.update(new_date=add,
+                   new_time=at if calendar_events.is_valid_hhmm(at) else None)
     return ctx
 
 
@@ -709,6 +716,14 @@ def _week_ctx(conn, sun: _date) -> dict:
     ppm = _WEEK_HOUR_PX / 60.0
 
     today_iso = today_str()
+    # Current-time line (M4): rendered in today's column only, and only while
+    # "now" falls inside the visible band (the band never widens just for it).
+    now_top = None
+    if week_days[0].isoformat() <= today_iso <= week_days[-1].isoformat():
+        hhmm = now_iso()[11:16]  # wall-clock in the ledger zone (sec13.3)
+        now_min = int(hhmm[:2]) * 60 + int(hhmm[3:])
+        if band_start <= now_min <= band_end:
+            now_top = round((now_min - band_start) * ppm, 1)
     days = []
     for d in week_days:
         iso = d.isoformat()
@@ -732,7 +747,7 @@ def _week_ctx(conn, sun: _date) -> dict:
     hours = [{"label": f"{h:02d}:00", "top": round((h * 60 - band_start) * ppm, 1)}
              for h in range(band_start // 60, band_end // 60)]
     return {
-        "days": days, "hours": hours,
+        "days": days, "hours": hours, "now_top": now_top,
         "grid_h": int(round((band_end - band_start) * ppm)), "hour_px": _WEEK_HOUR_PX,
     }
 
@@ -745,13 +760,14 @@ def _parse_date(s: str | None) -> _date:
 
 @app.get("/calendar/week")
 def get_calendar_week(request: Request, date: str | None = None, ev: str | None = None,
-                      on: str | None = None, flash: str | None = None):
+                      on: str | None = None, add: str | None = None,
+                      at: str | None = None, flash: str | None = None):
     sun = _sunday_of(_parse_date(date))
     self_url = f"/calendar/week?date={sun.isoformat()}"
     conn = get_conn()
     try:
         ctx = _week_ctx(conn, sun)
-        ctx.update(_event_modal_ctx(conn, self_url, ev, on), flash=flash)
+        ctx.update(_event_modal_ctx(conn, self_url, ev, on, add, at), flash=flash)
     finally:
         conn.close()
     last = sun + timedelta(days=6)

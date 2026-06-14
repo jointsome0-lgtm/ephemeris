@@ -1,14 +1,16 @@
 {# Event create + edit modals, shared by the month and week calendar views (M3).
-   Create opens via :target (#new-event from the header +); edit is server-opened
-   (`.open`) when the route resolves ?ev=<id>, with ?on=<date> carrying the
-   clicked occurrence for Skip. Context: self_url (this view, no ev/on params),
-   today, cal_lists, edit_ev (row|None), edit_exdates (list), on (date|None).
+   Create opens via :target (#new-event from the header +) OR server-opened
+   prefilled when a week-grid empty slot sets ?add=<date>&at=<HH:MM>; edit is
+   server-opened (`.open`) when the route resolves ?ev=<id>, with ?on=<date>
+   carrying the clicked occurrence for Skip. Context: self_url (this view, no
+   ev/on/add/at params), today, cal_lists, edit_ev (row|None), edit_exdates
+   (list), on (date|None), new_date/new_time (slot prefill|None).
 
    Guarded on cal_lists: templates are read from disk per render, so a running
    server older than this feature would otherwise 500 the calendar (its routes
    don't pass the modal context). It just skips the modals until restarted. #}
 {% if cal_lists is defined %}
-<div class="modal-overlay" id="new-event">
+<div class="modal-overlay{% if new_date %} open{% endif %}" id="new-event">
   <div class="modal" role="dialog" aria-label="New event">
     <header class="modal-head"><h2>New Event</h2><a class="dp-close" href="{{ self_url }}">×</a></header>
     {% with action="/calendar/events", ev=None, return_to=self_url, cancel_url=self_url %}

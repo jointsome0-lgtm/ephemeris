@@ -14,7 +14,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from ..db import EXPORTS_DIR, now_stamp
+from ..db import EXPORTS_DIR, now_iso, now_stamp
 
 
 def event_count(conn: sqlite3.Connection) -> int:
@@ -43,6 +43,21 @@ def build_jsonl(conn: sqlite3.Connection) -> tuple[str, int]:
                 "payload": payload,
             },
             ensure_ascii=False,  # keep emoji / unicode notes readable
+        ))
+    # sec32 §8: calendar_events SERIES rows ride along as their own record type.
+    # The audit stream alone can't rebuild a series (update events journal only
+    # id+title), so the source-of-truth rows — including soft-archived ones — are
+    # snapshotted at export time. Occurrences are never exported (expanded on read).
+    exported_at = now_iso()
+    for s in conn.execute("SELECT * FROM calendar_events ORDER BY id").fetchall():
+        lines.append(json.dumps(
+            {
+                "timestamp": exported_at,
+                "type": "calendar_event_series",
+                "payload_version": 1,
+                "payload": {k: s[k] for k in s.keys()},
+            },
+            ensure_ascii=False,
         ))
     text = "".join(line + "\n" for line in lines)
     return text, len(lines)

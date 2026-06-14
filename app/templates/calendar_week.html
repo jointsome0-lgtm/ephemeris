@@ -37,6 +37,13 @@
     </div>
     {% for d in days %}
     <div class="cw-daycol{% if d.is_today %} today{% endif %}">
+      {# empty hour slots → create modal prefilled with this day + hour (M4) #}
+      {% for h in hours %}
+      <a class="cw-slot" href="{{ self_url }}&add={{ d.date }}&at={{ h.label }}"
+         style="top:{{ h.top }}px; height:{{ hour_px }}px"
+         aria-label="New event on {{ d.date }} at {{ h.label }}"></a>
+      {% endfor %}
+      {% if d.is_today and now_top is not none %}<div class="cw-now" style="top:{{ now_top }}px"></div>{% endif %}
       {% for b in d.blocks %}
       <a class="cw-block" href="{{ cal.ev_href(self_url, b.event_id, d.date) }}"
          style="top:{{ b.top }}px; height:{{ b.height }}px; left:{{ b.left }}%; width:{{ b.width }}%;"
