@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .db import get_conn, init_db, is_not_future, is_valid_date, now_iso, today_str
-from .services import calendar_events, checkins, export, focus, items, lists, stats, tasks
+from .services import calendar_events, checkins, export, focus, items, lessons, lists, stats, tasks
 from .terminal import client_is_local, setup_terminal, shutdown_terminal
 
 log = logging.getLogger("activity_ledger")
@@ -934,8 +934,110 @@ def get_matrix(request: Request):
 
 
 @app.get("/learn")
-def get_learn(request: Request):
-    return templates.TemplateResponse(request, "learn.html", {"request": request, "rail": "learn"})
+def get_learn(
+    request: Request,
+    status: str | None = None,
+    archived: int = 0,
+    flash: str | None = None,
+):
+    show_archived = bool(archived)
+    conn = get_conn()
+    try:
+        try:
+            rows = lessons.list_lessons(conn, status=status, archived_only=show_archived)
+        except lessons.LessonError:
+            status = None
+            rows = lessons.list_lessons(conn, archived_only=show_archived)
+        counts = lessons.counts(conn)
+    finally:
+        conn.close()
+    query = []
+    if status:
+        query.append(f"status={quote(status)}")
+    if show_archived:
+        query.append("archived=1")
+    self_url = "/learn" + (f"?{'&'.join(query)}" if query else "")
+    return templates.TemplateResponse(request, "learn.html", {
+        "request": request,
+        "rail": "learn",
+        "rows": rows,
+        "status_filter": status,
+        "show_archived": show_archived,
+        "counts": counts,
+        "status_tabs": [{"key": key, "label": lessons.STATUS_LABELS[key]} for key in lessons.STATUSES],
+        "self_url": self_url,
+        "flash": flash,
+    })
+
+
+@app.post("/learn/lessons")
+def post_lesson_create(
+    request: Request,
+    title: str = Form(...),
+    source_url: str = Form(""),
+    return_to: str = Form("/learn"),
+):
+    _check_origin(request)
+    conn = get_conn()
+    try:
+        lessons.create_lesson(conn, title, source_url)
+    except lessons.LessonError as exc:
+        return RedirectResponse(
+            _with_flash(_safe_return(return_to, "/learn"), str(exc)), status_code=303
+        )
+    finally:
+        conn.close()
+    return RedirectResponse(_safe_return(return_to, "/learn"), status_code=303)
+
+
+@app.post("/learn/lessons/{lesson_id}/status")
+def post_lesson_status(
+    request: Request,
+    lesson_id: int,
+    status: str = Form(...),
+    return_to: str = Form("/learn"),
+):
+    _check_origin(request)
+    conn = get_conn()
+    try:
+        lessons.set_status(conn, lesson_id, status)
+    except lessons.LessonError as exc:
+        return RedirectResponse(
+            _with_flash(_safe_return(return_to, "/learn"), str(exc)), status_code=303
+        )
+    finally:
+        conn.close()
+    return RedirectResponse(_safe_return(return_to, "/learn"), status_code=303)
+
+
+@app.post("/learn/lessons/{lesson_id}/archive")
+def post_lesson_archive(request: Request, lesson_id: int, return_to: str = Form("/learn")):
+    _check_origin(request)
+    conn = get_conn()
+    try:
+        lessons.archive_lesson(conn, lesson_id)
+    except lessons.LessonError as exc:
+        return RedirectResponse(
+            _with_flash(_safe_return(return_to, "/learn"), str(exc)), status_code=303
+        )
+    finally:
+        conn.close()
+    return RedirectResponse(_safe_return(return_to, "/learn"), status_code=303)
+
+
+@app.post("/learn/lessons/{lesson_id}/restore")
+def post_lesson_restore(request: Request, lesson_id: int, return_to: str = Form("/learn")):
+    _check_origin(request)
+    conn = get_conn()
+    try:
+        lessons.restore_lesson(conn, lesson_id)
+    except lessons.LessonError as exc:
+        return RedirectResponse(
+            _with_flash(_safe_return(return_to, "/learn"), str(exc)), status_code=303
+        )
+    finally:
+        conn.close()
+    return RedirectResponse(_safe_return(return_to, "/learn"), status_code=303)
 
 
 @app.get("/focus")

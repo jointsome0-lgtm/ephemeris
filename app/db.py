@@ -108,7 +108,7 @@ def get_conn() -> sqlite3.Connection:
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -302,6 +302,34 @@ def _migrate_to_5(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA_V5)
 
 
+# v6 — Learn lessons: a small backlog/archive for research items and generated
+# lessons. The rendered HTML lesson body lives under data/lessons later; this
+# table stores public-safe metadata and emits ledger events on every write.
+_SCHEMA_V6 = """
+CREATE TABLE IF NOT EXISTS lessons (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL CHECK(length(trim(title)) > 0),
+  source_url TEXT,
+  slug TEXT NOT NULL UNIQUE CHECK(length(trim(slug)) > 0),
+  status TEXT NOT NULL DEFAULT 'backlog'
+         CHECK(status IN ('backlog','studying','paused','studied')),
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  archived_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_lessons_status ON lessons(status, archived_at);
+CREATE INDEX IF NOT EXISTS idx_lessons_created ON lessons(created_at);
+"""
+
+
+def _migrate_to_6(conn: sqlite3.Connection) -> None:
+    conn.executescript(_SCHEMA_V6)
+
+
 # Ordered, idempotent steps. A schema change must NEVER require deleting the
 # ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
 _MIGRATIONS = [
@@ -310,6 +338,7 @@ _MIGRATIONS = [
     (3, _migrate_to_3),
     (4, _migrate_to_4),
     (5, _migrate_to_5),
+    (6, _migrate_to_6),
 ]
 
 
