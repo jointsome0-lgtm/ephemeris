@@ -938,6 +938,7 @@ def get_learn(
     request: Request,
     status: str | None = None,
     archived: int = 0,
+    lesson: int | None = None,
     flash: str | None = None,
 ):
     show_archived = bool(archived)
@@ -951,11 +952,22 @@ def get_learn(
         counts = lessons.counts(conn)
     finally:
         conn.close()
+    selected = None
+    if lesson is not None:
+        selected = next((row for row in rows if row["id"] == lesson), None)
+    if selected is None and rows:
+        selected = rows[0]
+    selected = lessons.with_file_info(selected)
+    selected_id = selected["id"] if selected else None
+    for row in rows:
+        row["selected"] = row["id"] == selected_id
     query = []
     if status:
         query.append(f"status={quote(status)}")
     if show_archived:
         query.append("archived=1")
+    if selected_id:
+        query.append(f"lesson={selected_id}")
     self_url = "/learn" + (f"?{'&'.join(query)}" if query else "")
     return templates.TemplateResponse(request, "learn.html", {
         "request": request,
@@ -965,8 +977,64 @@ def get_learn(
         "show_archived": show_archived,
         "counts": counts,
         "status_tabs": [{"key": key, "label": lessons.STATUS_LABELS[key]} for key in lessons.STATUSES],
+        "selected": selected,
         "self_url": self_url,
         "flash": flash,
+    })
+
+
+_LESSON_PREVIEW_CSP = (
+    "sandbox allow-scripts allow-forms allow-popups allow-downloads; "
+    "default-src 'self' data: blob: https:; "
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; "
+    "style-src 'self' 'unsafe-inline' data: https:; "
+    "img-src 'self' data: blob: https:; "
+    "font-src 'self' data: https:; "
+    "connect-src 'self' data: blob: https:; "
+    "object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
+)
+
+
+def _lesson_or_404(conn, lesson_id: int) -> dict:
+    lesson = lessons.get_lesson(conn, lesson_id)
+    if lesson is None:
+        raise HTTPException(status_code=404, detail="unknown lesson")
+    return lesson
+
+
+@app.get("/learn/lessons/{lesson_id}/preview")
+def get_lesson_preview(lesson_id: int):
+    conn = get_conn()
+    try:
+        lesson = _lesson_or_404(conn, lesson_id)
+        html, info = lessons.preview_html(lesson)
+    finally:
+        conn.close()
+    return Response(
+        content=html,
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": _LESSON_PREVIEW_CSP,
+            "X-Content-Type-Options": "nosniff",
+            "X-Lesson-Preview-Version": info["version"],
+        },
+    )
+
+
+@app.get("/learn/lessons/{lesson_id}/preview-meta")
+def get_lesson_preview_meta(lesson_id: int):
+    conn = get_conn()
+    try:
+        lesson = _lesson_or_404(conn, lesson_id)
+        info = lessons.lesson_file_info(lesson)
+    finally:
+        conn.close()
+    return JSONResponse({
+        "ok": True,
+        "exists": info["exists"],
+        "version": info["version"],
+        "path": info["path"],
     })
 
 
@@ -980,14 +1048,14 @@ def post_lesson_create(
     _check_origin(request)
     conn = get_conn()
     try:
-        lessons.create_lesson(conn, title, source_url)
+        lesson_id = lessons.create_lesson(conn, title, source_url)
     except lessons.LessonError as exc:
         return RedirectResponse(
             _with_flash(_safe_return(return_to, "/learn"), str(exc)), status_code=303
         )
     finally:
         conn.close()
-    return RedirectResponse(_safe_return(return_to, "/learn"), status_code=303)
+    return RedirectResponse(f"/learn?lesson={lesson_id}", status_code=303)
 
 
 @app.post("/learn/lessons/{lesson_id}/status")

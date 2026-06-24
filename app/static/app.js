@@ -79,6 +79,38 @@
     }
   });
 
+  // --- Learn HTML preview: poll the runtime file mtime and reload the sandboxed iframe.
+  (() => {
+    const frame = document.getElementById("lesson-preview-frame");
+    if (!frame) return;
+    const metaUrl = frame.dataset.metaUrl;
+    const src = frame.dataset.src || frame.getAttribute("src");
+    if (!metaUrl || !src) return;
+    let version = frame.dataset.version || "";
+    let inFlight = false;
+    async function tick() {
+      if (document.hidden || inFlight) return;
+      inFlight = true;
+      try {
+        const r = await fetch(metaUrl, { cache: "no-store" });
+        const data = await r.json();
+        const next = String(data.version || "0");
+        if (next !== version) {
+          version = next;
+          const url = new URL(src, window.location.href);
+          url.searchParams.set("_v", Date.now());
+          frame.src = url.toString();
+        }
+      } catch (_) {
+        // Preview is best-effort; the next tick will try again.
+      } finally {
+        inFlight = false;
+      }
+    }
+    setInterval(tick, 1200);
+    document.addEventListener("visibilitychange", tick);
+  })();
+
   // --- theme: tri-state (system | light | dark); default follows the OS --------
   // The storage key, resolve rule and system media query live in ONE place:
   // window.alTheme, defined by base.html's pre-paint head script (which always

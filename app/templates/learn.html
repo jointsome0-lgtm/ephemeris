@@ -11,80 +11,117 @@
 
   {% if flash %}<p class="flash" role="status">{{ flash }}</p>{% endif %}
 
-  <form method="post" action="/learn/lessons" class="learn-add" autocomplete="off">
-    <span class="qa-plus" aria-hidden="true">+</span>
-    <input type="text" name="title" class="qa-input" placeholder="Lesson title" required>
-    <input type="url" name="source_url" class="learn-url-input" placeholder="Source URL">
-    <input type="hidden" name="return_to" value="{{ self_url }}">
-    <button type="submit" class="btn-primary">Add</button>
-  </form>
+  <div class="learn-workspace">
+    <aside class="lesson-panel" aria-label="Lessons">
+      <form method="post" action="/learn/lessons" class="learn-add" autocomplete="off">
+        <span class="qa-plus" aria-hidden="true">+</span>
+        <input type="text" name="title" class="qa-input" placeholder="Lesson title" required>
+        <input type="url" name="source_url" class="learn-url-input" placeholder="Source URL">
+        <input type="hidden" name="return_to" value="{{ self_url }}">
+        <button type="submit" class="btn-primary">Add</button>
+      </form>
 
-  <nav class="learn-filters" aria-label="Lesson filters">
-    <a class="learn-filter{% if not status_filter %} on{% endif %}"
-       href="{{ '/learn?archived=1' if show_archived else '/learn' }}">
-      All <span>{{ counts['all'] }}</span>
-    </a>
-    {% for tab in status_tabs %}
-    <a class="learn-filter{% if status_filter == tab.key %} on{% endif %}"
-       href="/learn?status={{ tab.key }}{% if show_archived %}&archived=1{% endif %}">
-      {{ tab.label }} <span>{{ counts[tab.key] }}</span>
-    </a>
-    {% endfor %}
-    <a class="learn-filter learn-filter-archive{% if show_archived %} on{% endif %}"
-       href="{{ '/learn' if show_archived else '/learn?archived=1' }}">
-      Archived <span>{{ counts['archived'] }}</span>
-    </a>
-  </nav>
+      <nav class="learn-filters" aria-label="Lesson filters">
+        <a class="learn-filter{% if not status_filter %} on{% endif %}"
+           href="{{ '/learn?archived=1' if show_archived else '/learn' }}">
+          All <span>{{ counts['all'] }}</span>
+        </a>
+        {% for tab in status_tabs %}
+        <a class="learn-filter{% if status_filter == tab.key %} on{% endif %}"
+           href="/learn?status={{ tab.key }}{% if show_archived %}&archived=1{% endif %}">
+          {{ tab.label }} <span>{{ counts[tab.key] }}</span>
+        </a>
+        {% endfor %}
+        <a class="learn-filter learn-filter-archive{% if show_archived %} on{% endif %}"
+           href="{{ '/learn' if show_archived else '/learn?archived=1' }}">
+          Archived <span>{{ counts['archived'] }}</span>
+        </a>
+      </nav>
 
-  {% if rows %}
-  <div class="lesson-list">
-    {% for lesson in rows %}
-    <article class="lesson-row{% if lesson.archived %} archived{% endif %}">
-      <div class="lesson-main">
-        <div class="lesson-title-line">
-          <h2>{{ lesson.title }}</h2>
-          <span class="lesson-status st-{{ lesson.status }}">{{ lesson.status_label }}</span>
-        </div>
-        <div class="lesson-meta">
-          {% if lesson.source_url %}
-          <a href="{{ lesson.source_url }}" target="_blank" rel="noopener noreferrer">{{ lesson.source_url }}</a>
-          {% else %}
-          <span>{{ lesson.slug }}</span>
-          {% endif %}
-          {% if lesson.archived %}<span>Archived</span>{% endif %}
-        </div>
-      </div>
-      <div class="lesson-actions">
-        {% if not lesson.archived %}
-          {% for tab in status_tabs %}
-            {% if tab.key != lesson.status %}
-            <form method="post" action="/learn/lessons/{{ lesson.id }}/status">
-              <input type="hidden" name="status" value="{{ tab.key }}">
-              <input type="hidden" name="return_to" value="{{ self_url }}">
-              <button type="submit" class="btn-text">{{ tab.label }}</button>
-            </form>
+      {% if rows %}
+      <div class="lesson-list">
+        {% for lesson in rows %}
+        <article class="lesson-row{% if lesson.archived %} archived{% endif %}{% if lesson.selected %} sel{% endif %}">
+          <a class="lesson-main" href="/learn{% if status_filter or show_archived %}?{% if status_filter %}status={{ status_filter }}{% endif %}{% if status_filter and show_archived %}&{% endif %}{% if show_archived %}archived=1{% endif %}&lesson={{ lesson.id }}{% else %}?lesson={{ lesson.id }}{% endif %}">
+            <div class="lesson-title-line">
+              <h2>{{ lesson.title }}</h2>
+              <span class="lesson-status st-{{ lesson.status }}">{{ lesson.status_label }}</span>
+            </div>
+            <div class="lesson-meta">
+              {% if lesson.source_url %}
+              <span>{{ lesson.source_url }}</span>
+              {% else %}
+              <span>{{ lesson.slug }}</span>
+              {% endif %}
+              {% if lesson.archived %}<span>Archived</span>{% endif %}
+            </div>
+          </a>
+          <div class="lesson-actions">
+            {% if not lesson.archived %}
+              {% for tab in status_tabs %}
+                {% if tab.key != lesson.status %}
+                <form method="post" action="/learn/lessons/{{ lesson.id }}/status">
+                  <input type="hidden" name="status" value="{{ tab.key }}">
+                  <input type="hidden" name="return_to" value="{{ self_url }}">
+                  <button type="submit" class="btn-text">{{ tab.label }}</button>
+                </form>
+                {% endif %}
+              {% endfor %}
+              <form method="post" action="/learn/lessons/{{ lesson.id }}/archive">
+                <input type="hidden" name="return_to" value="{{ self_url }}">
+                <button type="submit" class="icon-btn danger" title="Archive">{{ ic.icon('archive') }}</button>
+              </form>
+            {% else %}
+              <form method="post" action="/learn/lessons/{{ lesson.id }}/restore">
+                <input type="hidden" name="return_to" value="{{ self_url }}">
+                <button type="submit" class="btn-text">Restore</button>
+              </form>
             {% endif %}
-          {% endfor %}
-          <form method="post" action="/learn/lessons/{{ lesson.id }}/archive">
-            <input type="hidden" name="return_to" value="{{ self_url }}">
-            <button type="submit" class="icon-btn danger" title="Archive">{{ ic.icon('archive') }}</button>
-          </form>
-        {% else %}
-          <form method="post" action="/learn/lessons/{{ lesson.id }}/restore">
-            <input type="hidden" name="return_to" value="{{ self_url }}">
-            <button type="submit" class="btn-text">Restore</button>
-          </form>
-        {% endif %}
+          </div>
+        </article>
+        {% endfor %}
       </div>
-    </article>
-    {% endfor %}
+      {% else %}
+      <div class="learn-empty">
+        <div class="learn-mark" aria-hidden="true">HTML</div>
+        <h2>{{ 'No archived lessons' if show_archived else 'No lessons yet' }}</h2>
+      </div>
+      {% endif %}
+    </aside>
+
+    <section class="lesson-preview" aria-label="Lesson preview">
+      {% if selected %}
+      <header class="lesson-preview-head">
+        <div class="lesson-preview-title">
+          <h2>{{ selected.title }}</h2>
+          <span class="lesson-file-path">{{ selected.file.path }}</span>
+        </div>
+        <div class="lesson-preview-tools">
+          {% if selected.source_url %}
+          <a href="{{ selected.source_url }}" target="_blank" rel="noopener noreferrer">Source</a>
+          {% endif %}
+          <span class="lesson-file-state">{{ 'HTML' if selected.file.exists else 'No file' }}</span>
+        </div>
+      </header>
+      <div class="lesson-frame-wrap">
+        <iframe
+          id="lesson-preview-frame"
+          class="lesson-frame"
+          title="{{ selected.title }}"
+          src="/learn/lessons/{{ selected.id }}/preview"
+          data-src="/learn/lessons/{{ selected.id }}/preview"
+          data-meta-url="/learn/lessons/{{ selected.id }}/preview-meta"
+          data-version="{{ selected.file.version }}"
+          sandbox="allow-scripts allow-forms allow-popups allow-downloads"></iframe>
+      </div>
+      {% else %}
+      <div class="learn-empty">
+        <div class="learn-mark" aria-hidden="true">HTML</div>
+        <h2>No lesson selected</h2>
+      </div>
+      {% endif %}
+    </section>
   </div>
-  {% else %}
-  <div class="learn-empty">
-    <div class="learn-mark" aria-hidden="true">HTML</div>
-    <h2>{{ 'No archived lessons' if show_archived else 'No lessons yet' }}</h2>
-  </div>
-  {% endif %}
 </section>
 {% endblock %}
 

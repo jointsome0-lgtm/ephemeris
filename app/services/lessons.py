@@ -6,11 +6,13 @@ soft archive, and the matching ledger events.
 """
 from __future__ import annotations
 
+from html import escape
+from pathlib import Path
 import re
 import sqlite3
 from urllib.parse import urlsplit
 
-from ..db import append_event, now_iso
+from ..db import DATA_DIR, append_event, now_iso
 
 STATUSES = ("backlog", "studying", "paused", "studied")
 STATUS_LABELS = {
@@ -19,6 +21,7 @@ STATUS_LABELS = {
     "paused": "Paused",
     "studied": "Studied",
 }
+LESSONS_DIR = DATA_DIR / "lessons"
 
 
 class LessonError(ValueError):
@@ -47,6 +50,7 @@ def _clean_url(source_url: str | None) -> str | None:
 
 
 _SLUG_WORD = re.compile(r"[^a-z0-9]+")
+_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 def _base_slug(title: str) -> str:
@@ -84,11 +88,44 @@ def _lesson_view(row: sqlite3.Row) -> dict:
     }
 
 
+def _lesson_path(slug: str) -> Path:
+    if not _SLUG_RE.match(slug or ""):
+        raise LessonError("invalid lesson slug")
+    return LESSONS_DIR / f"{slug}.html"
+
+
+def lesson_file_info(lesson: dict) -> dict:
+    """Runtime HTML artifact metadata for one lesson."""
+    LESSONS_DIR.mkdir(parents=True, exist_ok=True)
+    path = _lesson_path(lesson["slug"])
+    exists = path.is_file()
+    stat = path.stat() if exists else None
+    return {
+        "path": str(path),
+        "exists": exists,
+        "version": str(stat.st_mtime_ns) if stat else "0",
+        "size": stat.st_size if stat else 0,
+    }
+
+
+def with_file_info(lesson: dict | None) -> dict | None:
+    if lesson is None:
+        return None
+    lesson = dict(lesson)
+    lesson["file"] = lesson_file_info(lesson)
+    return lesson
+
+
 def _require_lesson(conn: sqlite3.Connection, lesson_id: int) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM lessons WHERE id = ?", (lesson_id,)).fetchone()
     if row is None:
         raise LessonError("unknown lesson")
     return row
+
+
+def get_lesson(conn: sqlite3.Connection, lesson_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM lessons WHERE id = ?", (lesson_id,)).fetchone()
+    return _lesson_view(row) if row else None
 
 
 def create_lesson(conn: sqlite3.Connection, title: str, source_url: str | None = None) -> int:
@@ -211,6 +248,51 @@ def list_lessons(
         "COALESCE(updated_at, created_at) DESC, id DESC"
     )
     return [_lesson_view(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def preview_html(lesson: dict) -> tuple[str, dict]:
+    """Return the current lesson HTML, or a small generated placeholder."""
+    info = lesson_file_info(lesson)
+    if info["exists"]:
+        return Path(info["path"]).read_text(encoding="utf-8", errors="replace"), info
+    title = escape(lesson["title"])
+    path = escape(info["path"])
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title}</title>
+  <style>
+    :root {{ color-scheme: light dark; }}
+    body {{
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      font: 14px/1.5 system-ui, -apple-system, Segoe UI, sans-serif;
+      color: #2d3035; background: #f6f7f9;
+    }}
+    main {{
+      width: min(680px, calc(100vw - 48px)); padding: 32px;
+      border: 1px solid #e3e6ea; border-radius: 8px; background: white;
+      box-shadow: 0 12px 36px rgba(0,0,0,.08);
+    }}
+    h1 {{ margin: 0 0 10px; font-size: 22px; line-height: 1.2; }}
+    code {{
+      display: block; margin-top: 16px; padding: 12px;
+      border-radius: 7px; background: #f1f3f5; overflow-wrap: anywhere;
+      font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{title}</h1>
+    <p>No HTML file yet.</p>
+    <code>{path}</code>
+  </main>
+</body>
+</html>
+"""
+    return html, info
 
 
 def counts(conn: sqlite3.Connection) -> dict:
