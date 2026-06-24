@@ -15,10 +15,10 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import date as _date, timedelta
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -939,6 +939,7 @@ def get_learn(
     status: str | None = None,
     archived: int = 0,
     lesson: int | None = None,
+    entry: str | None = None,
     flash: str | None = None,
 ):
     show_archived = bool(archived)
@@ -950,25 +951,44 @@ def get_learn(
             status = None
             rows = lessons.list_lessons(conn, archived_only=show_archived)
         counts = lessons.counts(conn)
+        selected = None
+        selected_entry = None
+        if lesson is not None:
+            selected = next((row for row in rows if row["id"] == lesson), None)
+            if selected is not None:
+                selected_entry = entry
+        if selected is None and rows:
+            selected = rows[0]
+        selected = lessons.with_bundle_info(selected, entry=selected_entry)
+        if selected:
+            lessons.mark_opened(conn, selected["id"], selected["entry"])
     finally:
         conn.close()
-    selected = None
-    if lesson is not None:
-        selected = next((row for row in rows if row["id"] == lesson), None)
-    if selected is None and rows:
-        selected = rows[0]
-    selected = lessons.with_file_info(selected)
     selected_id = selected["id"] if selected else None
     for row in rows:
         row["selected"] = row["id"] == selected_id
-    query = []
-    if status:
-        query.append(f"status={quote(status)}")
-    if show_archived:
-        query.append("archived=1")
-    if selected_id:
-        query.append(f"lesson={selected_id}")
-    self_url = "/learn" + (f"?{'&'.join(query)}" if query else "")
+        row["href"] = _learn_url(status=status, archived=show_archived, lesson_id=row["id"])
+    if selected:
+        selected["file_url"] = _lesson_preview_url(selected["id"], selected["entry"])
+        selected["preview_url"] = _lesson_preview_url(
+            selected["id"],
+            selected["entry"],
+            exists=selected["file"]["exists"],
+        )
+        selected["preview_meta_url"] = _lesson_preview_url(selected["id"], selected["entry"], meta=True)
+        for page in selected["pages"]:
+            page["href"] = _learn_url(
+                status=status,
+                archived=show_archived,
+                lesson_id=selected["id"],
+                entry=page["entry"],
+            )
+    self_url = _learn_url(
+        status=status,
+        archived=show_archived,
+        lesson_id=selected_id,
+        entry=selected["entry"] if selected else None,
+    )
     return templates.TemplateResponse(request, "learn.html", {
         "request": request,
         "rail": "learn",
@@ -983,6 +1003,25 @@ def get_learn(
     })
 
 
+def _learn_url(
+    *,
+    status: str | None = None,
+    archived: bool = False,
+    lesson_id: int | None = None,
+    entry: str | None = None,
+) -> str:
+    query: list[tuple[str, str]] = []
+    if status:
+        query.append(("status", status))
+    if archived:
+        query.append(("archived", "1"))
+    if lesson_id is not None:
+        query.append(("lesson", str(lesson_id)))
+    if entry:
+        query.append(("entry", entry))
+    return "/learn" + (f"?{urlencode(query)}" if query else "")
+
+
 _LESSON_PREVIEW_CSP = (
     "sandbox allow-scripts allow-forms allow-popups allow-downloads; "
     "default-src 'self' data: blob: https:; "
@@ -995,6 +1034,22 @@ _LESSON_PREVIEW_CSP = (
 )
 
 
+def _lesson_preview_url(
+    lesson_id: int,
+    entry: str | None,
+    *,
+    exists: bool = True,
+    meta: bool = False,
+) -> str:
+    if not entry:
+        entry = lessons.DEFAULT_ENTRY
+    if meta:
+        return f"/learn/lessons/{lesson_id}/preview-meta?{urlencode([('entry', entry)])}"
+    if not exists:
+        return f"/learn/lessons/{lesson_id}/preview?{urlencode([('entry', entry)])}"
+    return f"/learn/lessons/{lesson_id}/files/{quote(entry, safe='/')}"
+
+
 def _lesson_or_404(conn, lesson_id: int) -> dict:
     lesson = lessons.get_lesson(conn, lesson_id)
     if lesson is None:
@@ -1002,12 +1057,38 @@ def _lesson_or_404(conn, lesson_id: int) -> dict:
     return lesson
 
 
-@app.get("/learn/lessons/{lesson_id}/preview")
-def get_lesson_preview(lesson_id: int):
+@app.get("/learn/lessons/{lesson_id}/files/{resource:path}")
+def get_lesson_bundle_file(lesson_id: int, resource: str):
     conn = get_conn()
     try:
         lesson = _lesson_or_404(conn, lesson_id)
-        html, info = lessons.preview_html(lesson)
+        try:
+            info = lessons.bundle_resource_info(lesson, resource)
+        except lessons.LessonError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        conn.close()
+    if not info["exists"]:
+        raise HTTPException(status_code=404, detail="lesson file not found")
+    headers = {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if info["active"]:
+        headers["Content-Security-Policy"] = _LESSON_PREVIEW_CSP
+        headers["X-Lesson-Preview-Version"] = info["version"]
+    return FileResponse(info["path"], media_type=info["media_type"], headers=headers)
+
+
+@app.get("/learn/lessons/{lesson_id}/preview")
+def get_lesson_preview(lesson_id: int, entry: str | None = None):
+    conn = get_conn()
+    try:
+        lesson = _lesson_or_404(conn, lesson_id)
+        try:
+            html, info = lessons.preview_html(lesson, entry)
+        except lessons.LessonError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         conn.close()
     return Response(
@@ -1023,11 +1104,14 @@ def get_lesson_preview(lesson_id: int):
 
 
 @app.get("/learn/lessons/{lesson_id}/preview-meta")
-def get_lesson_preview_meta(lesson_id: int):
+def get_lesson_preview_meta(lesson_id: int, entry: str | None = None):
     conn = get_conn()
     try:
         lesson = _lesson_or_404(conn, lesson_id)
-        info = lessons.lesson_file_info(lesson)
+        try:
+            info = lessons.lesson_file_info(lesson, entry)
+        except lessons.LessonError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         conn.close()
     return JSONResponse({
@@ -1035,6 +1119,8 @@ def get_lesson_preview_meta(lesson_id: int):
         "exists": info["exists"],
         "version": info["version"],
         "path": info["path"],
+        "preview_url": _lesson_preview_url(lesson_id, info["entry"], exists=info["exists"]),
+        "file_url": _lesson_preview_url(lesson_id, info["entry"]),
     })
 
 
@@ -1056,6 +1142,27 @@ def post_lesson_create(
     finally:
         conn.close()
     return RedirectResponse(f"/learn?lesson={lesson_id}", status_code=303)
+
+
+@app.post("/learn/lessons/{lesson_id}/entry")
+def post_lesson_entry(
+    request: Request,
+    lesson_id: int,
+    entry: str = Form(...),
+    return_to: str = Form("/learn"),
+):
+    _check_origin(request)
+    conn = get_conn()
+    try:
+        lessons.set_current_entry(conn, lesson_id, entry)
+    except lessons.LessonError as exc:
+        return RedirectResponse(
+            _with_flash(_safe_return(return_to, f"/learn?lesson={lesson_id}"), str(exc)),
+            status_code=303,
+        )
+    finally:
+        conn.close()
+    return RedirectResponse(_safe_return(return_to, f"/learn?lesson={lesson_id}"), status_code=303)
 
 
 @app.post("/learn/lessons/{lesson_id}/status")

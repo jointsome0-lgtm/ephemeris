@@ -108,7 +108,7 @@ def get_conn() -> sqlite3.Connection:
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -330,6 +330,26 @@ def _migrate_to_6(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA_V6)
 
 
+# v7 — Learn bundle navigation: the agent owns a runtime lesson folder
+# (lesson.json + index.html + related/*.html), while SQLite keeps app-state for
+# the currently selected entry and last time the lesson was opened.
+_SCHEMA_V7 = """
+ALTER TABLE lessons ADD COLUMN current_entry TEXT;
+ALTER TABLE lessons ADD COLUMN last_opened_at TEXT;
+"""
+
+
+def _migrate_to_7(conn: sqlite3.Connection) -> None:
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(lessons)")}
+    for stmt in _SCHEMA_V7.strip().split(";"):
+        stmt = stmt.strip()
+        if not stmt:
+            continue
+        col = stmt.split("ADD COLUMN", 1)[1].split()[0]
+        if col not in have:
+            conn.execute(stmt)
+
+
 # Ordered, idempotent steps. A schema change must NEVER require deleting the
 # ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
 _MIGRATIONS = [
@@ -339,6 +359,7 @@ _MIGRATIONS = [
     (4, _migrate_to_4),
     (5, _migrate_to_5),
     (6, _migrate_to_6),
+    (7, _migrate_to_7),
 ]
 
 

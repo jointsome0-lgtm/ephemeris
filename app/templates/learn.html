@@ -42,7 +42,7 @@
       <div class="lesson-list">
         {% for lesson in rows %}
         <article class="lesson-row{% if lesson.archived %} archived{% endif %}{% if lesson.selected %} sel{% endif %}">
-          <a class="lesson-main" href="/learn{% if status_filter or show_archived %}?{% if status_filter %}status={{ status_filter }}{% endif %}{% if status_filter and show_archived %}&{% endif %}{% if show_archived %}archived=1{% endif %}&lesson={{ lesson.id }}{% else %}?lesson={{ lesson.id }}{% endif %}">
+          <a class="lesson-main" href="{{ lesson.href }}">
             <div class="lesson-title-line">
               <h2>{{ lesson.title }}</h2>
               <span class="lesson-status st-{{ lesson.status }}">{{ lesson.status_label }}</span>
@@ -95,12 +95,21 @@
         <div class="lesson-preview-title">
           <h2>{{ selected.title }}</h2>
           <span class="lesson-file-path">{{ selected.file.path }}</span>
+          {% if selected.pages %}
+          <nav class="lesson-page-tabs" aria-label="Lesson pages">
+            {% for page in selected.pages %}
+            <a class="{% if page.current %}on{% endif %}" href="{{ page.href }}">
+              {{ page.label }}
+            </a>
+            {% endfor %}
+          </nav>
+          {% endif %}
         </div>
         <div class="lesson-preview-tools">
           {% if selected.source_url %}
           <a href="{{ selected.source_url }}" target="_blank" rel="noopener noreferrer">Source</a>
           {% endif %}
-          <span class="lesson-file-state">{{ 'HTML' if selected.file.exists else 'No file' }}</span>
+          <span class="lesson-file-state">{{ selected.file.label }} · {{ 'HTML' if selected.file.exists else 'No file' }}</span>
         </div>
       </header>
       <div class="lesson-frame-wrap">
@@ -108,9 +117,9 @@
           id="lesson-preview-frame"
           class="lesson-frame"
           title="{{ selected.title }}"
-          src="/learn/lessons/{{ selected.id }}/preview"
-          data-src="/learn/lessons/{{ selected.id }}/preview"
-          data-meta-url="/learn/lessons/{{ selected.id }}/preview-meta"
+          src="{{ selected.preview_url }}"
+          data-src="{{ selected.file_url }}"
+          data-meta-url="{{ selected.preview_meta_url }}"
           data-version="{{ selected.file.version }}"
           sandbox="allow-scripts allow-forms allow-popups allow-downloads"></iframe>
       </div>

@@ -6,10 +6,12 @@ soft archive, and the matching ledger events.
 """
 from __future__ import annotations
 
-from html import escape
-from pathlib import Path
+import json
+import mimetypes
 import re
 import sqlite3
+from html import escape
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
 from ..db import DATA_DIR, append_event, now_iso
@@ -22,6 +24,8 @@ STATUS_LABELS = {
     "studied": "Studied",
 }
 LESSONS_DIR = DATA_DIR / "lessons"
+DEFAULT_ENTRY = "index.html"
+MANIFEST_NAME = "lesson.json"
 
 
 class LessonError(ValueError):
@@ -84,23 +88,155 @@ def _lesson_view(row: sqlite3.Row) -> dict:
         "started_at": row["started_at"],
         "completed_at": row["completed_at"],
         "archived_at": row["archived_at"],
+        "current_entry": row["current_entry"],
+        "last_opened_at": row["last_opened_at"],
         "archived": row["archived_at"] is not None,
     }
 
 
-def _lesson_path(slug: str) -> Path:
+def _lesson_dir(slug: str) -> Path:
+    if not _SLUG_RE.match(slug or ""):
+        raise LessonError("invalid lesson slug")
+    return LESSONS_DIR / slug
+
+
+def _legacy_lesson_path(slug: str) -> Path:
     if not _SLUG_RE.match(slug or ""):
         raise LessonError("invalid lesson slug")
     return LESSONS_DIR / f"{slug}.html"
 
 
-def lesson_file_info(lesson: dict) -> dict:
-    """Runtime HTML artifact metadata for one lesson."""
+def _clean_bundle_ref(value: str | None, *, html_only: bool = False) -> str:
+    if value is not None and not isinstance(value, str):
+        raise LessonError("invalid lesson entry")
+    value = (value or DEFAULT_ENTRY).strip()
+    if not value or "\\" in value or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise LessonError("invalid lesson entry")
+    ref = PurePosixPath(value)
+    if ref.is_absolute() or ".." in ref.parts:
+        raise LessonError("invalid lesson entry")
+    if html_only and ref.suffix.lower() != ".html":
+        raise LessonError("lesson entry must be HTML")
+    return ref.as_posix()
+
+
+def _clean_html_ref(value: str | None) -> str:
+    return _clean_bundle_ref(value, html_only=True)
+
+
+def _bundle_path(slug: str, ref: str) -> Path:
+    base = _lesson_dir(slug)
+    ref = _clean_bundle_ref(ref)
+    try:
+        path = (base / Path(ref)).resolve()
+        root = base.resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise LessonError("invalid lesson entry") from exc
+    if not path.is_relative_to(root):
+        raise LessonError("invalid lesson entry")
+    return path
+
+
+def _entry_path(slug: str, entry: str) -> Path:
+    entry = _clean_html_ref(entry)
+    return _bundle_path(slug, entry)
+
+
+def _entry_label(entry: str) -> str:
+    stem = PurePosixPath(entry).stem.replace("-", " ").replace("_", " ").strip()
+    return stem.title() or entry
+
+
+def _default_manifest(lesson: dict) -> dict:
+    return {
+        "schema_version": 1,
+        "slug": lesson["slug"],
+        "title": lesson["title"],
+        "source_url": lesson.get("source_url"),
+        "entry": DEFAULT_ENTRY,
+        "related": [],
+        "updated_by_agent_at": None,
+    }
+
+
+def _manifest_path(slug: str) -> Path:
+    return _lesson_dir(slug) / MANIFEST_NAME
+
+
+def _write_manifest(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _normalise_manifest(lesson: dict, raw) -> dict:
+    if not isinstance(raw, dict):
+        raw = {}
+    default = _default_manifest(lesson)
+    raw_entry = raw.get("entry")
+    if isinstance(raw_entry, dict):
+        raw_entry = raw_entry.get("path")
+    if not isinstance(raw_entry, str):
+        raw_entry = default["entry"]
+    try:
+        entry = _clean_html_ref(raw_entry)
+    except LessonError:
+        entry = default["entry"]
+    related: list[str] = []
+    raw_related = raw.get("related")
+    if not isinstance(raw_related, list):
+        raw_related = []
+    for item in raw_related:
+        candidate = item.get("path") if isinstance(item, dict) else item
+        if not isinstance(candidate, str):
+            continue
+        try:
+            ref = _clean_html_ref(candidate)
+        except LessonError:
+            continue
+        if ref != entry and ref not in related:
+            related.append(ref)
+    return {
+        **default,
+        "entry": entry,
+        "related": related,
+        "updated_by_agent_at": raw.get("updated_by_agent_at"),
+    }
+
+
+def _ensure_bundle_manifest(lesson: dict) -> dict:
     LESSONS_DIR.mkdir(parents=True, exist_ok=True)
-    path = _lesson_path(lesson["slug"])
+    lesson_dir = _lesson_dir(lesson["slug"])
+    lesson_dir.mkdir(parents=True, exist_ok=True)
+    (lesson_dir / "related").mkdir(exist_ok=True)
+    (lesson_dir / "assets").mkdir(exist_ok=True)
+
+    manifest_path = _manifest_path(lesson["slug"])
+    if not manifest_path.exists():
+        _write_manifest(manifest_path, _default_manifest(lesson))
+
+    # Non-destructive bridge from the earlier flat-file prototype:
+    # data/lessons/<slug>.html -> data/lessons/<slug>/index.html.
+    legacy = _legacy_lesson_path(lesson["slug"])
+    index = _entry_path(lesson["slug"], DEFAULT_ENTRY)
+    if legacy.is_file() and not index.exists():
+        index.write_text(legacy.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+
+    try:
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raw = {}
+    return _normalise_manifest(lesson, raw)
+
+
+def lesson_file_info(lesson: dict, entry: str | None = None) -> dict:
+    """Runtime HTML artifact metadata for one bundle entry."""
+    manifest = _ensure_bundle_manifest(lesson)
+    entry = _clean_html_ref(entry or lesson.get("current_entry") or manifest["entry"])
+    path = _entry_path(lesson["slug"], entry)
     exists = path.is_file()
     stat = path.stat() if exists else None
     return {
+        "entry": entry,
+        "label": _entry_label(entry),
         "path": str(path),
         "exists": exists,
         "version": str(stat.st_mtime_ns) if stat else "0",
@@ -108,12 +244,65 @@ def lesson_file_info(lesson: dict) -> dict:
     }
 
 
-def with_file_info(lesson: dict | None) -> dict | None:
+def bundle_resource_info(lesson: dict, ref: str) -> dict:
+    """Runtime metadata for a bundle-relative file, including assets."""
+    _ensure_bundle_manifest(lesson)
+    ref = _clean_bundle_ref(ref)
+    path = _bundle_path(lesson["slug"], ref)
+    exists = path.is_file()
+    stat = path.stat() if exists else None
+    media_type, _encoding = mimetypes.guess_type(path.name)
+    media_type = media_type or "application/octet-stream"
+    suffix = path.suffix.lower()
+    html = media_type in ("text/html", "application/xhtml+xml") or suffix in (".html", ".htm")
+    active = html or media_type == "image/svg+xml" or suffix == ".svg"
+    return {
+        "entry": ref,
+        "path": str(path),
+        "exists": exists,
+        "version": str(stat.st_mtime_ns) if stat else "0",
+        "size": stat.st_size if stat else 0,
+        "media_type": media_type,
+        "html": html,
+        "active": active,
+    }
+
+
+def bundle_info(lesson: dict, entry: str | None = None) -> dict:
+    """Agent-facing file bundle plus the app's current entry selection."""
+    manifest = _ensure_bundle_manifest(lesson)
+    try:
+        current = _clean_html_ref(entry or lesson.get("current_entry") or manifest["entry"])
+    except LessonError:
+        current = manifest["entry"]
+    pages = [manifest["entry"], *manifest["related"]]
+    if current not in pages:
+        pages.insert(0, current)
+    return {
+        "manifest": manifest,
+        "manifest_path": str(_manifest_path(lesson["slug"])),
+        "entry": current,
+        "file": lesson_file_info(lesson, current),
+        "pages": [
+            {**lesson_file_info(lesson, page), "current": page == current}
+            for page in pages
+        ],
+    }
+
+
+def with_bundle_info(lesson: dict | None, entry: str | None = None) -> dict | None:
     if lesson is None:
         return None
     lesson = dict(lesson)
-    lesson["file"] = lesson_file_info(lesson)
+    lesson["bundle"] = bundle_info(lesson, entry)
+    lesson["entry"] = lesson["bundle"]["entry"]
+    lesson["file"] = lesson["bundle"]["file"]
+    lesson["pages"] = lesson["bundle"]["pages"]
     return lesson
+
+
+def with_file_info(lesson: dict | None) -> dict | None:
+    return with_bundle_info(lesson)
 
 
 def _require_lesson(conn: sqlite3.Connection, lesson_id: int) -> sqlite3.Row:
@@ -149,6 +338,35 @@ def create_lesson(conn: sqlite3.Connection, title: str, source_url: str | None =
             "status": "backlog",
         })
     return lesson_id
+
+
+def mark_opened(conn: sqlite3.Connection, lesson_id: int, entry: str) -> None:
+    """Persist lightweight UI state without adding a noisy ledger event."""
+    entry = _clean_html_ref(entry)
+    _require_lesson(conn, lesson_id)
+    ts = now_iso()
+    with conn:
+        conn.execute(
+            "UPDATE lessons SET current_entry=?, last_opened_at=? WHERE id=?",
+            (entry, ts, lesson_id),
+        )
+
+
+def set_current_entry(conn: sqlite3.Connection, lesson_id: int, entry: str) -> None:
+    """Explicitly set the lesson entry, e.g. from an agent curl call."""
+    entry = _clean_html_ref(entry)
+    row = _require_lesson(conn, lesson_id)
+    ts = now_iso()
+    with conn:
+        conn.execute(
+            "UPDATE lessons SET current_entry=?, updated_at=? WHERE id=?",
+            (entry, ts, lesson_id),
+        )
+        append_event(conn, "lesson_entry_changed", {
+            "lesson_id": lesson_id,
+            "from_entry": row["current_entry"],
+            "to_entry": entry,
+        })
 
 
 def set_status(conn: sqlite3.Connection, lesson_id: int, status: str) -> None:
@@ -250,9 +468,9 @@ def list_lessons(
     return [_lesson_view(row) for row in conn.execute(sql, params).fetchall()]
 
 
-def preview_html(lesson: dict) -> tuple[str, dict]:
+def preview_html(lesson: dict, entry: str | None = None) -> tuple[str, dict]:
     """Return the current lesson HTML, or a small generated placeholder."""
-    info = lesson_file_info(lesson)
+    info = lesson_file_info(lesson, entry)
     if info["exists"]:
         return Path(info["path"]).read_text(encoding="utf-8", errors="replace"), info
     title = escape(lesson["title"])

@@ -84,8 +84,8 @@
     const frame = document.getElementById("lesson-preview-frame");
     if (!frame) return;
     const metaUrl = frame.dataset.metaUrl;
-    const src = frame.dataset.src || frame.getAttribute("src");
-    if (!metaUrl || !src) return;
+    const fallbackSrc = frame.getAttribute("src");
+    if (!metaUrl || !fallbackSrc) return;
     let version = frame.dataset.version || "";
     let inFlight = false;
     async function tick() {
@@ -97,6 +97,7 @@
         const next = String(data.version || "0");
         if (next !== version) {
           version = next;
+          const src = data.preview_url || (data.exists ? frame.dataset.src : fallbackSrc);
           const url = new URL(src, window.location.href);
           url.searchParams.set("_v", Date.now());
           frame.src = url.toString();
