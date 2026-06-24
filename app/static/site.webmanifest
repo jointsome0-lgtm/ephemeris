@@ -1,0 +1,59 @@
+{
+  "name": "Activity Ledger",
+  "short_name": "Ledger",
+  "description": "Local-first learning, planning, focus, habits, and tasks.",
+  "id": "/",
+  "start_url": "/today",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#4772fa",
+  "orientation": "any",
+  "categories": ["education", "productivity"],
+  "icons": [
+    {
+      "src": "/static/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Learn",
+      "short_name": "Learn",
+      "url": "/learn",
+      "icons": [
+        {
+          "src": "/static/app-icon.svg",
+          "sizes": "any",
+          "type": "image/svg+xml"
+        }
+      ]
+    },
+    {
+      "name": "Focus",
+      "short_name": "Focus",
+      "url": "/focus",
+      "icons": [
+        {
+          "src": "/static/app-icon.svg",
+          "sizes": "any",
+          "type": "image/svg+xml"
+        }
+      ]
+    },
+    {
+      "name": "Today",
+      "short_name": "Today",
+      "url": "/today",
+      "icons": [
+        {
+          "src": "/static/app-icon.svg",
+          "sizes": "any",
+          "type": "image/svg+xml"
+        }
+      ]
+    }
+  ]
+}
