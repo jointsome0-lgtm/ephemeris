@@ -7,7 +7,7 @@
 <form class="search-bar" method="get" action="/search" role="search">
   <span class="search-ico" aria-hidden="true">{{ ic.icon('search') }}</span>
   <input type="text" name="q" class="search-input" value="{{ q }}" autofocus
-         placeholder="Search tasks, notes…" autocomplete="off">
+         placeholder="Search tasks, notes, lessons…" autocomplete="off">
 </form>
 
 <div class="search-filters" aria-hidden="true">
@@ -17,26 +17,48 @@
 </div>
 
 {% if q %}
-  {% if results %}
+  {% set has_lessons = lessons is defined and lessons %}
+  {% if results or has_lessons %}
+    {% if results %}
     <div class="tsection-head" style="padding:14px 4px 6px">
-      <span class="tsection-name">Results</span>
+      <span class="tsection-name">Tasks</span>
       <span class="tsection-count">{{ results|length }}</span>
     </div>
     <div class="tsection-body">
       {% for t in results %}{% include "_task_row.html" %}{% endfor %}
     </div>
+    {% endif %}
+    {% if has_lessons %}
+    <div class="tsection-head" style="padding:14px 4px 6px">
+      <span class="tsection-name">Lessons</span>
+      <span class="tsection-count">{{ lessons|length }}</span>
+    </div>
+    <div class="tsection-body">
+      {% for lesson in lessons %}
+      <a class="search-lesson" href="/learn?lesson={{ lesson.id }}">
+        <span class="search-lesson-ico" aria-hidden="true">{{ ic.icon('learn') }}</span>
+        <span class="search-lesson-body">
+          <span class="search-lesson-title">{{ lesson.title }}</span>
+          {% if lesson.source_url %}<span class="search-lesson-meta">{{ lesson.source_url }}</span>{% endif %}
+        </span>
+        <span class="lesson-status st-{{ lesson.status }}">{{ lesson.status_label }}</span>
+        {% if lesson.archived %}<span class="lesson-status">Archived</span>{% endif %}
+      </a>
+      {% endfor %}
+    </div>
+    {% endif %}
   {% else %}
     <div class="empty-state es-full">
       {% include "_search_illus.html" %}
       <div class="es-title">Nothing found</div>
-      <div>No tasks or notes match “{{ q }}”.</div>
+      <div>Nothing matches “{{ q }}”.</div>
     </div>
   {% endif %}
 {% else %}
   <div class="empty-state es-full">
     {% include "_search_illus.html" %}
     <div class="es-title">Search everything</div>
-    <div>Find tasks and notes across all your lists.</div>
+    <div>Find tasks, notes, and lessons across all your lists.</div>
   </div>
 {% endif %}
 {% endblock %}

@@ -560,18 +560,20 @@ def get_countdown(request: Request, sel: str | None = None, month: str | None = 
 
 @app.get("/search")
 def get_search(request: Request, q: str = ""):
-    """Substring search over task titles + notes."""
+    """Substring search over task titles + notes, plus Learn lessons."""
     q = (q or "").strip()
     conn = get_conn()
     try:
         results = tasks.search(conn, q) if q else []
+        lesson_hits = lessons.search(conn, q) if q else []
     finally:
         conn.close()
     return templates.TemplateResponse(request,
         "search.html",
         {
             "request": request, "rail": "search", "q": q,
-            "results": results, "today": today_str(), "cur_path": "/search",
+            "results": results, "lessons": lesson_hits,
+            "today": today_str(), "cur_path": "/search",
         },
     )
 

@@ -333,6 +333,21 @@ body.term-right-open .tt-shell { padding-right: var(--term-w, 42vw); }
 }
 .lesson-meta a, .lesson-meta span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lesson-actions { flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end; gap: 4px; flex-wrap: wrap; }
+
+/* Learn lessons surfaced in the Search results list */
+.search-lesson {
+  display: flex; align-items: center; gap: 12px; padding: 10px 8px;
+  border-radius: var(--radius); color: var(--text); text-decoration: none;
+}
+.search-lesson:hover { background: var(--hover); }
+.search-lesson-ico { flex: 0 0 auto; display: inline-flex; color: var(--muted); }
+.search-lesson-ico svg { width: 18px; height: 18px; }
+.search-lesson-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.search-lesson-title { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-lesson-meta {
+  font-size: 12px; color: var(--faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .lesson-panel .lesson-actions { justify-content: flex-start; }
 .lesson-actions form { display: inline-flex; }
 .lesson-actions .btn-text { height: 30px; padding: 0 8px; border-radius: 7px; }

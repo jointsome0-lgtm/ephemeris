@@ -435,6 +435,18 @@ def restore_lesson(conn: sqlite3.Connection, lesson_id: int) -> None:
         })
 
 
+# Active first, then studying → paused → backlog → studied, freshest within each.
+# Shared by the Learn list and Search so both rank lessons identically.
+_LESSON_ORDER = (
+    " ORDER BY "
+    "CASE WHEN archived_at IS NULL THEN 0 ELSE 1 END, "
+    "CASE status "
+    "WHEN 'studying' THEN 0 WHEN 'paused' THEN 1 "
+    "WHEN 'backlog' THEN 2 WHEN 'studied' THEN 3 ELSE 4 END, "
+    "COALESCE(updated_at, created_at) DESC, id DESC"
+)
+
+
 def list_lessons(
     conn: sqlite3.Connection,
     *,
@@ -457,15 +469,28 @@ def list_lessons(
     sql = "SELECT * FROM lessons"
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += (
-        " ORDER BY "
-        "CASE WHEN archived_at IS NULL THEN 0 ELSE 1 END, "
-        "CASE status "
-        "WHEN 'studying' THEN 0 WHEN 'paused' THEN 1 "
-        "WHEN 'backlog' THEN 2 WHEN 'studied' THEN 3 ELSE 4 END, "
-        "COALESCE(updated_at, created_at) DESC, id DESC"
-    )
+    sql += _LESSON_ORDER
     return [_lesson_view(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def search(conn: sqlite3.Connection, query: str, limit: int = 50) -> list[dict]:
+    """Lessons whose title, notes, or source URL contain `query` (case-insensitive
+    substring). Spans archived lessons too — the Search view marks them. Empty
+    query returns nothing, mirroring tasks.search."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    # escape LIKE metacharacters so a literal % or _ isn't treated as a wildcard
+    esc = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    like = f"%{esc}%"
+    rows = conn.execute(
+        "SELECT * FROM lessons "
+        "WHERE title LIKE ? ESCAPE '\\' OR COALESCE(notes,'') LIKE ? ESCAPE '\\' "
+        "OR COALESCE(source_url,'') LIKE ? ESCAPE '\\'"
+        + _LESSON_ORDER + " LIMIT ?",
+        (like, like, like, limit),
+    ).fetchall()
+    return [_lesson_view(row) for row in rows]
 
 
 def preview_html(lesson: dict, entry: str | None = None) -> tuple[str, dict]:

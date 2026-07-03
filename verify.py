@@ -588,7 +588,7 @@ with TestClient(app) as c:
             except ce.CalendarEventError:
                 check(label, True)
 
-        check("schema migrated to v5", cconn.execute("PRAGMA user_version").fetchone()[0] == 5)
+        check("schema migrated to v7", cconn.execute("PRAGMA user_version").fetchone()[0] == 7)
         oid = ce.create_event(cconn, "Orbit Drill", start_date="2027-04-07", freq="weekly",
                               byweekday="1010100", start_time="09:10", end_time="09:55")
         sid = ce.create_event(cconn, "Signal Lab", start_date="2027-04-07", freq="weekly",
@@ -804,6 +804,83 @@ with TestClient(app) as c:
     check("occurrences are never exported",
           not any("occurrence" in l["type"] and "skipped" not in l["type"]
                   and "unskipped" not in l["type"] for l in lines))
+
+    # --- Learn: lesson lifecycle, ledger events, Search + export (sec: Learn module)
+    from app.services import lessons as _lessons
+
+    rL = c.post("/learn/lessons",
+                data={"title": "Sparse Transformers Study",
+                      "source_url": "https://example.org/sparser-faster"},
+                follow_redirects=False)
+    check("POST /learn/lessons creates + redirects to the lesson",
+          rL.status_code == 303 and "lesson=" in rL.headers.get("location", ""),
+          str(rL.status_code))
+    lconn = get_conn()
+    try:
+        lrow = lconn.execute(
+            "SELECT id, status FROM lessons WHERE title = 'Sparse Transformers Study'"
+        ).fetchone()
+        check("new lesson starts in backlog", lrow is not None and lrow["status"] == "backlog")
+        lid = lrow["id"]
+    finally:
+        lconn.close()
+
+    for st in ("studying", "paused", "studied"):
+        rS = c.post(f"/learn/lessons/{lid}/status", data={"status": st},
+                    follow_redirects=False)
+        check(f"lesson status -> {st} accepted", rS.status_code == 303, str(rS.status_code))
+    lconn = get_conn()
+    try:
+        cur = lconn.execute(
+            "SELECT status, started_at, completed_at FROM lessons WHERE id = ?", (lid,)
+        ).fetchone()
+        check("studied lesson stamped started_at + completed_at",
+              cur["status"] == "studied" and cur["started_at"] and cur["completed_at"])
+    finally:
+        lconn.close()
+
+    rX = c.post(f"/learn/lessons/{lid}/status", data={"status": "backlog"},
+                headers={"Origin": "http://evil.example", "Host": "testserver"},
+                follow_redirects=False)
+    check("cross-origin POST lesson status -> 403", rX.status_code == 403, str(rX.status_code))
+
+    c.post(f"/learn/lessons/{lid}/archive", follow_redirects=False)
+    lconn = get_conn()
+    try:
+        check("archive stamps archived_at", lconn.execute(
+            "SELECT archived_at FROM lessons WHERE id = ?", (lid,)).fetchone()["archived_at"])
+    finally:
+        lconn.close()
+    c.post(f"/learn/lessons/{lid}/restore", follow_redirects=False)
+    lconn = get_conn()
+    try:
+        check("restore clears archived_at", lconn.execute(
+            "SELECT archived_at FROM lessons WHERE id = ?", (lid,)).fetchone()["archived_at"] is None)
+    finally:
+        lconn.close()
+
+    # Search now spans lessons (not a silo) — page + service
+    rSearch = c.get("/search", params={"q": "Sparse Transformers"})
+    check("search page surfaces the matching lesson",
+          "Sparse Transformers Study" in rSearch.text and f"/learn?lesson={lid}" in rSearch.text)
+    check("search page ignores lessons for a non-matching query",
+          "Sparse Transformers Study" not in c.get("/search", params={"q": "zzz-nomatch"}).text)
+    lconn = get_conn()
+    try:
+        hits = _lessons.search(lconn, "sparse transformers")
+        check("lessons.search matches case-insensitive substring", any(h["id"] == lid for h in hits))
+        check("lessons.search('') returns nothing", _lessons.search(lconn, "") == [])
+        check("lessons.search escapes LIKE wildcards", _lessons.search(lconn, "%") == [])
+    finally:
+        lconn.close()
+
+    # Lesson ledger events reach the JSONL export (integrated, not a silo)
+    llines = [_json.loads(x) for x in c.post("/export/jsonl").text.splitlines()]
+    ltypes = {x["type"] for x in llines}
+    check("export carries lesson lifecycle events",
+          {"lesson_created", "lesson_status_changed", "lesson_archived",
+           "lesson_restored"} <= ltypes,
+          str(sorted(t for t in ltypes if t.startswith("lesson"))))
 
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
