@@ -27,6 +27,15 @@ Do not copy real task titles, habit names, notes, dates, screenshots, export row
 - The terminal PTY/WS core (`app/terminal.py`) is delicate (detach/reattach + fd lifecycle): changes to it go through their own dedicated review, never a ride-along cleanup pass.
 - Scope passes to a fresh, small target (a path or the latest commit). Do not re-run a pass over the same accumulated unpushed pile.
 
+## Security Reviews Go To Codex
+
+Adversarial security reviews of the sensitive surfaces — the terminal PTY/WS core (`app/terminal.py`), the future `app/agent/`, and anything about to be exposed on a live port — are **delegated to Codex**, not run by Claude in the first person.
+
+- Do not open, narrate, or carry out a red-team / adversarial security pass yourself. Hand that framing to Codex from the start (`codex:rescue` or the codex plugin) and let it drive the attack-surface analysis.
+- Claude's role is the **correctness half** (does the code do what it should, race/lifecycle/fd bugs, plan alignment) and **converging** Codex's findings with its own — see the `route-security-reviews-to-codex` and `use-codex-as-second-reviewer` memories.
+- Reason, so nobody "fixes" this later: routing avoids a real workflow failure. Fable's safeguards false-positive on security-review framing and interrupt mid-task (switching models, dropping the thread); Codex is unaffected and gives a genuinely independent adversarial view.
+- This is a routing rule, **not** a license to ignore security. The Public Data Boundary above and the Public-Safety Check below still apply to every change, and a security concern noticed in passing still gets surfaced plainly — it just gets handed to Codex to review rather than adversarially probed by Claude.
+
 ## Public-Safety Check
 
 Before finishing any change that touches storage, exports, docs, screenshots, tests, fixtures, or agent instructions, run:
