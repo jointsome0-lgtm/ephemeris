@@ -73,18 +73,29 @@ def _is_loopback_hostname(hostname: str | None) -> bool:
 def _ws_is_trusted(ws: WebSocket) -> bool:
     """A loopback peer is necessary but NOT sufficient: a browser can be a confused
     deputy. Also require the Host header to be a loopback name (blocks DNS-rebinding)
-    and every Origin value, if any is present, to be a loopback origin (blocks cross-site
-    WebSocket hijacking — a malicious page the local user visits opening ws://127.0.0.1/...).
-    Origin is absent for non-browser local clients, which the peer check already trusts;
-    a browser always sends exactly one browser-controlled Origin and cannot suppress it."""
+    and every Origin value, if any is present, to match the Host header's host:port
+    exactly — same-origin, not merely loopback-family, so a page on ANOTHER local
+    port (http://localhost:3000) cannot open a shell here (cross-site WebSocket
+    hijacking stays blocked cross-port too). Origin is absent for non-browser local
+    clients, which the peer check already trusts; a browser always sends exactly one
+    browser-controlled Origin and cannot suppress it."""
     if not is_local_host(ws.client.host if ws.client else None):
         return False
-    if not _is_loopback_hostname(urlsplit("//" + (ws.headers.get("host") or "")).hostname):
+    try:
+        host = urlsplit("//" + (ws.headers.get("host") or ""))
+        own = (host.hostname, host.port)  # .port raises ValueError on a junk Host
+    except ValueError:
+        return False
+    if not _is_loopback_hostname(own[0]):
         return False
     # getlist (not get) so a smuggled duplicate "Origin: <loopback>" + "Origin: <evil>"
-    # can't slip through on the first value alone — reject if ANY value is non-loopback.
+    # can't slip through on the first value alone — reject if ANY value is off-origin.
     for origin in ws.headers.getlist("origin"):
-        if not _is_loopback_hostname(urlsplit(origin).hostname):
+        try:
+            parts = urlsplit(origin)
+            if (parts.hostname, parts.port) != own:
+                return False
+        except ValueError:
             return False
     return True
 
@@ -240,6 +251,10 @@ class _TermSession:
         if self.ws is ws:
             self.ws = None
             self.detached_at = time.monotonic()
+            # Wake a writer parked on PTY writability on behalf of this socket: it
+            # must bail via the ownership re-check in _write_all, not resume into a
+            # successor's session — nor stay parked forever on a PTY that never drains.
+            self._remove_writer(exc=OSError("terminal socket detached"))
 
     def start(self) -> None:
         self._pump = asyncio.create_task(self._run())
@@ -343,13 +358,19 @@ class _TermSession:
 
 def _reap_idle(force_oldest: bool = False) -> None:
     """Close sessions detached longer than the TTL (lazy, on each new connection).
-    With force_oldest, also evict the oldest detached session to free a slot."""
+    With force_oldest, also evict the oldest detached session to free a slot.
+    Never touches a session whose _attach_lock is held: it is mid-(re)attach —
+    briefly ws-less while the handshake awaits — and reaping it there would tear
+    down the PTY just as the reconnect lands."""
     now = time.monotonic()
-    stale = [s for s in _SESSIONS.values()
-             if s.ws is None and s.detached_at and now - s.detached_at > _SESSION_TTL]
+
+    def _idle(s: "_TermSession", min_idle: float) -> bool:
+        return (s.ws is None and not s._attach_lock.locked()
+                and bool(s.detached_at) and now - s.detached_at > min_idle)
+
+    stale = [s for s in _SESSIONS.values() if _idle(s, _SESSION_TTL)]
     if force_oldest and not stale:
-        evictable = [s for s in _SESSIONS.values()
-                     if s.ws is None and s.detached_at and now - s.detached_at > _FORCE_GRACE]
+        evictable = [s for s in _SESSIONS.values() if _idle(s, _FORCE_GRACE)]
         if evictable:
             stale = [min(evictable, key=lambda s: s.detached_at)]
     for s in stale:
@@ -431,16 +452,21 @@ async def _create_session() -> "_TermSession | None":
         return sess
 
 
-async def _write_all(sess: _TermSession, data: bytes) -> None:
-    """Write all of `data` to the non-blocking PTY master. The fast path is one
-    plain os.write on the event loop; only when the program at the slave end has
-    stopped draining stdin (buffer full) do we wait for writability."""
+async def _write_all(sess: _TermSession, ws: WebSocket, data: bytes) -> None:
+    """Write all of `data` to the non-blocking PTY master on behalf of `ws`. The fast
+    path is one plain os.write on the event loop; only when the program at the slave
+    end has stopped draining stdin (buffer full) do we wait for writability.
+    Ownership is re-checked on EVERY turn of the loop, not just on entry: the
+    writability wait can span an attach hand-off, and a booted socket's remaining
+    bytes must not be injected into the session its replacement now owns."""
     loop = asyncio.get_running_loop()
     fd = sess.master_fd
     mv = memoryview(data)
     while mv:
         if sess.closed:
             raise OSError("terminal session closed")
+        if sess.ws is not ws:
+            raise OSError("terminal socket was replaced")
         try:
             n = os.write(fd, mv)
         except BlockingIOError:
@@ -459,21 +485,28 @@ async def _write_all(sess: _TermSession, data: bytes) -> None:
         try:
             await writable
         finally:
-            sess._remove_writer(loop)
+            # Tear down only OUR registration: detach() may already have woken this
+            # writer (waiter cleared) and a successor writer may have re-armed the
+            # fd — its waiter/watcher must survive our cleanup.
+            if sess._writer_waiter is writable:
+                sess._remove_writer(loop)
 
 
 async def _read_input(ws: WebSocket, sess: "_TermSession") -> None:
-    """Pump client → PTY: binary frames are keystrokes; TEXT JSON is control."""
+    """Pump client → PTY: binary frames are keystrokes; TEXT JSON is control.
+    EVERY frame is gated on ownership — keystrokes AND control (resize/kill) — so
+    a socket booted by a newer attach to this sid cannot write into, resize, or
+    kill the PTY its replacement now owns."""
     try:
         while True:
             msg = await ws.receive()
             if msg.get("type") == "websocket.disconnect":
                 break
+            if sess.ws is not ws:  # booted by a newer attach to this sid — stop
+                break
             data = msg.get("bytes")
             if data is not None:
-                if sess.ws is not ws:  # booted by a newer attach to this sid — stop writing
-                    break
-                await _write_all(sess, data)
+                await _write_all(sess, ws, data)
                 continue
             text = msg.get("text")
             if not text:
@@ -533,7 +566,9 @@ async def _serve_ws(ws: WebSocket) -> None:
         async with sess._attach_lock:
             old = sess.ws  # single-attach: boot a stale socket before taking over
             if old is not None and old is not ws:
-                sess.ws = None
+                # detach (not a bare ws=None) so a writer parked mid-paste for the old
+                # socket is woken to bail instead of resuming into OUR session later.
+                sess.detach(old)
                 try:
                     await old.close()
                 except RuntimeError:

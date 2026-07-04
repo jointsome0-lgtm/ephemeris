@@ -922,5 +922,188 @@ with TestClient(app) as c:
     check("focus page renders the lesson picker",
           'id="focus-lesson"' in rfocus.text and "Sparse Transformers Study" in rfocus.text)
 
+    # --- Terminal core: trust gate + session ownership (review F1–F4) ----
+    import asyncio as _asyncio
+    import pty as _pty
+    import time as _time
+    import types as _types
+
+    from starlette.websockets import WebSocket as _WS, WebSocketDisconnect as _WSDisc
+
+    from app import terminal as _terminal
+
+    # a non-loopback peer (TestClient reports "testclient") is closed pre-accept
+    gate_rejected = False
+    try:
+        with c.websocket_connect("/terminal/ws"):
+            pass
+    except _WSDisc as e:
+        gate_rejected = e.code == 1008
+    check("terminal WS rejects a non-loopback peer pre-accept", gate_rejected)
+
+    async def _ws_noop(*a):  # WebSocket() wants receive/send; the gate never calls them
+        pass
+
+    def _gate_ws(peer: str, host: str, origins=()):
+        headers = [(b"host", host.encode())] + [(b"origin", o.encode()) for o in origins]
+        scope = {"type": "websocket", "path": "/terminal/ws", "query_string": b"",
+                 "headers": headers, "client": (peer, 55555)}
+        return _WS(scope, _ws_noop, _ws_noop)
+
+    _T = _terminal._ws_is_trusted
+    check("term gate: same-origin loopback accepted",
+          _T(_gate_ws("127.0.0.1", "127.0.0.1:8765", ["http://127.0.0.1:8765"])))
+    check("term gate: IPv6 loopback same-origin accepted",
+          _T(_gate_ws("::1", "[::1]:8765", ["http://[::1]:8765"])))
+    check("term gate: no-Origin local (non-browser) client accepted",
+          _T(_gate_ws("127.0.0.1", "localhost:8765")))
+    check("term gate: cross-port loopback origin rejected (F1)",
+          not _T(_gate_ws("127.0.0.1", "localhost:8765", ["http://localhost:3000"])))
+    check("term gate: loopback-family but different hostname rejected (F1)",
+          not _T(_gate_ws("127.0.0.1", "127.0.0.1:8765", ["http://localhost:8765"])))
+    check("term gate: portless origin vs ported host rejected (F1)",
+          not _T(_gate_ws("127.0.0.1", "127.0.0.1:8765", ["http://127.0.0.1"])))
+    check("term gate: non-loopback origin rejected",
+          not _T(_gate_ws("127.0.0.1", "127.0.0.1:8765", ["http://evil.example:8765"])))
+    check("term gate: duplicate-Origin smuggle rejected",
+          not _T(_gate_ws("127.0.0.1", "127.0.0.1:8765",
+                          ["http://127.0.0.1:8765", "http://evil.example:8765"])))
+    check("term gate: non-loopback peer rejected",
+          not _T(_gate_ws("192.168.1.50", "127.0.0.1:8765", ["http://127.0.0.1:8765"])))
+    check("term gate: non-loopback Host rejected (DNS rebind)",
+          not _T(_gate_ws("127.0.0.1", "attacker.example:8765",
+                          ["http://attacker.example:8765"])))
+    check("term gate: junk Host port rejected, not crashed",
+          not _T(_gate_ws("127.0.0.1", "localhost:junk", ["http://localhost:8765"])))
+
+    class _FakeSock:
+        """Just enough of a WebSocket for the _read_input/_write_all/close paths."""
+        def __init__(self):
+            self.frames = []
+
+        async def receive(self):
+            if self.frames:
+                return self.frames.pop(0)
+            return {"type": "websocket.disconnect"}
+
+        async def close(self, code=None):
+            pass
+
+    async def _terminal_behavior() -> dict:
+        out = {}
+        master, slave = _pty.openpty()
+        os.set_blocking(master, False)
+        sess = _terminal._TermSession(
+            "verify-term-sid", _types.SimpleNamespace(returncode=0), master)
+        _terminal._SESSIONS[sess.sid] = sess
+        owner, stale = _FakeSock(), _FakeSock()
+        sess.attach(owner)
+
+        # F2: a socket that lost the session must not write into it
+        try:
+            await _terminal._write_all(sess, stale, b"nope\n")
+            out["stale_write_blocked"] = False
+        except OSError:
+            out["stale_write_blocked"] = True
+        await _terminal._write_all(sess, owner, b"ok\n")
+        out["owner_write_lands"] = os.read(slave, 16) == b"ok\n"
+
+        # F3: a booted socket's resize/kill frames are ignored...
+        stale.frames = [
+            {"type": "websocket.receive", "text": '{"type":"resize","rows":50,"cols":100}'},
+            {"type": "websocket.receive", "text": '{"type":"kill"}'},
+        ]
+        await _terminal._read_input(stale, sess)
+        out["stale_ctrl_ignored"] = (sess.rows, sess.cols) == (24, 80) and not sess.closed
+        # ...while the owning socket's resize applies and kill closes the session
+        owner.frames = [
+            {"type": "websocket.receive", "text": '{"type":"resize","rows":50,"cols":100}'},
+            {"type": "websocket.receive", "text": '{"type":"kill"}'},
+        ]
+        await _terminal._read_input(owner, sess)
+        out["owner_ctrl_applies"] = (sess.rows, sess.cols) == (50, 100) and sess.closed
+        out["killed_session_deregistered"] = sess.sid not in _terminal._SESSIONS
+
+        # F2, the original interleaving: a writer PARKED on PTY writability is booted
+        # by a newer attach mid-wait — it must wake with an error and its remaining
+        # bytes must never reach the PTY the new socket now owns.
+        import termios as _termios
+        master3, slave3 = _pty.openpty()
+        os.set_blocking(master3, False)
+        attrs = _termios.tcgetattr(slave3)
+        attrs[3] &= ~(_termios.ICANON | _termios.ECHO)  # raw-ish: a plain byte queue
+        _termios.tcsetattr(slave3, _termios.TCSANOW, attrs)
+        sess3 = _terminal._TermSession(
+            "verify-term-sid3", _types.SimpleNamespace(returncode=0), master3)
+        _terminal._SESSIONS[sess3.sid] = sess3
+        old_sock, new_sock = _FakeSock(), _FakeSock()
+        sess3.attach(old_sock)
+        big = b"A" * (2 * 1024 * 1024)  # far beyond any PTY buffering — must park
+        writer_task = _asyncio.ensure_future(
+            _terminal._write_all(sess3, old_sock, big))
+        for _ in range(2000):  # wait (bounded) for the writer to park on add_writer
+            if sess3._writer_active or writer_task.done():
+                break
+            await _asyncio.sleep(0.001)
+        out["writer_parked"] = sess3._writer_active and not writer_task.done()
+        sess3.detach(old_sock)   # the boot path in _serve_ws — wakes the parked writer
+        sess3.attach(new_sock)
+        woke = await _asyncio.gather(writer_task, return_exceptions=True)
+        out["parked_writer_woken_to_bail"] = isinstance(woke[0], OSError)
+
+        os.set_blocking(slave3, False)
+
+        def _drain(fd: int) -> bytes:
+            got = b""
+            while True:
+                try:
+                    chunk = os.read(fd, 65536)
+                except BlockingIOError:
+                    return got
+                if not chunk:
+                    return got
+                got += chunk
+
+        prefix = _drain(slave3)  # bytes legitimately written BEFORE the boot
+        out["park_was_mid_write"] = 0 < len(prefix) < len(big)
+        await _terminal._write_all(sess3, new_sock, b"B" * 64)
+        out["no_stale_tail_after_reattach"] = _drain(slave3) == b"B" * 64
+        await sess3.close()
+        os.close(slave3)
+
+        # F4: the reaper skips a TTL-stale session whose attach handshake is in flight
+        master2, slave2 = _pty.openpty()
+        os.set_blocking(master2, False)
+        sess2 = _terminal._TermSession(
+            "verify-term-sid2", _types.SimpleNamespace(returncode=0), master2)
+        _terminal._SESSIONS[sess2.sid] = sess2
+        sess2.detached_at = _time.monotonic() - 2 * _terminal._SESSION_TTL
+        await sess2._attach_lock.acquire()
+        _terminal._reap_idle()
+        out["reaper_skips_mid_attach"] = sess2.sid in _terminal._SESSIONS
+        sess2._attach_lock.release()
+        _terminal._reap_idle()
+        out["reaper_reaps_after_attach"] = sess2.sid not in _terminal._SESSIONS
+        await _asyncio.sleep(0)  # let the reaper's close() task finish
+        os.close(slave)
+        os.close(slave2)
+        return out
+
+    tb = _asyncio.run(_terminal_behavior())
+    check("terminal: booted socket cannot write into a re-attached session (F2)",
+          tb["stale_write_blocked"])
+    check("terminal: owning socket writes reach the PTY", tb["owner_write_lands"])
+    check("terminal: writer parks mid-write on a full PTY (F2 precondition)",
+          tb["writer_parked"] and tb["park_was_mid_write"])
+    check("terminal: boot wakes the parked writer to bail (F2)",
+          tb["parked_writer_woken_to_bail"])
+    check("terminal: no stale tail bytes reach the re-attached session (F2)",
+          tb["no_stale_tail_after_reattach"])
+    check("terminal: booted socket's resize/kill are ignored (F3)", tb["stale_ctrl_ignored"])
+    check("terminal: owner resize applies and kill closes", tb["owner_ctrl_applies"])
+    check("terminal: killed session leaves the registry", tb["killed_session_deregistered"])
+    check("terminal: reaper skips a session mid-attach (F4)", tb["reaper_skips_mid_attach"])
+    check("terminal: reaper reaps it once the attach lock is free", tb["reaper_reaps_after_attach"])
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
