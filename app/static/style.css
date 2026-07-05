@@ -1160,6 +1160,16 @@ body.term-right-open .tt-shell { padding-right: var(--term-w, 42vw); }
   @keyframes eph-pal-in { from { transform: translateY(-8px); opacity: 0; } to { transform: none; opacity: 1; } }
 }
 
+/* ===== drag & drop (matrix + calendar) ================================== */
+.trow[draggable="true"] { cursor: grab; }
+.matrix-grid .trow.dragging { opacity: 0.4; cursor: grabbing; }
+.quad-body.over { outline: 2px dashed var(--astral); outline-offset: -4px; border-radius: 8px; background: var(--glow); }
+.cm-event.ev[draggable="true"] { cursor: grab; }
+.cm-event.dragging { opacity: 0.4; }
+.cm-cell.over { outline: 2px solid var(--astral); outline-offset: -2px; background: var(--glow); }
+/* the placeholder is always in the DOM (for drag-to-empty); show it only when the quadrant has no rows */
+.quad-body:has(.trow) .quad-empty { display: none; }
+
 /* ===== bottom nav (mobile only) ========================================= */
 .bottom-nav { display: none; }
 

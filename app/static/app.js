@@ -182,7 +182,7 @@
       hintsEl.addEventListener("mousedown", (e) => { if (e.target === hintsEl) closeHints(); });
       document.body.appendChild(hintsEl);
     }
-    window.alUI = { newTask, toggleTheme, showHints, closeHints };
+    window.alUI = { newTask, toggleTheme, showHints, closeHints, toast };
 
     let armed = false, armTimer = null;
     document.addEventListener("keydown", (e) => {

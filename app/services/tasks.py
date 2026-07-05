@@ -87,6 +87,63 @@ def create_task(
     return task_id
 
 
+def _clip_priority(priority) -> int:
+    try:
+        priority = int(priority)
+    except (TypeError, ValueError):
+        return 0
+    return priority if priority in PRIORITIES else 0
+
+
+def _respace(conn: sqlite3.Connection, priority: int) -> None:
+    """Renumber the open tasks in one priority bucket to 10, 20, 30 … so a midpoint
+    insert has room again. Ordered by current (sort_order, id)."""
+    rows = conn.execute(
+        "SELECT id FROM tasks WHERE priority = ? AND completed_at IS NULL AND kind = 'task' "
+        "ORDER BY sort_order, id", (priority,)).fetchall()
+    for i, r in enumerate(rows, start=1):
+        conn.execute("UPDATE tasks SET sort_order = ? WHERE id = ?", (i * 10, r["id"]))
+
+
+def move_task(conn: sqlite3.Connection, task_id: int, *, priority=None,
+              after_id: int | None = None, before_id: int | None = None) -> dict:
+    """Reposition an open task for drag-and-drop. `after_id`/`before_id` are the
+    tasks that should sit directly above/below it after the move (either may be
+    None at a list end); its sort_order becomes their midpoint. When `priority`
+    is given (matrix cross-quadrant drop) the task also changes quadrant. Appends
+    a `task_moved` event; returns the new {priority, sort_order}."""
+    row = conn.execute("SELECT priority FROM tasks WHERE id = ? AND kind = 'task'", (task_id,)).fetchone()
+    if row is None:
+        raise TaskError("unknown task")
+    tgt = row["priority"] if priority is None else _clip_priority(priority)
+
+    def _order_of(other_id):
+        if not other_id:
+            return None
+        r = conn.execute("SELECT sort_order FROM tasks WHERE id = ?", (other_id,)).fetchone()
+        return r["sort_order"] if r else None
+
+    lo, hi = _order_of(after_id), _order_of(before_id)
+    if lo is not None and hi is not None and hi - lo < 2:
+        _respace(conn, tgt)                       # out of gap → renumber, then retry
+        lo, hi = _order_of(after_id), _order_of(before_id)
+    if lo is not None and hi is not None:
+        new_order = (lo + hi) // 2
+    elif lo is not None:
+        new_order = lo + 10
+    elif hi is not None:
+        new_order = hi - 10
+    else:
+        new_order = 0
+    ts = now_iso()
+    with conn:
+        conn.execute("UPDATE tasks SET priority = ?, sort_order = ?, updated_at = ? WHERE id = ?",
+                     (tgt, new_order, ts, task_id))
+        append_event(conn, "task_moved",
+                     {"task_id": task_id, "priority": tgt, "sort_order": new_order})
+    return {"priority": tgt, "sort_order": new_order}
+
+
 def seed_if_empty(conn: sqlite3.Connection) -> int:
     """Insert sample tasks if there are none yet (lists must be seeded first)."""
     if conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]:

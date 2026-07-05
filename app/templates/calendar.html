@@ -11,11 +11,11 @@
     {% for d in ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'] %}<div class="cmw-dow">{{ d }}</div>{% endfor %}
   </div>
   {% for week in weeks %}{% for c in week %}
-    <div class="cm-cell{% if not c.in_month %} out{% endif %}{% if c.is_today %} today{% endif %}">
+    <div class="cm-cell{% if not c.in_month %} out{% endif %}{% if c.is_today %} today{% endif %}" data-date="{{ c.date }}" data-dropzone="calendar">
       <span class="cm-num">{% if c.day == 1 %}{{ c.month_abbr }} {% endif %}{{ c.day }}</span>
       {% for ev in c.events %}
         {% if ev.kind == 'event' %}
-        <a class="cm-event ev" href="{{ cal.ev_href(self_url, ev.event_id, ev.date) }}" title="{{ ev.title }}">{% if not ev.all_day and ev.start_time %}<span class="cm-time">{{ ev.start_time }}</span> {{ ev.title }}{% else %}{{ cal.ev_label(ev) }}{% endif %}</a>
+        <a class="cm-event ev" href="{{ cal.ev_href(self_url, ev.event_id, ev.date) }}" title="{{ ev.title }}"{% if ev.freq == 'once' %} draggable="true" data-ev-id="{{ ev.event_id }}" data-ev-date="{{ ev.date }}"{% else %} draggable="false"{% endif %}>{% if not ev.all_day and ev.start_time %}<span class="cm-time">{{ ev.start_time }}</span> {{ ev.title }}{% else %}{{ cal.ev_label(ev) }}{% endif %}</a>
         {% else %}
         <span class="cm-event{{ cal.chip_class(ev) }}" title="{{ ev.title }}">{{ ev.title }}</span>
         {% endif %}

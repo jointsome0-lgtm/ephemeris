@@ -103,6 +103,7 @@ def _occurrence(row: sqlite3.Row, d: _date) -> dict:
     return {
         "event_id": row["id"],
         "date": d.isoformat(),
+        "freq": row["freq"],
         "all_day": bool(row["all_day"]),
         "start_time": row["start_time"],
         "end_time": row["end_time"],
@@ -345,6 +346,21 @@ def update_event(conn: sqlite3.Connection, event_id: int, **fields) -> None:
             [*(c[k] for k in _COLS), ts, event_id],
         )
         append_event(conn, "calendar_event_updated", {"calendar_event_id": event_id, "title": c["title"]})
+
+
+def move_event(conn: sqlite3.Connection, event_id: int, new_date: str) -> None:
+    """Drag-and-drop a NON-recurring event to another day (its start_date moves).
+    Recurring series are refused — a single occurrence can't be detached here, edit
+    the series instead. Raises CalendarEventError on a bad date, unknown/archived
+    event, or a repeating series."""
+    if not is_valid_date(new_date):
+        raise CalendarEventError("invalid date (expected YYYY-MM-DD)")
+    row = get_event(conn, event_id)
+    if row is None or row["archived_at"] is not None:
+        raise CalendarEventError("unknown event")
+    if row["freq"] != "once":
+        raise CalendarEventError("can’t drag a repeating event — edit the series instead")
+    update_event(conn, event_id, start_date=new_date)
 
 
 def archive_event(conn: sqlite3.Connection, event_id: int) -> None:

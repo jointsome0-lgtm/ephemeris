@@ -1026,6 +1026,76 @@ with TestClient(app) as c:
           rjson.status_code == 200 and rjson.json().get("ok") is True
           and "!2" in rjson.json().get("label", ""), rjson.text[:120])
 
+    # --- Drag & drop: matrix reorder/reprioritise + calendar event move (M4) ----
+    from app.services import calendar_events as _ce, tasks as _tasks
+
+    mconn = get_conn()
+    try:
+        ta = _tasks.create_task(mconn, "dnd A", priority=1)
+        tb = _tasks.create_task(mconn, "dnd B", priority=1)
+        tc = _tasks.create_task(mconn, "dnd C", priority=1)
+        _tasks.move_task(mconn, tc, after_id=ta, before_id=tb)   # reorder: A < C < B
+        oa, ob, oc = (mconn.execute("SELECT sort_order FROM tasks WHERE id=?", (i,)).fetchone()[0]
+                      for i in (ta, tb, tc))
+        check("move_task reorders within a quadrant (A < C < B by sort_order)",
+              oa < oc < ob, f"{oa},{oc},{ob}")
+        res = _tasks.move_task(mconn, tc, priority=3)             # cross-quadrant
+        check("move_task reprioritises across quadrants (C -> priority 3)",
+              res["priority"] == 3 and
+              mconn.execute("SELECT priority FROM tasks WHERE id=?", (tc,)).fetchone()[0] == 3)
+        mconn.execute("UPDATE tasks SET sort_order=5 WHERE id=?", (ta,))   # zero-gap neighbours
+        mconn.execute("UPDATE tasks SET sort_order=6 WHERE id=?", (tb,))
+        mconn.commit()
+        _tasks.move_task(mconn, tc, priority=1, after_id=ta, before_id=tb)
+        na, nb, nc = (mconn.execute("SELECT sort_order FROM tasks WHERE id=?", (i,)).fetchone()[0]
+                      for i in (ta, tb, tc))
+        check("move_task respaces when neighbours have no gap (A < C < B holds)",
+              na < nc < nb, f"{na},{nc},{nb}")
+
+        eo = _ce.create_event(mconn, "dnd once", start_date="2026-07-10",
+                              freq="once", all_day=True)
+        er = _ce.create_event(mconn, "dnd weekly", start_date="2026-07-10",
+                              freq="weekly", byweekday="0000100", all_day=True)
+        _ce.move_event(mconn, eo, "2026-07-15")
+        check("move_event moves a one-off event's start_date",
+              mconn.execute("SELECT start_date FROM calendar_events WHERE id=?",
+                            (eo,)).fetchone()[0] == "2026-07-15")
+        try:
+            _ce.move_event(mconn, er, "2026-07-16")
+            refused = False
+        except _ce.CalendarEventError:
+            refused = True
+        check("move_event refuses a recurring series", refused)
+    finally:
+        mconn.close()
+
+    rmv = c.post(f"/tasks/{ta}/move", data={"priority": "0", "return_to": "/matrix"},
+                 headers={"X-Partial": "1"})
+    check("POST /tasks/{id}/move returns JSON with the new priority",
+          rmv.status_code == 200 and rmv.json().get("ok") is True
+          and rmv.json().get("priority") == 0, rmv.text[:120])
+    check("POST /tasks/{id}/move rejects an unknown task id (422)",
+          c.post("/tasks/999999/move", data={"priority": "1"},
+                 headers={"X-Partial": "1"}).status_code == 422)
+
+    check("matrix rows are draggable inside quadrant drop zones",
+          all(s in c.get("/matrix").text for s in
+              ('draggable="true"', 'data-dropzone="matrix"', 'data-priority=')))
+
+    rrec = c.post(f"/calendar/events/{er}/move", data={"date": "2026-07-16"},
+                  headers={"X-Partial": "1"})
+    check("POST /calendar/events/{id}/move rejects a recurring series (422)",
+          rrec.status_code == 422 and rrec.json().get("ok") is False, str(rrec.status_code))
+    rone = c.post(f"/calendar/events/{eo}/move", data={"date": "2026-07-20"},
+                  headers={"X-Partial": "1"})
+    check("POST /calendar/events/{id}/move moves a one-off (JSON ok)",
+          rone.status_code == 200 and rone.json().get("date") == "2026-07-20", rone.text[:120])
+    rcal = c.get("/calendar?month=2026-07")
+    check("calendar cells are drop zones carrying ISO dates",
+          'data-dropzone="calendar"' in rcal.text and 'data-date="2026-07' in rcal.text)
+    check("calendar renders the one-off event as a draggable chip",
+          f'data-ev-id="{eo}"' in rcal.text and 'draggable="true"' in rcal.text)
+
     # --- Terminal core: trust gate + session ownership (review F1–F4) ----
     import asyncio as _asyncio
     import pty as _pty

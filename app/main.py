@@ -958,6 +958,26 @@ def post_event_unskip(request: Request, event_id: int, date: str = Form(...),
     return _events_redirect(return_to)
 
 
+@app.post("/calendar/events/{event_id}/move")
+def post_event_move(request: Request, event_id: int, date: str = Form(...),
+                    return_to: str = Form("/calendar")):
+    """Drag-and-drop a non-recurring event to another day (Mode A/B)."""
+    _check_origin(request)
+    json_mode = _wants_json(request)
+    conn = get_conn()
+    try:
+        calendar_events.move_event(conn, event_id, date)
+        if json_mode:
+            return JSONResponse({"ok": True, "event_id": event_id, "date": date})
+    except calendar_events.CalendarEventError as exc:
+        if json_mode:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+        return _events_redirect(return_to, str(exc))
+    finally:
+        conn.close()
+    return _events_redirect(return_to)
+
+
 # Eisenhower quadrants keyed by our priority field (high→urgent+important … none→neither)
 _MATRIX_QUADRANTS = [
     (3, "Urgent & Important"),
@@ -976,7 +996,10 @@ def get_matrix(request: Request):
             buckets.get(t["priority"], buckets[0]).append(t)
     finally:
         conn.close()
-    quadrants = [{"title": title, "rows": buckets[p]} for p, title in _MATRIX_QUADRANTS]
+    # within a quadrant, manual order (sort_order) is primary so drag-reorder shows
+    for rows in buckets.values():
+        rows.sort(key=lambda t: (t["sort_order"], t["id"]))
+    quadrants = [{"title": title, "priority": p, "rows": buckets[p]} for p, title in _MATRIX_QUADRANTS]
     return templates.TemplateResponse(request,
         "matrix.html", {"request": request, "rail": "matrix", "quadrants": quadrants}
     )
@@ -1612,6 +1635,41 @@ def post_task_update(
             due_date=(due_date or None), priority=priority, list_id=list_id,
         )
     except tasks.TaskError as exc:
+        return RedirectResponse(_with_flash(_safe_return(return_to), str(exc)), status_code=303)
+    finally:
+        conn.close()
+    return RedirectResponse(_safe_return(return_to), status_code=303)
+
+
+@app.post("/tasks/{task_id}/move")
+def post_task_move(
+    request: Request,
+    task_id: int,
+    priority: str = Form(""),
+    after: str = Form(""),
+    before: str = Form(""),
+    return_to: str = Form("/matrix"),
+):
+    """Drag-and-drop reposition (matrix): `priority` = target quadrant (optional),
+    `after`/`before` = the task ids now above/below the drop slot."""
+    _check_origin(request)
+    json_mode = _wants_json(request)
+
+    def _int_or_none(v: str):
+        v = (v or "").strip()
+        return int(v) if v.lstrip("-").isdigit() else None
+
+    conn = get_conn()
+    try:
+        res = tasks.move_task(
+            conn, task_id, priority=_int_or_none(priority),
+            after_id=_int_or_none(after), before_id=_int_or_none(before),
+        )
+        if json_mode:
+            return JSONResponse({"ok": True, "task_id": task_id, **res})
+    except tasks.TaskError as exc:
+        if json_mode:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
         return RedirectResponse(_with_flash(_safe_return(return_to), str(exc)), status_code=303)
     finally:
         conn.close()
