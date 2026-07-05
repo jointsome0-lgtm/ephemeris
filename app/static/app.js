@@ -144,6 +144,7 @@
     const fstart = document.getElementById("focus-start");
     if (!ft || !fstart) return;
     const fend = document.getElementById("focus-end");
+    const ring = document.getElementById("focus-ring");
     const POMO = 25 * 60;
     let mode = "pomo", remaining = POMO, elapsed = 0, timer = null, running = false;
 
@@ -151,6 +152,7 @@
     function render() {
       ft.textContent = fmt(mode === "pomo" ? remaining : elapsed);
       if (fend) fend.hidden = !(mode === "stopwatch" && elapsed > 0);
+      if (ring) ring.style.setProperty("--focus-progress", String(mode === "pomo" ? (POMO - remaining) / POMO : (elapsed % POMO) / POMO));
     }
 
     // --- persist a finished session, then patch the Overview + Record list -----

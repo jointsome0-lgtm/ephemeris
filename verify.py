@@ -99,6 +99,33 @@ with TestClient(app) as c:
     r = c.get("/trash")
     check("GET /trash 200", r.status_code == 200, str(r.status_code))
 
+    # --- Ephemeris design system (M1) -----------------------------------
+    css = c.get("/static/style.css")
+    check("style.css served 200", css.status_code == 200, str(css.status_code))
+    check("tokens: --font-display + --astral defined",
+          "--font-display" in css.text and "--astral" in css.text)
+    check("motion gated behind prefers-reduced-motion", "prefers-reduced-motion" in css.text)
+    check(":focus-visible is gold (--astral)",
+          ":focus-visible" in css.text and "outline: 2px solid var(--astral)" in css.text)
+    check("@font-face vendors Cormorant Garamond + JetBrains Mono",
+          "Cormorant Garamond" in css.text and "JetBrains Mono" in css.text)
+    dfont = c.get("/static/fonts/cormorant-garamond-400-latin.woff2")
+    check("vendored display font served 200 (woff2 magic)",
+          dfont.status_code == 200 and dfont.content[:4] == b"wOF2",
+          f"{dfont.status_code} {dfont.content[:4]!r}")
+    mfont = c.get("/static/fonts/jetbrains-mono-400-latin.woff2")
+    check("vendored mono font served 200 (woff2 magic)",
+          mfont.status_code == 200 and mfont.content[:4] == b"wOF2", str(mfont.status_code))
+    tday = c.get("/today").text
+    check("Today title carries the Ephemeris identity", "· Ephemeris" in tday)
+    check("base metas rebranded to Ephemeris",
+          'application-name" content="Ephemeris"' in tday)
+    focus = c.get("/focus").text
+    check("focus ring is a progress-driven astrolabe SVG",
+          'class="astrolabe"' in focus and "astro-progress" in focus and 'id="focus-ring"' in focus)
+    check("astrolabe keeps the timer ids", 'id="focus-time"' in focus and 'id="focus-start"' in focus)
+    check("empty quadrant shows a constellation", "es-constellation" in c.get("/matrix").text)
+
     r = c.get("/items")
     check("GET /items 200", r.status_code == 200, str(r.status_code))
     check("items has Add form", 'action="/items"' in r.text)

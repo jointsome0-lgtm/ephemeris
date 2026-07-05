@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% import "_icons.html" as ic %}
-{% block title %}Eisenhower Matrix - TickTick{% endblock %}
+{% block title %}Eisenhower Matrix · Ephemeris{% endblock %}
 {% block content_class %}wide{% endblock %}
 {% block content %}
 <header class="page-head"><h1>Eisenhower Matrix</h1><div class="head-actions"><button class="head-btn">{{ ic.icon('more') }}</button></div></header>
@@ -24,7 +24,7 @@
         </div>
         {% endfor %}
       {% else %}
-        <div class="quad-empty">No Tasks</div>
+        <div class="quad-empty">{{ ic.constellation() }}<span>No tasks</span></div>
       {% endif %}
     </div>
   </section>

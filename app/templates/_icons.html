@@ -38,3 +38,18 @@
 } -%}
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{{ paths.get(name, '') | safe }}</svg>
 {%- endmacro %}
+
+{# Empty-state signature: a star-chart asterism — faint dots linked by hairlines,
+   one star lit gold (the .es-star-bright). Reused across empty views. #}
+{% macro constellation(cls='es-illus') -%}
+<svg class="{{ cls }} es-constellation" viewBox="0 0 130 100" fill="none" aria-hidden="true">
+  <path class="es-link" d="M26 62 L46 38 L66 52 L86 28 L104 56 M66 52 L76 78 L52 82"/>
+  <circle cx="26" cy="62" r="2"/>
+  <circle cx="46" cy="38" r="2.4"/>
+  <circle class="es-star-bright" cx="66" cy="52" r="3.2"/>
+  <circle cx="86" cy="28" r="2.6"/>
+  <circle cx="104" cy="56" r="2"/>
+  <circle cx="76" cy="78" r="2.2"/>
+  <circle cx="52" cy="82" r="1.8"/>
+</svg>
+{%- endmacro %}

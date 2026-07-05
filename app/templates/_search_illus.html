@@ -1,7 +1,12 @@
-{# Original faint "search" doodle for the Search empty state (our own SVG). #}
-<svg class="es-illus" viewBox="0 0 130 104" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-  <rect x="20" y="22" width="46" height="60" rx="7"/>
-  <path d="M30 40h26M30 52h26M30 64h16"/>
-  <circle cx="90" cy="56" r="19"/>
-  <path d="M104 70l12 12"/>
+{# Search empty state: a star-chart asterism (mirrors ic.constellation in _icons.html;
+   inlined so the include stays self-contained). One star is lit gold. #}
+<svg class="es-illus es-constellation" viewBox="0 0 130 100" fill="none" aria-hidden="true">
+  <path class="es-link" d="M26 62 L46 38 L66 52 L86 28 L104 56 M66 52 L76 78 L52 82"/>
+  <circle cx="26" cy="62" r="2"/>
+  <circle cx="46" cy="38" r="2.4"/>
+  <circle class="es-star-bright" cx="66" cy="52" r="3.2"/>
+  <circle cx="86" cy="28" r="2.6"/>
+  <circle cx="104" cy="56" r="2"/>
+  <circle cx="76" cy="78" r="2.2"/>
+  <circle cx="52" cy="82" r="1.8"/>
 </svg>
