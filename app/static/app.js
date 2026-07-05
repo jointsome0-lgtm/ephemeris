@@ -21,17 +21,31 @@
   }
 
   let toastTimer = null;
-  function toast(msg) {
+  // toast(msg) — transient status. toast(msg, {label, fn}) — adds an action
+  // button (e.g. Undo) and holds longer so it can be clicked.
+  function toast(msg, action) {
     let el = document.querySelector(".toast");
     if (!el) {
       el = document.createElement("div");
       el.className = "toast";
       document.body.appendChild(el);
     }
-    el.textContent = msg;
+    el.textContent = "";
+    const span = document.createElement("span");
+    span.textContent = msg;
+    el.appendChild(span);
+    const hasAction = action && action.label && typeof action.fn === "function";
+    if (hasAction) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "toast-action";
+      btn.textContent = action.label;
+      btn.addEventListener("click", () => { el.classList.remove("show"); action.fn(); });
+      el.appendChild(btn);
+    }
     el.classList.add("show");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.classList.remove("show"), 2200);
+    toastTimer = setTimeout(() => el.classList.remove("show"), hasAction ? 5000 : 2200);
   }
 
   // --- habit check-in (binary): reflect {status,current_streak,total} onto row ---
@@ -72,6 +86,15 @@
       if (row) row.classList.toggle("done", res.completed);
       const cb = form.querySelector(".checkbox");
       if (cb) cb.classList.toggle("on", res.completed);
+      if (res.completed) {
+        toast("Task completed", { label: "Undo", fn: async () => {
+          const undo = await postPartial(action, Object.fromEntries(new FormData(form)));
+          if (undo.ok) {
+            if (row) row.classList.toggle("done", undo.completed);
+            if (cb) cb.classList.toggle("on", undo.completed);
+          }
+        } });
+      }
     } else if (action === "/daily-note") {
       e.preventDefault();
       const res = await postPartial("/daily-note", Object.fromEntries(new FormData(form)));

@@ -1096,6 +1096,12 @@ with TestClient(app) as c:
     check("calendar renders the one-off event as a draggable chip",
           f'data-ev-id="{eo}"' in rcal.text and 'draggable="true"' in rcal.text)
 
+    # --- UX polish (M5): mobile "More" sheet exposes the rail overflow ----------
+    rhome = c.get("/today").text
+    check("mobile More sheet toggles a slide-up with the rail's overflow links",
+          'id="more-toggle"' in rhome and 'class="more-sheet"' in rhome
+          and all(f'href="{h}"' in rhome for h in ("/countdown", "/learn", "/export", "/items")))
+
     # --- Terminal core: trust gate + session ownership (review F1–F4) ----
     import asyncio as _asyncio
     import pty as _pty
