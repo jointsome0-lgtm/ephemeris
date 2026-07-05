@@ -974,6 +974,58 @@ with TestClient(app) as c:
     check("focus page renders the lesson picker",
           'id="focus-lesson"' in rfocus.text and "Sparse Transformers Study" in rfocus.text)
 
+    # --- Smart quick-add + command palette (M3) ---------------------------------
+    from app.services import quickadd as _qa
+
+    _p1 = _qa.parse("buy milk завтра !1", "2026-07-05")
+    check("quickadd: RU 'завтра' + !1 -> tomorrow, priority 3 (!1 inverts to high)",
+          _p1 == {"title": "buy milk", "due_date": "2026-07-06", "priority": 3}, str(_p1))
+    _p2 = _qa.parse("report friday !2", "2026-07-05")
+    check("quickadd: EN weekday + !2 -> next Friday, priority 2",
+          _p2["due_date"] == "2026-07-10" and _p2["priority"] == 2 and _p2["title"] == "report", str(_p2))
+    _p3 = _qa.parse("pay rent 15.08", "2026-07-05")
+    check("quickadd: numeric 15.08 -> 2026-08-15, no priority word",
+          _p3["due_date"] == "2026-08-15" and _p3["priority"] == 0, str(_p3))
+    _p4 = _qa.parse("just a plain title", "2026-07-05")
+    check("quickadd: plain text keeps title, no date/priority",
+          _p4 == {"title": "just a plain title", "due_date": None, "priority": 0}, str(_p4))
+
+    rpal = c.get("/palette.json")
+    _pj = rpal.json()
+    check("/palette.json returns 200 with every section",
+          rpal.status_code == 200 and all(k in _pj for k in
+              ("views", "lists", "habits", "lessons", "actions")), str(rpal.status_code))
+    check("/palette.json views expose Tasks + Focus destinations",
+          any(v["href"] == "/today" for v in _pj["views"]) and
+          any(v["href"] == "/focus" for v in _pj["views"]))
+
+    check("quick-add form opts into smart parsing (smart=1)",
+          'name="smart" value="1"' in c.get("/today").text)
+
+    rsmart = c.post("/tasks", data={"title": "ship release послезавтра !1",
+                                    "smart": "1", "return_to": "/today"},
+                    follow_redirects=False)
+    check("POST /tasks smart=1 redirects (303) with a parse-confirm flash",
+          rsmart.status_code == 303 and "flash=" in rsmart.headers.get("location", ""),
+          rsmart.headers.get("location", ""))
+    sconn = get_conn()
+    try:
+        srow = sconn.execute(
+            "SELECT due_date, priority FROM tasks WHERE title = 'ship release'").fetchone()
+        check("smart quick-add strips date/flag words from the stored title", srow is not None)
+        check("smart quick-add resolves the relative date word to a due date",
+              srow is not None and srow["due_date"] is not None)
+        check("smart quick-add stores the inverted priority (!1 -> 3)",
+              srow is not None and srow["priority"] == 3)
+    finally:
+        sconn.close()
+
+    rjson = c.post("/tasks", data={"title": "call dentist tomorrow !2", "smart": "1"},
+                   headers={"X-Partial": "1"})
+    check("POST /tasks smart=1 Mode B returns a JSON parse label",
+          rjson.status_code == 200 and rjson.json().get("ok") is True
+          and "!2" in rjson.json().get("label", ""), rjson.text[:120])
+
     # --- Terminal core: trust gate + session ownership (review F1–F4) ----
     import asyncio as _asyncio
     import pty as _pty

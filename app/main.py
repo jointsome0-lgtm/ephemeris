@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .db import get_conn, init_db, is_not_future, is_valid_date, now_iso, today_str
-from .services import calendar_events, checkins, export, focus, items, lessons, lists, stats, tasks
+from .services import calendar_events, checkins, export, focus, items, lessons, lists, quickadd, stats, tasks
 from .terminal import client_is_local, setup_terminal, shutdown_terminal
 
 log = logging.getLogger("activity_ledger")
@@ -652,6 +652,50 @@ def _event_modal_ctx(conn, self_url: str, ev: str | None, on: str | None,
         ctx.update(new_date=add,
                    new_time=at if calendar_events.is_valid_hhmm(at) else None)
     return ctx
+
+
+# --- command palette (Ctrl/⌘K) index ----------------------------------------
+_PALETTE_VIEWS = [
+    {"label": "Tasks", "href": "/today", "icon": "tasks"},
+    {"label": "Calendar", "href": "/calendar", "icon": "calendar"},
+    {"label": "Focus", "href": "/focus", "icon": "focus"},
+    {"label": "Matrix", "href": "/matrix", "icon": "matrix"},
+    {"label": "Habits", "href": "/habits", "icon": "habit"},
+    {"label": "Countdown", "href": "/countdown", "icon": "countdown"},
+    {"label": "Learn", "href": "/learn", "icon": "learn"},
+    {"label": "Search", "href": "/search", "icon": "search"},
+    {"label": "Export", "href": "/export", "icon": "download"},
+]
+_PALETTE_ACTIONS = [
+    {"label": "New task", "hint": "n", "shortcut": "n"},
+    {"label": "Toggle theme", "hint": "t", "shortcut": "t"},
+    {"label": "Keyboard shortcuts", "hint": "?", "shortcut": "?"},
+]
+
+
+@app.get("/palette.json")
+def get_palette():
+    """Index the command palette pulls at open: views, lists, habits, lessons, actions."""
+    conn = get_conn()
+    try:
+        list_rows = lists.list_lists(conn)
+        habit_rows = [r for r in items.list_items(conn) if r["active"]]
+        try:
+            lesson_rows = lessons.list_lessons(conn)
+        except lessons.LessonError:
+            lesson_rows = []
+    finally:
+        conn.close()
+    return JSONResponse({
+        "views": _PALETTE_VIEWS,
+        "lists": [{"label": r["name"], "href": f"/list/{r['id']}",
+                   "emoji": r["emoji"], "count": r["open_count"]} for r in list_rows],
+        "habits": [{"label": r["title"], "href": f"/habit/{r['id']}",
+                    "emoji": r["emoji"]} for r in habit_rows],
+        "lessons": [{"label": r["title"], "href": _learn_url(lesson_id=r["id"])}
+                    for r in lesson_rows],
+        "actions": _PALETTE_ACTIONS,
+    })
 
 
 @app.get("/calendar")
@@ -1496,17 +1540,39 @@ def post_task_create(
     list_id: int | None = Form(None),
     due_date: str | None = Form(None),
     kind: str = Form("task"),
+    smart: str = Form(""),
     return_to: str = Form("/today"),
 ):
     _check_origin(request)
+    priority = 0
+    parsed_label = ""
+    if smart in ("1", "true", "on"):
+        p = quickadd.parse(title, today_str())
+        title = p["title"] or title
+        due_date = p["due_date"] or due_date
+        priority = p["priority"]
+        bits = []
+        if p["due_date"]:
+            bits.append(due_label(p["due_date"]))
+        if priority:
+            bits.append("!" + {3: "1", 2: "2", 1: "3"}[priority])
+        parsed_label = " · ".join(bits)
     conn = get_conn()
     try:
-        tasks.create_task(conn, title, list_id=list_id, due_date=(due_date or None), kind=kind)
+        tasks.create_task(conn, title, list_id=list_id, due_date=(due_date or None),
+                          kind=kind, priority=priority)
     except tasks.TaskError as exc:
+        if _wants_json(request):
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
         return RedirectResponse(_with_flash(_safe_return(return_to), str(exc)), status_code=303)
     finally:
         conn.close()
-    return RedirectResponse(_safe_return(return_to), status_code=303)
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "label": parsed_label})
+    dest = _safe_return(return_to)
+    if parsed_label:
+        dest = _with_flash(dest, f"Added · {parsed_label}")
+    return RedirectResponse(dest, status_code=303)
 
 
 @app.post("/tasks/{task_id}/complete")

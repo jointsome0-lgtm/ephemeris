@@ -138,6 +138,70 @@
     apply(read());  // sync data-theme + button UI on load
   })();
 
+  // --- global keyboard shortcuts + "?" cheat sheet ----------------------------
+  // Chord nav (g→t/c/f/…), single-key actions, and a help overlay. The palette
+  // (palette.js) owns ⌘K and reuses these action handlers via window.alUI.
+  (() => {
+    const NAV = { t: "/today", c: "/calendar", f: "/focus", m: "/matrix",
+                  h: "/habits", l: "/learn", s: "/search" };
+    const HINTS = [
+      ["⌘K  Ctrl K", "Command palette"],
+      ["n", "New task"],
+      ["g t / c / f", "Tasks / Calendar / Focus"],
+      ["g m / h", "Matrix / Habits"],
+      ["g l / s", "Learn / Search"],
+      ["t", "Toggle theme"],
+      ["?", "This help"],
+    ];
+
+    function typing(el) {
+      if (!el || el.nodeType !== 1) return false;  // only Elements can be edit targets
+      return el.isContentEditable ||
+        /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || !!el.closest(".term-drawer");
+    }
+    function newTask() {
+      const qa = document.querySelector(".qa-input");
+      if (qa) { qa.focus(); if (qa.select) qa.select(); }
+      else window.location.href = "/today";
+    }
+    function toggleTheme() {
+      const b = document.querySelector(".theme-toggle");
+      if (b) b.click();
+    }
+    let hintsEl = null;
+    function closeHints() { if (hintsEl) { hintsEl.remove(); hintsEl = null; } }
+    function showHints() {
+      if (hintsEl) { closeHints(); return; }
+      hintsEl = document.createElement("div");
+      hintsEl.className = "kbd-hints";
+      hintsEl.innerHTML =
+        '<div class="kbd-card" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">' +
+        "<h2>Keyboard</h2><dl>" +
+        HINTS.map((r) => "<dt>" + r[0] + "</dt><dd>" + r[1] + "</dd>").join("") +
+        "</dl></div>";
+      hintsEl.addEventListener("mousedown", (e) => { if (e.target === hintsEl) closeHints(); });
+      document.body.appendChild(hintsEl);
+    }
+    window.alUI = { newTask, toggleTheme, showHints, closeHints };
+
+    let armed = false, armTimer = null;
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { closeHints(); return; }
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      if (typing(e.target)) return;
+      if (armed) {
+        armed = false; clearTimeout(armTimer);
+        const dest = NAV[e.key.toLowerCase()];
+        if (dest) { e.preventDefault(); window.location.href = dest; }
+        return;
+      }
+      if (e.key === "g") { armed = true; armTimer = setTimeout(() => (armed = false), 600); return; }
+      if (e.key === "n") { e.preventDefault(); newTask(); }
+      else if (e.key === "t") { e.preventDefault(); toggleTheme(); }
+      else if (e.key === "?") { e.preventDefault(); showHints(); }
+    });
+  })();
+
   // --- Pomodoro / Stopwatch (focus page) --------------------------------------
   (() => {
     const ft = document.getElementById("focus-time");

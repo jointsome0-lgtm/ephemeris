@@ -18,6 +18,7 @@
   {% if show_add %}
   <form class="quick-add" method="post" action="/tasks" autocomplete="off">
     <input type="hidden" name="return_to" value="{{ cur_path }}">
+    <input type="hidden" name="smart" value="1">
     <input type="hidden" name="list_id" value="{{ add_list_id }}">
     {% if add_due %}<input type="hidden" name="due_date" value="{{ add_due }}">{% endif %}
     {% if add_kind and add_kind != 'task' %}<input type="hidden" name="kind" value="{{ add_kind }}">{% endif %}
