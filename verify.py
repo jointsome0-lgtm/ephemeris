@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+from pathlib import Path
 
 # Isolated DB before importing the app.
 os.environ["ACTIVITY_DATA_DIR"] = tempfile.mkdtemp(prefix="al-verify-")
@@ -20,6 +21,7 @@ from app.main import app  # noqa: E402
 
 PASS = 0
 FAIL = 0
+ROOT = Path(__file__).resolve().parent
 
 
 def check(label: str, cond: bool, extra: str = "") -> None:
@@ -116,6 +118,21 @@ with TestClient(app) as c:
     mfont = c.get("/static/fonts/jetbrains-mono-400-latin.woff2")
     check("vendored mono font served 200 (woff2 magic)",
           mfont.status_code == 200 and mfont.content[:4] == b"wOF2", str(mfont.status_code))
+    vendor_dir = ROOT / "app" / "static" / "vendor"
+    xterm_js = (vendor_dir / "xterm.min.js").read_text(encoding="utf-8", errors="replace")
+    xterm_css = (vendor_dir / "xterm.min.css").read_text(encoding="utf-8", errors="replace")
+    fit_js = (vendor_dir / "xterm-addon-fit.min.js").read_text(encoding="utf-8", errors="replace")
+    check("vendored xterm JS is @xterm/xterm 5.5.0",
+          "/npm/@xterm/xterm@5.5.0/lib/xterm.js" in xterm_js[:500])
+    check("vendored xterm CSS is @xterm/xterm 5.5.0",
+          "/npm/@xterm/xterm@5.5.0/css/xterm.css" in xterm_css[:500])
+    check("vendored addon-fit JS is @xterm/addon-fit 0.10.0",
+          "/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js" in fit_js[:500])
+    base_html = (ROOT / "app" / "templates" / "base.html").read_text(encoding="utf-8")
+    check("base.html stamps terminal vendor attrs via static_url",
+          "data-xterm-css=\"{{ static_url('vendor/xterm.min.css') }}\"" in base_html
+          and "data-xterm-js=\"{{ static_url('vendor/xterm.min.js') }}\"" in base_html
+          and "data-fit-js=\"{{ static_url('vendor/xterm-addon-fit.min.js') }}\"" in base_html)
     tday = c.get("/today").text
     check("Today title carries the Ephemeris identity", "· Ephemeris" in tday)
     check("base metas rebranded to Ephemeris",
