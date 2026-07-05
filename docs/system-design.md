@@ -1793,8 +1793,8 @@ export data
 ## 30. Task Manager Layer (TickTick clone) — scope change 2026-06-05
 
 §29 originally said *do not build a TickTick clone / full task manager*. The user
-revisited that after seeing the full TickTick Today screen and explicitly chose
-**"Полный клон TickTick"** (full clone: Tasks + Habits + Lists + Tags + Filters +
+revisited that after seeing the full TickTick Today screen and explicitly chose a
+**full TickTick clone** (Tasks + Habits + Lists + Tags + Filters +
 Countdown + Inbox + the 3-pane app shell). This section supersedes §29's
 "do not build" line for that decision. The habit layer (§16.2/§16.6) is kept
 intact and folded in as one section of the new Today, plus its own Habit tab.
@@ -1868,7 +1868,8 @@ pane share `_habit_detail.html` via `_habit_detail_ctx()` (the route passes
 
 ## 31. Habit Tab (TickTick parity) — 2026-06-06
 
-The user sent TickTick's **Habit tab** ("У нас такой вкладки нет") — a habit list
+The user sent TickTick's **Habit tab** ("У нас такой вкладки нет" — "we don't have
+a tab like that") — a habit list
 with an **inline detail pane** (stat cards + monthly calendar + log), a per-habit
 **⋯ menu** (Edit / Checked-in Style / Archive / Delete), and a **Create Habit**
 modal. T1 had repointed `/habits` to a daily-note rail; this section brings the tab

@@ -1,4 +1,4 @@
-# ТЗ — Calendar Events (timed + recurring)
+# Spec — Calendar Events (timed + recurring)
 
 > Spec for adding **time-of-day, recurring calendar events** to the tick-like
 > TickTick clone. Written to drop into `docs/system-design.md` as **sec32**
