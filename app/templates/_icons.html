@@ -39,6 +39,21 @@
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{{ paths.get(name, '') | safe }}</svg>
 {%- endmacro %}
 
+{# Learn empty-state: an open engraved book with a constellation rising off the
+   page — same asterism vocabulary as constellation() below. #}
+{% macro constellation_book(cls='es-illus') -%}
+<svg class="{{ cls }} es-constellation" viewBox="0 0 130 100" fill="none" aria-hidden="true">
+  <path class="es-fig" d="M65 52 C53 44.5 37 43.5 25 47.5 V82 C37 78 53 79 65 86 C77 79 93 78 105 82 V47.5 C93 43.5 77 44.5 65 52 Z"/>
+  <path class="es-fig" d="M65 52 V86"/>
+  <path class="es-link" d="M35 30 L52 18 L68 26 L88 12 M68 26 L96 30 M68 26 L65 52"/>
+  <circle cx="35" cy="30" r="2"/>
+  <circle cx="52" cy="18" r="2.4"/>
+  <circle class="es-star-bright" cx="68" cy="26" r="3"/>
+  <circle cx="88" cy="12" r="2.4"/>
+  <circle cx="96" cy="30" r="1.8"/>
+</svg>
+{%- endmacro %}
+
 {# Empty-state signature: a star-chart asterism — faint dots linked by hairlines,
    one star lit gold (the .es-star-bright). Reused across empty views. #}
 {% macro constellation(cls='es-illus') -%}

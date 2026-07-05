@@ -55,10 +55,10 @@
   {% endif %}
 
   <section class="stat-grid">
-    <div class="stat-card"><span class="stat-top"><span class="stat-ico">✅</span>Monthly check-ins</span><span class="stat-val">{{ month_stats.kept }}<small>Day</small></span></div>
-    <div class="stat-card"><span class="stat-top"><span class="stat-ico">⚡</span>Total Check-Ins</span><span class="stat-val">{{ total }}<small>Day</small></span></div>
-    <div class="stat-card"><span class="stat-top"><span class="stat-ico">🎯</span>Monthly check-in rate</span><span class="stat-val">{{ month_stats.rate }}<small>%</small></span></div>
-    <div class="stat-card"><span class="stat-top"><span class="stat-ico">🔥</span>Current Streak</span><span class="stat-val">{{ current_streak }}<small>Day</small></span></div>
+    <div class="stat-card"><span class="stat-top"><span class="stat-ico">{{ ic.icon('calendar') }}</span>Monthly check-ins</span><span class="stat-val">{{ month_stats.kept }}<small>Day</small></span></div>
+    <div class="stat-card"><span class="stat-top"><span class="stat-ico">{{ ic.icon('completed') }}</span>Total Check-Ins</span><span class="stat-val">{{ total }}<small>Day</small></span></div>
+    <div class="stat-card"><span class="stat-top"><span class="stat-ico">{{ ic.icon('focus') }}</span>Monthly check-in rate</span><span class="stat-val">{{ month_stats.rate }}<small>%</small></span></div>
+    <div class="stat-card"><span class="stat-top"><span class="stat-ico">{{ ic.icon('habit') }}</span>Current Streak</span><span class="stat-val">{{ current_streak }}<small>Day</small></span></div>
   </section>
 
   <section class="cal">

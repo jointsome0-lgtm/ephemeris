@@ -2,6 +2,7 @@
    honest linear scale from zero, a <title> on every mark for a native tooltip.
    Visible text lives in HTML around the SVG so a stretched viewBox can't distort
    it. Celestial vocabulary: focus is gold light gathered; check-ins are stars. #}
+{% import "_icons.html" as ic %}
 
 {# Bar chart — daily magnitude. `bars` items carry .value .title .is_today .day #}
 {% macro bar_chart(bars, unit='m', label='') -%}
@@ -9,7 +10,10 @@
 {%- set scale = maxv or 1 -%}
 {%- set w = bars | length * 12 -%}
 <figure class="eph-chart">
-  {% if label %}<figcaption class="ec-head"><span>{{ label }}</span><span class="ec-max">{{ maxv }}{{ unit }}</span></figcaption>{% endif %}
+  {% if label %}<figcaption class="ec-head"><span>{{ label }}</span>{% if maxv %}<span class="ec-max">{{ maxv }}{{ unit }}</span>{% endif %}</figcaption>{% endif %}
+  {% if not maxv %}
+  <div class="ec-empty">{{ ic.constellation('ec-empty-illus') }}<span>No focus in this fortnight</span></div>
+  {% else %}
   <svg class="ec-bars" viewBox="0 0 {{ w }} 60" preserveAspectRatio="none" role="img" aria-label="{{ label or 'Daily focus' }}, peak {{ maxv }}{{ unit }}">
     <line class="ec-axis" x1="0" y1="59.5" x2="{{ w }}" y2="59.5"/>
     {%- for b in bars %}
@@ -20,6 +24,7 @@
   <figcaption class="ec-axis-labels" aria-hidden="true">
     {%- for b in bars %}<span class="{% if b.is_today %}today{% endif %}">{{ b.day if (loop.index0 % 3 == 0 or b.is_today) else '' }}</span>{% endfor %}
   </figcaption>
+  {% endif %}
 </figure>
 {%- endmacro %}
 
@@ -41,7 +46,14 @@
    `weeks` from stats.year_map; level 0..3 brightens the star. #}
 {% macro star_year(weeks) -%}
 {%- set cw = 11 -%}
+{%- set mnames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] -%}
+{%- set ns = namespace(prev='') -%}
 <figure class="eph-year">
+  <div class="sy-months" aria-hidden="true">
+    {%- for col in weeks %}{% set m = col[0].date[5:7] %}
+    {%- if m != ns.prev and not loop.first %}<span style="left: {{ (loop.index0 / (weeks | length) * 100) | round(2) }}%">{{ mnames[(m | int) - 1] }}</span>{% endif %}
+    {%- set ns.prev = m %}{% endfor %}
+  </div>
   <svg class="sy-grid" viewBox="0 0 {{ weeks | length * cw }} {{ 7 * cw }}" role="img" aria-label="A year of check-ins">
     {%- for col in weeks %}{% set wi = loop.index0 %}{% for cell in col %}
     {%- if cell.in_range %}
@@ -60,7 +72,7 @@
   <svg class="ss-svg" viewBox="0 0 280 46" role="img">
     <path class="ss-link" d="{% for p in pulse %}{{ 'M' if loop.first else 'L' }}{{ loop.index0 * 40 + 20 }} {{ (38 - (p.total / maxt * 26)) | round(2) }} {% endfor %}"/>
     {%- for p in pulse %}
-    <circle class="ss-star{% if p.total %} on{% endif %}{% if p.is_today %} today{% endif %}" cx="{{ loop.index0 * 40 + 20 }}" cy="{{ (38 - (p.total / maxt * 26)) | round(2) }}" r="{{ (2 + (p.total / maxt * 2.6)) | round(2) }}"><title>{{ p.title }}</title></circle>
+    <circle class="ss-star{% if p.total %} on{% endif %}{% if p.is_today %} today{% endif %}" cx="{{ loop.index0 * 40 + 20 }}" cy="{{ (38 - (p.total / maxt * 26)) | round(2) }}" r="{{ (3.2 + (p.total / maxt * 2.6)) | round(2) }}"><title>{{ p.title }}</title></circle>
     {%- endfor %}
   </svg>
   <div class="ss-days" aria-hidden="true">{% for p in pulse %}<span class="{% if p.is_today %}today{% endif %}">{{ p.dow }}</span>{% endfor %}</div>

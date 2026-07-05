@@ -1,8 +1,9 @@
 {# One habit row in the Habit tab (binary, TickTick): emoji avatar · name ·
-   "⚡total Day  🔥streak Day" · a circular check-in ring on the right (toggles
-   today's check-in). Body links to the detail pane (?sel=habit-{id}); selected row
-   gets a blue border. Context: it (enriched: id/title/emoji/status/current_streak/
-   total), sel, sel_id, today. #}
+   "✓total Day  streak Day" instrument line · a circular check-in ring on the
+   right (toggles today's check-in). Body links to the detail pane
+   (?sel=habit-{id}). Context: it (enriched: id/title/emoji/status/
+   current_streak/total), sel, sel_id, today. #}
+{% import "_icons.html" as ic %}
 {% set a = avatar(it.title) %}
 <div class="habit-row{% if sel == 'habit' and sel_id == it.id %} sel{% endif %}"
      id="item-{{ it.id }}" data-item="{{ it.id }}" data-date="{{ today }}" data-status="{{ it.status or '' }}">
@@ -22,8 +23,8 @@
     <span class="hl-text">
       <span class="hl-title">{{ it.title }}</span>
       <span class="hl-sub">
-        <span>⚡ <b data-total>{{ it.total }}</b> Day</span>
-        <span>🔥 <b data-streak-cur>{{ it.current_streak }}</b> Day</span>
+        <span class="hl-stat">{{ ic.icon('completed') }}<b data-total>{{ it.total }}</b> Day</span>
+        <span class="hl-stat">{{ ic.icon('habit') }}<b data-streak-cur>{{ it.current_streak }}</b> Day</span>
       </span>
     </span>
   </a>

@@ -84,7 +84,7 @@
       </div>
       {% else %}
       <div class="learn-empty">
-        <div class="learn-mark" aria-hidden="true">HTML</div>
+        {{ ic.constellation_book('learn-mark') }}
         <h2>{{ 'No archived lessons' if show_archived else 'No lessons yet' }}</h2>
       </div>
       {% endif %}
@@ -126,7 +126,7 @@
       </div>
       {% else %}
       <div class="learn-empty">
-        <div class="learn-mark" aria-hidden="true">HTML</div>
+        {{ ic.constellation_book('learn-mark') }}
         <h2>No lesson selected</h2>
       </div>
       {% endif %}
