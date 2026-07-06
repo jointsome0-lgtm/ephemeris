@@ -204,6 +204,45 @@ with TestClient(app) as c:
           and 'id="term-find-prev"' in base_html
           and 'id="term-find-next"' in base_html
           and 'id="term-find-close"' in base_html)
+    # --- Learn lesson terminal: lesson-scoped cwd + generated AGENTS.md ---
+    from app.services import lessons as lessons_svc  # local: only these checks use it
+    _lt_conn = get_conn()
+    try:
+        _lt_id = lessons_svc.create_lesson(_lt_conn, "Terminal Workspace Demo")
+        _lt = lessons_svc.get_lesson(_lt_conn, _lt_id)
+    finally:
+        _lt_conn.close()
+    ws_info = lessons_svc.prepare_terminal_workspace(_lt["slug"])
+    check("prepare_terminal_workspace resolves a lesson slug to its bundle dir",
+          ws_info is not None and ws_info["dir"].endswith(f"lessons/{_lt['slug']}"),
+          repr(ws_info))
+    agents_text = ""
+    if ws_info:
+        _agents_path = Path(ws_info["dir"]) / "AGENTS.md"
+        if _agents_path.is_file():
+            agents_text = _agents_path.read_text(encoding="utf-8")
+    check("lesson AGENTS.md generated with the lesson brief",
+          "Terminal Workspace Demo" in agents_text and "lesson.json" in agents_text)
+    check("lesson AGENTS.md teaches stage=page + the manifest contract",
+          "related/" in agents_text and "updated_by_agent_at" in agents_text
+          and "reading order" in agents_text)
+    check("prepare_terminal_workspace rejects junk/unknown slugs",
+          lessons_svc.prepare_terminal_workspace("../evil") is None
+          and lessons_svc.prepare_terminal_workspace("no-such-lesson-slug") is None
+          and lessons_svc.prepare_terminal_workspace(None) is None)
+    term_py = (ROOT / "app" / "terminal.py").read_text(encoding="utf-8")
+    check("terminal.py spawns lesson sessions in the lesson workspace",
+          "prepare_terminal_workspace" in term_py
+          and 'ws.query_params.get("lesson")' in term_py
+          and 'workspace["dir"] if workspace else str(_REPO_ROOT)' in term_py)
+    check("terminal.js opens/reuses a lesson tab and passes the slug on create",
+          "function openLessonTab" in terminal_js
+          and "'lesson=' + encodeURIComponent(tab.lesson)" in terminal_js
+          and "lesson-term-btn" in terminal_js)
+    learn_tpl = (ROOT / "app" / "templates" / "learn.html").read_text(encoding="utf-8")
+    check("learn.html offers the local-only lesson terminal button",
+          'id="lesson-term-btn"' in learn_tpl and "client_is_local(request)" in learn_tpl)
+
     tday = c.get("/today").text
     check("Today title carries the Ephemeris identity", "· Ephemeris" in tday)
     check("base metas rebranded to Ephemeris",

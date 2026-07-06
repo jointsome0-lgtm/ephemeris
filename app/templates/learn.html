@@ -110,6 +110,12 @@
           {% if selected.source_url %}
           <a href="{{ selected.source_url }}" target="_blank" rel="noopener noreferrer">Source</a>
           {% endif %}
+          {% if client_is_local(request) %}
+          <button type="button" class="icon-btn" id="lesson-term-btn"
+                  data-lesson="{{ selected.slug }}" data-lesson-title="{{ selected.title }}"
+                  title="Terminal in this lesson's folder — local only"
+                  aria-label="Open terminal in this lesson's folder">{{ ic.icon('terminal') }}</button>
+          {% endif %}
           <span class="lesson-file-state">{{ selected.file.label }} · {{ 'HTML' if selected.file.exists else 'No file' }}</span>
         </div>
       </header>

@@ -67,6 +67,7 @@
       return {
         id: cleanTitle(t.id, newId()),
         sid: t.sid ? String(t.sid) : null,
+        lesson: t.lesson ? String(t.lesson).slice(0, 80) : null,
         title: cleanTitle(t.title, 'Terminal ' + (i + 1)),
         term: null, fit: null, search: null, clipboard: null, webgl: null, ws: null, screen: null, ro: null,
         sentRows: 0, sentCols: 0
@@ -82,7 +83,7 @@
 
   function persistTabs() {
     localStorage.setItem(TABS_KEY, JSON.stringify(tabs.map(function (t) {
-      return { id: t.id, sid: t.sid, title: t.title };
+      return { id: t.id, sid: t.sid, lesson: t.lesson || null, title: t.title };
     })));
     if (activeId) localStorage.setItem(ACTIVE_KEY, activeId);
     else localStorage.removeItem(ACTIVE_KEY);
@@ -95,7 +96,7 @@
   function ensureDefaultTab() {
     if (tabs.length) return;
     tabs.push({
-      id: newId(), sid: null, title: 'Terminal 1',
+      id: newId(), sid: null, lesson: null, title: 'Terminal 1',
       term: null, fit: null, search: null, clipboard: null, webgl: null, ws: null, screen: null, ro: null,
       sentRows: 0, sentCols: 0
     });
@@ -347,7 +348,12 @@
   function connectTab(tab) {
     if (tab.ws && (tab.ws.readyState === 0 || tab.ws.readyState === 1)) return;
     var proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    var url = proto + '://' + location.host + '/terminal/ws' + (tab.sid ? ('?sid=' + encodeURIComponent(tab.sid)) : '');
+    // Send both: sid reattaches; lesson only matters when the server has to create
+    // a session (first connect, or healing a reaped sid back into the lesson dir).
+    var qs = [];
+    if (tab.sid) qs.push('sid=' + encodeURIComponent(tab.sid));
+    if (tab.lesson) qs.push('lesson=' + encodeURIComponent(tab.lesson));
+    var url = proto + '://' + location.host + '/terminal/ws' + (qs.length ? '?' + qs.join('&') : '');
     tab.ws = new WebSocket(url);
     tab.ws.binaryType = 'arraybuffer';
     tab.sentRows = 0; tab.sentCols = 0;
@@ -500,7 +506,7 @@
       return;
     }
     var tab = {
-      id: newId(), sid: null, title: 'Terminal ' + (tabs.length + 1),
+      id: newId(), sid: null, lesson: null, title: 'Terminal ' + (tabs.length + 1),
       term: null, fit: null, search: null, clipboard: null, webgl: null, ws: null, screen: null, ro: null,
       sentRows: 0, sentCols: 0
     };
@@ -511,6 +517,31 @@
     renderTabs();
     if (drawer.hidden) open();
     else switchTab(tab.id);
+  }
+
+  function openLessonTab(slug, title) {
+    slug = String(slug || '').slice(0, 80);
+    if (!slug) return;
+    var tab = tabs.find(function (t) { return t.lesson === slug; });
+    if (!tab) {
+      if (tabs.length >= MAX_TABS) {
+        fail('[terminal: maximum 8 sessions]');
+        return;
+      }
+      tab = {
+        id: newId(), sid: null, lesson: slug, title: cleanTitle(title, slug),
+        term: null, fit: null, search: null, clipboard: null, webgl: null, ws: null, screen: null, ro: null,
+        sentRows: 0, sentCols: 0
+      };
+      tabs.push(tab);
+    }
+    activeId = tab.id;
+    clearFail();
+    persistTabs();
+    renderTabs();
+    if (drawer.hidden) open();
+    else switchTab(tab.id);
+    if (drawer.classList.contains('minimized')) setMinimized(false);
   }
 
   function closeActiveTab() {
@@ -621,6 +652,12 @@
 
   toggle.addEventListener('click', function () { drawer.hidden ? open() : hide(); });
   if (newBtn) newBtn.addEventListener('click', createTab);
+  var lessonBtn = document.getElementById('lesson-term-btn');
+  if (lessonBtn) {
+    lessonBtn.addEventListener('click', function () {
+      openLessonTab(lessonBtn.dataset.lesson, lessonBtn.dataset.lessonTitle);
+    });
+  }
   if (findPrevBtn) findPrevBtn.addEventListener('click', function () { runSearch(false); });
   if (findNextBtn) findNextBtn.addEventListener('click', function () { runSearch(true); });
   if (findCloseBtn) findCloseBtn.addEventListener('click', function () { closeFind(true); });

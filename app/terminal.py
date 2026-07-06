@@ -36,6 +36,8 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 
+from .services.lessons import prepare_terminal_workspace
+
 # Repo root: a sensible cwd so agents/commands run against the project by default.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _LOOPBACK_CLOSE = 1008  # WebSocket "policy violation"
@@ -401,9 +403,11 @@ def _ensure_reaper() -> None:
         _REAPER_TASK = asyncio.create_task(_reaper_loop())
 
 
-async def _create_session() -> "_TermSession | None":
+async def _create_session(lesson: str | None = None) -> "_TermSession | None":
     """Spawn a fresh shell on a PTY and register it. Returns None at capacity or on a
-    spawn failure. Serialized via _CREATE_LOCK so the capacity check is atomic."""
+    spawn failure. `lesson` (a Learn slug) scopes the shell to that lesson's bundle
+    dir with a regenerated AGENTS.md brief; anything invalid quietly falls back to
+    the repo root. Serialized via _CREATE_LOCK so the capacity check is atomic."""
     async with _CREATE_LOCK:
         if len(_SESSIONS) >= _MAX_SESSIONS:
             _reap_idle(force_oldest=True)
@@ -423,6 +427,12 @@ async def _create_session() -> "_TermSession | None":
             env.pop(_k, None)
         proxy = await asyncio.to_thread(_detect_proxy_env)
         env.update(proxy)
+        # Lesson-scoped shell (Learn tab): resolve the slug to its bundle dir and
+        # refresh the agent brief there. prepare_terminal_workspace is total (never
+        # raises) and its DB + file I/O runs in a worker thread like the probe above.
+        workspace = None
+        if lesson:
+            workspace = await asyncio.to_thread(prepare_terminal_workspace, lesson)
 
         master_fd, slave_fd = pty.openpty()
         os.set_blocking(master_fd, False)  # pump + input writes are add_reader/add_writer-driven
@@ -431,7 +441,7 @@ async def _create_session() -> "_TermSession | None":
                 shell, "-i",
                 stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
                 preexec_fn=_child_setup,
-                cwd=str(_REPO_ROOT),
+                cwd=workspace["dir"] if workspace else str(_REPO_ROOT),
                 env=env,
             )
         except (OSError, ValueError):
@@ -447,6 +457,11 @@ async def _create_session() -> "_TermSession | None":
             sess.remember(
                 (f"\x1b[2m· terminal egress via proxy {shown} — agents bypass geo-blocks; "
                  f"localhost direct (TICKLIKE_TERM_PROXY=off to disable).\x1b[0m\r\n").encode()
+            )
+        if workspace:  # informational banner, replayed with the scrollback
+            where = "".join(c for c in workspace["dir"] if c.isprintable())  # defang control bytes
+            sess.remember(
+                (f"\x1b[2m· lesson shell — cwd {where} (AGENTS.md refreshed).\x1b[0m\r\n").encode()
             )
         sess.start()
         return sess
@@ -547,7 +562,9 @@ async def _serve_ws(ws: WebSocket) -> None:
     if sess is not None and sess.closed:
         sess = None
     if sess is None:
-        sess = await _create_session()
+        # `lesson` only scopes a NEW session's cwd (attach-by-sid ignores it), so a
+        # reaped lesson session heals into a fresh shell in the same lesson dir.
+        sess = await _create_session(ws.query_params.get("lesson"))
         if sess is None:
             try:
                 await ws.send_bytes(b"\r\n\x1b[31m[terminal: too many sessions]\x1b[0m\r\n")
