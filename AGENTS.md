@@ -37,3 +37,5 @@ git status --short --ignored
 ```
 
 The app has no auth in v0. Keeping the code in public Git is acceptable; exposing a running instance to the public internet is not.
+
+Changes touching `app/terminal.py`, `app/agent/`, or anything about to listen on a port get one entry appended to `docs/reviews/QUEUE.md` when they land, and do not go live while their entries are Pending (that file's header describes the drain protocol).
