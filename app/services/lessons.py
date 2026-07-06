@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 import re
 import sqlite3
 from html import escape
@@ -373,14 +374,41 @@ def _agents_md(lesson: dict) -> str:
     )
 
 
+def _bundle_dir_is_safe(lesson_dir: Path) -> bool:
+    """Refuse a lesson dir reached through a symlink, so a pre-planted link at
+    data/lessons/<slug> can't redirect the manifest/AGENTS.md write or the shell
+    cwd outside the bundle tree. A not-yet-created dir is fine (it'll be made real);
+    an existing one must be a real directory that is a direct child of the resolved
+    lessons root. Best-effort against a hostile/imported bundle, not a same-user
+    TOCTOU race (that user already owns the process)."""
+    if not lesson_dir.exists():
+        return True
+    if lesson_dir.is_symlink() or not lesson_dir.is_dir():
+        return False
+    try:
+        return lesson_dir.resolve(strict=True).parent == LESSONS_DIR.resolve()
+    except OSError:
+        return False
+
+
+def _write_agents_md(path: Path, text: str) -> None:
+    """Write the brief WITHOUT following a final symlink: O_NOFOLLOW makes os.open
+    raise on a symlinked AGENTS.md instead of truncating whatever it points at (the
+    caller treats that error as 'skip the lesson workspace')."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
 def prepare_terminal_workspace(slug: str | None) -> dict | None:
     """Resolve a Learn slug to its bundle dir for a lesson-scoped terminal
     (app/terminal.py), (re)generating the agent-facing AGENTS.md there.
 
     Runs in a worker thread off the websocket accept path, so it opens its own
     short-lived DB connection. Total by design — returns None (meaning "spawn at
-    the repo root instead") for an unknown/invalid slug and on any DB/filesystem
-    error: a broken lesson must never block opening a plain terminal."""
+    the repo root instead") for an unknown/invalid slug, a symlink-redirected
+    bundle dir, and any DB/filesystem error: a broken or hostile lesson dir must
+    never block opening a plain terminal."""
     slug = (slug or "").strip()
     if len(slug) > 80 or not _SLUG_RE.match(slug):
         return None
@@ -392,9 +420,11 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
             conn.close()
         if lesson is None:
             return None
-        _ensure_bundle_manifest(lesson)
         lesson_dir = _lesson_dir(slug)
-        (lesson_dir / AGENTS_FILENAME).write_text(_agents_md(lesson), encoding="utf-8")
+        if not _bundle_dir_is_safe(lesson_dir):  # before any write into it
+            return None
+        _ensure_bundle_manifest(lesson)
+        _write_agents_md(lesson_dir / AGENTS_FILENAME, _agents_md(lesson))
     except (OSError, sqlite3.Error, LessonError):
         return None
     return {"slug": slug, "title": lesson["title"], "dir": str(lesson_dir)}

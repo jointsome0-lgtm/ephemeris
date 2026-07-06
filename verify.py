@@ -243,6 +243,35 @@ with TestClient(app) as c:
     check("learn.html offers the local-only lesson terminal button",
           'id="lesson-term-btn"' in learn_tpl and "client_is_local(request)" in learn_tpl)
 
+    # symlink hardening (Codex review, low): a pre-planted symlink at the lesson
+    # dir or at AGENTS.md must not redirect the write / cwd outside the bundle.
+    import os as _os
+    import shutil as _shutil
+    _ln_conn = get_conn()
+    try:
+        _ln_id = lessons_svc.create_lesson(_ln_conn, "Symlink Guard Demo")
+        _ln = lessons_svc.get_lesson(_ln_conn, _ln_id)
+    finally:
+        _ln_conn.close()
+    _ln_dir = Path(lessons_svc.LESSONS_DIR) / _ln["slug"]
+    _decoy = Path(lessons_svc.LESSONS_DIR) / "decoy-target-dir"
+    _decoy.mkdir(parents=True, exist_ok=True)
+    if _ln_dir.exists() or _ln_dir.is_symlink():
+        _shutil.rmtree(_ln_dir, ignore_errors=True)
+    _os.symlink(_decoy, _ln_dir)  # lesson dir IS a symlink to an outside dir
+    _sym_dir_res = lessons_svc.prepare_terminal_workspace(_ln["slug"])
+    check("prepare_terminal_workspace refuses a symlinked lesson dir",
+          _sym_dir_res is None and not (_decoy / "AGENTS.md").exists())
+    _os.unlink(_ln_dir)
+    # real dir, but AGENTS.md is a symlink to a decoy file — must not be truncated
+    _ln_dir.mkdir(parents=True, exist_ok=True)
+    _decoy_file = _decoy / "sink.txt"
+    _decoy_file.write_text("original", encoding="utf-8")
+    _os.symlink(_decoy_file, _ln_dir / "AGENTS.md")
+    _sym_file_res = lessons_svc.prepare_terminal_workspace(_ln["slug"])
+    check("prepare_terminal_workspace refuses a symlinked AGENTS.md (no truncation)",
+          _sym_file_res is None and _decoy_file.read_text(encoding="utf-8") == "original")
+
     tday = c.get("/today").text
     check("Today title carries the Ephemeris identity", "· Ephemeris" in tday)
     check("base metas rebranded to Ephemeris",
