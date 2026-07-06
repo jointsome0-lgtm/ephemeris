@@ -8,6 +8,8 @@
   if (!drawer || !toggle) return;
 
   var CSS = drawer.dataset.xtermCss, XJS = drawer.dataset.xtermJs, FJS = drawer.dataset.fitJs;
+  var WGLJS = drawer.dataset.webglJs, WLJS = drawer.dataset.webLinksJs;
+  var U11JS = drawer.dataset.unicode11Js, SJS = drawer.dataset.searchJs;
   var OPEN_KEY = 'al-term-open';
   var LEGACY_SID_KEY = 'al-term-sid';
   var TABS_KEY = 'al-term-tabs';
@@ -22,6 +24,11 @@
   var screenHost = document.getElementById('term-screens');
   var tabsEl = document.getElementById('term-tabs');
   var newBtn = document.getElementById('term-new');
+  var findEl = document.getElementById('term-find');
+  var findInput = document.getElementById('term-find-input');
+  var findPrevBtn = document.getElementById('term-find-prev');
+  var findNextBtn = document.getElementById('term-find-next');
+  var findCloseBtn = document.getElementById('term-find-close');
   var enc = new TextEncoder();
   var loaded = null;
   var tabs = [];
@@ -60,7 +67,7 @@
         id: cleanTitle(t.id, newId()),
         sid: t.sid ? String(t.sid) : null,
         title: cleanTitle(t.title, 'Terminal ' + (i + 1)),
-        term: null, fit: null, ws: null, screen: null, ro: null,
+        term: null, fit: null, search: null, webgl: null, ws: null, screen: null, ro: null,
         sentRows: 0, sentCols: 0
       };
     });
@@ -88,7 +95,7 @@
     if (tabs.length) return;
     tabs.push({
       id: newId(), sid: null, title: 'Terminal 1',
-      term: null, fit: null, ws: null, screen: null, ro: null,
+      term: null, fit: null, search: null, webgl: null, ws: null, screen: null, ro: null,
       sentRows: 0, sentCols: 0
     });
     activeId = tabs[0].id;
@@ -121,20 +128,61 @@
   function loadAssets() {
     if (loaded) return loaded;
     loaded = new Promise(function (res, rej) {
-      if (window.Terminal && window.FitAddon) return res();
+      if (window.Terminal && window.FitAddon && window.WebglAddon &&
+          window.WebLinksAddon && window.Unicode11Addon && window.SearchAddon) return res();
       var l = document.createElement('link'); l.rel = 'stylesheet'; l.href = CSS; document.head.appendChild(l);
-      var s = document.createElement('script'); s.src = XJS;
-      s.onload = function () {
-        var f = document.createElement('script'); f.src = FJS;
-        f.onload = res; f.onerror = rej; document.head.appendChild(f);
+      var scripts = [XJS, FJS, WLJS, U11JS, SJS, WGLJS];
+      var loadScript = function (i) {
+        if (i >= scripts.length) return res();
+        var s = document.createElement('script'); s.src = scripts[i];
+        s.onload = function () { loadScript(i + 1); };
+        s.onerror = rej; document.head.appendChild(s);
       };
-      s.onerror = rej; document.head.appendChild(s);
+      loadScript(0);
     });
     return loaded;
   }
 
   function ready(cb) {
     loadAssets().then(cb).catch(function () { fail('Failed to load xterm.js (local asset missing).'); });
+  }
+
+  function openTerminalLink(event, uri) {
+    if (event && event.preventDefault) event.preventDefault();
+    var a = document.createElement('a');
+    a.href = uri;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  function loadRuntimeAddons(tab, term) {
+    try { term.loadAddon(new WebLinksAddon.WebLinksAddon(openTerminalLink)); } catch (_) {}
+    try {
+      term.loadAddon(new Unicode11Addon.Unicode11Addon());
+      if (term.unicode) term.unicode.activeVersion = '11';
+    } catch (_) {}
+    try {
+      tab.search = new SearchAddon.SearchAddon();
+      term.loadAddon(tab.search);
+    } catch (_) { tab.search = null; }
+    try {
+      var webgl = new WebglAddon.WebglAddon();
+      tab.webgl = webgl;
+      if (webgl.onContextLoss) {
+        webgl.onContextLoss(function () {
+          try { webgl.dispose(); } catch (_) {}
+          if (tab.webgl === webgl) tab.webgl = null;
+        });
+      }
+      term.loadAddon(webgl);
+    } catch (_) {
+      try { if (tab.webgl) tab.webgl.dispose(); } catch (__) {}
+      tab.webgl = null;
+    }
   }
 
   function ensureRuntime(tab) {
@@ -152,6 +200,7 @@
     var fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open(screen);
+    loadRuntimeAddons(tab, term);
     term.onData(function (d) {
       if (tab.ws && tab.ws.readyState === 1) tab.ws.send(enc.encode(d));
     });
@@ -330,7 +379,7 @@
     }
     var tab = {
       id: newId(), sid: null, title: 'Terminal ' + (tabs.length + 1),
-      term: null, fit: null, ws: null, screen: null, ro: null,
+      term: null, fit: null, search: null, webgl: null, ws: null, screen: null, ro: null,
       sentRows: 0, sentCols: 0
     };
     tabs.push(tab);
@@ -353,6 +402,7 @@
     } catch (_) {}
     try { if (tab.ws) tab.ws.close(); } catch (_) {}
     if (tab.ro) tab.ro.disconnect();
+    try { if (tab.webgl) tab.webgl.dispose(); } catch (_) {}
     try { if (tab.term) tab.term.dispose(); } catch (_) {}
     if (tab.screen) tab.screen.remove();
 
@@ -413,8 +463,44 @@
     focusSoon();
   }
 
+  function drawerHasFocus() {
+    return !drawer.hidden && drawer.contains(document.activeElement);
+  }
+
+  function openFind() {
+    if (!findEl || !findInput || drawer.hidden) return;
+    findEl.hidden = false;
+    drawer.classList.add('find-open');
+    setTimeout(function () { findInput.focus(); findInput.select(); }, 0);
+  }
+
+  function closeFind(refocus) {
+    if (!findEl) return;
+    findEl.hidden = true;
+    drawer.classList.remove('find-open');
+    if (refocus) focusSoon();
+  }
+
+  function toggleFind() {
+    if (!findEl || findEl.hidden) openFind();
+    else closeFind(true);
+  }
+
+  function runSearch(next) {
+    var tab = activeTab();
+    var q = findInput ? findInput.value : '';
+    if (!tab || !tab.search || !q) return;
+    try {
+      if (next) tab.search.findNext(q);
+      else tab.search.findPrevious(q);
+    } catch (_) {}
+  }
+
   toggle.addEventListener('click', function () { drawer.hidden ? open() : hide(); });
   if (newBtn) newBtn.addEventListener('click', createTab);
+  if (findPrevBtn) findPrevBtn.addEventListener('click', function () { runSearch(false); });
+  if (findNextBtn) findNextBtn.addEventListener('click', function () { runSearch(true); });
+  if (findCloseBtn) findCloseBtn.addEventListener('click', function () { closeFind(true); });
   var killBtn = document.getElementById('term-close');
   if (killBtn) killBtn.addEventListener('click', closeActiveTab);
   var minBtn = document.getElementById('term-min');
@@ -443,6 +529,27 @@
   }
 
   window.addEventListener('keydown', function (e) {
+    if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey &&
+        String(e.key).toLowerCase() === 'f' && drawerHasFocus()) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleFind();
+      return;
+    }
+    if (findEl && !findEl.hidden && findEl.contains(document.activeElement)) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        runSearch(!e.shiftKey);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeFind(true);
+        return;
+      }
+    }
     if (e.ctrlKey && !e.altKey && !e.metaKey && e.key === '`') {
       e.preventDefault();
       drawer.hidden ? open() : hide();

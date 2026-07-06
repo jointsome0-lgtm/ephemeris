@@ -122,17 +122,52 @@ with TestClient(app) as c:
     xterm_js = (vendor_dir / "xterm.min.js").read_text(encoding="utf-8", errors="replace")
     xterm_css = (vendor_dir / "xterm.min.css").read_text(encoding="utf-8", errors="replace")
     fit_js = (vendor_dir / "xterm-addon-fit.min.js").read_text(encoding="utf-8", errors="replace")
+    webgl_js = (vendor_dir / "xterm-addon-webgl.min.js").read_text(encoding="utf-8", errors="replace")
+    web_links_js = (vendor_dir / "xterm-addon-web-links.min.js").read_text(encoding="utf-8", errors="replace")
+    unicode11_js = (vendor_dir / "xterm-addon-unicode11.min.js").read_text(encoding="utf-8", errors="replace")
+    search_js = (vendor_dir / "xterm-addon-search.min.js").read_text(encoding="utf-8", errors="replace")
     check("vendored xterm JS is @xterm/xterm 5.5.0",
           "/npm/@xterm/xterm@5.5.0/lib/xterm.js" in xterm_js[:500])
     check("vendored xterm CSS is @xterm/xterm 5.5.0",
           "/npm/@xterm/xterm@5.5.0/css/xterm.css" in xterm_css[:500])
     check("vendored addon-fit JS is @xterm/addon-fit 0.10.0",
           "/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js" in fit_js[:500])
+    check("vendored addon-webgl JS is @xterm/addon-webgl 0.18.0",
+          "/npm/@xterm/addon-webgl@0.18.0/lib/addon-webgl.js" in webgl_js[:500])
+    check("vendored addon-web-links JS is @xterm/addon-web-links 0.11.0",
+          "/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.js" in web_links_js[:500])
+    check("vendored addon-unicode11 JS is @xterm/addon-unicode11 0.8.0",
+          "/npm/@xterm/addon-unicode11@0.8.0/lib/addon-unicode11.js" in unicode11_js[:500])
+    check("vendored addon-search JS is @xterm/addon-search 0.15.0",
+          "/npm/@xterm/addon-search@0.15.0/lib/addon-search.js" in search_js[:500])
     base_html = (ROOT / "app" / "templates" / "base.html").read_text(encoding="utf-8")
     check("base.html stamps terminal vendor attrs via static_url",
           "data-xterm-css=\"{{ static_url('vendor/xterm.min.css') }}\"" in base_html
           and "data-xterm-js=\"{{ static_url('vendor/xterm.min.js') }}\"" in base_html
-          and "data-fit-js=\"{{ static_url('vendor/xterm-addon-fit.min.js') }}\"" in base_html)
+          and "data-fit-js=\"{{ static_url('vendor/xterm-addon-fit.min.js') }}\"" in base_html
+          and "data-webgl-js=\"{{ static_url('vendor/xterm-addon-webgl.min.js') }}\"" in base_html
+          and "data-web-links-js=\"{{ static_url('vendor/xterm-addon-web-links.min.js') }}\"" in base_html
+          and "data-unicode11-js=\"{{ static_url('vendor/xterm-addon-unicode11.min.js') }}\"" in base_html
+          and "data-search-js=\"{{ static_url('vendor/xterm-addon-search.min.js') }}\"" in base_html)
+    terminal_js = (ROOT / "app" / "static" / "terminal.js").read_text(encoding="utf-8")
+    check("terminal.js lazy-loads the official xterm addons",
+          "drawer.dataset.webglJs" in terminal_js
+          and "drawer.dataset.webLinksJs" in terminal_js
+          and "drawer.dataset.unicode11Js" in terminal_js
+          and "drawer.dataset.searchJs" in terminal_js
+          and "var scripts = [XJS, FJS, WLJS, U11JS, SJS, WGLJS]" in terminal_js)
+    check("terminal.js wires xterm addon behavior",
+          "new WebglAddon.WebglAddon()" in terminal_js
+          and ".onContextLoss" in terminal_js
+          and "new WebLinksAddon.WebLinksAddon(openTerminalLink)" in terminal_js
+          and "term.unicode.activeVersion = '11'" in terminal_js
+          and "new SearchAddon.SearchAddon()" in terminal_js)
+    check("terminal drawer has a minimal find bar",
+          'id="term-find"' in base_html
+          and 'id="term-find-input"' in base_html
+          and 'id="term-find-prev"' in base_html
+          and 'id="term-find-next"' in base_html
+          and 'id="term-find-close"' in base_html)
     tday = c.get("/today").text
     check("Today title carries the Ephemeris identity", "· Ephemeris" in tday)
     check("base metas rebranded to Ephemeris",

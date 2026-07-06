@@ -108,11 +108,21 @@
   <div id="term-drawer" class="term-drawer" hidden aria-hidden="true"
        data-xterm-css="{{ static_url('vendor/xterm.min.css') }}"
        data-xterm-js="{{ static_url('vendor/xterm.min.js') }}"
-       data-fit-js="{{ static_url('vendor/xterm-addon-fit.min.js') }}">
+       data-fit-js="{{ static_url('vendor/xterm-addon-fit.min.js') }}"
+       data-webgl-js="{{ static_url('vendor/xterm-addon-webgl.min.js') }}"
+       data-web-links-js="{{ static_url('vendor/xterm-addon-web-links.min.js') }}"
+       data-unicode11-js="{{ static_url('vendor/xterm-addon-unicode11.min.js') }}"
+       data-search-js="{{ static_url('vendor/xterm-addon-search.min.js') }}">
     <div class="term-resize" id="term-resize" title="Drag to resize"></div>
     <div class="term-head">
       <span class="term-dot" id="term-dot"></span>
       <div class="term-tabs" id="term-tabs" role="tablist" aria-label="Terminal tabs"></div>
+      <div class="term-find" id="term-find" role="search" aria-label="Find in terminal" hidden>
+        <input type="search" class="term-find-input" id="term-find-input" aria-label="Find in terminal" placeholder="Find" autocomplete="off" spellcheck="false">
+        <button type="button" class="term-btn" id="term-find-prev" title="Previous result" aria-label="Previous result">{{ ic.icon('chev-left') }}</button>
+        <button type="button" class="term-btn" id="term-find-next" title="Next result" aria-label="Next result">{{ ic.icon('chev-right') }}</button>
+        <button type="button" class="term-btn" id="term-find-close" title="Close find" aria-label="Close find">{{ ic.icon('close') }}</button>
+      </div>
       <button type="button" class="term-btn term-new" id="term-new" title="New terminal" aria-label="New terminal">{{ ic.icon('plus') }}</button>
       <span class="term-meta">localhost · {{ request.client.host }}</span>
       <button type="button" class="term-btn" id="term-min" title="Minimize" aria-label="Minimize terminal">–</button>

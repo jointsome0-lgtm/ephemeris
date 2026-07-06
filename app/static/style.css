@@ -307,6 +307,7 @@ html[data-theme="light"] .content { background-image:
 .term-drawer[hidden] { display: none; }
 .term-drawer.minimized { height: auto !important; min-height: 0; }
 .term-drawer.minimized .term-resize,
+.term-drawer.minimized .term-find,
 .term-drawer.minimized .term-screens,
 .term-drawer.minimized .term-screen,
 .term-drawer.minimized .term-status { display: none; }
@@ -332,6 +333,21 @@ html[data-theme="light"] .content { background-image:
 .term-tab:hover { background: rgba(255,255,255,.08); color: #fff; }
 .term-tab.active { background: #0e1120; border-color: rgba(255,255,255,.10); color: #fff; }
 .term-tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.term-find {
+  flex: 0 1 260px; min-width: 150px; max-width: 320px;
+  display: flex; align-items: center; gap: 4px;
+}
+.term-find[hidden] { display: none; }
+.term-find-input {
+  flex: 1 1 auto; min-width: 0; height: 24px;
+  border: 1px solid rgba(255,255,255,.12); border-radius: 6px;
+  background: #0e1120; color: #e6e6e6;
+  padding: 0 8px; font: inherit; font-size: 12px;
+}
+.term-find-input::placeholder { color: rgba(230,230,230,.45); }
+.term-find-input:focus-visible { outline: 2px solid var(--astral); outline-offset: 1px; }
+.term-find .term-btn { flex: 0 0 26px; }
+.term-drawer.find-open .term-meta { display: none; }
 .term-meta { margin-left: auto; opacity: .5; font-size: 12px; }
 .term-btn {
   color: #cfcfcf; width: 26px; height: 24px; border-radius: 6px;
@@ -358,6 +374,7 @@ html[data-theme="light"] .content { background-image:
 .term-drawer.right-dock.minimized .term-head { justify-content: center; gap: 0; padding: 7px 9px; }
 .term-drawer.right-dock.minimized .term-dot,
 .term-drawer.right-dock.minimized .term-tabs,
+.term-drawer.right-dock.minimized .term-find,
 .term-drawer.right-dock.minimized .term-new,
 .term-drawer.right-dock.minimized .term-meta,
 .term-drawer.right-dock.minimized #term-close { display: none; }
@@ -513,6 +530,7 @@ html[data-theme="light"] .content { background-image:
 .learn-empty h2 { margin: 0; color: var(--muted); font-size: 16px; font-weight: 500; }
 @media (max-width: 860px) {
   .term-drawer { left: 0; bottom: calc(58px + env(safe-area-inset-bottom, 0px)); }   /* the rail is hidden here */
+  .term-find { flex-basis: 160px; min-width: 120px; }
   .term-drawer.right-dock {
     left: 0; top: auto; width: auto !important; min-width: 0; max-width: none;
     height: 42vh !important; min-height: 120px;
