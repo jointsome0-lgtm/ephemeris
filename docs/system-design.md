@@ -673,7 +673,7 @@ Deterministic ordering:
 
 ```text
 - Today / Manage list: ORDER BY group_name, sort_order, id
-- Export:              ORDER BY id   (events)
+- Export:              events ORDER BY id, then calendar_events ORDER BY id
 ```
 
 Migrations (no framework):
@@ -735,8 +735,8 @@ later Story/Atlas integrations
 
 Role (decided for v0): the event log is an **append-only audit / derived feed**.
 The typed tables (`checkins`, `daily_notes`, `routine_items`) remain the source
-of truth; the JSONL export (sec18) is generated from events. Events are NOT
-replayed to rebuild state in v0.
+of truth; the JSONL export (sec18) serializes events plus the calendar-series
+snapshot exception (sec32 §8). Events are NOT replayed to rebuild state in v0.
 
 Atomicity: every state change writes the table row AND its event in ONE SQLite
 transaction (roll back both on failure). See sec16.4.
@@ -878,9 +878,10 @@ POST /export/jsonl
 Purpose:
 
 ```text
-export the events stream to JSONL — every check-in and daily note is already
-an event (sec14.1), so they ride along as event payloads; they are NOT exported
-as separate record types in v0 (sec18.1)
+export JSONL = append-only events stream plus calendar-series snapshots
+(sec18.1). Every check-in and daily note is already an event (sec14.1), so
+they ride along as event payloads; `calendar_events` rows are the explicit
+snapshot exception (sec32 §8).
 ```
 
 ---
@@ -1204,15 +1205,16 @@ Each line:
 {"timestamp":"...","type":"...","payload_version":1,"payload":{...}}
 ```
 
-Contract (decided for v0): export is an **events replay** — the full append-only
-`events` table serialized to JSONL, one event per line, ORDERED BY id. Because
-every check-in and daily note is recorded as an event (sec14.1), this export
-inherently includes all check-ins and daily notes; current-state tables are
-derivable from it and are NOT separately exported in v0. Each line carries
+Contract (decided for v0): export is the full append-only `events` table
+serialized to JSONL, one event per line, ORDERED BY id, plus the calendar-series
+snapshot records below. Because every check-in and daily note is recorded as an
+event (sec14.1), this export inherently includes all check-ins and daily notes
+as event payloads; current-state tables are otherwise derivable from the audit
+stream and are NOT separately exported in v0. Each line carries
 `payload_version` for forward-compatibility. (Future option: a discriminated
 full-table snapshot with `record_type` + `schema_version`.)
 
-One exception to "events only" (sec32 §8): the export also appends one
+The explicit snapshot exception (sec32 §8): the export also appends one
 `calendar_event_series` line per `calendar_events` row (including soft-archived
 ones), because series-update audit events journal only id+title — the audit
 stream alone can't rebuild a recurrence rule. The series rows are the source of
@@ -1465,10 +1467,11 @@ sort/group display
 ### Milestone 4 — Export
 
 ```text
-export JSONL = the events stream (sec18.1)
+export JSONL = events stream + calendar series snapshots (sec18.1; sec32 §8)
 events table serialized one-per-line, ORDER BY id
 check-ins ride along AS routine_checkin_* event payloads (not a separate record)
 daily notes ride along AS daily_note_updated event payloads (not a separate record)
+calendar_events ride along AS calendar_event_series snapshot records
 ```
 
 ### Milestone 5 — UX Pass

@@ -1,12 +1,15 @@
-"""JSONL export — serialize the append-only events ledger (sec15.4 / sec18.1).
+"""JSONL export — serialize the audit stream plus series snapshots (sec18.1).
 
-Contract (decided for v0, sec18.1): export is an **events replay** — the full
-`events` table serialized to JSONL, one event per line, ORDER BY id. Because every
-check-in, daily note, task and habit change is already journaled as an event
-(sec14.1), this single stream inherently includes them all; current-state tables
-are derivable from it and are NOT separately exported in v0. SQLite stays the
-source of truth — this file is a portable backup. Output lands in db.EXPORTS_DIR
-(`data/exports/`, git-ignored; may contain private notes — sec9).
+Contract (decided for v0, sec15.4 / sec18.1): export is the append-only
+`events` table serialized to JSONL, one event per line, ORDER BY id, plus one
+`calendar_event_series` snapshot line per `calendar_events` row (sec32 §8).
+Because every check-in, daily note, task and habit change is already journaled
+as an event (sec14.1), those records ride along as event payloads rather than
+separate current-state table exports. Calendar series are the explicit
+exception: their source-of-truth rows are snapshotted because the audit stream
+alone cannot rebuild recurrence rules. SQLite stays the source of truth — this
+file is a portable backup. Output lands in db.EXPORTS_DIR (`data/exports/`,
+git-ignored; may contain private notes — sec9).
 """
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ def event_count(conn: sqlite3.Connection) -> int:
 
 
 def build_jsonl(conn: sqlite3.Connection) -> tuple[str, int]:
-    """Render every event as one JSON line (ORDER BY id). Returns (text, count)."""
+    """Render export JSONL: events first, then calendar series snapshots."""
     rows = conn.execute(
         "SELECT timestamp, type, payload_version, payload_json FROM events ORDER BY id"
     ).fetchall()
