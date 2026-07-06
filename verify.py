@@ -6,6 +6,7 @@ contract still holds. Prints PASS/FAIL per assertion; exits non-zero on any fail
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 import tempfile
@@ -106,6 +107,13 @@ with TestClient(app) as c:
     check("style.css served 200", css.status_code == 200, str(css.status_code))
     check("tokens: --font-display + --astral defined",
           "--font-display" in css.text and "--astral" in css.text)
+    check("tokens: terminal palette defines xterm theme colors",
+          "--term-background" in css.text
+          and "--term-foreground" in css.text
+          and "--term-cursor" in css.text
+          and "--term-selection-background" in css.text
+          and "--term-black" in css.text
+          and "--term-bright-white" in css.text)
     check("motion gated behind prefers-reduced-motion", "prefers-reduced-motion" in css.text)
     check(":focus-visible is gold (--astral)",
           ":focus-visible" in css.text and "outline: 2px solid var(--astral)" in css.text)
@@ -126,6 +134,9 @@ with TestClient(app) as c:
     web_links_js = (vendor_dir / "xterm-addon-web-links.min.js").read_text(encoding="utf-8", errors="replace")
     unicode11_js = (vendor_dir / "xterm-addon-unicode11.min.js").read_text(encoding="utf-8", errors="replace")
     search_js = (vendor_dir / "xterm-addon-search.min.js").read_text(encoding="utf-8", errors="replace")
+    clipboard_path = vendor_dir / "xterm-addon-clipboard.min.js"
+    clipboard_js_bytes = clipboard_path.read_bytes()
+    clipboard_js = clipboard_js_bytes.decode("utf-8", errors="replace")
     check("vendored xterm JS is @xterm/xterm 5.5.0",
           "/npm/@xterm/xterm@5.5.0/lib/xterm.js" in xterm_js[:500])
     check("vendored xterm CSS is @xterm/xterm 5.5.0",
@@ -140,6 +151,10 @@ with TestClient(app) as c:
           "/npm/@xterm/addon-unicode11@0.8.0/lib/addon-unicode11.js" in unicode11_js[:500])
     check("vendored addon-search JS is @xterm/addon-search 0.15.0",
           "/npm/@xterm/addon-search@0.15.0/lib/addon-search.js" in search_js[:500])
+    check("vendored addon-clipboard JS is @xterm/addon-clipboard 0.1.0",
+          hashlib.sha256(clipboard_js_bytes).hexdigest() ==
+          "c3fe3f1e8be371c7b2034170c6a2e3cc1b9dbe6c9f1f283cbc17ff456ef78818"
+          and "ClipboardAddon" in clipboard_js[:300])
     base_html = (ROOT / "app" / "templates" / "base.html").read_text(encoding="utf-8")
     check("base.html stamps terminal vendor attrs via static_url",
           "data-xterm-css=\"{{ static_url('vendor/xterm.min.css') }}\"" in base_html
@@ -148,20 +163,41 @@ with TestClient(app) as c:
           and "data-webgl-js=\"{{ static_url('vendor/xterm-addon-webgl.min.js') }}\"" in base_html
           and "data-web-links-js=\"{{ static_url('vendor/xterm-addon-web-links.min.js') }}\"" in base_html
           and "data-unicode11-js=\"{{ static_url('vendor/xterm-addon-unicode11.min.js') }}\"" in base_html
-          and "data-search-js=\"{{ static_url('vendor/xterm-addon-search.min.js') }}\"" in base_html)
+          and "data-search-js=\"{{ static_url('vendor/xterm-addon-search.min.js') }}\"" in base_html
+          and "data-clipboard-js=\"{{ static_url('vendor/xterm-addon-clipboard.min.js') }}\"" in base_html)
     terminal_js = (ROOT / "app" / "static" / "terminal.js").read_text(encoding="utf-8")
     check("terminal.js lazy-loads the official xterm addons",
           "drawer.dataset.webglJs" in terminal_js
           and "drawer.dataset.webLinksJs" in terminal_js
           and "drawer.dataset.unicode11Js" in terminal_js
           and "drawer.dataset.searchJs" in terminal_js
-          and "var scripts = [XJS, FJS, WLJS, U11JS, SJS, WGLJS]" in terminal_js)
+          and "drawer.dataset.clipboardJs" in terminal_js
+          and "window.ClipboardAddon" in terminal_js
+          and "var scripts = [XJS, FJS, WLJS, U11JS, SJS, CJS, WGLJS]" in terminal_js)
     check("terminal.js wires xterm addon behavior",
           "new WebglAddon.WebglAddon()" in terminal_js
           and ".onContextLoss" in terminal_js
           and "new WebLinksAddon.WebLinksAddon(openTerminalLink)" in terminal_js
           and "term.unicode.activeVersion = '11'" in terminal_js
           and "new SearchAddon.SearchAddon()" in terminal_js)
+    check("terminal.js wires clipboard UX and write-only OSC 52",
+          "attachCustomKeyEventHandler" in terminal_js
+          and "term.hasSelection && term.hasSelection()" in terminal_js
+          and "navigator.clipboard" in terminal_js
+          and "clip.writeText(String(text))" in terminal_js
+          and "clip.readText()" in terminal_js
+          and "term.paste(text)" in terminal_js
+          and "COPY_SELECT_KEY = 'al-term-copyselect'" in terminal_js
+          and "term.onSelectionChange" in terminal_js
+          and "new ClipboardAddon.ClipboardAddon(" in terminal_js
+          and "new ClipboardAddon.Base64()" in terminal_js
+          and "writeOnlyClipboardProvider()" in terminal_js
+          and "readText: function () { return ''; }" in terminal_js)
+    check("terminal.js sources the xterm theme from CSS custom properties",
+          "theme: terminalTheme()" in terminal_js
+          and "selectionBackground: cssVar('--term-selection-background'" in terminal_js
+          and "brightWhite: cssVar('--term-bright-white'" in terminal_js
+          and "theme: { background: '#16181d'" not in terminal_js)
     check("terminal drawer has a minimal find bar",
           'id="term-find"' in base_html
           and 'id="term-find-input"' in base_html

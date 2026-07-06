@@ -4,8 +4,8 @@
    ("night", a deep indigo sky) is the primary theme; light ("day map") is cold
    cartographic paper. The tri-state theme (system|light|dark) rides on
    html[data-theme]; window.alTheme owns the switch. Class names pinned by
-   verify.py never change here — only token VALUES, plus a few new tokens
-   (--font-display / --font-mono / --astral / --glow / --hairline). */
+   verify.py never change here — only token VALUES, plus identity and terminal
+   palette tokens. */
 
 /* ===== vendored type (Google Fonts, OFL — see app/static/fonts/OFL-*.txt) ==
    Cormorant Garamond = display (view titles, Roman numerals); JetBrains Mono =
@@ -95,6 +95,32 @@ html[data-theme="light"] {
   --radius-pill: 999px;
 
   --rail-w: 50px;   /* far-left icon rail — the terminal drawer's left edge tracks it */
+
+  /* Terminal stays dark in both app themes, following Cloud Shell convention. */
+  --term-background: #0b0e18;
+  --term-panel: #171b2c;
+  --term-foreground: #e6e4da;
+  --term-muted: rgba(230,228,218,0.60);
+  --term-border: rgba(230,228,218,0.11);
+  --term-hover: rgba(230,228,218,0.10);
+  --term-cursor: #d4a95c;
+  --term-selection-background: rgba(109,127,247,0.34);
+  --term-black: #0b0e18;
+  --term-red: #e5635a;
+  --term-green: #35b899;
+  --term-yellow: #d4a95c;
+  --term-blue: #8090f6;
+  --term-magenta: #b887e8;
+  --term-cyan: #35b0d8;
+  --term-white: #d8d6cb;
+  --term-bright-black: #5c627a;
+  --term-bright-red: #ff7b72;
+  --term-bright-green: #56d6b8;
+  --term-bright-yellow: #f0c56d;
+  --term-bright-blue: #9daaff;
+  --term-bright-magenta: #d3a4ff;
+  --term-bright-cyan: #5bd3ee;
+  --term-bright-white: #fffaf0;
 }
 
 /* Dark — "night": the primary theme. A deep indigo sky, warm starlight text. */
@@ -300,8 +326,8 @@ html[data-theme="light"] .content { background-image:
   position: fixed; left: var(--rail-w); right: 0; bottom: 0; z-index: 60;
   height: 42vh; min-height: 120px;
   display: flex; flex-direction: column;
-  background: #0e1120; color: #cfcfcf;
-  border-top: 1px solid rgba(255,255,255,.10);
+  background: var(--term-background); color: var(--term-foreground);
+  border-top: 1px solid var(--term-border);
   box-shadow: 0 -8px 24px rgba(0,0,0,.28);
 }
 .term-drawer[hidden] { display: none; }
@@ -314,24 +340,24 @@ html[data-theme="light"] .content { background-image:
 .term-resize { position: absolute; top: -3px; left: 0; right: 0; height: 7px; cursor: ns-resize; z-index: 1; }
 .term-resize::before {
   content: ""; position: absolute; left: 50%; top: 3px; transform: translateX(-50%);
-  width: 38px; height: 3px; border-radius: 2px; background: rgba(255,255,255,.18);
+  width: 38px; height: 3px; border-radius: 2px; background: var(--term-border);
 }
 .term-head {
   display: flex; align-items: center; gap: 8px; flex: 0 0 auto;
-  padding: 7px 10px 7px 14px; font-size: 13px; background: #141830;
-  border-bottom: 1px solid rgba(255,255,255,.07);
+  padding: 7px 10px 7px 14px; font-size: 13px; background: var(--term-panel);
+  border-bottom: 1px solid var(--term-border);
 }
-.term-dot { width: 9px; height: 9px; border-radius: 50%; background: #888; flex: 0 0 auto; }
-.term-dot.on { background: #2ecc71; }   /* socket connected — toggled by terminal.js */
+.term-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--term-bright-black); flex: 0 0 auto; }
+.term-dot.on { background: var(--term-green); }   /* socket connected — toggled by terminal.js */
 .term-tabs { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: thin; }
 .term-tab {
   flex: 0 1 150px; min-width: 74px; max-width: 170px; height: 26px;
   display: inline-flex; align-items: center; justify-content: center;
   padding: 0 9px; border: 1px solid transparent; border-radius: 7px;
-  background: transparent; color: rgba(230,230,230,.68); font: inherit; cursor: pointer;
+  background: transparent; color: var(--term-muted); font: inherit; cursor: pointer;
 }
-.term-tab:hover { background: rgba(255,255,255,.08); color: #fff; }
-.term-tab.active { background: #0e1120; border-color: rgba(255,255,255,.10); color: #fff; }
+.term-tab:hover { background: var(--term-hover); color: var(--term-bright-white); }
+.term-tab.active { background: var(--term-background); border-color: var(--term-border); color: var(--term-bright-white); }
 .term-tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .term-find {
   flex: 0 1 260px; min-width: 150px; max-width: 320px;
@@ -340,34 +366,34 @@ html[data-theme="light"] .content { background-image:
 .term-find[hidden] { display: none; }
 .term-find-input {
   flex: 1 1 auto; min-width: 0; height: 24px;
-  border: 1px solid rgba(255,255,255,.12); border-radius: 6px;
-  background: #0e1120; color: #e6e6e6;
+  border: 1px solid var(--term-border); border-radius: 6px;
+  background: var(--term-background); color: var(--term-foreground);
   padding: 0 8px; font: inherit; font-size: 12px;
 }
-.term-find-input::placeholder { color: rgba(230,230,230,.45); }
+.term-find-input::placeholder { color: var(--term-muted); }
 .term-find-input:focus-visible { outline: 2px solid var(--astral); outline-offset: 1px; }
 .term-find .term-btn { flex: 0 0 26px; }
 .term-drawer.find-open .term-meta { display: none; }
-.term-meta { margin-left: auto; opacity: .5; font-size: 12px; }
+.term-meta { margin-left: auto; color: var(--term-muted); font-size: 12px; }
 .term-btn {
-  color: #cfcfcf; width: 26px; height: 24px; border-radius: 6px;
+  color: var(--term-foreground); width: 26px; height: 24px; border-radius: 6px;
   font-size: 14px; line-height: 1; display: grid; place-items: center;
 }
 .term-btn svg { width: 15px; height: 15px; }
-.term-btn:hover { background: rgba(255,255,255,.10); color: #fff; }
+.term-btn:hover { background: var(--term-hover); color: var(--term-bright-white); }
 .term-btn[disabled] { opacity: .35; cursor: not-allowed; }
 .term-new { flex: 0 0 auto; }
-.term-screens { flex: 1 1 auto; min-height: 0; display: flex; background: #0e1120; }
-.term-screen { flex: 1 1 auto; min-width: 0; min-height: 0; padding: 6px 4px 4px 10px; background: #0e1120; }
+.term-screens { flex: 1 1 auto; min-height: 0; display: flex; background: var(--term-background); }
+.term-screen { flex: 1 1 auto; min-width: 0; min-height: 0; padding: 6px 4px 4px 10px; background: var(--term-background); }
 .term-screen[hidden] { display: none; }
 .term-screen .xterm, .term-screen .xterm-viewport, .term-screen .xterm-screen { height: 100% !important; }
-.term-status { flex: 0 0 auto; padding: 8px 14px; color: #ff8585; font-size: 13px;
-  background: #0e1120; border-top: 1px solid rgba(255,255,255,.07); }
+.term-status { flex: 0 0 auto; padding: 8px 14px; color: var(--term-bright-red); font-size: 13px;
+  background: var(--term-background); border-top: 1px solid var(--term-border); }
 .term-drawer.right-dock {
   left: auto; top: 0; bottom: 0; right: 0;
   width: 42vw; min-width: 300px; max-width: calc(100vw - var(--rail-w) - 220px);
   height: auto !important; min-height: 0;
-  border-top: none; border-left: 1px solid rgba(255,255,255,.10);
+  border-top: none; border-left: 1px solid var(--term-border);
   box-shadow: -8px 0 24px rgba(0,0,0,.26);
 }
 .term-drawer.right-dock.minimized { width: 44px !important; min-width: 44px; }

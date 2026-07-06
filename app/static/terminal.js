@@ -9,7 +9,7 @@
 
   var CSS = drawer.dataset.xtermCss, XJS = drawer.dataset.xtermJs, FJS = drawer.dataset.fitJs;
   var WGLJS = drawer.dataset.webglJs, WLJS = drawer.dataset.webLinksJs;
-  var U11JS = drawer.dataset.unicode11Js, SJS = drawer.dataset.searchJs;
+  var U11JS = drawer.dataset.unicode11Js, SJS = drawer.dataset.searchJs, CJS = drawer.dataset.clipboardJs;
   var OPEN_KEY = 'al-term-open';
   var LEGACY_SID_KEY = 'al-term-sid';
   var TABS_KEY = 'al-term-tabs';
@@ -17,6 +17,7 @@
   var H_KEY = 'al-term-h';
   var W_KEY = 'al-term-w';
   var MIN_KEY = 'al-term-min';
+  var COPY_SELECT_KEY = 'al-term-copyselect';
   var MAX_TABS = 8;
 
   var statusEl = document.getElementById('term-status');
@@ -67,7 +68,7 @@
         id: cleanTitle(t.id, newId()),
         sid: t.sid ? String(t.sid) : null,
         title: cleanTitle(t.title, 'Terminal ' + (i + 1)),
-        term: null, fit: null, search: null, webgl: null, ws: null, screen: null, ro: null,
+        term: null, fit: null, search: null, clipboard: null, webgl: null, ws: null, screen: null, ro: null,
         sentRows: 0, sentCols: 0
       };
     });
@@ -95,7 +96,7 @@
     if (tabs.length) return;
     tabs.push({
       id: newId(), sid: null, title: 'Terminal 1',
-      term: null, fit: null, search: null, webgl: null, ws: null, screen: null, ro: null,
+      term: null, fit: null, search: null, clipboard: null, webgl: null, ws: null, screen: null, ro: null,
       sentRows: 0, sentCols: 0
     });
     activeId = tabs[0].id;
@@ -129,9 +130,10 @@
     if (loaded) return loaded;
     loaded = new Promise(function (res, rej) {
       if (window.Terminal && window.FitAddon && window.WebglAddon &&
-          window.WebLinksAddon && window.Unicode11Addon && window.SearchAddon) return res();
+          window.WebLinksAddon && window.Unicode11Addon && window.SearchAddon &&
+          window.ClipboardAddon) return res();
       var l = document.createElement('link'); l.rel = 'stylesheet'; l.href = CSS; document.head.appendChild(l);
-      var scripts = [XJS, FJS, WLJS, U11JS, SJS, WGLJS];
+      var scripts = [XJS, FJS, WLJS, U11JS, SJS, CJS, WGLJS];
       var loadScript = function (i) {
         if (i >= scripts.length) return res();
         var s = document.createElement('script'); s.src = scripts[i];
@@ -159,6 +161,118 @@
     a.remove();
   }
 
+  function cssVar(name, fallback) {
+    var value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return value || fallback;
+  }
+
+  function terminalTheme() {
+    return {
+      background: cssVar('--term-background', '#10131f'),
+      foreground: cssVar('--term-foreground', '#e6e4da'),
+      cursor: cssVar('--term-cursor', '#d4a95c'),
+      selectionBackground: cssVar('--term-selection-background', 'rgba(109,127,247,0.34)'),
+      black: cssVar('--term-black', '#0b0e18'),
+      red: cssVar('--term-red', '#e5635a'),
+      green: cssVar('--term-green', '#35b899'),
+      yellow: cssVar('--term-yellow', '#d4a95c'),
+      blue: cssVar('--term-blue', '#8090f6'),
+      magenta: cssVar('--term-magenta', '#b887e8'),
+      cyan: cssVar('--term-cyan', '#35b0d8'),
+      white: cssVar('--term-white', '#d8d6cb'),
+      brightBlack: cssVar('--term-bright-black', '#5c627a'),
+      brightRed: cssVar('--term-bright-red', '#ff7b72'),
+      brightGreen: cssVar('--term-bright-green', '#56d6b8'),
+      brightYellow: cssVar('--term-bright-yellow', '#f0c56d'),
+      brightBlue: cssVar('--term-bright-blue', '#9daaff'),
+      brightMagenta: cssVar('--term-bright-magenta', '#d3a4ff'),
+      brightCyan: cssVar('--term-bright-cyan', '#5bd3ee'),
+      brightWhite: cssVar('--term-bright-white', '#fffaf0')
+    };
+  }
+
+  function clipboardApi() {
+    if (!window.navigator || !navigator.clipboard) return null;
+    return navigator.clipboard;
+  }
+
+  function writeClipboardText(text) {
+    if (text == null) return null;
+    var clip = clipboardApi();
+    if (!clip || typeof clip.writeText !== 'function') return null;
+    try {
+      var result = clip.writeText(String(text));
+      if (result && result.catch) return result.catch(function () {});
+      return result;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function readClipboardText(cb) {
+    var clip = clipboardApi();
+    if (!clip || typeof clip.readText !== 'function') return;
+    try {
+      var result = clip.readText();
+      if (result && result.then) {
+        result.then(function (text) { cb(text || ''); }).catch(function () {});
+      }
+    } catch (_) {}
+  }
+
+  function copyOnSelectEnabled() {
+    try { return localStorage.getItem(COPY_SELECT_KEY) === '1'; } catch (_) { return false; }
+  }
+
+  function attachTerminalClipboardHandlers(term) {
+    if (term.attachCustomKeyEventHandler) {
+      term.attachCustomKeyEventHandler(function (e) {
+        var key = String(e.key || '').toLowerCase();
+        if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && key === 'c') {
+          if (term.hasSelection && term.hasSelection()) {
+            writeClipboardText(term.getSelection ? term.getSelection() : '');
+            return false;
+          }
+          return true;
+        }
+        if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && key === 'v') {
+          readClipboardText(function (text) {
+            if (term.paste && text) term.paste(text);
+          });
+          return false;
+        }
+        return true;
+      });
+    }
+    if (term.onSelectionChange) {
+      var lastSelection = '';
+      term.onSelectionChange(function () {
+        var selection = term.getSelection ? term.getSelection() : '';
+        if (!selection) {
+          lastSelection = '';
+          return;
+        }
+        if (!copyOnSelectEnabled()) {
+          lastSelection = '';
+          return;
+        }
+        if (selection === lastSelection) return;
+        lastSelection = selection;
+        writeClipboardText(selection);
+      });
+    }
+  }
+
+  function writeOnlyClipboardProvider() {
+    return {
+      readText: function () { return ''; },
+      writeText: function (selection, text) {
+        if (selection !== 'c') return null;
+        return writeClipboardText(text);
+      }
+    };
+  }
+
   function loadRuntimeAddons(tab, term) {
     try { term.loadAddon(new WebLinksAddon.WebLinksAddon(openTerminalLink)); } catch (_) {}
     try {
@@ -169,6 +283,13 @@
       tab.search = new SearchAddon.SearchAddon();
       term.loadAddon(tab.search);
     } catch (_) { tab.search = null; }
+    try {
+      tab.clipboard = new ClipboardAddon.ClipboardAddon(
+        new ClipboardAddon.Base64(),
+        writeOnlyClipboardProvider()
+      );
+      term.loadAddon(tab.clipboard);
+    } catch (_) { tab.clipboard = null; }
     try {
       var webgl = new WebglAddon.WebglAddon();
       tab.webgl = webgl;
@@ -195,12 +316,13 @@
     var term = new Terminal({
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
       fontSize: 13, cursorBlink: true, scrollback: 5000,
-      theme: { background: '#16181d', foreground: '#e6e6e6', cursor: '#e6e6e6' }
+      theme: terminalTheme()
     });
     var fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open(screen);
     loadRuntimeAddons(tab, term);
+    attachTerminalClipboardHandlers(term);
     term.onData(function (d) {
       if (tab.ws && tab.ws.readyState === 1) tab.ws.send(enc.encode(d));
     });
@@ -379,7 +501,7 @@
     }
     var tab = {
       id: newId(), sid: null, title: 'Terminal ' + (tabs.length + 1),
-      term: null, fit: null, search: null, webgl: null, ws: null, screen: null, ro: null,
+      term: null, fit: null, search: null, clipboard: null, webgl: null, ws: null, screen: null, ro: null,
       sentRows: 0, sentCols: 0
     };
     tabs.push(tab);
@@ -402,6 +524,7 @@
     } catch (_) {}
     try { if (tab.ws) tab.ws.close(); } catch (_) {}
     if (tab.ro) tab.ro.disconnect();
+    try { if (tab.clipboard) tab.clipboard.dispose(); } catch (_) {}
     try { if (tab.webgl) tab.webgl.dispose(); } catch (_) {}
     try { if (tab.term) tab.term.dispose(); } catch (_) {}
     if (tab.screen) tab.screen.remove();
