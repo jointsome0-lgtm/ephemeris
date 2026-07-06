@@ -1338,7 +1338,7 @@ def post_focus_session(
     return RedirectResponse(_safe_return(return_to, "/focus"), status_code=303)
 
 
-# --- Export (sec15.4 / sec18.1): one-button JSONL backup of the event ledger -
+# --- Export (sec15.4 / sec18.1): event stream + calendar series JSONL backup -
 
 
 @app.get("/export")
