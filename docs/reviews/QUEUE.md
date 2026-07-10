@@ -19,7 +19,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-11 — uncommitted (working tree) — `app/terminal.py`, `verify.py` —
+- [ ] 2026-07-11 — 4855e8e — `app/terminal.py`, `verify.py` —
   terminal websocket registration and local-only UI gating now honor
   `TICKLIKE_DISABLE_TERMINAL`; subprocess checks cover both switch states.
 - [ ] 2026-07-07 — 92e585a — `app/services/lessons.py` —
