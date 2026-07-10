@@ -734,9 +734,9 @@ later Story/Atlas integrations
 ### 14.1 Event Log Role & Rules
 
 Role (decided for v0): the event log is an **append-only audit / derived feed**.
-The typed tables (`checkins`, `daily_notes`, `routine_items`) remain the source
-of truth; the JSONL export (sec18) serializes events plus the calendar-series
-snapshot exception (sec32 §8). Events are NOT replayed to rebuild state in v0.
+The typed tables remain the source of truth; the JSONL export (sec18) serializes
+events plus the calendar-series snapshot exception (sec32 §8). Restore can
+replay only the semantic subset identified in `docs/restore-from-export.md`.
 
 Atomicity: every state change writes the table row AND its event in ONE SQLite
 transaction (roll back both on failure). See sec16.4.
@@ -1205,14 +1205,14 @@ Each line:
 {"timestamp":"...","type":"...","payload_version":1,"payload":{...}}
 ```
 
-Contract (decided for v0): export is the full append-only `events` table
-serialized to JSONL, one event per line, ORDERED BY id, plus the calendar-series
-snapshot records below. Because every check-in and daily note is recorded as an
-event (sec14.1), this export inherently includes all check-ins and daily notes
-as event payloads; current-state tables are otherwise derivable from the audit
-stream and are NOT separately exported in v0. Each line carries
-`payload_version` for forward-compatibility. (Future option: a discriminated
-full-table snapshot with `record_type` + `schema_version`.)
+Contract (decided for v0): export is the append-only `events` table serialized
+to JSONL, one event per line, ORDERED BY id, plus the calendar-series snapshot
+records below. The export omits `events.id`; several typed tables also have
+incomplete or absent journal coverage. It therefore supports only the semantic
+restore subset in `docs/restore-from-export.md`, not full-fidelity recovery or
+idempotent redelivery. Each line carries `payload_version` for
+forward-compatibility. (Future option: a discriminated full-table snapshot with
+stable record IDs, `record_type`, and `schema_version`.)
 
 The explicit snapshot exception (sec32 §8): the export also appends one
 `calendar_event_series` line per `calendar_events` row (including soft-archived
