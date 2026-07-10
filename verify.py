@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 # Isolated DB before importing the app.
 os.environ["ACTIVITY_DATA_DIR"] = tempfile.mkdtemp(prefix="al-verify-")
+os.environ.pop("TICKLIKE_DISABLE_TERMINAL", None)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -23,6 +25,21 @@ from app.main import app  # noqa: E402
 PASS = 0
 FAIL = 0
 ROOT = Path(__file__).resolve().parent
+
+_TERMINAL_WIRING_PROBE = r"""
+from starlette.requests import Request
+
+from app.main import app, templates
+
+request = Request({"type": "http", "client": ("127.0.0.1", 50000)})
+html = templates.get_template("base.html").render(request=request)
+print(
+    any(getattr(route, "path", None) == "/terminal/ws" for route in app.routes),
+    'id="term-drawer"' in html,
+    'id="term-toggle"' in html,
+    "terminal.js" in html,
+)
+"""
 
 
 def check(label: str, cond: bool, extra: str = "") -> None:
@@ -53,6 +70,37 @@ def item_row(item_id: int):
         ).fetchone()
     finally:
         conn.close()
+
+
+def terminal_wiring_probe(disabled: bool):
+    """Import the app in a fresh process because terminal routes wire at import."""
+    env = os.environ.copy()
+    env.pop("TICKLIKE_DISABLE_TERMINAL", None)
+    if disabled:
+        env["TICKLIKE_DISABLE_TERMINAL"] = "1"
+    return subprocess.run(
+        [sys.executable, "-c", _TERMINAL_WIRING_PROBE],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+
+default_terminal_wiring = terminal_wiring_probe(False)
+check(
+    "terminal wiring: default loopback route and UI present",
+    default_terminal_wiring.returncode == 0
+    and default_terminal_wiring.stdout.strip() == "True True True True",
+    default_terminal_wiring.stderr.strip() or default_terminal_wiring.stdout.strip(),
+)
+disabled_terminal_wiring = terminal_wiring_probe(True)
+check(
+    "terminal wiring: kill switch omits websocket route and UI",
+    disabled_terminal_wiring.returncode == 0
+    and disabled_terminal_wiring.stdout.strip() == "False False False False",
+    disabled_terminal_wiring.stderr.strip() or disabled_terminal_wiring.stdout.strip(),
+)
 
 
 with TestClient(app) as c:

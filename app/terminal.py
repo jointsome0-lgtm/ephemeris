@@ -12,6 +12,8 @@ clients. Access it from the machine running the server, via
 http://localhost:<port> / http://127.0.0.1:<port> — NOT the LAN IP.
 NOTE: do NOT run uvicorn with --proxy-headers or behind a forwarded-headers proxy, or
 `scope["client"]` could become attacker-influenced and weaken the loopback peer check.
+Set TICKLIKE_DISABLE_TERMINAL (to any value) before startup to omit both the
+websocket route and the local-only terminal UI.
 
 The UI is a GCP-style bottom drawer docked over any page (toggled from the rail icon
 or Ctrl+`); there is no dedicated page route, only this websocket.
@@ -41,6 +43,7 @@ from .services.lessons import prepare_terminal_workspace
 # Repo root: a sensible cwd so agents/commands run against the project by default.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _LOOPBACK_CLOSE = 1008  # WebSocket "policy violation"
+_TERMINAL_DISABLED = "TICKLIKE_DISABLE_TERMINAL" in os.environ
 
 
 def is_local_host(host: str | None) -> bool:
@@ -58,9 +61,12 @@ def is_local_host(host: str | None) -> bool:
 
 
 def client_is_local(request: Request) -> bool:
-    """Template helper (registered with the globals in main.py): is this request
-    from the local machine? Gates the rail link + drawer markup in base.html."""
-    return bool(request.client) and is_local_host(request.client.host)
+    """Template helper: should local-only terminal UI render for this request?"""
+    return (
+        not _TERMINAL_DISABLED
+        and bool(request.client)
+        and is_local_host(request.client.host)
+    )
 
 
 def _is_loopback_hostname(hostname: str | None) -> bool:
@@ -626,6 +632,8 @@ def setup_terminal(app: FastAPI) -> None:
     """Register the localhost-only terminal websocket. (The drawer UI it serves is
     gated in base.html by `client_is_local`, registered with the other template
     globals in main.py.)"""
+    if _TERMINAL_DISABLED:
+        return
 
     @app.websocket("/terminal/ws")
     async def terminal_ws(ws: WebSocket):

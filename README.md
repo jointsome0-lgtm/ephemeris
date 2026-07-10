@@ -47,6 +47,13 @@ hostname -I    # find your Linux box's LAN IP
 
 Then on the phone browse to `http://<linux-lan-ip>:8000`.
 
+## Security
+
+The supported boundary is localhost by default, or a trusted LAN when explicitly
+enabled; public-internet deployment is unsupported in v0. The embedded terminal
+remains loopback-only. See the [security model](docs/security-model.md) for the
+deployment assumptions, known limitations, and terminal kill switch.
+
 ## Run as a background service (systemd)
 
 To keep the ledger running across reboots, install the user service from the
