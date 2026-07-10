@@ -465,6 +465,24 @@ check(
     (decoy / "keep-me.txt").read_text(encoding="utf-8") == "unrelated data\n",
 )
 
+no_habits_export = WORK_DIR / "no-habits-export.jsonl"
+no_habits_export.write_text(
+    json.dumps({
+        "timestamp": "2024-01-15T00:00:00",
+        "type": "daily_note_updated",
+        "payload_version": 1,
+        "payload": {"date": "2024-01-15", "text": "Invented note"},
+    }) + "\n",
+    encoding="utf-8",
+)
+no_habits_run = run_restore(no_habits_export, WORK_DIR / "restored-no-habits")
+check(
+    "summary warns about habit seeding when no live habits were restored",
+    no_habits_run.returncode == 0
+    and "demo habits will seed" in no_habits_run.stdout,
+    no_habits_run.stderr or no_habits_run.stdout,
+)
+
 reexports = [reexport(target) for target in targets]
 for index, run in enumerate(reexports, start=1):
     check(f"re-export run {index} succeeds", run.returncode == 0, run.stderr)

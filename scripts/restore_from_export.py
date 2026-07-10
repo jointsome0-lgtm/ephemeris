@@ -474,8 +474,13 @@ def print_summary(target: Path, result: dict[str, Any]) -> None:
 
     print("IDEMPOTENT REDELIVERY: NO")
     print("  Exported events omit their stable events.id; this importer is fresh-target only.")
-    print("FIRST APP START: current demo lists/tasks will seed into their empty tables")
-    print("  and append new task events; inspect this partial DB before launching the app.")
+    if rows["routine_items"] == 0:
+        print("FIRST APP START: demo habits will seed into the empty routine_items table")
+        print("  (this export retained no live habits), and demo lists/tasks will seed")
+        print("  and append new task events; inspect this partial DB before launching the app.")
+    else:
+        print("FIRST APP START: current demo lists/tasks will seed into their empty tables")
+        print("  and append new task events; inspect this partial DB before launching the app.")
     print("FULL-FIDELITY RECOVERY: use a consistent SQLite backup, not JSONL alone.")
 
 
