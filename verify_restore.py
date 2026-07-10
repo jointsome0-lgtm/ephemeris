@@ -432,6 +432,32 @@ for index, run in enumerate(restore_runs, start=1):
         run.stderr or run.stdout,
     )
 
+failed_target = WORK_DIR / "restored-failed"
+bad_export = WORK_DIR / "bad-export.jsonl"
+bad_export.write_text(
+    json.dumps({
+        "timestamp": "2024-01-15T00:00:00",
+        "type": "calendar_event_series",
+        "payload_version": 1,
+        "payload": {"bogus_column": 1},
+    }) + "\n",
+    encoding="utf-8",
+)
+failed_run = run_restore(bad_export, failed_target)
+check(
+    "failed replay leaves neither target nor staging behind",
+    failed_run.returncode != 0
+    and not failed_target.exists()
+    and not (WORK_DIR / "restored-failed.restore-tmp").exists(),
+    failed_run.stderr or failed_run.stdout,
+)
+retry_run = run_restore(export_path, failed_target)
+check(
+    "retry into the same target succeeds after a failed run",
+    retry_run.returncode == 0 and "RESTORE STATUS: PARTIAL" in retry_run.stdout,
+    retry_run.stderr or retry_run.stdout,
+)
+
 reexports = [reexport(target) for target in targets]
 for index, run in enumerate(reexports, start=1):
     check(f"re-export run {index} succeeds", run.returncode == 0, run.stderr)

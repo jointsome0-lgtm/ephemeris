@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sqlite3
 import sys
 from collections import Counter
@@ -289,12 +290,32 @@ def _ensure_fresh_target(target: Path) -> None:
 
 
 def restore(records: list[Record], target: Path) -> dict[str, Any]:
-    """Build a fresh schema, preserve the audit stream, and replay supported state."""
+    """Build a fresh schema, preserve the audit stream, and replay supported state.
+
+    The database is built in a sibling staging directory and moved into place
+    only on success, so a replay failure cannot leave a half-created target
+    that would block the retry behind the fresh-target guard.
+    """
     _ensure_fresh_target(target)
-    target.mkdir(parents=True, exist_ok=True)
+    staging = target.parent / f"{target.name}.restore-tmp"
+    if staging.exists():
+        shutil.rmtree(staging)  # leftover staging from a previously failed run
+    try:
+        result = _build_into(records, staging)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    if target.exists():
+        target.rmdir()  # verified empty by the guard; rename needs the name free
+    staging.rename(target)
+    return result
+
+
+def _build_into(records: list[Record], staging: Path) -> dict[str, Any]:
+    staging.mkdir(parents=True)
 
     # app.db resolves these at import time. ACTIVITY_DB must not escape the target.
-    os.environ["ACTIVITY_DATA_DIR"] = str(target)
+    os.environ["ACTIVITY_DATA_DIR"] = str(staging)
     os.environ.pop("ACTIVITY_DB", None)
     sys.path.insert(0, str(ROOT))
     from app import db  # noqa: E402
