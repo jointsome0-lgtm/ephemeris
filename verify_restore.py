@@ -483,6 +483,27 @@ check(
         for records in restored_records),
 )
 
+_ID_KEYS = {"task_id": "tasks", "list_id": "lists",
+            "session_id": "focus_sessions", "lesson_id": "lessons"}
+expected_seq_floor: dict[str, int] = {}
+for record in source_records:
+    for key, table in _ID_KEYS.items():
+        value = record.get("payload", {}).get(key)
+        if isinstance(value, int):
+            expected_seq_floor[table] = max(expected_seq_floor.get(table, 0), value)
+restored_seqs = {
+    name: seq
+    for name, seq in rows(targets[0] / "activity.sqlite",
+                          "SELECT name, seq FROM sqlite_sequence")
+}
+check(
+    "skipped-table id namespaces advance past retained audit ids",
+    bool(expected_seq_floor)
+    and all(restored_seqs.get(table, 0) >= floor
+            for table, floor in expected_seq_floor.items()),
+    f"expected >= {expected_seq_floor}, got {restored_seqs}",
+)
+
 restored_projections = [state_projection(target / "activity.sqlite") for target in targets]
 check(
     "reconstructible state projections match row-wise",

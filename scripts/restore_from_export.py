@@ -351,6 +351,7 @@ def _build_into(records: list[Record], staging: Path) -> dict[str, Any]:
                     _replay_note(conn, record)
             for record in snapshots:
                 _insert_calendar_snapshot(conn, record, unresolved_links)
+            sequence_bumps = _bump_id_sequences(conn, records)
 
         fk_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
         if fk_errors:
@@ -373,7 +374,44 @@ def _build_into(records: list[Record], staging: Path) -> dict[str, Any]:
         "types": type_counts,
         "unknown_types": unknown_types,
         "unresolved_calendar_list_links": unresolved_links,
+        "sequence_bumps": sequence_bumps,
     }
+
+
+# Payload key -> AUTOINCREMENT table whose id namespace the key belongs to.
+# Scanned across every record (task events carry list_id, focus events carry
+# lesson_id, calendar snapshots carry list_id).
+_ID_NAMESPACES = {
+    "task_id": "tasks",
+    "list_id": "lists",
+    "session_id": "focus_sessions",
+    "lesson_id": "lessons",
+}
+
+
+def _bump_id_sequences(conn: sqlite3.Connection, records: list[Record]) -> dict[str, int]:
+    """Advance sqlite_sequence for tables whose rows are not restored, so the
+    first post-restore app writes cannot reuse ids already present in the
+    retained audit stream (which would make later exports ambiguous)."""
+    maxima: dict[str, int] = {}
+    for record in records:
+        for key, table in _ID_NAMESPACES.items():
+            value = record.payload.get(key)
+            if isinstance(value, int) and value > maxima.get(table, 0):
+                maxima[table] = value
+    for table, seq in maxima.items():
+        row = conn.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = ?", (table,)
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)", (table, seq)
+            )
+        elif row[0] < seq:
+            conn.execute(
+                "UPDATE sqlite_sequence SET seq = ? WHERE name = ?", (seq, table)
+            )
+    return maxima
 
 
 def print_summary(target: Path, result: dict[str, Any]) -> None:
@@ -427,6 +465,12 @@ def print_summary(target: Path, result: dict[str, Any]) -> None:
         )
     else:
         print("  unknown event types: none")
+    bumps = result["sequence_bumps"]
+    if bumps:
+        print(
+            "  id namespaces advanced past retained audit ids: "
+            + ", ".join(f"{table} -> {seq}" for table, seq in sorted(bumps.items()))
+        )
 
     print("IDEMPOTENT REDELIVERY: NO")
     print("  Exported events omit their stable events.id; this importer is fresh-target only.")

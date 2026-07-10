@@ -14,6 +14,11 @@ On the first normal app start, the current startup code will seed demo lists and
 tasks into those empty tables and append new task events. Inspect or copy the
 partial restored database before launching the app if stream equality matters.
 
+To keep those new writes unambiguous, the restore advances `sqlite_sequence`
+for the skipped tables (`tasks`, `lists`, `focus_sessions`, `lessons`) past the
+highest ids observed in the retained audit payloads, so post-restore rows and
+events never reuse an id that already appears in the historical stream.
+
 ## Reconstructibility matrix
 
 `Fully*` means current business state is reproducible under the equivalence
