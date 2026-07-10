@@ -6,9 +6,11 @@
 
 <div class="export-card">
   <p class="export-lead">
-    Download your full activity ledger as <strong>JSONL</strong> — every check-in,
-    task, habit and note, recorded as an append-only event stream. SQLite stays the
-    source of truth; this file is a private portable backup, not public Git content.
+    Download the audit stream plus calendar-series snapshots as <strong>JSONL</strong>.
+    Habits, check-ins and notes are replayable. Calendar snapshots restore except
+    links to unavailable list rows; tasks, lists, focus sessions and lessons have
+    larger gaps. Use a consistent SQLite backup for full-fidelity recovery. This
+    private export is not public Git content.
   </p>
 
   <div class="export-meta">
