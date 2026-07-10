@@ -19,7 +19,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-07 — uncommitted (working tree) — `app/services/lessons.py` —
+- [ ] 2026-07-07 — 92e585a — `app/services/lessons.py` —
   lesson workspace prep now also writes a `CLAUDE.md` brief shim (static
   `@AGENTS.md` include) via the same `O_NOFOLLOW` writer; +2 verify checks (338).
 
