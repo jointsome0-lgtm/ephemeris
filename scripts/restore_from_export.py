@@ -16,6 +16,7 @@ import os
 import shutil
 import sqlite3
 import sys
+import tempfile
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -297,9 +298,12 @@ def restore(records: list[Record], target: Path) -> dict[str, Any]:
     that would block the retry behind the fresh-target guard.
     """
     _ensure_fresh_target(target)
-    staging = target.parent / f"{target.name}.restore-tmp"
-    if staging.exists():
-        shutil.rmtree(staging)  # leftover staging from a previously failed run
+    # Unique name via mkdtemp: never collides with (or deletes) anything
+    # pre-existing; sibling of target so the final rename stays on one filesystem.
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(
+        prefix=f"{target.name}.restore-tmp-", dir=target.parent
+    ))
     try:
         result = _build_into(records, staging)
     except BaseException:
@@ -312,7 +316,6 @@ def restore(records: list[Record], target: Path) -> dict[str, Any]:
 
 
 def _build_into(records: list[Record], staging: Path) -> dict[str, Any]:
-    staging.mkdir(parents=True)
 
     # app.db resolves these at import time. ACTIVITY_DB must not escape the target.
     os.environ["ACTIVITY_DATA_DIR"] = str(staging)

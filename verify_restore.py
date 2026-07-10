@@ -443,12 +443,15 @@ bad_export.write_text(
     }) + "\n",
     encoding="utf-8",
 )
+decoy = WORK_DIR / "restored-failed.restore-tmp"
+decoy.mkdir()
+(decoy / "keep-me.txt").write_text("unrelated data\n", encoding="utf-8")
 failed_run = run_restore(bad_export, failed_target)
 check(
     "failed replay leaves neither target nor staging behind",
     failed_run.returncode != 0
     and not failed_target.exists()
-    and not (WORK_DIR / "restored-failed.restore-tmp").exists(),
+    and not any(WORK_DIR.glob("restored-failed.restore-tmp-*")),
     failed_run.stderr or failed_run.stdout,
 )
 retry_run = run_restore(export_path, failed_target)
@@ -456,6 +459,10 @@ check(
     "retry into the same target succeeds after a failed run",
     retry_run.returncode == 0 and "RESTORE STATUS: PARTIAL" in retry_run.stdout,
     retry_run.stderr or retry_run.stdout,
+)
+check(
+    "pre-existing sibling matching the staging convention is preserved",
+    (decoy / "keep-me.txt").read_text(encoding="utf-8") == "unrelated data\n",
 )
 
 reexports = [reexport(target) for target in targets]
