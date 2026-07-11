@@ -19,12 +19,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-11 — 4855e8e — `app/terminal.py`, `verify.py` —
-  terminal websocket registration and local-only UI gating now honor
-  `TICKLIKE_DISABLE_TERMINAL`; subprocess checks cover both switch states.
-- [ ] 2026-07-07 — 92e585a — `app/services/lessons.py` —
-  lesson workspace prep now also writes a `CLAUDE.md` brief shim (static
-  `@AGENTS.md` include) via the same `O_NOFOLLOW` writer; +2 verify checks (338).
+(none)
 
 ## Done
 
@@ -34,3 +29,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 - [x] 2026-07-06 — 2b2878f, 1fd1a63 — `app/terminal.py`,
   `app/templates/learn.html` — lesson-scoped terminal sessions →
   `learn-lesson-terminal-review.md` (one Low fixed in 1fd1a63)
+- [x] 2026-07-07 — 92e585a — `app/services/lessons.py` —
+  lesson workspace prep now also writes a `CLAUDE.md` brief shim (static
+  `@AGENTS.md` include) via the same `O_NOFOLLOW` writer; +2 verify checks (338)
+  → `2026-07-11-lesson-claude-shim-review.md`
+- [x] 2026-07-11 — 4855e8e — `app/terminal.py`, `verify.py` —
+  terminal websocket registration and local-only UI gating now honor
+  `TICKLIKE_DISABLE_TERMINAL`; subprocess checks cover both switch states
+  → `2026-07-11-terminal-disable-switch-review.md`
