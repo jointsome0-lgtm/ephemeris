@@ -21,3 +21,58 @@ Even composing a security-framed plan or subagent prompt in Claude's own output 
 - To drain the queue, hand Codex the standing brief **by file reference** — "apply `docs/reviews/review-prompt.md` to the Pending entries" — without restating its contents. A second independent pass (an Opus-model subagent pointed at the same file) is welcome per `use-codex-as-second-reviewer`; Claude converges the results in its correctness voice.
 - Drain at task boundaries (a turn or session of its own), never mid-task — so if a fallback still fires, it has nothing to drop.
 - The deploy gate is mechanical: no live restart while the touched surface has Pending entries (AGENTS.md → Public-Safety Check).
+
+## Picking the right models for workflows and subagents
+
+Rankings, higher = better. Cost reflects what I actually pay (OpenAI has really
+generous limits), not list price. Intelligence is how hard a problem you can
+hand the model unsupervised. Taste covers UI/UX, code quality, API design, and
+copy.
+
+| model    | cost | intelligence | taste |
+|----------|------|--------------|-------|
+| gpt-5.6  | 9    | 8.9          | 7     |
+| sonnet-5 | 5    | 5            | 7     |
+| opus-4.8 | 4    | 7            | 8     |
+| fable-5  | 2    | 9            | 9     |
+
+How to apply:
+
+- These are defaults, not limits. You have standing permission to override
+  them: if a cheaper model's output doesn't meet the bar, rerun or redo the
+  work with a smarter model without asking. Judge the output, not the price
+  tag. Escalating costs less than shipping mediocre work.
+- Cost is a tie-breaker only; when axes conflict for anything that ships,
+  intelligence > taste > cost.
+- The top two split by shape, not rank: fable-5 is stronger on architecture
+  and interconnections; gpt-5.6 on driving a goal to completion and finding
+  defects. Pick by task shape, not the raw intelligence number.
+- Bulk/mechanical work (clear-spec implementation, data analysis, migrations):
+  gpt-5.6 — it's effectively free.
+- Anything user-facing (UI, copy, API design) needs taste ≥ 7.
+- Reviews of plans/implementations: fable-5 or opus-4.8, optionally gpt-5.6 as
+  an extra independent perspective.
+- Never use Haiku.
+- Mechanics: gpt-5.6 is only reachable through the Codex CLI — `codex exec` /
+  `codex review` (my `~/.codex/config.toml` defaults to `gpt-5.6-sol` at xhigh
+  effort). Use the codex plugin skills (`codex:rescue` for delegated
+  diagnosis/fix passes, `codex:setup` for CLI health checks); for work they
+  don't cover (investigation, data analysis, verification), run
+  `codex exec -s read-only` directly with a self-contained prompt, and drop the
+  sandbox flag only when codex must edit files.
+- Claude models (sonnet-5, opus-4.8, fable-5) run via the Agent/Workflow model
+  parameter.
+
+Using gpt-5.6 inside workflows and subagents (the model parameter only takes
+Claude models, so use a wrapper):
+
+- Spawn a thin Claude wrapper agent with `model: 'sonnet', effort: 'low'` whose
+  only job is to run `codex exec` via Bash and return the raw output verbatim.
+- Write the full self-contained codex prompt yourself and pass it to the
+  wrapper word-for-word. Wrappers never formulate or rewrite codex prompts —
+  sonnet/opus don't write them well, and intermediary layers are banned — and
+  you digest the result yourself.
+- Treat codex claims (file:line, "tests are green", "done") as unverified until
+  checked against artifacts. Codex is goal-driven and loves finding defects —
+  excellent as a critic, so on long solo work call it at checkpoints
+  (draft/diff → its findings → improve), not only at the end.
