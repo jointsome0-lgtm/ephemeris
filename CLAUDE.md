@@ -1,6 +1,10 @@
-@AGENTS.md
+# CLAUDE.md
 
-<!-- Single source of truth is AGENTS.md (shared with Codex and other tools). Add Claude-only rules below this line only if they cannot live in AGENTS.md. -->
+Read [AGENTS.md](AGENTS.md) first: it is the shared agent contract for this
+repository (the public-data boundary, rules for automated fix passes, the
+public-safety check) and applies to Claude Code in full. The security-review
+queue and its drain protocol live in
+[docs/reviews/QUEUE.md](docs/reviews/QUEUE.md).
 
 ## Security reviews go to Codex
 
