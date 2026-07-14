@@ -5,7 +5,7 @@ nothing is written. These power the TickTick-style habit surface: per-row streak
 stats + 7-day dots on the day view (sec16.2) and the habit detail view's stat
 cards + monthly calendar heatmap (sec16.6).
 
-Streak semantics — Activity Ledger's four-status model. `light_done` keeping the
+Streak semantics — Ephemeris's four-status model. `light_done` keeping the
 chain is the differentiator TickTick's binary model cannot express (sec16.5):
 
     full_done / light_done   KEEP the chain (a "light" day still counts).

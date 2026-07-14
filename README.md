@@ -1,7 +1,8 @@
-# Activity Ledger
+# Ephemeris
 
 A small, local-first personal routine/activity tracker. FastAPI + SQLite +
 Jinja2 + vanilla HTML/CSS. TickTick-like execution speed, our own data model.
+Formerly known as *tick-like* — old repo URLs redirect here.
 
 See [`docs/system-design.md`](docs/system-design.md) for the full design.
 
@@ -61,14 +62,14 @@ committed template:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp deploy/tick-like.service.example ~/.config/systemd/user/tick-like.service
+cp deploy/ephemeris.service.example ~/.config/systemd/user/ephemeris.service
 # For phone/LAN access, change --host to 0.0.0.0 in the copy (trusted Wi-Fi only).
 systemctl --user daemon-reload
-systemctl --user enable --now tick-like
+systemctl --user enable --now ephemeris
 loginctl enable-linger "$USER"        # keep running after logout / across reboots
 ```
 
-Status: `systemctl --user status tick-like` · logs: `journalctl --user -u tick-like -f`.
+Status: `systemctl --user status ephemeris` · logs: `journalctl --user -u ephemeris -f`.
 The template ships with `127.0.0.1`; copy-and-edit (don't symlink) so your local
 host choice never lands back in Git.
 

@@ -1,6 +1,6 @@
 """End-to-end verification via TestClient on a throwaway DB.
 
-Run: PYTHONPATH=/home/aina/projects/tick-like ACTIVITY_DATA_DIR=/tmp/al-verify python verify.py
+Run: PYTHONPATH=/home/aina/projects/ephemeris ACTIVITY_DATA_DIR=/tmp/al-verify python verify.py
 Exercises the new Manage Items CRUD + events and re-checks the §16.4 write
 contract still holds. Prints PASS/FAIL per assertion; exits non-zero on any fail.
 """
@@ -15,7 +15,7 @@ from pathlib import Path
 
 # Isolated DB before importing the app.
 os.environ["ACTIVITY_DATA_DIR"] = tempfile.mkdtemp(prefix="al-verify-")
-os.environ.pop("TICKLIKE_DISABLE_TERMINAL", None)
+os.environ.pop("EPHEMERIS_DISABLE_TERMINAL", None)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -75,9 +75,9 @@ def item_row(item_id: int):
 def terminal_wiring_probe(disabled: bool):
     """Import the app in a fresh process because terminal routes wire at import."""
     env = os.environ.copy()
-    env.pop("TICKLIKE_DISABLE_TERMINAL", None)
+    env.pop("EPHEMERIS_DISABLE_TERMINAL", None)
     if disabled:
-        env["TICKLIKE_DISABLE_TERMINAL"] = "1"
+        env["EPHEMERIS_DISABLE_TERMINAL"] = "1"
     return subprocess.run(
         [sys.executable, "-c", _TERMINAL_WIRING_PROBE],
         cwd=ROOT,

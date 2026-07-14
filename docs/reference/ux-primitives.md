@@ -1,4 +1,4 @@
-# UX Primitives — distilled for Activity Ledger
+# UX Primitives — distilled for Ephemeris
 
 Status: v0.1 · Date: 2026-06-05
 Source: distilled from `ticktick-ux-report.md` (TickTick web, disposable account, Playwright inspection).
@@ -55,7 +55,7 @@ Per-item detail view with stat cards (streak, totals, rate) + a calendar heatmap
 
 ## P10 — Mobile nav: bottom tabs, not a drawer ✅ (diverge from web)
 TickTick **web** collapses nav into a hamburger **drawer**; its **native** app uses **bottom tabs**. Bottom tabs win for thumb reach.
-- **Decision:** keep Activity Ledger's planned **bottom nav** (Today / History / Items, §16.2). Do **not** copy the web drawer.
+- **Decision:** keep Ephemeris's planned **bottom nav** (Today / History / Items, §16.2). Do **not** copy the web drawer.
 
 ## P11 — Single-column reflow at 390px ✅
 At 390px everything is one full-width column; no multi-column, no cramming multiple controls per row.

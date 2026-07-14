@@ -17,7 +17,7 @@ colorama==0.4.6 ; sys_platform == 'win32'
 exceptiongroup==1.3.1 ; python_full_version < '3.11'
     # via anyio
 fastapi==0.136.3
-    # via tick-like
+    # via ephemeris
 h11==0.16.0
     # via uvicorn
 httptools==0.8.0
@@ -25,7 +25,7 @@ httptools==0.8.0
 idna==3.18
     # via anyio
 jinja2==3.1.6
-    # via tick-like
+    # via ephemeris
 markupsafe==3.0.3
     # via jinja2
 pydantic==2.13.4
@@ -35,7 +35,7 @@ pydantic-core==2.46.4
 python-dotenv==1.2.2
     # via uvicorn
 python-multipart==0.0.32
-    # via tick-like
+    # via ephemeris
 pyyaml==6.0.3
     # via uvicorn
 starlette==1.2.1
@@ -55,7 +55,7 @@ typing-inspection==0.4.2
     #   fastapi
     #   pydantic
 uvicorn==0.49.0
-    # via tick-like
+    # via ephemeris
 uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'
     # via uvicorn
 watchfiles==1.2.0

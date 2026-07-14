@@ -43,10 +43,10 @@ rewrites the client address from forwarded headers. Otherwise
 
 ### Disable the terminal
 
-Set `TICKLIKE_DISABLE_TERMINAL` before starting the process:
+Set `EPHEMERIS_DISABLE_TERMINAL` before starting the process:
 
 ```bash
-TICKLIKE_DISABLE_TERMINAL=1 uv run uvicorn app.main:app \
+EPHEMERIS_DISABLE_TERMINAL=1 uv run uvicorn app.main:app \
   --host 127.0.0.1 --port 8000 --no-proxy-headers
 ```
 

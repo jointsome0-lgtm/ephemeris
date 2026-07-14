@@ -12,7 +12,7 @@ clients. Access it from the machine running the server, via
 http://localhost:<port> / http://127.0.0.1:<port> — NOT the LAN IP.
 NOTE: do NOT run uvicorn with --proxy-headers or behind a forwarded-headers proxy, or
 `scope["client"]` could become attacker-influenced and weaken the loopback peer check.
-Set TICKLIKE_DISABLE_TERMINAL (to any value) before startup to omit both the
+Set EPHEMERIS_DISABLE_TERMINAL (to any value) before startup to omit both the
 websocket route and the local-only terminal UI.
 
 The UI is a GCP-style bottom drawer docked over any page (toggled from the rail icon
@@ -43,7 +43,7 @@ from .services.lessons import prepare_terminal_workspace
 # Repo root: a sensible cwd so agents/commands run against the project by default.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _LOOPBACK_CLOSE = 1008  # WebSocket "policy violation"
-_TERMINAL_DISABLED = "TICKLIKE_DISABLE_TERMINAL" in os.environ
+_TERMINAL_DISABLED = "EPHEMERIS_DISABLE_TERMINAL" in os.environ
 
 
 def is_local_host(host: str | None) -> bool:
@@ -127,7 +127,7 @@ def _child_setup() -> None:
 
 # --- egress proxy for agent CLIs -------------------------------------------------
 # Auto-detection probes ONLY the xray client the user actually runs (10809 http /
-# 10808 socks). Any other setup must be named via TICKLIKE_TERM_PROXY or the
+# 10808 socks). Any other setup must be named via EPHEMERIS_TERM_PROXY or the
 # service env — a wider port scan (8080 & friends) too easily latches onto some
 # unrelated dev server and silently breaks the shell's egress.
 _HTTP_PROXY_PORT = 10809
@@ -163,8 +163,8 @@ def _detect_proxy_env() -> dict[str, str]:
     answers with HTTP 403. We instead route them through the user's existing local
     proxy. Precedence:
 
-      1. ``TICKLIKE_TERM_PROXY=off``   -> force a direct connection (no proxy);
-      2. ``TICKLIKE_TERM_PROXY=<url>`` -> use exactly this (``http://…`` / ``socks5h://…``);
+      1. ``EPHEMERIS_TERM_PROXY=off``   -> force a direct connection (no proxy);
+      2. ``EPHEMERIS_TERM_PROXY=<url>`` -> use exactly this (``http://…`` / ``socks5h://…``);
       3. a proxy already in the service env -> inherit it verbatim;
       4. else auto-detect the xray client on its default loopback ports.
 
@@ -172,7 +172,7 @@ def _detect_proxy_env() -> dict[str, str]:
     should have. The caller clears any ambient proxy vars first, then applies this,
     so an empty dict reliably means "connect directly".
     """
-    override = os.environ.get("TICKLIKE_TERM_PROXY", "").strip()
+    override = os.environ.get("EPHEMERIS_TERM_PROXY", "").strip()
     if override.lower() in {"off", "none", "0", "false"}:
         return {}
 
@@ -426,7 +426,7 @@ async def _create_session(lesson: str | None = None) -> "_TermSession | None":
         home = os.path.expanduser("~")
         env["PATH"] = f"{home}/.local/bin:/usr/local/bin:" + env.get("PATH", "/usr/bin:/bin")
         # Route agent CLIs around country-level blocks via the user's local proxy (if any).
-        # Clear the ambient proxy slate first so TICKLIKE_TERM_PROXY=off truly means direct.
+        # Clear the ambient proxy slate first so EPHEMERIS_TERM_PROXY=off truly means direct.
         # Detection runs in a worker thread: its socket probes block (up to ~0.15s/port),
         # which must not stall the event loop (and every other PTY pump) mid-detect.
         for _k in _PROXY_ENV_VARS:
@@ -462,7 +462,7 @@ async def _create_session(lesson: str | None = None) -> "_TermSession | None":
             shown = "".join(c for c in proxy["HTTP_PROXY"] if c.isprintable())  # defang control bytes
             sess.remember(
                 (f"\x1b[2m· terminal egress via proxy {shown} — agents bypass geo-blocks; "
-                 f"localhost direct (TICKLIKE_TERM_PROXY=off to disable).\x1b[0m\r\n").encode()
+                 f"localhost direct (EPHEMERIS_TERM_PROXY=off to disable).\x1b[0m\r\n").encode()
             )
         if workspace:  # informational banner, replayed with the scrollback
             where = "".join(c for c in workspace["dir"] if c.isprintable())  # defang control bytes

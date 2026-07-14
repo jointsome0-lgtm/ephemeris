@@ -1,4 +1,4 @@
-"""Activity Ledger FastAPI app — daily execution surface + write contract.
+"""Ephemeris FastAPI app — daily execution surface + write contract.
 
 Implements system-design.md sec15 (routes), sec16.4 (status & note write
 contract — Mode A no-JS forms + Mode B fetch), and sec20 (security: same-origin
@@ -59,14 +59,14 @@ async def _lifespan(app: FastAPI):
     if created:
         log.info("Seeded %d routine items", created)
     log.warning(
-        "Activity Ledger has NO AUTH (sec20): serve only on a trusted LAN; "
+        "Ephemeris has NO AUTH (sec20): serve only on a trusted LAN; "
         "never expose to the public internet."
     )
     yield
     await shutdown_terminal()  # kill any persistent terminal shells on shutdown
 
 
-app = FastAPI(title="Activity Ledger", lifespan=_lifespan)
+app = FastAPI(title="Ephemeris", lifespan=_lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 # Status display metadata (sec16.5): a distinct glyph per status so state reads

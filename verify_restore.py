@@ -11,14 +11,14 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-WORK = tempfile.TemporaryDirectory(prefix="tick-like-restore-verify-")
+WORK = tempfile.TemporaryDirectory(prefix="ephemeris-restore-verify-")
 WORK_DIR = Path(WORK.name)
 SOURCE_DIR = WORK_DIR / "source"
 
 # The real app must bind to the throwaway source before it is imported.
 os.environ["ACTIVITY_DATA_DIR"] = str(SOURCE_DIR)
 os.environ.pop("ACTIVITY_DB", None)
-os.environ["TICKLIKE_DISABLE_TERMINAL"] = "1"
+os.environ["EPHEMERIS_DISABLE_TERMINAL"] = "1"
 sys.path.insert(0, str(ROOT))
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -135,7 +135,7 @@ def reexport(target: Path) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["ACTIVITY_DATA_DIR"] = str(target)
     env.pop("ACTIVITY_DB", None)
-    env["TICKLIKE_DISABLE_TERMINAL"] = "1"
+    env["EPHEMERIS_DISABLE_TERMINAL"] = "1"
     return subprocess.run(
         [sys.executable, "-c", _REEXPORT],
         cwd=ROOT,
@@ -159,7 +159,7 @@ def boot_app_and_reexport(target: Path) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["ACTIVITY_DATA_DIR"] = str(target)
     env.pop("ACTIVITY_DB", None)
-    env["TICKLIKE_DISABLE_TERMINAL"] = "1"
+    env["EPHEMERIS_DISABLE_TERMINAL"] = "1"
     return subprocess.run(
         [sys.executable, "-c", _BOOT_AND_REEXPORT],
         cwd=ROOT,

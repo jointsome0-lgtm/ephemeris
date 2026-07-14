@@ -1,4 +1,4 @@
-# Activity Ledger — System Design Document
+# Ephemeris — System Design Document
 
 Status: Draft v0.1  
 Primary target: Linux + Samsung browser  
@@ -10,7 +10,7 @@ UX reference: TickTick-like execution interface, not TickTick clone
 
 ## 1. Summary
 
-Activity Ledger is a small personal tracker for daily routine, activity check-ins, simple history, and future integration with personal systems.
+Ephemeris is a small personal tracker for daily routine, activity check-ins, simple history, and future integration with personal systems.
 
 The app should initially replace the overloaded/limited TickTick usage for personal tracking, while preserving the main thing that makes TickTick useful: a fast operational interface.
 
@@ -44,7 +44,7 @@ VPS = later only if always-on access is needed
 
 ## 2. Product Goal
 
-Build a personal Activity Ledger with a TickTick-like execution experience, but with our own data model:
+Build a personal Ephemeris with a TickTick-like execution experience, but with our own data model:
 
 ```text
 routine items
@@ -1591,7 +1591,7 @@ temporary operational benchmark
 not source of truth
 ```
 
-### Activity Ledger
+### Ephemeris
 
 ```text
 source of truth for routine/check-ins/events
@@ -1640,7 +1640,7 @@ Not part of MVP.
 ## 27. Coding Agent Prompt
 
 ```text
-Build Activity Ledger v0 according to docs/system-design.md.
+Build Ephemeris v0 according to docs/system-design.md.
 
 Goal:
 A local-first personal activity tracker with a TickTick-like execution interface, but our own data model and SQLite source of truth.
@@ -1700,7 +1700,7 @@ Do not add:
 ## 28. Reference UX Agent Prompt
 
 ```text
-Use Playwright to inspect TickTick web UI as a UX reference for Activity Ledger.
+Use Playwright to inspect TickTick web UI as a UX reference for Ephemeris.
 
 Goal:
 Extract interaction patterns that make TickTick fast for daily execution.
@@ -1746,8 +1746,8 @@ The report should answer:
 - What information is visible immediately?
 - What is hidden behind secondary interactions?
 - How does the UI avoid feeling overloaded?
-- Which patterns should Activity Ledger adopt conceptually?
-- Which patterns should Activity Ledger avoid?
+- Which patterns should Ephemeris adopt conceptually?
+- Which patterns should Ephemeris avoid?
 ```
 
 ---
@@ -1759,7 +1759,7 @@ Build:
 ```text
 TickTick-like execution UI
 +
-Activity Ledger data model
+Ephemeris data model
 +
 SQLite local memory
 +

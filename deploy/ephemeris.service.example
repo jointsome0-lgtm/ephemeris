@@ -1,32 +1,32 @@
-# Activity Ledger (tick-like) — systemd *user* service template.
+# Ephemeris — systemd *user* service template.
 #
 # This is a committed, portable template (host 127.0.0.1, %h paths). Copy it to
 # your user unit directory and adjust before enabling — do NOT symlink it, so
 # your local host choice never lands back in Git:
 #
 #   mkdir -p ~/.config/systemd/user
-#   cp deploy/tick-like.service.example ~/.config/systemd/user/tick-like.service
+#   cp deploy/ephemeris.service.example ~/.config/systemd/user/ephemeris.service
 #   # For phone/LAN access, change --host to 0.0.0.0 in the copy (see note below).
 #   systemctl --user daemon-reload
-#   systemctl --user enable --now tick-like
+#   systemctl --user enable --now ephemeris
 #   loginctl enable-linger "$USER"   # keep running after logout / across reboots
 #
-# %h expands to your home dir; this assumes the repo lives at ~/projects/tick-like.
+# %h expands to your home dir; this assumes the repo lives at ~/projects/ephemeris.
 
 [Unit]
-Description=Activity Ledger (tick-like)
+Description=Ephemeris — personal activity ledger
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/projects/tick-like
+WorkingDirectory=%h/projects/ephemeris
 # Optional: the ledger clock that defines "today". Defaults to the host zone.
 Environment=APP_TIMEZONE=Europe/Moscow
 # Concrete venv interpreter built by `uv sync` — no PATH/shim dependency.
 # Default 127.0.0.1 = desktop-only (safe). The app has NO AUTH.
 # For phone/LAN access change to --host 0.0.0.0 — ONLY on a trusted network.
-ExecStart=%h/projects/tick-like/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+ExecStart=%h/projects/ephemeris/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 Restart=on-failure
 RestartSec=3
 

@@ -1,1 +1,1 @@
-"""Activity Ledger — local-first personal routine/activity tracker."""
+"""Ephemeris — local-first personal routine/activity tracker."""

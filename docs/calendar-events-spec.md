@@ -1,6 +1,6 @@
 # Spec — Calendar Events (timed + recurring)
 
-> Spec for adding **time-of-day, recurring calendar events** to the tick-like
+> Spec for adding **time-of-day, recurring calendar events** to the ephemeris
 > TickTick clone. Written to drop into `docs/system-design.md` as **sec32**
 > (scope change, same style as sec30 Task Manager / sec31 Habit Tab). Grounded in
 > the current code: schema v4 (`app/db.py`), services (`app/services/tasks.py`,
@@ -382,7 +382,7 @@ Keep the suite green (the repo tracks a "N/N verified" bar).
 
 Before touching the **live** DB: `python -m scripts.backup_db --keep 20` first
 (sec19), test the migration on the copy, and restart the service via
-`systemctl --user restart tick-like` (never a broad `pkill`).
+`systemctl --user restart ephemeris` (never a broad `pkill`).
 
 ---
 
