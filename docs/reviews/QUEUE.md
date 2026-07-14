@@ -19,10 +19,6 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-14 — d56b617 — `app/terminal.py`, `verify.py`, `verify_restore.py` —
-  project rename: env switches `TICKLIKE_DISABLE_TERMINAL` / `TICKLIKE_TERM_PROXY`
-  renamed to `EPHEMERIS_*` (mechanical, no logic change); verify 340/340
-
 ## Done
 
 - [x] 2026-07-03 — multi-session terminal core — `app/terminal.py` —
@@ -39,3 +35,6 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   terminal websocket registration and local-only UI gating now honor
   `TICKLIKE_DISABLE_TERMINAL`; subprocess checks cover both switch states
   → `2026-07-11-terminal-disable-switch-review.md`
+- [x] 2026-07-14 — d56b617 — `app/terminal.py`, `verify.py`, `verify_restore.py` —
+  project rename: terminal controls renamed from `TICKLIKE_*` to `EPHEMERIS_*`
+  → `2026-07-14-terminal-env-rename-review.md` (one Medium and two Low confirmed)

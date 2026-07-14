@@ -73,6 +73,27 @@ Status: `systemctl --user status ephemeris` · logs: `journalctl --user -u ephem
 The template ships with `127.0.0.1`; copy-and-edit (don't symlink) so your local
 host choice never lands back in Git.
 
+### Upgrading from tick-like
+
+The project was renamed (repo, package, systemd unit, env vars). Pulling the
+rename commit does not migrate an existing install — do it explicitly:
+
+```bash
+systemctl --user disable --now tick-like
+mv ~/projects/tick-like ~/projects/ephemeris
+cp deploy/ephemeris.service.example ~/.config/systemd/user/ephemeris.service
+# ...re-apply any local edits (host, port, env) to the copy, then:
+rm ~/.config/systemd/user/tick-like.service
+systemctl --user daemon-reload
+systemctl --user enable --now ephemeris
+systemctl --user status ephemeris   # verify THIS unit is the listener
+```
+
+The env switches were renamed and the old names are **no longer honored** —
+if you set `TICKLIKE_DISABLE_TERMINAL` or `TICKLIKE_TERM_PROXY`, re-set them
+as `EPHEMERIS_DISABLE_TERMINAL` / `EPHEMERIS_TERM_PROXY` before restarting,
+or the terminal comes back enabled / the proxy override is ignored.
+
 ## Configuration
 
 | Env var             | Default            | Meaning                                            |
