@@ -4,6 +4,12 @@
 
 Treat this repository as public by default.
 
+Ephemeris is a [public engine](https://github.com/jointsome0-lgtm/selfos/blob/main/docs/architecture.md):
+it holds code, schemas/specs, docs, and invented demo fixtures. All private
+runtime state lives in an explicitly configured [private instance](https://github.com/jointsome0-lgtm/selfos/blob/main/docs/instance.md)
+outside the checkout. The ecosystem [deletion contract](https://github.com/jointsome0-lgtm/selfos/blob/main/docs/deletion.md)
+defines how data leaves this ecosystem.
+
 Allowed in Git:
 
 - Application source code under `app/`.

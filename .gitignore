@@ -1,3 +1,22 @@
+# --- Shared selfos public-hygiene core ---
+atlas/
+data/
+state/
+intake/
+graph/
+plans/
+*.sqlite*
+*.db*
+*.jsonl
+.env
+.env.*
+engine.pin
+copies-manifest
+delivery-registry
+.claude/
+.codex/
+.agents/
+
 # --- Browser automation / Playwright output (may contain PRIVATE data) ---
 .playwright-mcp/
 playwright/.auth/
