@@ -65,3 +65,4 @@ venv/
 # --- OS / editor noise ---
 .DS_Store
 *.swp
+.worktrees/
