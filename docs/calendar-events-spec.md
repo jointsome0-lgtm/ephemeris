@@ -46,8 +46,9 @@ first-class entity, **calendar events**, that have:
 
 ## 2. Worked example (the canonical demo fixture)
 
-Use this invented demo schedule as the acceptance fixture (§11). It is not copied
-from the user's calendar, tasks, habits, or notes.
+Use this invented demo schedule as the acceptance fixture (§11). It is authored
+by the synthetic persona Vera Example ([selfos docs/persona.md](https://github.com/jointsome0-lgtm/selfos/blob/main/docs/persona.md))
+and is not copied from the user's calendar, tasks, habits, or notes.
 
 - **Orbit Drill** — 09:10–09:55, **weekly Mon/Wed/Fri**, starts **2027-04-07 (Wed)**, open-ended.
 - **Signal Lab**  — 09:10–09:55, **weekly Tue/Thu**, starts **2027-04-07 (Wed)**, open-ended.
