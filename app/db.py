@@ -18,7 +18,16 @@ from zoneinfo import ZoneInfo
 
 # --- paths -----------------------------------------------------------------
 
-DATA_DIR = Path(os.environ.get("ACTIVITY_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
+_data_dir = os.environ.get("ACTIVITY_DATA_DIR")
+if not _data_dir:
+    raise RuntimeError(
+        "ACTIVITY_DATA_DIR is required: the destination must be an explicitly "
+        "configured private path outside the public checkout (for example, "
+        "~/.local/share/ephemeris); see "
+        "https://github.com/jointsome0-lgtm/selfos/blob/main/docs/instance.md"
+    )
+
+DATA_DIR = Path(_data_dir)
 DB_PATH = Path(os.environ.get("ACTIVITY_DB", DATA_DIR / "activity.sqlite"))
 EXPORTS_DIR = DATA_DIR / "exports"
 

@@ -38,7 +38,7 @@ separate calls.
 | `task_tags` | Not journaled | The table exists (`app/db.py:197-201`) but has no application write/event vocabulary. |
 | `focus_sessions` | Partially | The row contains note/date/timestamps, while the event carries only session ID, mode, seconds, and lesson ID (`app/services/focus.py:46-71`). |
 | `calendar_events` | Partially | Every row is exported as a complete `calendar_event_series` snapshot, including archived rows and IDs (`app/services/export.py:50-64`), but linked list rows may be unavailable. Restore keeps the DB foreign-key clean by clearing and reporting those `list_id` values. |
-| `lessons` | Partially | Lifecycle events exist, but ordinary lesson opens update current entry/last-opened time without an event (`app/services/lessons.py:450-565`, especially `473-482`). Generated lesson files under `data/lessons/` are not exported. |
+| `lessons` | Partially | Lifecycle events exist, but ordinary lesson opens update current entry/last-opened time without an event (`app/services/lessons.py:450-565`, especially `473-482`). Generated lesson files under `$ACTIVITY_DATA_DIR/lessons/` are not exported. |
 
 `append_event(...)` defines 26 audit event types:
 
@@ -84,7 +84,8 @@ separate calls.
 - Tasks/lists: emit complete post-write row snapshots, including every row
   changed by respace and list archive, or add versioned typed-table snapshots.
 - Focus: include note/date/timestamps or snapshot the table.
-- Lessons: snapshot all metadata and back up `data/lessons/` separately.
+- Lessons: snapshot all metadata and back up `$ACTIVITY_DATA_DIR/lessons/`
+  separately.
 - Tags/task tags: add journaling or snapshots before activating those tables.
 - Timestamp fidelity: use one transaction timestamp for both typed row and
   audit envelope.

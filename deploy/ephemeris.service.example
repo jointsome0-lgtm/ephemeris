@@ -23,6 +23,8 @@ Type=simple
 WorkingDirectory=%h/projects/ephemeris
 # Optional: the ledger clock that defines "today". Defaults to the host zone.
 Environment=APP_TIMEZONE=Europe/Moscow
+# The ledger must live outside the public checkout; adjust this path in your copy.
+Environment=ACTIVITY_DATA_DIR=%h/.local/share/ephemeris
 # Concrete venv interpreter built by `uv sync` — no PATH/shim dependency.
 # Default 127.0.0.1 = desktop-only (safe). The app has NO AUTH.
 # For phone/LAN access change to --host 0.0.0.0 — ONLY on a trusted network.
