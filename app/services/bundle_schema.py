@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import errno
 import json
+import math
 import os
 import re
 import stat as stat_module
@@ -256,6 +257,16 @@ def _reject_nonstandard(const: str) -> None:
     raise json.JSONDecodeError(f"non-standard JSON constant {const}", "", 0)
 
 
+def _finite_float(token: str) -> float:
+    """A standard number token that overflows to inf (e.g. 1e10000) must not
+    be accepted either: json.dumps would re-emit it as the non-JSON token
+    `Infinity`, poisoning the manifest for the next read."""
+    value = float(token)
+    if not math.isfinite(value):
+        raise json.JSONDecodeError(f"non-finite number {token}", "", 0)
+    return value
+
+
 def read_manifest_text(
     text: str,
     *,
@@ -279,7 +290,11 @@ def read_manifest_bytes(
     if len(data) > MAX_MANIFEST_BYTES:
         return rejected_read("manifest-too-large", f"{len(data)} bytes")
     try:
-        raw = json.loads(data.decode("utf-8"), parse_constant=_reject_nonstandard)
+        raw = json.loads(
+            data.decode("utf-8"),
+            parse_constant=_reject_nonstandard,
+            parse_float=_finite_float,
+        )
     except (UnicodeDecodeError, ValueError) as exc:
         # ValueError covers JSONDecodeError AND the decoder's other parse-time
         # failures (e.g. the int-conversion digit limit on a huge number

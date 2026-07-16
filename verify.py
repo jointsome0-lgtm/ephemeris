@@ -855,6 +855,9 @@ with TestClient(app) as c:
         '{"schema_version": 2, "x_big": ' + "9" * 5000 + "}")
     check("huge integer token is manifest-unreadable, not a crash",
           _bigint.outcome == "rejected" and "manifest-unreadable" in _bigint.codes())
+    _inf = bschema.read_manifest_text('{"schema_version": 2, "x_big": 1e10000}')
+    check("overflowing float token is manifest-unreadable (writer stays JSON)",
+          _inf.outcome == "rejected" and "manifest-unreadable" in _inf.codes())
 
     # v2 selections compare exactly (§4.1): a normalizable variant is not repaired
     _norm_meta = c.get(f"/learn/lessons/{_v2_id}/preview-meta",
