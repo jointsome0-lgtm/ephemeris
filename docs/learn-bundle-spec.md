@@ -385,7 +385,12 @@ lives. Rules:
 Deterministic adapter enumeration (no HTML parsing, no Atlas access):
 
 1. read `lesson.json` (reject > 256 KiB), apply the version policy (§9);
-2. identity = `lesson_uid`; pages/questions/blocks from the manifest;
+2. identity = `lesson_uid` — a **v2** contract: a v1 (or missing-version)
+   bundle carries no identity, and an external adapter treats it as
+   legacy-awaiting-migration — it MAY enumerate pages but MUST NOT mint or
+   derive a durable identity from slug/title (in-app readers, which have
+   the DB, join `lessons.uid` by slug instead);
+   pages/questions/blocks from the manifest;
 3. `path`/`step`/`concepts` passed through verbatim as opaque values;
 4. attempts from `attempts.jsonl` if present (per §6.2 tolerance);
 5. learner files: walk each artifact root lexicographically, depth ≤ 4,
