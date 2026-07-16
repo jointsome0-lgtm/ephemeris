@@ -6,7 +6,6 @@ soft archive, and the matching ledger events.
 """
 from __future__ import annotations
 
-import json
 import mimetypes
 import os
 import re
@@ -15,8 +14,10 @@ import tempfile
 from html import escape
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from ..db import DATA_DIR, append_event, get_conn, now_iso
+from . import bundle_schema
 
 STATUSES = ("backlog", "studying", "paused", "studied")
 STATUS_LABELS = {
@@ -26,7 +27,7 @@ STATUS_LABELS = {
     "studied": "Studied",
 }
 LESSONS_DIR = DATA_DIR / "lessons"
-DEFAULT_ENTRY = "index.html"
+DEFAULT_ENTRY = bundle_schema.DEFAULT_ENTRY
 MANIFEST_NAME = "lesson.json"
 
 
@@ -79,6 +80,7 @@ def _lesson_view(row: sqlite3.Row) -> dict:
     status = row["status"]
     return {
         "id": row["id"],
+        "uid": row["uid"],
         "title": row["title"],
         "source_url": row["source_url"],
         "slug": row["slug"],
@@ -150,15 +152,14 @@ def _entry_label(entry: str) -> str:
 
 
 def _default_manifest(lesson: dict) -> dict:
-    return {
-        "schema_version": 1,
-        "slug": lesson["slug"],
-        "title": lesson["title"],
-        "source_url": lesson.get("source_url"),
-        "entry": DEFAULT_ENTRY,
-        "related": [],
-        "updated_by_agent_at": None,
-    }
+    """The v2 creation skeleton (learn-bundle-spec.md §5). The DB-minted uid
+    is echoed so the bundle is self-describing for the agent and adapters."""
+    return bundle_schema.default_manifest_v2(
+        lesson_uid=lesson["uid"],
+        slug=lesson["slug"],
+        title=lesson["title"],
+        source_url=lesson.get("source_url"),
+    )
 
 
 def _manifest_path(slug: str) -> Path:
@@ -166,79 +167,108 @@ def _manifest_path(slug: str) -> Path:
 
 
 def _write_manifest(path: Path, data: dict) -> None:
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    """Canonical serialization + atomic replace (§9.3; the B1 writer idiom)."""
+    bundle_schema.write_manifest(path, data)
 
 
-def _normalise_manifest(lesson: dict, raw) -> dict:
-    if not isinstance(raw, dict):
-        raw = {}
-    default = _default_manifest(lesson)
-    raw_entry = raw.get("entry")
-    if isinstance(raw_entry, dict):
-        raw_entry = raw_entry.get("path")
-    if not isinstance(raw_entry, str):
-        raw_entry = default["entry"]
-    try:
-        entry = _clean_html_ref(raw_entry)
-    except LessonError:
-        entry = default["entry"]
-    related: list[str] = []
-    raw_related = raw.get("related")
-    if not isinstance(raw_related, list):
-        raw_related = []
-    for item in raw_related:
-        candidate = item.get("path") if isinstance(item, dict) else item
-        if not isinstance(candidate, str):
-            continue
-        try:
-            ref = _clean_html_ref(candidate)
-        except LessonError:
-            continue
-        if ref != entry and ref not in related:
-            related.append(ref)
-    return {
-        **default,
-        "entry": entry,
-        "related": related,
-        "updated_by_agent_at": raw.get("updated_by_agent_at"),
-    }
-
-
-def _ensure_bundle_manifest(lesson: dict) -> dict:
+def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:
+    """Dual-read the bundle manifest (v1/v2), creating the standard dirs and —
+    for a lesson that has none — the v2 skeleton. Creation, never repair: an
+    existing manifest is read as-is, and a corrupt/unsupported/symlinked one
+    is a visible reject (§9.1), not a silent default."""
     LESSONS_DIR.mkdir(parents=True, exist_ok=True)
     lesson_dir = _lesson_dir(lesson["slug"])
+    if not _bundle_dir_is_safe(lesson_dir):
+        return bundle_schema.rejected_read(
+            "symlinked-bundle", "lesson bundle dir is not a real directory"
+        )
     lesson_dir.mkdir(parents=True, exist_ok=True)
     (lesson_dir / "related").mkdir(exist_ok=True)
     (lesson_dir / "assets").mkdir(exist_ok=True)
 
     manifest_path = _manifest_path(lesson["slug"])
-    if not manifest_path.exists():
+    read = bundle_schema.read_manifest_path(manifest_path, db_lesson=lesson)
+    if read is None:  # genuinely missing: creation, not migration (§9.1)
         _write_manifest(manifest_path, _default_manifest(lesson))
+        read = bundle_schema.read_manifest_path(manifest_path, db_lesson=lesson)
+        if read is None:
+            return bundle_schema.rejected_read(
+                "manifest-unreadable", "manifest vanished after creation"
+            )
+    if read.version == bundle_schema.SCHEMA_V2 and not read.rejected:
+        # the default artifact root exists for learner work; v1 bundles stay
+        # byte-untouched (the 14 migrated-later real bundles are v1)
+        (lesson_dir / bundle_schema.DEFAULT_ARTIFACT_ROOT).mkdir(exist_ok=True)
 
     # Non-destructive bridge from the earlier flat-file prototype:
-    # data/lessons/<slug>.html -> data/lessons/<slug>/index.html.
+    # data/lessons/<slug>.html -> data/lessons/<slug>/index.html. Never
+    # writes through a pre-planted symlink (§2).
     legacy = _legacy_lesson_path(lesson["slug"])
-    index = _entry_path(lesson["slug"], DEFAULT_ENTRY)
-    if legacy.is_file() and not index.exists():
+    index = lesson_dir / DEFAULT_ENTRY
+    if legacy.is_file() and not index.exists() and not index.is_symlink():
         index.write_text(legacy.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
 
-    try:
-        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        raw = {}
-    return _normalise_manifest(lesson, raw)
+    return read
 
 
-def lesson_file_info(lesson: dict, entry: str | None = None) -> dict:
-    """Runtime HTML artifact metadata for one bundle entry."""
-    manifest = _ensure_bundle_manifest(lesson)
-    entry = _clean_html_ref(entry or lesson.get("current_entry") or manifest["entry"])
-    path = _entry_path(lesson["slug"], entry)
-    exists = path.is_file()
+def _finding_views(read: bundle_schema.ManifestRead) -> list[dict]:
+    """Findings for the preview metadata — readers MUST surface them (§9.2)."""
+    return [
+        {"code": f.code, "severity": f.severity, "detail": f.detail}
+        for f in read.findings
+    ]
+
+
+def _resolve_entry(lesson: dict, read: bundle_schema.ManifestRead, entry: str | None) -> str:
+    """One owner of the page-selection rule. v2 accepts only declared
+    `pages[].path`: an undeclared stored/requested selection falls back to the
+    manifest entry (§4.2). v1 keeps its historical tolerance of undeclared
+    (but well-formed) refs. Malformed input still raises for the routes."""
+    candidate = entry or lesson.get("current_entry")
+    if read.version == bundle_schema.SCHEMA_V2:
+        if candidate:
+            candidate = _clean_html_ref(candidate)
+            if candidate in read.page_paths():
+                return candidate
+        return read.entry
+    return _clean_html_ref(candidate or read.entry)
+
+
+def _file_info(lesson: dict, read: bundle_schema.ManifestRead, entry: str | None) -> dict:
+    if read.rejected:
+        # No page is renderable; the preview shows an explicit placeholder
+        # and the metadata carries the findings (§9.1).
+        return {
+            "entry": None,
+            "label": "Manifest",
+            "path": str(_manifest_path(lesson["slug"])),
+            "rel_path": f"{lesson['slug']}/{MANIFEST_NAME}",
+            "exists": False,
+            "version": "0",
+            "size": 0,
+            "outcome": read.outcome,
+            "findings": _finding_views(read),
+        }
+    entry = _resolve_entry(lesson, read, entry)
+    findings = _finding_views(read)
+    # §2 symlink policy: a path that resolves through a symlink is missing —
+    # checked before any resolve() so the link is never followed.
+    if bundle_schema.path_has_symlink(_lesson_dir(lesson["slug"]), entry):
+        findings.append({
+            "code": "symlinked-path",
+            "severity": bundle_schema.DEGRADED,
+            "detail": f"{entry} resolves through a symlink",
+        })
+        path = _lesson_dir(lesson["slug"]) / PurePosixPath(entry)
+        exists = False
+    else:
+        path = _entry_path(lesson["slug"], entry)
+        exists = path.is_file()
     stat = path.stat() if exists else None
+    titles = {p["path"]: p["title"] for p in read.pages}
     return {
         "entry": entry,
-        "label": _entry_label(entry),
+        "label": titles.get(entry) or _entry_label(entry),
         "path": str(path),
         # Display form: bundle-relative, so templates/APIs never leak the
         # server's absolute filesystem layout (home dir, username) to clients.
@@ -246,15 +276,29 @@ def lesson_file_info(lesson: dict, entry: str | None = None) -> dict:
         "exists": exists,
         "version": str(stat.st_mtime_ns) if stat else "0",
         "size": stat.st_size if stat else 0,
+        "outcome": read.outcome,
+        "findings": findings,
     }
+
+
+def lesson_file_info(lesson: dict, entry: str | None = None) -> dict:
+    """Runtime HTML artifact metadata for one bundle entry."""
+    read = _ensure_bundle_manifest(lesson)
+    return _file_info(lesson, read, entry)
 
 
 def bundle_resource_info(lesson: dict, ref: str) -> dict:
     """Runtime metadata for a bundle-relative file, including assets."""
     _ensure_bundle_manifest(lesson)
     ref = _clean_bundle_ref(ref)
-    path = _bundle_path(lesson["slug"], ref)
-    exists = path.is_file()
+    # §2 symlink policy: a path that resolves through a symlink is missing —
+    # checked before any resolve() so the link is never followed.
+    if bundle_schema.path_has_symlink(_lesson_dir(lesson["slug"]), ref):
+        path = _lesson_dir(lesson["slug"]) / PurePosixPath(ref)
+        exists = False
+    else:
+        path = _bundle_path(lesson["slug"], ref)
+        exists = path.is_file()
     stat = path.stat() if exists else None
     media_type, _encoding = mimetypes.guess_type(path.name)
     media_type = media_type or "application/octet-stream"
@@ -275,21 +319,35 @@ def bundle_resource_info(lesson: dict, ref: str) -> dict:
 
 def bundle_info(lesson: dict, entry: str | None = None) -> dict:
     """Agent-facing file bundle plus the app's current entry selection."""
-    manifest = _ensure_bundle_manifest(lesson)
-    try:
-        current = _clean_html_ref(entry or lesson.get("current_entry") or manifest["entry"])
-    except LessonError:
-        current = manifest["entry"]
-    pages = [manifest["entry"], *manifest["related"]]
-    if current not in pages:
-        pages.insert(0, current)
-    return {
-        "manifest": manifest,
+    read = _ensure_bundle_manifest(lesson)
+    info = {
+        "manifest": read.raw,
         "manifest_path": str(_manifest_path(lesson["slug"])),
+        "schema_version": read.version,
+        "profile": read.profile,
+        "outcome": read.outcome,
+        "findings": _finding_views(read),
+    }
+    if read.rejected:
+        return {
+            **info,
+            "entry": None,
+            "file": _file_info(lesson, read, None),
+            "pages": [],
+        }
+    try:
+        current = _resolve_entry(lesson, read, entry)
+    except LessonError:
+        current = read.entry
+    pages = read.page_paths()
+    if read.version != bundle_schema.SCHEMA_V2 and current not in pages:
+        pages.insert(0, current)  # v1 display tolerance; v2 never injects (§4.2)
+    return {
+        **info,
         "entry": current,
-        "file": lesson_file_info(lesson, current),
+        "file": _file_info(lesson, read, current),
         "pages": [
-            {**lesson_file_info(lesson, page), "current": page == current}
+            {**_file_info(lesson, read, page), "current": page == current}
             for page in pages
         ],
     }
@@ -464,30 +522,44 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
 
 
 def create_lesson(conn: sqlite3.Connection, title: str, source_url: str | None = None) -> int:
-    """Create one backlog lesson and append its ledger event in the same txn."""
+    """Create one backlog lesson and append its ledger event in the same txn.
+
+    The lesson uid is minted here, exactly once (learn-bundle-spec.md §3):
+    SQLite is the mint source and the truth; the v2 bundle manifest written
+    right after only carries an echo."""
     title = _clean_title(title)
     source_url = _clean_url(source_url)
     slug = _unique_slug(conn, title)
+    uid = str(uuid4())
     ts = now_iso()
     with conn:
         cur = conn.execute(
-            "INSERT INTO lessons (title, source_url, slug, status, created_at) "
-            "VALUES (?, ?, ?, 'backlog', ?)",
-            (title, source_url, slug, ts),
+            "INSERT INTO lessons (uid, title, source_url, slug, status, created_at) "
+            "VALUES (?, ?, ?, ?, 'backlog', ?)",
+            (uid, title, source_url, slug, ts),
         )
         lesson_id = cur.lastrowid
         append_event(conn, "lesson_created", {
             "lesson_id": lesson_id,
+            "lesson_uid": uid,
             "title": title,
             "source_url": source_url,
             "slug": slug,
             "status": "backlog",
         })
+    # v2 skeleton at creation (§5). Best-effort: a filesystem hiccup must not
+    # undo the committed lesson — the read path recreates a missing manifest.
+    try:
+        _ensure_bundle_manifest(get_lesson(conn, lesson_id))
+    except OSError:
+        pass
     return lesson_id
 
 
 def mark_opened(conn: sqlite3.Connection, lesson_id: int, entry: str) -> None:
-    """Persist lightweight UI state without adding a noisy ledger event."""
+    """Persist lightweight UI state without adding a noisy ledger event.
+    Callers pass an entry already resolved against the bundle read model
+    (bundle_info), so v2 selections are declared pages by construction."""
     entry = _clean_html_ref(entry)
     _require_lesson(conn, lesson_id)
     ts = now_iso()
@@ -499,9 +571,17 @@ def mark_opened(conn: sqlite3.Connection, lesson_id: int, entry: str) -> None:
 
 
 def set_current_entry(conn: sqlite3.Connection, lesson_id: int, entry: str) -> None:
-    """Explicitly set the lesson entry, e.g. from an agent curl call."""
+    """Explicitly set the lesson entry, e.g. from an agent curl call.
+
+    For a v2 bundle only declared `pages[].path` values are accepted
+    (learn-bundle-spec.md §4.2); a rejected manifest refuses the write."""
     entry = _clean_html_ref(entry)
     row = _require_lesson(conn, lesson_id)
+    read = _ensure_bundle_manifest(_lesson_view(row))
+    if read.rejected:
+        raise LessonError("lesson manifest is rejected; fix lesson.json first")
+    if read.version == bundle_schema.SCHEMA_V2 and entry not in read.page_paths():
+        raise LessonError("entry is not a declared lesson page")
     ts = now_iso()
     with conn:
         conn.execute(
@@ -510,6 +590,7 @@ def set_current_entry(conn: sqlite3.Connection, lesson_id: int, entry: str) -> N
         )
         append_event(conn, "lesson_entry_changed", {
             "lesson_id": lesson_id,
+            "lesson_uid": row["uid"],
             "from_entry": row["current_entry"],
             "to_entry": entry,
         })
@@ -544,6 +625,7 @@ def set_status(conn: sqlite3.Connection, lesson_id: int, status: str) -> None:
         )
         append_event(conn, "lesson_status_changed", {
             "lesson_id": lesson_id,
+            "lesson_uid": row["uid"],
             "from_status": row["status"],
             "to_status": status,
         })
@@ -561,6 +643,7 @@ def archive_lesson(conn: sqlite3.Connection, lesson_id: int) -> None:
         )
         append_event(conn, "lesson_archived", {
             "lesson_id": lesson_id,
+            "lesson_uid": row["uid"],
             "status": row["status"],
         })
 
@@ -577,6 +660,7 @@ def restore_lesson(conn: sqlite3.Connection, lesson_id: int) -> None:
         )
         append_event(conn, "lesson_restored", {
             "lesson_id": lesson_id,
+            "lesson_uid": row["uid"],
             "status": row["status"],
         })
 
@@ -639,16 +723,25 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 50) -> list[dict]:
     return [_lesson_view(row) for row in rows]
 
 
-def preview_html(lesson: dict, entry: str | None = None) -> tuple[str, dict]:
-    """Return the current lesson HTML, or a small generated placeholder."""
-    info = lesson_file_info(lesson, entry)
-    if info["exists"]:
-        return Path(info["path"]).read_text(encoding="utf-8", errors="replace"), info
-    title = escape(lesson["title"])
-    # Bundle-relative on purpose: this document reaches any client that can open
-    # the preview, so the server's absolute filesystem layout stays out of it.
-    path = escape(info["rel_path"])
-    html = f"""<!doctype html>
+# Human text for the §9.2 short-circuit/reject codes the preview can hit.
+_REJECT_MESSAGES = {
+    "unsupported-version": "Unsupported manifest version.",
+    "manifest-unreadable": "lesson.json is not readable JSON.",
+    "manifest-too-large": "lesson.json exceeds the manifest size limit.",
+    "symlinked-bundle": "The lesson bundle resolves through a symlink.",
+    "missing-identity": "The manifest is missing its lesson identity.",
+    "duplicate-id": "The manifest repeats an id.",
+    "duplicate-path": "The manifest claims one path twice.",
+    "limit-exceeded": "A manifest list exceeds its size limit.",
+    "no-pages": "The manifest declares no valid pages.",
+}
+
+
+def _placeholder_html(title: str, message: str, code_line: str) -> str:
+    title = escape(title)
+    message = escape(message)
+    code_line = escape(code_line)
+    return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -677,12 +770,32 @@ def preview_html(lesson: dict, entry: str | None = None) -> tuple[str, dict]:
 <body>
   <main>
     <h1>{title}</h1>
-    <p>No HTML file yet.</p>
-    <code>{path}</code>
+    <p>{message}</p>
+    <code>{code_line}</code>
   </main>
 </body>
 </html>
 """
+
+
+def preview_html(lesson: dict, entry: str | None = None) -> tuple[str, dict]:
+    """Return the current lesson HTML, or a small generated placeholder —
+    including the explicit rejected-manifest placeholder (§9.1): the lesson
+    stays listed, nothing is silently coerced to defaults."""
+    info = lesson_file_info(lesson, entry)
+    if info["exists"]:
+        return Path(info["path"]).read_text(encoding="utf-8", errors="replace"), info
+    # Bundle-relative on purpose: this document reaches any client that can open
+    # the preview, so the server's absolute filesystem layout stays out of it.
+    if info["outcome"] == bundle_schema.REJECTED:
+        codes = sorted({f["code"] for f in info["findings"]
+                        if f["severity"] == bundle_schema.REJECTED})
+        message = " ".join(_REJECT_MESSAGES.get(code, "The lesson manifest was rejected.")
+                           for code in codes)
+        html = _placeholder_html(lesson["title"], message,
+                                 f"{info['rel_path']}: {', '.join(codes)}")
+    else:
+        html = _placeholder_html(lesson["title"], "No HTML file yet.", info["rel_path"])
     return html, info
 
 

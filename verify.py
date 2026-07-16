@@ -517,6 +517,214 @@ with TestClient(app) as c:
           and _atomic_agents.read_text(encoding="utf-8") == _atomic_before
           and not list(_atomic_dir.glob(".brief-*")))
 
+    # --- C3: bundle schema v2 (learn-bundle-spec.md) — readers, writer, identity
+    from app import db as db_mod
+    from app.services import bundle_schema as bschema
+
+    # every cases.json expectation holds under the fixture-only runner registry
+    _fx_dir = ROOT / "fixtures" / "lesson-manifests"
+    _fx_cases = json.loads((_fx_dir / "cases.json").read_text(encoding="utf-8"))
+    _fx_registry = frozenset(_fx_cases["context"]["runner_registry"]["known"])
+    for _case in _fx_cases["cases"]:
+        _fx_text = (_fx_dir / _case["file"]).read_text(encoding="utf-8")
+        _fx_read = bschema.read_manifest_text(_fx_text, runner_registry=_fx_registry)
+        check(f"fixture {_case['file']}: {_case['expect']}, read as {_case['read_as']}",
+              _fx_read.outcome == _case["expect"]
+              and _fx_read.version == _case["read_as"]
+              and set(_case["findings"]) <= _fx_read.codes(),
+              f"outcome={_fx_read.outcome} version={_fx_read.version} "
+              f"codes={sorted(_fx_read.codes())}")
+
+    # §9.3: round-tripping a canonical manifest is byte-identical
+    _fx_roundtrips = [
+        bschema.canonical_dumps(
+            json.loads(_fx_file.read_text(encoding="utf-8")),
+            json.loads(_fx_file.read_text(encoding="utf-8")).get("schema_version", 1),
+        ) == _fx_file.read_text(encoding="utf-8")
+        for _fx_file in sorted(_fx_dir.glob("*.json"))
+        if _fx_file.name != "cases.json"
+    ]
+    check("canonical writer round-trips all 10 fixture manifests byte-identically",
+          len(_fx_roundtrips) == 10 and all(_fx_roundtrips))
+
+    # lesson identity (§3): minted once at creation, echoed in manifest + event
+    _uid_conn = get_conn()
+    try:
+        _uid_id = lessons_svc.create_lesson(
+            _uid_conn, "Uid Mint Demo", "https://learning.example/uid-demo")
+        _uid_lesson = lessons_svc.get_lesson(_uid_conn, _uid_id)
+    finally:
+        _uid_conn.close()
+    check("create_lesson mints a lesson uid",
+          bool(_uid_lesson["uid"])
+          and bschema.UUID_RE.match(_uid_lesson["uid"]) is not None)
+    _uid_manifest_path = Path(lessons_svc.LESSONS_DIR) / _uid_lesson["slug"] / "lesson.json"
+    _uid_manifest_text = _uid_manifest_path.read_text(encoding="utf-8")
+    _uid_manifest = json.loads(_uid_manifest_text)
+    check("create_lesson writes the v2 skeleton manifest (§5)",
+          _uid_manifest.get("schema_version") == 2
+          and _uid_manifest.get("lesson_uid") == _uid_lesson["uid"]
+          and _uid_manifest.get("entry") == "index.html"
+          and [p.get("path") for p in _uid_manifest.get("pages", [])] == ["index.html"]
+          and bschema.PAGE_ID_RE.match(_uid_manifest["pages"][0]["id"]) is not None
+          and _uid_manifest.get("runtime") == {"profile": "interactive-local-v1"}
+          and _uid_manifest.get("artifact_roots") == ["attempts"]
+          and _uid_manifest.get("source_url") == "https://learning.example/uid-demo")
+    check("v2 skeleton is canonical on disk",
+          bschema.canonical_dumps(_uid_manifest) == _uid_manifest_text)
+    check("v2 bundle gets its default artifact root dir",
+          (Path(lessons_svc.LESSONS_DIR) / _uid_lesson["slug"] / "attempts").is_dir())
+    _uid_created = json.loads(events_of("lesson_created")[-1]["payload_json"])
+    check("lesson_created event echoes lesson_uid",
+          _uid_created.get("lesson_uid") == _uid_lesson["uid"]
+          and _uid_created.get("lesson_id") == _uid_id)
+
+    # rename churn never re-mints (§3): uid survives title+slug change,
+    # backfill rerun is a no-op, a NULL-uid row (stale pre-v10 writer) heals
+    _uid_conn = get_conn()
+    try:
+        with _uid_conn:
+            _uid_conn.execute(
+                "UPDATE lessons SET title='Uid Mint Demo Renamed', "
+                "slug='uid-mint-demo-renamed' WHERE id=?", (_uid_id,))
+        _restamped = db_mod.backfill_lesson_uids(_uid_conn)
+        _uid_conn.commit()
+        _uid_after = lessons_svc.get_lesson(_uid_conn, _uid_id)
+        with _uid_conn:
+            _uid_conn.execute(
+                "INSERT INTO lessons (title, slug, status, created_at) "
+                "VALUES ('Stale Writer Demo', 'stale-writer-demo', 'backlog', ?)",
+                (db_mod.now_iso(),))
+        _healed = db_mod.backfill_lesson_uids(_uid_conn)
+        _uid_conn.commit()
+        _stale_uid = _uid_conn.execute(
+            "SELECT uid FROM lessons WHERE slug='stale-writer-demo'").fetchone()["uid"]
+    finally:
+        _uid_conn.close()
+    check("rename does not change the lesson uid",
+          _restamped == 0 and _uid_after["uid"] == _uid_lesson["uid"])
+    check("uid backfill stamps exactly the NULL-uid rows",
+          _healed == 1 and _stale_uid and bschema.UUID_RE.match(_stale_uid) is not None)
+
+    # v2 read path: declared pages only (§4.2), unknown fields preserved (§9.3)
+    _v2_conn = get_conn()
+    try:
+        _v2_id = lessons_svc.create_lesson(_v2_conn, "V2 Reader Demo")
+        _v2 = lessons_svc.get_lesson(_v2_conn, _v2_id)
+    finally:
+        _v2_conn.close()
+    _v2_dir = Path(lessons_svc.LESSONS_DIR) / _v2["slug"]
+    _v2_raw = json.loads((_v2_dir / "lesson.json").read_text(encoding="utf-8"))
+    _v2_raw["pages"].append({"id": "pg_stagetwo01", "path": "related/01-stage.html"})
+    _v2_raw["x_note"] = {"keep": ["me"]}
+    bschema.write_manifest(_v2_dir / "lesson.json", _v2_raw)
+    (_v2_dir / "index.html").write_text("<html>Vera Example index</html>", encoding="utf-8")
+    (_v2_dir / "related" / "01-stage.html").write_text(
+        "<html>Vera Example stage</html>", encoding="utf-8")
+    _v2_view = lessons_svc.with_bundle_info(_v2)
+    check("v2 bundle lists exactly the declared pages, in order",
+          [p["entry"] for p in _v2_view["pages"]] == ["index.html", "related/01-stage.html"]
+          and _v2_view["bundle"]["schema_version"] == 2
+          and _v2_view["bundle"]["outcome"] == "ok"
+          and _v2_view["bundle"]["profile"] == "interactive-local-v1")
+    _v2_ghost = lessons_svc.bundle_info(_v2, entry="related/99-ghost.html")
+    check("v2 undeclared selection falls back to the manifest entry (§4.2)",
+          _v2_ghost["entry"] == "index.html"
+          and all(p["entry"] != "related/99-ghost.html" for p in _v2_ghost["pages"]))
+    check("unknown manifest fields survive the canonical writer",
+          json.loads((_v2_dir / "lesson.json").read_text(encoding="utf-8"))
+          .get("x_note") == {"keep": ["me"]})
+    _v2_conn = get_conn()
+    try:
+        _v2_refused = False
+        try:
+            lessons_svc.set_current_entry(_v2_conn, _v2_id, "related/99-ghost.html")
+        except lessons_svc.LessonError:
+            _v2_refused = True
+        lessons_svc.set_current_entry(_v2_conn, _v2_id, "related/01-stage.html")
+        _v2_after = lessons_svc.get_lesson(_v2_conn, _v2_id)
+    finally:
+        _v2_conn.close()
+    _v2_entry_event = json.loads(events_of("lesson_entry_changed")[-1]["payload_json"])
+    check("set_current_entry refuses an undeclared v2 page",
+          _v2_refused and _v2_after["current_entry"] == "related/01-stage.html")
+    check("lesson_entry_changed event echoes lesson_uid",
+          _v2_entry_event.get("lesson_uid") == _v2["uid"]
+          and _v2_entry_event.get("to_entry") == "related/01-stage.html")
+
+    # corrupt / unsupported manifests reject visibly (§9.1) and stay untouched
+    _rej_conn = get_conn()
+    try:
+        _rej_id = lessons_svc.create_lesson(_rej_conn, "Reject Demo")
+        _rej = lessons_svc.get_lesson(_rej_conn, _rej_id)
+    finally:
+        _rej_conn.close()
+    _rej_path = Path(lessons_svc.LESSONS_DIR) / _rej["slug"] / "lesson.json"
+    _rej_path.write_text('{"schema_version": 2, "broken', encoding="utf-8")
+    _rej_meta = c.get(f"/learn/lessons/{_rej_id}/preview-meta").json()
+    _rej_prev = c.get(f"/learn/lessons/{_rej_id}/preview")
+    check("corrupt manifest is a visible reject, not a silent default",
+          _rej_meta["outcome"] == "rejected"
+          and any(f["code"] == "manifest-unreadable" for f in _rej_meta["findings"])
+          and "lesson.json is not readable JSON." in _rej_prev.text
+          and _rej_path.read_text(encoding="utf-8") == '{"schema_version": 2, "broken')
+    check("GET /learn stays 200 with a rejected manifest selected",
+          c.get(f"/learn?lesson={_rej_id}").status_code == 200)
+    _rej_path.write_text(
+        json.dumps({"schema_version": 99, "entry": "index.html"}) + "\n", encoding="utf-8")
+    _rej_meta2 = c.get(f"/learn/lessons/{_rej_id}/preview-meta").json()
+    _rej_prev2 = c.get(f"/learn/lessons/{_rej_id}/preview")
+    check("unsupported manifest version rejects visibly",
+          _rej_meta2["outcome"] == "rejected"
+          and any(f["code"] == "unsupported-version" for f in _rej_meta2["findings"])
+          and "Unsupported manifest version." in _rej_prev2.text)
+
+    # v1 manifests dual-read unchanged (§9.2) and are never rewritten (§9.1)
+    _v1_conn = get_conn()
+    try:
+        _v1_id = lessons_svc.create_lesson(_v1_conn, "V1 Dual Read Demo")
+        _v1 = lessons_svc.get_lesson(_v1_conn, _v1_id)
+    finally:
+        _v1_conn.close()
+    _v1_dir = Path(lessons_svc.LESSONS_DIR) / _v1["slug"]
+    _v1_text = (_fx_dir / "v1-valid.json").read_text(encoding="utf-8")
+    (_v1_dir / "lesson.json").write_text(_v1_text, encoding="utf-8")
+    (_v1_dir / "index.html").write_text("<html>Vera Example v1</html>", encoding="utf-8")
+    _v1_view = lessons_svc.with_bundle_info(_v1)
+    check("v1 manifest dual-reads with entry + related pages, legacy profile",
+          _v1_view["bundle"]["schema_version"] == 1
+          and [p["entry"] for p in _v1_view["pages"]]
+          == ["index.html", "related/01-gravity-gradient.html",
+              "related/02-spring-and-neap.html"]
+          and _v1_view["bundle"]["profile"] == "legacy-display"
+          and _v1_view["bundle"]["outcome"] == "ok")
+    check("v1 manifest is never rewritten by the read path",
+          (_v1_dir / "lesson.json").read_text(encoding="utf-8") == _v1_text)
+
+    # §2 symlink policy: a page that resolves through a symlink is missing
+    _symp_conn = get_conn()
+    try:
+        _symp_id = lessons_svc.create_lesson(_symp_conn, "Symlink Page Demo")
+        _symp = lessons_svc.get_lesson(_symp_conn, _symp_id)
+    finally:
+        _symp_conn.close()
+    _symp_dir = Path(lessons_svc.LESSONS_DIR) / _symp["slug"]
+    _symp_target = Path(lessons_svc.LESSONS_DIR) / "decoy-page.html"
+    _symp_target.write_text("<html>outside the bundle</html>", encoding="utf-8")
+    _os.symlink(_symp_target, _symp_dir / "index.html")
+    _symp_info = lessons_svc.lesson_file_info(_symp)
+    _symp_file = c.get(f"/learn/lessons/{_symp_id}/files/index.html")
+    check("symlinked page is treated as missing (§2)",
+          _symp_info["exists"] is False and _symp_file.status_code == 404)
+    _symp_manifest = _symp_dir / "lesson.json"
+    _symp_manifest.unlink()
+    _os.symlink(_symp_target, _symp_manifest)
+    _symp_meta = c.get(f"/learn/lessons/{_symp_id}/preview-meta").json()
+    check("symlinked lesson.json rejects as symlinked-bundle, no skeleton overwrite",
+          _symp_meta["outcome"] == "rejected"
+          and any(f["code"] == "symlinked-bundle" for f in _symp_meta["findings"])
+          and _symp_manifest.is_symlink())
+
     tday = c.get("/today").text
     check("Today title carries the Ephemeris identity", "· Ephemeris" in tday)
     check("base metas rebranded to Ephemeris",
@@ -1162,7 +1370,7 @@ with TestClient(app) as c:
             except ce.CalendarEventError:
                 check(label, True)
 
-        check("schema migrated to v9", cconn.execute("PRAGMA user_version").fetchone()[0] == 9)
+        check("schema migrated to v10", cconn.execute("PRAGMA user_version").fetchone()[0] == 10)
         oid = ce.create_event(cconn, "Orbit Drill", start_date="2027-04-07", freq="weekly",
                               byweekday="1010100", start_time="09:10", end_time="09:55")
         sid = ce.create_event(cconn, "Signal Lab", start_date="2027-04-07", freq="weekly",

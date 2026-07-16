@@ -1025,7 +1025,9 @@ def get_learn(
         if selected is None and rows:
             selected = rows[0]
         selected = lessons.with_bundle_info(selected, entry=selected_entry)
-        if selected:
+        # A rejected manifest has no selectable entry — show the placeholder
+        # without persisting a selection.
+        if selected and selected["entry"]:
             lessons.mark_opened(conn, selected["id"], selected["entry"])
     finally:
         conn.close()
@@ -1184,6 +1186,10 @@ def get_lesson_preview_meta(lesson_id: int, entry: str | None = None):
         "exists": info["exists"],
         "version": info["version"],
         "path": info["rel_path"],
+        # Manifest read outcome + findings (learn-bundle-spec.md §9.2):
+        # readers must surface findings to the preview metadata.
+        "outcome": info["outcome"],
+        "findings": info["findings"],
         "preview_url": _lesson_preview_url(lesson_id, info["entry"], exists=info["exists"]),
         "file_url": _lesson_preview_url(lesson_id, info["entry"]),
     })

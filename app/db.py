@@ -124,7 +124,7 @@ def get_conn() -> sqlite3.Connection:
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -415,6 +415,35 @@ def _migrate_to_9(conn: sqlite3.Connection) -> None:
     backfill_event_uuids(conn)
 
 
+# v10 — lesson identity (learn-bundle-spec.md §3): `lessons.uid` is the mint
+# source and the truth for lesson_uid; the bundle manifest only carries an
+# echo. Same idiom as events.uuid (v9): nullable column + unique index +
+# idempotent backfill that NEVER replaces an existing uid — a lesson is minted
+# exactly once, and rename/status/archive churn must not touch it. The
+# backfill also reruns on every init_db() to stamp rows a not-yet-restarted
+# pre-v10 process inserts after the migration ran.
+
+
+def backfill_lesson_uids(conn: sqlite3.Connection) -> int:
+    """Mint a UUID for every lesson row that lacks one; returns how many were
+    stamped. Idempotent: an existing uid is never replaced, so a rerun is a
+    no-op and the uid survives title/slug renames and re-migration."""
+    ids = [r["id"] for r in conn.execute("SELECT id FROM lessons WHERE uid IS NULL")]
+    conn.executemany(
+        "UPDATE lessons SET uid = ? WHERE id = ? AND uid IS NULL",
+        [(str(uuid4()), lesson_id) for lesson_id in ids],
+    )
+    return len(ids)
+
+
+def _migrate_to_10(conn: sqlite3.Connection) -> None:
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(lessons)")}
+    if "uid" not in have:
+        conn.execute("ALTER TABLE lessons ADD COLUMN uid TEXT")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_lessons_uid ON lessons(uid)")
+    backfill_lesson_uids(conn)
+
+
 # Ordered, idempotent steps. A schema change must NEVER require deleting the
 # ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
 _MIGRATIONS = [
@@ -427,6 +456,7 @@ _MIGRATIONS = [
     (7, _migrate_to_7),
     (8, _migrate_to_8),
     (9, _migrate_to_9),
+    (10, _migrate_to_10),
 ]
 
 
@@ -443,9 +473,12 @@ def init_db() -> None:
                 conn.execute(f"PRAGMA user_version = {target}")
                 conn.commit()
                 version = target
-        # Heal rows a pre-v9 process may have inserted after the migration ran
-        # (the live service lags the working tree until its next restart).
-        if backfill_event_uuids(conn):
+        # Heal rows a pre-v9/pre-v10 process may have inserted after the
+        # migration ran (the live service lags the working tree until its
+        # next restart).
+        healed = backfill_event_uuids(conn)
+        healed += backfill_lesson_uids(conn)
+        if healed:
             conn.commit()
     finally:
         conn.close()
