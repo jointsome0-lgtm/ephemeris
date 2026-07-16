@@ -91,7 +91,10 @@ Formats:
   `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
   (lowercase hex; version/variant nibbles are not checked — same family as
   `events.uuid` from #17/B4).
-- `page_id`, `question_id`, `block_id`: `^(pg|q|blk)_[a-z0-9]{4,32}$`.
+- `page_id`, `question_id`, `block_id`: the prefix is type-bound —
+  `pages[].id` matches `^pg_[a-z0-9]{4,32}$`, `questions[].id`
+  `^q_[a-z0-9]{4,32}$`, `blocks[].id` `^blk_[a-z0-9]{4,32}$`; an id with
+  the wrong prefix for its position violates the grammar (`invalid-id`).
   The suffix carries no meaning; it MUST NOT be derived from the title and
   MUST NOT be re-derived when the underlying file is renamed.
 
@@ -225,8 +228,8 @@ rejects writes for undeclared `question_id`s (D4/D5).
 "file": "attempts/blk_…/main.py", "runner_id": "python-script-v1"?}`
 
 - `id`: required, unique; `page`: required, must resolve;
-- `kind`: required; v2 defines only `editor`. Unknown kind ⇒ the block is
-  inert (dropped from the read model with a finding), the bundle still
+- `kind`: required; v2 defines only `editor`. An unknown kind drops the
+  block from the read model (`unknown-kind`, degraded), the bundle still
   renders;
 - `language`: optional editor hint, `^[a-z0-9+.-]{1,40}$`;
 - `file`: required, §4.1 grammar, MUST be under an artifact root (§7),
@@ -307,7 +310,7 @@ today's v1 `_default_manifest`): `schema_version` 2, the DB-minted
  "attempt_id": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
  "event_uuid": "9c1e5a7b-3d2f-4b8e-9f4a-1b6d8c0e2a53",
  "lesson_uid": "7f2a4c88-9d3b-4e21-8b5a-6c0d1e9f3a72",
- "page_id": "pg_bubble001", "question_id": "q_predictswap1",
+ "page_id": "pg_3f8ba65c12", "question_id": "q_5a1c380f6e",
  "page_rev": "sha256:…64 lowercase hex…",
  "answer": "Vera Example: I predict the largest value reaches the end.",
  "created_at": "2026-07-16T12:00:00+00:00", "stale": false}
@@ -450,6 +453,7 @@ outcome). This is why one fixture can require several codes at once.
 | `dangling-ref`       | degraded  | question/block references a `page_id` absent from the **post-drop valid page set** (a raw-declared but dropped page counts as missing); item dropped |
 | `unknown-profile`    | degraded  | §5; forced `legacy-display` |
 | `unknown-runner`     | degraded  | §4.4; Run disabled, editor stays |
+| `unknown-kind`       | degraded  | §4.4; `blocks[].kind` not recognized; block dropped |
 | `overlapping-roots`  | degraded  | §7; the nested root is dropped |
 | `invalid-ref`        | degraded  | malformed `path`/`concepts` entry, or orphan/non-integer/out-of-range `step`; the ref/step is dropped |
 | `identity-mismatch`  | degraded  | manifest `lesson_uid` ≠ DB `uid`; render as `legacy-display`, refuse attempt writes |

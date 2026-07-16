@@ -7,42 +7,42 @@
   "entry": "index.html",
   "pages": [
     {
-      "id": "pg_intro0001",
+      "id": "pg_7c2e91a4d0",
       "path": "index.html",
       "title": "Why order matters"
     },
     {
-      "id": "pg_bubble001",
+      "id": "pg_3f8ba65c12",
       "path": "related/01-bubble-sort.html",
       "title": "Bubble sort, step by step"
     },
     {
-      "id": "pg_bigo00001",
+      "id": "pg_e04d7f29b8",
       "path": "related/02-counting-the-cost.html",
       "title": "Counting the cost"
     }
   ],
   "questions": [
     {
-      "id": "q_predictswap1",
-      "page": "pg_bubble001",
+      "id": "q_5a1c380f6e",
+      "page": "pg_3f8ba65c12",
       "kind": "prediction",
       "label": "Predict the array after one bubble pass"
     },
     {
-      "id": "q_whyquadratic",
-      "page": "pg_bigo00001",
+      "id": "q_92d6b04e7a",
+      "page": "pg_e04d7f29b8",
       "kind": "free_text",
       "label": "Why does the pass count grow quadratically?"
     }
   ],
   "blocks": [
     {
-      "id": "blk_bubble01",
-      "page": "pg_bubble001",
+      "id": "blk_c47e02a9d1",
+      "page": "pg_3f8ba65c12",
       "kind": "editor",
       "language": "python",
-      "file": "attempts/blk_bubble01/bubble.py",
+      "file": "attempts/blk_c47e02a9d1/bubble.py",
       "runner_id": "python-script-v1"
     }
   ],

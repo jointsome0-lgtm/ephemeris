@@ -7,7 +7,7 @@
   "entry": "index.html",
   "pages": [
     {
-      "id": "pg_extras001",
+      "id": "pg_b81f3c56e0",
       "path": "index.html",
       "title": "The only page",
       "x_reading_minutes": 4
@@ -15,8 +15,8 @@
   ],
   "questions": [
     {
-      "id": "q_extras0001",
-      "page": "pg_extras001",
+      "id": "q_4e9a71d2c5",
+      "page": "pg_b81f3c56e0",
       "kind": "free_text",
       "label": "What would you try first?",
       "x_difficulty": "warmup"
@@ -38,7 +38,7 @@
   "x_agent_scratch": {
     "last_pass": "Vera Example scratch data",
     "revisit": [
-      "pg_extras001"
+      "pg_b81f3c56e0"
     ]
   }
 }
