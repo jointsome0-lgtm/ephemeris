@@ -22,7 +22,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 ## Done
 
 - [x] 2026-07-17 — 5250768, 5d37a97, 1227d29, 41224b5, 53b5232, ca4a7fd,
-  9c188d7, 5388efe, 6a690b2, 825bec6, 5a9fd04, 6fde64a, 4d5b20d, cdeda5b —
+  9c188d7, 5388efe, 6a690b2, 825bec6, 5a9fd04, 6fde64a, 4d5b20d, cdeda5b,
+  dd9c1c3 —
   `app/services/bundle_schema.py` (new), `app/services/lessons.py`, `app/db.py`,
   `app/main.py`, `docs/learn-bundle-spec.md`, `verify.py` — issue #39 session
   C3: typed v1/v2
@@ -41,14 +42,19 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `symlinked-bundle` instead of erroring, keep artifact roots out of the
   `assets/` preview area (spec §7 amendment), run the injected `attempts` root
   through the overlap pass while keeping v1's full historical file surface,
-  and snapshot bundle outcome/findings after selection resolution
+  snapshot bundle outcome/findings after selection resolution, and fold the
+  current page's symlink degradation into the top-level `bundle_info`
+  outcome
   → `2026-07-17-bundle-schema-runtime-review.md` (final addendum through
   `9c188d7`: B1–B5 and the PR-bot findings resolved; no remaining security-
   severity finding; the one Info canonical-JSON closure finding N1 fixed in
   `5388efe` per the closing note; direct-loopback deploy allowed, wider
-  deployment unsupported; resolution section covers `6a690b2..cdeda5b` —
-  PR #48 review rounds 7–12, each commit reviewed individually by the PR
-  review bot, head `cdeda5b` approved 2026-07-16T23:20:56Z)
+  deployment unsupported; resolution section covers `6a690b2..dd9c1c3` —
+  PR #48 review rounds 7–13, each commit reviewed individually by the PR
+  review bot on push, head `cdeda5b` approved 2026-07-16T23:20:56Z, the
+  round-13 follow-up `dd9c1c3` reviewed on push with no code finding
+  against it; this entry stays current with the branch: any further C3
+  commit touching these paths is appended here before any restart)
 
 - [x] 2026-07-16 — 61b6d65, 5d7c226, ad11d31 — `app/terminal.py`,
   `app/services/lessons.py`, `app/main.py`, `app/templates/learn.html`,

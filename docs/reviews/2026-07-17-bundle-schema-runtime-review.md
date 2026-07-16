@@ -566,3 +566,19 @@ PR body from chatgpt-codex-connector[bot] at 2026-07-16T23:20:56Z. No finding
 from any of the three review streams (this drain, the Opus second pass, the
 PR bot) remains open on the branch head. The deploy verdict above is
 unchanged: direct-loopback YES, wider deployment NO.
+
+### Round 13 — `dd9c1c3`
+
+The bot's review of the docs push `f331ec5` carried one more code finding:
+`bundle_info()`'s top-level outcome/findings snapshot, moved after selection
+resolution in round 12, was still taken before `_file_info()` — so a current
+page that resolves through a symlink degraded only the nested `file` object
+while the agent-facing top level said `ok`. `dd9c1c3` makes the top-level
+snapshot the current file's own outcome/findings (a superset of the manifest
+read's), with a matching verify check; 435 passed, 0 failed. The bot's
+follow-up review of `dd9c1c3` raised no finding against the code change —
+only that this report and the queue entry must stay current with the branch
+head, which this section and the amended entry now do. (That review cited a
+commit `96e224e` that exists neither locally nor on GitHub — the third
+hallucinated hash this PR; the repository merges via merge commits, not
+squash. The coverage-gap substance was real and is addressed.)
