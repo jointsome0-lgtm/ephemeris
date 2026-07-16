@@ -582,3 +582,15 @@ head, which this section and the amended entry now do. (That review cited a
 commit `96e224e` that exists neither locally nor on GitHub — the third
 hallucinated hash this PR; the repository merges via merge commits, not
 squash. The coverage-gap substance was real and is addressed.)
+
+### Round 15 — `4b88b6f`
+
+The bot's review of `50e41b0` found one more finding-masking case in the
+block reader: an unrecognized `kind` dropped the block before the
+file-vs-roots containment check ran, so a block violating both fields
+reported only `unknown-kind`. `4b88b6f` validates the two fields jointly —
+`unknown-kind` and `outside-root` are both recorded before the drop, with a
+matching verify probe; 436 passed, 0 failed. (Round 14 itself was a
+documentation-coverage finding against the queue entry, addressed in
+`50e41b0`; its cited squash commit `96e224e` exists neither locally nor on
+GitHub and was rebutted in-thread.)
