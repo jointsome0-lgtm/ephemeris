@@ -631,6 +631,12 @@ with TestClient(app) as c:
     check("v2 undeclared selection falls back to the manifest entry (§4.2)",
           _v2_ghost["entry"] == "index.html"
           and all(p["entry"] != "related/99-ghost.html" for p in _v2_ghost["pages"]))
+    _v2_ghost_meta = c.get(
+        f"/learn/lessons/{_v2_id}/preview-meta",
+        params={"entry": "related/99-ghost.html"}).json()
+    check("stale v2 selection surfaces invalid-entry, never a silent ok (§4.2)",
+          _v2_ghost_meta["outcome"] == "degraded"
+          and any(f["code"] == "invalid-entry" for f in _v2_ghost_meta["findings"]))
     check("unknown manifest fields survive the canonical writer",
           json.loads((_v2_dir / "lesson.json").read_text(encoding="utf-8"))
           .get("x_note") == {"keep": ["me"]})
@@ -678,6 +684,11 @@ with TestClient(app) as c:
           _rej_meta2["outcome"] == "rejected"
           and any(f["code"] == "unsupported-version" for f in _rej_meta2["findings"])
           and "Unsupported manifest version." in _rej_prev2.text)
+    # rejected means NO page render — direct file fetches included (§9.2)
+    (Path(lessons_svc.LESSONS_DIR) / _rej["slug"] / "index.html").write_text(
+        "<html>Vera Example orphan page</html>", encoding="utf-8")
+    check("rejected manifest blocks direct bundle file renders too (§9.2)",
+          c.get(f"/learn/lessons/{_rej_id}/files/index.html").status_code == 404)
 
     # v1 manifests dual-read unchanged (§9.2) and are never rewritten (§9.1)
     _v1_conn = get_conn()

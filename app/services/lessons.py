@@ -171,6 +171,13 @@ def _write_manifest(path: Path, data: dict) -> None:
     bundle_schema.write_manifest(path, data)
 
 
+def _mkdir_no_follow(path: Path) -> None:
+    """Create a standard bundle subdir only when nothing (including a
+    pre-planted symlink) occupies its name — never through a link (§2)."""
+    if not path.is_symlink() and not path.exists():
+        path.mkdir()
+
+
 def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:
     """Dual-read the bundle manifest (v1/v2), creating the standard dirs and —
     for a lesson that has none — the v2 skeleton. Creation, never repair: an
@@ -183,8 +190,8 @@ def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:
             "symlinked-bundle", "lesson bundle dir is not a real directory"
         )
     lesson_dir.mkdir(parents=True, exist_ok=True)
-    (lesson_dir / "related").mkdir(exist_ok=True)
-    (lesson_dir / "assets").mkdir(exist_ok=True)
+    for name in ("related", "assets"):
+        _mkdir_no_follow(lesson_dir / name)
 
     manifest_path = _manifest_path(lesson["slug"])
     read = bundle_schema.read_manifest_path(manifest_path, db_lesson=lesson)
@@ -198,7 +205,7 @@ def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:
     if read.version == bundle_schema.SCHEMA_V2 and not read.rejected:
         # the default artifact root exists for learner work; v1 bundles stay
         # byte-untouched (the 14 migrated-later real bundles are v1)
-        (lesson_dir / bundle_schema.DEFAULT_ARTIFACT_ROOT).mkdir(exist_ok=True)
+        _mkdir_no_follow(lesson_dir / bundle_schema.DEFAULT_ARTIFACT_ROOT)
 
     # Non-destructive bridge from the earlier flat-file prototype:
     # data/lessons/<slug>.html -> data/lessons/<slug>/index.html. Never
@@ -230,6 +237,9 @@ def _resolve_entry(lesson: dict, read: bundle_schema.ManifestRead, entry: str | 
             candidate = _clean_html_ref(candidate)
             if candidate in read.page_paths():
                 return candidate
+            # §4.2: the fallback is visible — a stale/undeclared selection
+            # must not silently report an `ok` read.
+            read.add("invalid-entry", f"selection {candidate!r} is not a declared page")
         return read.entry
     return _clean_html_ref(candidate or read.entry)
 
@@ -289,11 +299,12 @@ def lesson_file_info(lesson: dict, entry: str | None = None) -> dict:
 
 def bundle_resource_info(lesson: dict, ref: str) -> dict:
     """Runtime metadata for a bundle-relative file, including assets."""
-    _ensure_bundle_manifest(lesson)
+    read = _ensure_bundle_manifest(lesson)
     ref = _clean_bundle_ref(ref)
-    # §2 symlink policy: a path that resolves through a symlink is missing —
+    # A rejected manifest renders nothing — direct file fetches included
+    # (§9.2); and a path that resolves through a symlink is missing (§2),
     # checked before any resolve() so the link is never followed.
-    if bundle_schema.path_has_symlink(_lesson_dir(lesson["slug"]), ref):
+    if read.rejected or bundle_schema.path_has_symlink(_lesson_dir(lesson["slug"]), ref):
         path = _lesson_dir(lesson["slug"]) / PurePosixPath(ref)
         exists = False
     else:

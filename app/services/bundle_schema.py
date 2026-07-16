@@ -828,11 +828,14 @@ def path_has_symlink(base: Path, rel: str) -> bool:
     """Per-segment no-follow check: True when base itself or any component of
     base/rel is a symlink (lstat per component — never resolves). A missing
     component is not a symlink; the path is then simply missing."""
+    ref = PurePosixPath(rel)
+    if ref.is_absolute() or ".." in ref.parts:
+        return True  # backstop: callers pre-clean; never walk outside base
     current = base
     try:
         if current.is_symlink():
             return True
-        for segment in PurePosixPath(rel).parts:
+        for segment in ref.parts:
             current = current / segment
             if current.is_symlink():
                 return True
