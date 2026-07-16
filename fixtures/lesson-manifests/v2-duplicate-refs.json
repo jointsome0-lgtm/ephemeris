@@ -5,19 +5,57 @@
   "title": "Vera Example: Duplicate Refs Fixture",
   "entry": "index.html",
   "pages": [
-    {"id": "pg_dupid0001", "path": "index.html"},
-    {"id": "pg_dupid0001", "path": "related/01-echo.html"},
-    {"id": "pg_samepath1", "path": "related/02-mirror.html"},
-    {"id": "pg_samepath2", "path": "related/02-mirror.html"}
+    {
+      "id": "pg_dupid0001",
+      "path": "index.html"
+    },
+    {
+      "id": "pg_dupid0001",
+      "path": "related/01-echo.html"
+    },
+    {
+      "id": "pg_samepath1",
+      "path": "related/02-mirror.html"
+    },
+    {
+      "id": "pg_samepath2",
+      "path": "related/02-mirror.html"
+    }
   ],
   "questions": [
-    {"id": "q_dupquest01", "page": "pg_dupid0001", "kind": "prediction", "label": "First declaration"},
-    {"id": "q_dupquest01", "page": "pg_samepath1", "kind": "free_text", "label": "Second declaration of the same id"}
+    {
+      "id": "q_dupquest01",
+      "page": "pg_dupid0001",
+      "kind": "prediction",
+      "label": "First declaration"
+    },
+    {
+      "id": "q_dupquest01",
+      "page": "pg_samepath1",
+      "kind": "free_text",
+      "label": "Second declaration of the same id"
+    }
   ],
   "blocks": [
-    {"id": "blk_shared01", "page": "pg_dupid0001", "kind": "editor", "file": "attempts/shared/main.py"},
-    {"id": "blk_shared02", "page": "pg_samepath1", "kind": "editor", "file": "attempts/shared/main.py"}
+    {
+      "id": "blk_shared01",
+      "page": "pg_dupid0001",
+      "kind": "editor",
+      "file": "attempts/shared/main.py"
+    },
+    {
+      "id": "blk_shared02",
+      "page": "pg_samepath1",
+      "kind": "editor",
+      "file": "attempts/shared/main.py"
+    }
   ],
-  "concepts": ["loops", "loops", "recursion"],
-  "runtime": {"profile": "interactive-local-v1"}
+  "concepts": [
+    "loops",
+    "loops",
+    "recursion"
+  ],
+  "runtime": {
+    "profile": "interactive-local-v1"
+  }
 }

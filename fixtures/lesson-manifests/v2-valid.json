@@ -6,21 +6,58 @@
   "source_url": "https://learning.example/sorting-visualized",
   "entry": "index.html",
   "pages": [
-    {"id": "pg_intro0001", "path": "index.html", "title": "Why order matters"},
-    {"id": "pg_bubble001", "path": "related/01-bubble-sort.html", "title": "Bubble sort, step by step"},
-    {"id": "pg_bigo00001", "path": "related/02-counting-the-cost.html", "title": "Counting the cost"}
+    {
+      "id": "pg_intro0001",
+      "path": "index.html",
+      "title": "Why order matters"
+    },
+    {
+      "id": "pg_bubble001",
+      "path": "related/01-bubble-sort.html",
+      "title": "Bubble sort, step by step"
+    },
+    {
+      "id": "pg_bigo00001",
+      "path": "related/02-counting-the-cost.html",
+      "title": "Counting the cost"
+    }
   ],
   "questions": [
-    {"id": "q_predictswap1", "page": "pg_bubble001", "kind": "prediction", "label": "Predict the array after one bubble pass"},
-    {"id": "q_whyquadratic", "page": "pg_bigo00001", "kind": "free_text", "label": "Why does the pass count grow quadratically?"}
+    {
+      "id": "q_predictswap1",
+      "page": "pg_bubble001",
+      "kind": "prediction",
+      "label": "Predict the array after one bubble pass"
+    },
+    {
+      "id": "q_whyquadratic",
+      "page": "pg_bigo00001",
+      "kind": "free_text",
+      "label": "Why does the pass count grow quadratically?"
+    }
   ],
   "blocks": [
-    {"id": "blk_bubble01", "page": "pg_bubble001", "kind": "editor", "language": "python", "file": "attempts/blk_bubble01/bubble.py", "runner_id": "python-script-v1"}
+    {
+      "id": "blk_bubble01",
+      "page": "pg_bubble001",
+      "kind": "editor",
+      "language": "python",
+      "file": "attempts/blk_bubble01/bubble.py",
+      "runner_id": "python-script-v1"
+    }
   ],
   "path": "vera-example-foundations",
   "step": 2,
-  "concepts": ["sorting", "invariants", "big-o-notation"],
-  "runtime": {"profile": "interactive-local-v1"},
-  "artifact_roots": ["attempts"],
+  "concepts": [
+    "sorting",
+    "invariants",
+    "big-o-notation"
+  ],
+  "runtime": {
+    "profile": "interactive-local-v1"
+  },
+  "artifact_roots": [
+    "attempts"
+  ],
   "updated_by_agent_at": "2026-07-10T09:00:00+00:00"
 }

@@ -6,16 +6,39 @@
   "source_url": "https://learning.example/extras",
   "entry": "index.html",
   "pages": [
-    {"id": "pg_extras001", "path": "index.html", "title": "The only page", "x_reading_minutes": 4}
+    {
+      "id": "pg_extras001",
+      "path": "index.html",
+      "title": "The only page",
+      "x_reading_minutes": 4
+    }
   ],
   "questions": [
-    {"id": "q_extras0001", "page": "pg_extras001", "kind": "free_text", "label": "What would you try first?", "x_difficulty": "warmup"}
+    {
+      "id": "q_extras0001",
+      "page": "pg_extras001",
+      "kind": "free_text",
+      "label": "What would you try first?",
+      "x_difficulty": "warmup"
+    }
   ],
   "path": "vera-example-foundations",
   "step": 1,
-  "concepts": ["note-taking"],
-  "runtime": {"profile": "interactive-local-v1", "x_theme_hint": "dark"},
-  "artifact_roots": ["attempts"],
+  "concepts": [
+    "note-taking"
+  ],
+  "runtime": {
+    "profile": "interactive-local-v1",
+    "x_theme_hint": "dark"
+  },
+  "artifact_roots": [
+    "attempts"
+  ],
   "updated_by_agent_at": "2026-07-12T08:30:00+00:00",
-  "x_agent_scratch": {"last_pass": "Vera Example scratch data", "revisit": ["pg_extras001"]}
+  "x_agent_scratch": {
+    "last_pass": "Vera Example scratch data",
+    "revisit": [
+      "pg_extras001"
+    ]
+  }
 }

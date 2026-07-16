@@ -5,6 +5,9 @@
   "title": "Vera Example: Unsupported Version Fixture",
   "entry": "index.html",
   "pages": [
-    {"id": "pg_future001", "path": "index.html"}
+    {
+      "id": "pg_future001",
+      "path": "index.html"
+    }
   ]
 }

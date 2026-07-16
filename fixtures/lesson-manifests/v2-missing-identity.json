@@ -4,7 +4,12 @@
   "title": "Vera Example: Missing Identity Fixture",
   "entry": "index.html",
   "pages": [
-    {"id": "pg_lonely001", "path": "index.html"}
+    {
+      "id": "pg_lonely001",
+      "path": "index.html"
+    }
   ],
-  "runtime": {"profile": "legacy-display"}
+  "runtime": {
+    "profile": "legacy-display"
+  }
 }

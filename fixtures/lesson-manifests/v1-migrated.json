@@ -6,12 +6,25 @@
   "source_url": "https://learning.example/tides-101",
   "entry": "index.html",
   "pages": [
-    {"id": "pg_441d997d7047f13e", "path": "index.html"},
-    {"id": "pg_d743e70ebfa177c6", "path": "related/01-gravity-gradient.html"},
-    {"id": "pg_b87699c4756fb675", "path": "related/02-spring-and-neap.html"}
+    {
+      "id": "pg_441d997d7047f13e",
+      "path": "index.html"
+    },
+    {
+      "id": "pg_d743e70ebfa177c6",
+      "path": "related/01-gravity-gradient.html"
+    },
+    {
+      "id": "pg_b87699c4756fb675",
+      "path": "related/02-spring-and-neap.html"
+    }
   ],
-  "runtime": {"profile": "legacy-display"},
-  "artifact_roots": ["attempts"],
+  "runtime": {
+    "profile": "legacy-display"
+  },
+  "artifact_roots": [
+    "attempts"
+  ],
   "updated_by_agent_at": "2026-07-01T10:20:30+00:00",
   "x_demo_note": "Vera Example unknown v1 field — must survive migration untouched"
 }

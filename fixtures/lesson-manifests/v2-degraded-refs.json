@@ -1,0 +1,35 @@
+{
+  "schema_version": 2,
+  "lesson_uid": "6b9e3d1c-7a4f-4b8d-9e2c-5f0a8c6d4b37",
+  "slug": "vera-example-degraded-refs",
+  "title": "Vera Example: Degraded Refs Fixture",
+  "entry": "index.html",
+  "pages": [
+    {
+      "id": "pg_main00001",
+      "path": "index.html"
+    }
+  ],
+  "questions": [
+    {
+      "id": "q_ghostpage01",
+      "page": "pg_missing01",
+      "kind": "prediction",
+      "label": "Question on a page that does not exist"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "blk_mystery01",
+      "page": "pg_main00001",
+      "kind": "editor",
+      "language": "python",
+      "file": "attempts/blk_mystery01/probe.py",
+      "runner_id": "quantum-teleport-v9"
+    }
+  ],
+  "step": 4,
+  "runtime": {
+    "profile": "interactive-local-v1"
+  }
+}

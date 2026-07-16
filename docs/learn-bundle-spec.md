@@ -58,8 +58,13 @@ Reserved names, which no page, block file, or artifact root may claim:
 
 Symlink policy (whole bundle, all consumers): symlinks are never followed —
 not for the bundle directory itself, not for any file inside it. A path that
-resolves through a symlink is treated as missing/invalid, mirroring the
-existing `_bundle_path` / `_bundle_dir_is_safe` behavior.
+resolves through a symlink is treated as missing/invalid. This is a NEW,
+stricter rule than today's code: `_bundle_path` resolves and only checks
+containment (an in-bundle symlink to an in-bundle target is followed), and
+the read path never calls `_bundle_dir_is_safe`. C3 MUST implement
+per-segment enforcement (`lstat`/`O_NOFOLLOW` per component, or a
+realpath-within-root check that additionally rejects any symlink component)
+rather than reusing `resolve()`+containment.
 
 ## 3. Identity model
 
@@ -75,8 +80,10 @@ Five identifiers, five owners:
 
 Formats:
 
-- `lesson_uid`, `attempt_id`: RFC 4122 UUID, lowercase, string form
-  (same family as `events.uuid` from #17/B4).
+- `lesson_uid`, `attempt_id`: RFC 4122 UUID string, validated by shape only:
+  `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
+  (lowercase hex; version/variant nibbles are not checked — same family as
+  `events.uuid` from #17/B4).
 - `page_id`, `question_id`, `block_id`: `^(pg|q|blk)_[a-z0-9]{4,32}$`.
   The suffix carries no meaning; it MUST NOT be derived from the title and
   MUST NOT be re-derived when the underlying file is renamed.
@@ -97,7 +104,13 @@ concern, not a read-path side effect).
 - **Reordering `pages[]`** changes presentation order only; ids untouched.
 - **Deleting a page** removes its entry and retires the id forever — a
   retired id MUST NOT be reused for new content. Historical attempts keep
-  referencing it; adapters treat ids as durable keys.
+  referencing it; adapters treat ids as durable keys. Non-reuse is an
+  authoring rule (the #35 agent contract carries it), not a reader duty:
+  nothing in the bundle persists the retired set, and readers cannot detect
+  a meaning change mechanically. The durable record is the attempts side
+  (`lesson_attempts` rows and their ledger events) — ids referenced there
+  but absent from the manifest are retired, and C3 MAY use that as an
+  advisory collision check.
 - **Splitting a page**: the original keeps its id; new pages mint new ids. A
   question moves with its id only while it remains the same question; if the
   question's meaning changes, mint a new `question_id` and retire the old.
@@ -127,9 +140,15 @@ Top-level fields, in canonical writer order:
 | `updated_by_agent_at` | no  | ISO-8601 timestamp, set by the agent on page/manifest edits |
 
 `slug` and `title` are non-authoritative conveniences (the DB row is the
-truth); a mismatch is an informational `stale-metadata` finding and the DB
-value wins for display. Unknown fields at any level are ignored by readers
-and MUST be preserved by writers (§9.3).
+truth); a mismatch — including one of these copies violating its own
+grammar or length limit — is an informational `stale-metadata` finding and
+the DB value wins for display. Unknown fields at any level are ignored by
+readers and MUST be preserved by writers (§9.3).
+
+The "req" column binds **writers**: a conforming writer always emits those
+fields. Readers do not necessarily reject on violation — reader recovery is
+defined per finding in §9.2 (e.g. a bad `entry` degrades with a fallback
+rather than rejecting).
 
 ### 4.1 Path grammar
 
@@ -139,7 +158,9 @@ Applies to `entry`, `pages[].path`, `blocks[].file`, `artifact_roots[]`:
 - no backslash, no control characters (U+0000–U+001F, U+007F);
 - not absolute, no `.` or `..` segments, no empty segments (`//`), no
   trailing slash;
-- must not be, or be nested under, a reserved name (§2);
+- must not be, or be nested under, a reserved name (§2) — "nested under" is
+  segment-wise (`attempts.jsonl/x` is nested, `attempts.jsonl-notes` is
+  not);
 - `entry` and `pages[].path` must end in `.html`.
 
 Paths are compared exactly (case-sensitive); authors SHOULD stay lowercase
@@ -163,8 +184,10 @@ order is the list order — there is no separate ordering field.
 
 - `id`: required, unique; the durable key attempts reference;
 - `page`: required, must reference an existing `pages[].id`;
-- `kind`: optional, `^[a-z0-9_-]{1,40}$`; readers treat unknown kinds as
-  `free_text`; recommended values: `prediction`, `free_text`, `self_check`;
+- `kind`: optional, `^[a-z0-9_-]{1,40}$`; readers treat unknown but
+  grammar-valid kinds as `free_text`; a kind violating the grammar is
+  dropped (`invalid-value`, the question stays with the default kind);
+  recommended values: `prediction`, `free_text`, `self_check`;
 - `label`: optional adapter-facing summary ≤ 200. The full prompt lives in
   the page HTML; the manifest only declares existence and identity.
 
@@ -197,7 +220,8 @@ rejects writes for undeclared `question_id`s (D4/D5).
   atom: never resolved locally, never validated against Atlas, never used in
   a filesystem operation, never interpreted as a URL.
 - `path` + `step` place the lesson on one learning path; `step` without
-  `path` is dropped with an `invalid-ref` finding.
+  `path`, a non-integer `step`, or a `step` outside 1–10000 is dropped
+  (`invalid-ref`; `path` alone stays valid).
 - `concepts` is ordered and deduplicated by exact string match; duplicates
   are deduped (first occurrence wins) with an informational
   `duplicate-concept` finding.
@@ -226,6 +250,11 @@ fragments, no capability lists in the manifest).
 
 New app-created bundles start as `interactive-local-v1`; migrated v1 bundles
 start as `legacy-display` and are upgraded deliberately (§10, §12).
+Concretely, post-C3 `create_lesson` writes a **v2** skeleton (replacing
+today's v1 `_default_manifest`): `schema_version` 2, the DB-minted
+`lesson_uid`, `slug`/`title`/`source_url` copies, `entry` `index.html`,
+`pages` with one minted id for `index.html`, `runtime`
+`{"profile": "interactive-local-v1"}`, `artifact_roots` `["attempts"]`.
 
 ## 6. Attempts
 
@@ -268,12 +297,18 @@ start as `legacy-display` and are upgraded deliberately (§10, §12).
 
 - Idempotency key: an opaque client token ≤ 128 chars, unique per lesson,
   stored with the attempt row. Replaying a submission with a known key
-  returns the original `attempt_id` and writes nothing. The bridge's
-  `request_id` (D2/D5) maps onto it; the parent page owns the mapping — the
-  iframe never supplies identity (lesson/page ids) directly.
-- `page_rev` = `"sha256:" + hex` of the page file bytes as served when the
-  learner loaded the page (parent-derived, D2). If the current file hash
-  differs at record time, the attempt is still recorded, flagged
+  whose stored (`question_id`, `page_id`) match the incoming submission
+  returns the original `attempt_id` and writes nothing; a known key with a
+  DIFFERENT question/page is a client bug and gets a distinct
+  idempotency-conflict rejection — it is never silently coalesced into the
+  earlier attempt. The bridge's `request_id` (D2/D5) maps onto the key; the
+  parent page owns the mapping — the iframe never supplies identity
+  (lesson/page ids) directly.
+- `page_rev` = `"sha256:" + hex` over the page file's **raw bytes on disk**
+  at the time the parent loaded the page (parent-derived, D2). Both sides
+  hash the same raw byte stream; display-side decoding (e.g. the preview's
+  `errors="replace"` read) plays no part in hashing. If the current file
+  hash differs at record time, the attempt is still recorded, flagged
   `stale: true` — learning data is never dropped for being late.
 
 ## 7. Artifact roots and deterministic discovery
@@ -282,8 +317,13 @@ start as `legacy-display` and are upgraded deliberately (§10, §12).
 lives. Rules:
 
 - each root follows §4.1, is a directory path, and MUST NOT be (or nest
-  under) a reserved name; roots MUST be disjoint (no root is a path prefix
-  of another); the list MUST always include `attempts`;
+  under) a reserved name; roots MUST be disjoint — segment-wise: no root is
+  a path-segment prefix of another (`attempts` vs `attempts/deep` overlap;
+  `attempts` vs `attempts-extra` do not). A nested root is dropped with an
+  `overlapping-roots` finding (degraded);
+- the list MUST always include `attempts` (writers); a manifest missing it
+  gets `attempts` injected into the read model with a
+  `missing-attempts-root` finding (informational);
 - every `blocks[].file` MUST fall under some artifact root (`outside-root`
   finding otherwise; the block is dropped from the read model);
 - adapters and the app enumerate learner work ONLY inside artifact roots.
@@ -318,7 +358,8 @@ Deterministic adapter enumeration (no HTML parsing, no Atlas access):
 - Readers dual-read `schema_version` 1 and 2.
 - A missing `schema_version` on an otherwise readable manifest is read as
   v1 (flat-file-era compatibility).
-- Any other version (non-integer, `< 1`, `> 2`) ⇒ **visible reject**: the
+- Any other version (non-integer — a JSON boolean is NOT an integer despite
+  Python's `bool`/`int` subtyping — `< 1`, or `> 2`) ⇒ **visible reject**: the
   preview shows an explicit "unsupported manifest version" placeholder (same
   pattern as the missing-file placeholder), the lesson stays listed, and
   nothing is silently coerced to defaults.
@@ -334,6 +375,14 @@ Three outcomes: `ok` (render, possibly with informational findings),
 Readers MUST surface findings to the preview metadata — silently discarding
 a finding is non-conforming.
 
+Aggregation: a reader computes **all** applicable findings before
+returning. Only `manifest-unreadable`, `manifest-too-large`, and
+`unsupported-version` short-circuit (there is nothing meaningful to check
+past them); everything else — `missing-identity` included — accumulates
+across the whole manifest. The outcome is the most severe finding present
+(`rejected` > `degraded` > `ok`; informational findings never change the
+outcome). This is why one fixture can require several codes at once.
+
 | finding              | outcome   | condition |
 |----------------------|-----------|-----------|
 | `manifest-unreadable`| rejected  | file present but not valid JSON, or not a JSON object |
@@ -342,17 +391,21 @@ a finding is non-conforming.
 | `missing-identity`   | rejected  | v2 without `lesson_uid`, or `lesson_uid` not a UUID |
 | `duplicate-id`       | rejected  | id repeated within pages/questions/blocks |
 | `duplicate-path`     | rejected  | `pages[].path` repeated, or two blocks claim one file |
-| `limit-exceeded`     | rejected  | any §4 list/size limit exceeded |
+| `limit-exceeded`     | rejected  | a §4 **list-count** limit exceeded (pages/questions/blocks/concepts/artifact_roots); scalar over-limits degrade instead — see `stale-metadata`, `invalid-value` |
 | `no-pages`           | rejected  | v2 with zero valid pages |
 | `invalid-entry`      | degraded  | `entry` invalid or not in `pages[]`; fall back to first valid page |
-| `invalid-path`       | degraded  | a page/root path violates §4.1; that item is dropped |
+| `invalid-path`       | degraded  | a page path, block `file`, or artifact root violates §4.1; the carrying item is dropped |
+| `invalid-id`         | degraded  | a page/question/block `id` violates the §3 grammar; the item is dropped |
 | `outside-root`       | degraded  | `blocks[].file` outside every artifact root; block dropped |
-| `dangling-ref`       | degraded  | question/block references a missing `page_id`; item dropped |
+| `dangling-ref`       | degraded  | question/block references a `page_id` absent from the **post-drop valid page set** (a raw-declared but dropped page counts as missing); item dropped |
 | `unknown-profile`    | degraded  | §5; forced `legacy-display` |
 | `unknown-runner`     | degraded  | §4.4; Run disabled, editor stays |
-| `invalid-ref`        | degraded  | malformed `path`/`concepts` entry or orphan `step`; ref dropped |
+| `overlapping-roots`  | degraded  | §7; the nested root is dropped |
+| `invalid-ref`        | degraded  | malformed `path`/`concepts` entry, or orphan/non-integer/out-of-range `step`; the ref/step is dropped |
 | `identity-mismatch`  | degraded  | manifest `lesson_uid` ≠ DB `uid`; render as `legacy-display`, refuse attempt writes |
-| `stale-metadata`     | info      | `slug`/`title` differ from DB; DB wins |
+| `invalid-value`      | info      | an optional display/value field (`pages[].title`, `label`, `kind`, `language`) violates its grammar or limit; the field is dropped, the item stays |
+| `missing-attempts-root` | info   | §7; `attempts` injected into the read model |
+| `stale-metadata`     | info      | `slug`/`title`/`source_url` copy differs from DB or violates its own grammar/limit; DB wins |
 | `duplicate-concept`  | info      | §4.5; deduped |
 
 `manifest-unreadable` and `manifest-too-large` apply to v1 reads too — this
@@ -372,12 +425,25 @@ of dropping silently; behavior (what renders) is unchanged.
 Unknown fields — top-level or nested — are ignored by readers and preserved
 byte-faithfully by every writer (agent, app, migration tool). Additive
 evolution inside v2 means new OPTIONAL fields; any change to the meaning of
-an existing field requires v3. Writers use the canonical serialization:
-UTF-8, 2-space indent, `ensure_ascii=False`, trailing newline, known keys in
-§4 table order, unknown keys after them in their original relative order.
-Round-tripping a valid manifest MUST preserve unknown fields and page order;
-byte-identity beyond that is not required (but the canonical writer achieves
-it, which C4 uses for hash-based post-verification).
+an existing field requires v3.
+
+Canonical serialization, exactly: Python's
+`json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"`, UTF-8 — the
+existing `_write_manifest` idiom. Every nested object and array is expanded
+across lines by `indent=2`; no compact one-line forms. Key order is
+recursive: each object serializes its known keys first, in the order its
+defining table/section lists them (top level: the §4 table; `pages[]`
+items: `id`, `path`, `title`; `questions[]` items: `id`, `page`, `kind`,
+`label`; `blocks[]` items: `id`, `page`, `kind`, `language`, `file`,
+`runner_id`; `runtime`: `profile`), then unknown keys in their original
+relative order. Absent optional fields are omitted, not written as `null`
+(`source_url: null` is accepted on read as absent, v1 heritage).
+
+Round-tripping a valid manifest through the canonical writer MUST be
+byte-identical (unknown fields, page order, and key order all preserved) —
+C4's hash-based post-verification depends on it. The fixture manifests are
+stored in canonical form, and C3's verify round-trips each accepted fixture
+and asserts byte-identity so the definition can't drift.
 
 ## 10. v1 → v2 migration mapping (consumed by C4)
 
@@ -418,11 +484,17 @@ tool tests.
 | `v2-invalid-paths.json` | `degraded`: `invalid-entry`, `invalid-path`, `outside-root` |
 | `v2-duplicate-refs.json` | `rejected`: `duplicate-id`, `duplicate-path` |
 | `v2-missing-identity.json` | `rejected`: `missing-identity` |
+| `v2-unknown-profile.json` | `degraded`: `unknown-profile` (forced `legacy-display`) |
+| `v2-degraded-refs.json` | `degraded`: `dangling-ref`, `unknown-runner`, `invalid-ref` |
+| `v2-unreadable.json.broken` | `rejected`: `manifest-unreadable` (`.broken` keeps it out of `*.json` globs) |
 | `v99-unsupported-version.json` | `rejected`: `unsupported-version` |
 
 The projection record example lives inline in §6.2 (a committed
 `attempts.jsonl` would trip the repo-wide `*.jsonl` hygiene denial — the
-real file is runtime data and never enters Git).
+real file is runtime data and never enters Git). Codes with no fixture need
+runtime context and are synthesized in C3 tests instead:
+`manifest-too-large` (an oversized file), `identity-mismatch` and
+`stale-metadata` (require a DB row to disagree with).
 
 ## 12. Write authority
 

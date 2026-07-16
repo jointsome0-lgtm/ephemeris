@@ -5,15 +5,42 @@
   "title": "Vera Example: Invalid Paths Fixture",
   "entry": "../outside/index.html",
   "pages": [
-    {"id": "pg_okpage001", "path": "index.html"},
-    {"id": "pg_escape001", "path": "../sibling-bundle/steal.html"},
-    {"id": "pg_absolute1", "path": "/etc/motd.html"},
-    {"id": "pg_backslash", "path": "related\\03-windows.html"},
-    {"id": "pg_plaintext", "path": "related/04-notes.txt"}
+    {
+      "id": "pg_okpage001",
+      "path": "index.html"
+    },
+    {
+      "id": "pg_escape001",
+      "path": "../sibling-bundle/steal.html"
+    },
+    {
+      "id": "pg_absolute1",
+      "path": "/etc/motd.html"
+    },
+    {
+      "id": "pg_backslash",
+      "path": "related\\03-windows.html"
+    },
+    {
+      "id": "pg_plaintext",
+      "path": "related/04-notes.txt"
+    }
   ],
   "blocks": [
-    {"id": "blk_outside1", "page": "pg_okpage001", "kind": "editor", "language": "python", "file": "assets/scratch.py", "runner_id": "python-script-v1"}
+    {
+      "id": "blk_outside1",
+      "page": "pg_okpage001",
+      "kind": "editor",
+      "language": "python",
+      "file": "assets/scratch.py",
+      "runner_id": "python-script-v1"
+    }
   ],
-  "runtime": {"profile": "interactive-local-v1"},
-  "artifact_roots": ["attempts", "../shared-attempts"]
+  "runtime": {
+    "profile": "interactive-local-v1"
+  },
+  "artifact_roots": [
+    "attempts",
+    "../shared-attempts"
+  ]
 }

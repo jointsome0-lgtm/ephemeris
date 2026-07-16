@@ -1,5 +1,5 @@
 {
-  "_note": "Vera Example demo data. Expectations for the sibling fixtures; consumed by verify.py reader tests (C3) and migration tool tests (C4). Outcomes and finding codes are defined in docs/learn-bundle-spec.md §9.2. 'findings' lists codes that MUST appear; additional findings MAY appear (e.g. informational duplicate-concept).",
+  "_note": "Vera Example demo data. Expectations for the sibling fixtures; consumed by verify.py reader tests (C3) and migration tool tests (C4). Outcomes and finding codes are defined in docs/learn-bundle-spec.md §9.2. 'findings' lists codes that MUST appear; additional findings MAY appear (e.g. informational duplicate-concept). All *.json manifests are stored in the canonical serialization (spec §9.3); v2-unreadable.json.broken is deliberately not JSON.",
   "cases": [
     {"file": "v1-valid.json", "read_as": 1, "expect": "ok", "findings": []},
     {"file": "v1-migrated.json", "read_as": 2, "expect": "ok", "findings": [], "migrated_from": "v1-valid.json"},
@@ -8,6 +8,9 @@
     {"file": "v2-invalid-paths.json", "read_as": 2, "expect": "degraded", "findings": ["invalid-entry", "invalid-path", "outside-root"]},
     {"file": "v2-duplicate-refs.json", "read_as": 2, "expect": "rejected", "findings": ["duplicate-id", "duplicate-path"]},
     {"file": "v2-missing-identity.json", "read_as": 2, "expect": "rejected", "findings": ["missing-identity"]},
+    {"file": "v2-unknown-profile.json", "read_as": 2, "expect": "degraded", "findings": ["unknown-profile"]},
+    {"file": "v2-degraded-refs.json", "read_as": 2, "expect": "degraded", "findings": ["dangling-ref", "unknown-runner", "invalid-ref"]},
+    {"file": "v2-unreadable.json.broken", "read_as": null, "expect": "rejected", "findings": ["manifest-unreadable"]},
     {"file": "v99-unsupported-version.json", "read_as": null, "expect": "rejected", "findings": ["unsupported-version"]}
   ]
 }

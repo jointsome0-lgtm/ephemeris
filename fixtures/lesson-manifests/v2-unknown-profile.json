@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "lesson_uid": "8d2c5f7a-1e9b-4c3d-a6f8-4b0e7d9c2a51",
+  "slug": "vera-example-strange-profile",
+  "title": "Vera Example: Unknown Profile Fixture",
+  "entry": "index.html",
+  "pages": [
+    {
+      "id": "pg_solo00001",
+      "path": "index.html"
+    }
+  ],
+  "runtime": {
+    "profile": "holographic-v9"
+  }
+}
