@@ -19,6 +19,18 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
+- [ ] 2026-07-16 — 61b6d65 — `app/terminal.py`, `app/services/lessons.py`,
+  `app/main.py`, `app/templates/learn.html`, `deploy/ephemeris.service.example`,
+  `verify.py`, `verify_restore.py` — issue #16 first slice: terminal websocket
+  route and UI now register only when `EPHEMERIS_ENABLE_TERMINAL` is truthy
+  (previous opt-out var no longer honored; systemd example ships it commented
+  out with UMask/MemoryMax/TasksMax added); `?lesson=` sessions with an
+  unpreparable workspace are refused with a visible message instead of
+  spawning at the repo root; the child shell env is built from an allowlist
+  plus `_detect_proxy_env` output instead of full `os.environ`; the proxy
+  banner strips URL userinfo; Learn UI and preview-meta expose a
+  bundle-relative lesson path; verify wiring probes inverted, 366+28 green
+
 ## Done
 
 - [x] 2026-07-16 — a74eab1, e50090d — `app/security.py`, `app/main.py`,
