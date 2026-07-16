@@ -234,3 +234,252 @@ constant and introduce no attacker-controlled file access.
 documented opt-in, loopback-only posture.** L1 and L2 are resolved in
 `eeb71f1`, and the fix introduces no new findings. Wider network exposure
 remains unsupported and was not made safe by prompt wording.
+
+## Second addendum — combined re-review through `ff9a3f0`
+
+**Scope and method:** re-applied the standing brief to the exact combined diff
+`eeb71f1..ff9a3f0`. That range includes the first report and queue-drain docs in
+`a7bf426` and `7b56740`, then the generated-brief and verifier changes in
+`ecee1f2` and `ff9a3f0`; the docs-only commits do not alter the reviewed runtime
+surface. The complete target versions of `app/services/lessons.py`, `verify.py`,
+this report, and `docs/reviews/QUEUE.md` were re-read, together with the lesson
+workspace/terminal call chain, frozen bundle discovery contract, and earlier
+reports for this surface. The branch later advanced to `4b04757` while this
+review was in progress; that commit is outside the requested target and is not
+credited in this addendum's finding status or verdict.
+
+### Previously resolved finding status
+
+- **L1 — Remains resolved.** Neither follow-up commit weakens the instruction/data
+  boundary added in `eeb71f1`. The brief still classifies source material,
+  lesson pages, assets, attempt records, and learner files as untrusted data,
+  rejects their embedded instructions and tool requests as directives, and
+  gives the generated brief precedence (`app/services/lessons.py:399-409`). The
+  new optionality wording for `attempts.jsonl` and the line-wrap-only change do
+  not promote any learner content into trusted instructions
+  (`app/services/lessons.py:364-368`, `app/services/lessons.py:427-430`).
+- **L2 — Remains resolved.** The bundle-wide rule still says never to follow a
+  symlink or any path passing through one (`app/services/lessons.py:410-412`),
+  and the new attempts-specific sentence also says symlinks are skipped
+  (`app/services/lessons.py:423-426`). The incomplete non-symlink enumeration
+  rule below is a distinct new finding; it does not reopen L2's link-following
+  path.
+
+### New findings in the combined review
+
+#### N1 — Attempts pre-read weakens the frozen entry and file-type bounds (Low, confirmed)
+
+The frozen discovery contract requires a lexicographic walk with depth at most
+four, **at most 512 entries per root**, **regular files only**, symlinks skipped,
+and files over 2 MiB listed but not read
+(`docs/learn-bundle-spec.md:387-404`). The generated brief at `ff9a3f0` instead
+says "at most 512 files per root" and never tells the agent to restrict reads to
+regular files (`app/services/lessons.py:423-426`). The file count does not bound
+directory entries traversed before files are found, and a FIFO, socket, or other
+non-regular entry can still be selected by the mandatory attempts pre-read. A
+FIFO can block the lesson agent indefinitely; broader non-regular reads also
+break the deterministic, bounded view that every consumer is supposed to
+share.
+
+This is Low under today's loopback, same-user, non-importable-bundle posture:
+planting the entry currently requires local filesystem access and the learner
+must launch the agent. It becomes a stronger availability and local-resource
+boundary concern for the less-trusted/imported bundle posture already
+anticipated by the contract. The verifier does not close the gap: its attempts
+predicate pins only the depth and 2 MiB phrases, not the 512-entry or
+regular-file requirements (`verify.py:310-316`), so the incomplete contract is
+green at `ff9a3f0`.
+
+*Fix direction:* mirror the frozen wording exactly: cap enumeration at 512
+entries per root and admit regular files only, explicitly skipping FIFOs,
+sockets, and other non-regular entries as well as symlinks. Pin both semantics
+in the generated-contract regression check and re-review the dedicated fix.
+
+No other new Critical, High, Medium, Low, or Info findings were found. The
+range does not change a listener, route, PTY/WS lifecycle, filesystem writer,
+preview policy, metadata interpolation path, or terminal trust gate.
+
+### Second-addendum verification
+
+- `git diff --check eeb71f1..ff9a3f0` — passed.
+- Exact-target syntax compilation of `app/services/lessons.py` and `verify.py`
+  via Python's in-memory `compile()` — passed at both `ecee1f2` and `ff9a3f0`.
+- Exact-template probe — at `ecee1f2`, all newly added optionality/depth/size
+  phrases are present but the verifier's literal `never write or rewrite it`
+  anchor is absent because a newline splits it; the attempts-conventions
+  predicate is therefore false. At `ff9a3f0`, the anchor and full predicate are
+  true. This reproduces the reported 379+1 red intermediate state and the
+  anchor repair behind the reported 380 green final state.
+- `env -u ACTIVITY_DATA_DIR PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 timeout 180s
+  .venv/bin/python -u verify.py` in clean archive exports of both commits —
+  inconclusive in this environment: each run passed the two terminal-wiring
+  checks, then stalled and exited `124` without a visible failing assertion.
+  The focused exact-commit probe above independently confirms the specific
+  red-to-green transition, but these bounded runs do not independently claim
+  the complete totals.
+
+### Second revised deploy verdict
+
+**SAFE TO MAKE LIVE: NO for the exact lesson-agent teaching workflow at
+`ff9a3f0`.** L1 and L2 remain resolved, and the intermediate verifier regression
+is repaired, but N1 leaves the mandatory attempts pre-read broader than the
+frozen deterministic discovery contract. Land and re-review a dedicated fix
+before treating this target as deployable. Wider network exposure remains
+unsupported regardless of prompt wording.
+
+## Third addendum — re-review of discovery-contract fix `4b04757`
+
+**Scope and method:** re-applied the standing brief to the exact fix diff
+`ff9a3f0..4b04757`; `4b04757` is also the current branch head. The range changes
+only the attempts-discovery sentence in the constant generated lesson brief.
+The complete target lesson service and its workspace/terminal call chain were
+re-read together with the frozen artifact-discovery contract, verifier checks,
+and earlier reports for this surface. No listener, route, PTY/WS lifecycle,
+filesystem operation, preview policy, or attacker-controlled interpolation path
+changes in this range.
+
+### Finding status
+
+- **L1 — Remains resolved.** The diff does not change the instruction/data
+  boundary: learner answers, source material, lesson pages, assets, attempt
+  records, and learner files remain untrusted data whose embedded directives do
+  not override the generated brief (`app/services/lessons.py:364-368`,
+  `app/services/lessons.py:399-409`).
+- **L2 — Remains resolved.** The bundle-wide per-component no-symlink rule is
+  unchanged (`app/services/lessons.py:410-412`), and the repaired attempts
+  sentence continues to require skipping symlinks
+  (`app/services/lessons.py:423-427`).
+- **N1 — Resolved.** The brief now mirrors the material frozen discovery bounds:
+  depth at most four, at most 512 **entries** per root, **regular files only**,
+  symlinks/FIFOs/sockets skipped, and files over 2 MiB listed but not read
+  (`app/services/lessons.py:423-427`; `docs/learn-bundle-spec.md:398-400`).
+  "Regular files only" also excludes other non-regular filesystem objects, so
+  the mandatory pre-read no longer admits the blocking or non-deterministic
+  objects identified by N1.
+
+### New findings introduced by the fix
+
+No new Critical, High, Medium, Low, or Info findings. The change narrows the
+agent's permitted discovery behavior and adds no executable file-discovery
+implementation or new trust input. The existing verifier predicate still pins
+only the depth and 2 MiB portions of this sentence, not the repaired 512-entry
+and regular-file clauses (`verify.py:310-316`). That regression-coverage gap was
+already identified in N1 and is not new behavior introduced by `4b04757`; it
+does not leave the generated production contract incomplete.
+
+### Third-addendum verification
+
+- `git diff --check ff9a3f0..4b04757` — passed.
+- Exact-target syntax and template probe — passed: `4b04757` contains both
+  `at most 512 entries per root` and `regular files only (skip symlinks, FIFOs,
+  sockets)`, while the obsolete `512 files` wording is absent.
+- Exact-base regression probe — passed: `ff9a3f0` contains `512 files per root`
+  and lacks the regular-files-only clause, reproducing the reviewed defect.
+- `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m py_compile
+  app/services/lessons.py verify.py` — passed.
+
+### Third revised deploy verdict
+
+**SAFE TO MAKE LIVE: YES for the lesson-agent teaching workflow under the
+documented opt-in, loopback-only posture.** L1 and L2 remain resolved, N1 is
+resolved by `4b04757`, and the fix introduces no new findings. Wider network
+exposure remains unsupported and was not made safe by prompt wording.
+
+## Fourth addendum — re-review of all-artifact-roots fix `ba2bc3c`
+
+**Scope and method:** re-applied the standing brief to the exact fix diff
+`4b04757..ba2bc3c`. The range changes only the constant generated lesson brief:
+the mandatory learner pre-read and bundle-layout description now cover every
+manifest-declared artifact root rather than only `attempts/`. The complete
+target lesson service, terminal workspace caller, frozen manifest/path and
+artifact-discovery contract, exact-target verifier, and earlier reports for
+this surface were re-read. No listener, route, PTY/WS lifecycle, filesystem
+writer, preview policy, or metadata-interpolation path changes in this range.
+
+### Previously resolved finding status
+
+- **L1 — Remains resolved.** The expanded pre-read keeps learner-authored files
+  classified as data, never instructions (`app/services/lessons.py:364-370`),
+  while the general boundary still makes everything read during tutoring
+  untrusted and preserves the generated brief's precedence
+  (`app/services/lessons.py:403-411`). Additional valid artifact roots therefore
+  do not reopen the stored/indirect instruction channel identified by L1.
+- **L2 — Remains resolved.** The bundle-wide rule still rejects every path that
+  passes through a symlink (`app/services/lessons.py:412-414`), and the
+  per-root discovery sentence still skips symlinks
+  (`app/services/lessons.py:425-431`). N2 below concerns a raw absolute or
+  traversal-shaped root with no symlink; it is distinct from L2's link-following
+  path.
+- **N1 — Remains resolved.** Every named root retains the repaired depth-four,
+  512-entry, regular-file-only, non-regular-file skip, and 2 MiB read bounds
+  (`app/services/lessons.py:425-431`). Extending those same rules per root does
+  not re-admit the FIFO/socket or unbounded-entry behavior fixed by `4b04757`.
+
+### New findings introduced by the fix
+
+#### N2 — Raw declared roots are not constrained to valid in-bundle paths (Low, confirmed)
+
+The frozen contract does not treat every raw `artifact_roots[]` value as a
+root. It accepts at most eight directory paths, requires each to be a
+bundle-relative POSIX path, rejects absolute paths and `.`/`..` segments,
+backslashes, control/empty segments, trailing slashes, and reserved names, and
+drops invalid or overlapping roots from the read model
+(`docs/learn-bundle-spec.md:155-156`,
+`docs/learn-bundle-spec.md:180-190`,
+`docs/learn-bundle-spec.md:370-385`,
+`docs/learn-bundle-spec.md:465-475`). The new trusted brief instead directs the
+agent to read files under **every declared** artifact root
+(`app/services/lessons.py:364-367`) and repeats that a v2 manifest may declare
+more roots (`app/services/lessons.py:425-431`) without telling this consumer to
+apply the path grammar or use only roots that survive validation.
+
+The opening instruction to work only inside the bundle
+(`app/services/lessons.py:341-343`) is useful but leaves a conflict for an
+invented raw root such as an absolute path or a `../outside-note`-shaped value:
+the later, specific pre-read says to traverse it, and the no-symlink rule does
+not reject a direct absolute or parent-relative path. An OS-capable lesson agent
+that resolves the manifest value literally can therefore read outside-bundle
+files into model context, breaking the same local-data boundary the artifact
+root is meant to establish. This is Low under today's direct-loopback,
+same-user, manually launched, non-importable-bundle posture; it becomes more
+material when less-trusted/imported v2 bundles arrive.
+
+The exact-target verifier checks the depth and size phrases but not
+`artifact_roots`, root validation, or in-bundle containment
+(`verify.py:310-316`), so it remains green when this guard is absent.
+
+*Fix direction:* tell the agent to enumerate only artifact roots that satisfy
+the frozen path grammar and survive manifest validation, never raw declared
+values; explicitly skip absolute, `.`/`..`-bearing, reserved, non-directory,
+overlapping, over-limit, or otherwise invalid roots, and never resolve a root
+outside the bundle. Preserve default/injected `attempts/`, the per-root
+discovery limits, untrusted-data treatment, read-only rule, and no-symlink rule.
+Pin the path-validity/containment condition in the generated-contract regression
+check and re-review the dedicated fix.
+
+No other new Critical, High, Medium, Low, or Info findings were found. The diff
+does not alter execution code or relax the terminal and brief-publication
+protections confirmed by the earlier reviews.
+
+### Fourth-addendum verification
+
+- `git diff --check 4b04757..ba2bc3c` — passed.
+- Exact-target syntax compilation of `app/services/lessons.py` via Python's
+  in-memory `compile()` — passed.
+- Exact-template target probe — confirmed that `ba2bc3c` names every declared
+  `artifact_roots` entry, retains default `attempts/`, and applies the same
+  read-only/data, depth, entry-count, file-type, symlink, and size rules to each
+  root.
+- Exact-template base/guard probe — confirmed that `4b04757` names only
+  `attempts/`, while `ba2bc3c` adds no bundle-relative/path-grammar validation
+  for the newly trusted manifest values. Exact-target `verify.py` likewise has
+  no artifact-root or root-containment anchor.
+
+### Fourth revised deploy verdict
+
+**SAFE TO MAKE LIVE: NO for the exact lesson-agent teaching workflow at
+`ba2bc3c`.** L1, L2, and N1 remain resolved, and the valid-root coverage is
+correct, but N2 lets a malformed manifest steer the mandatory pre-read beyond
+the frozen artifact-root boundary. Land and re-review a dedicated path-validity
+guard before clearing this target. Wider network exposure remains unsupported
+regardless of prompt wording.

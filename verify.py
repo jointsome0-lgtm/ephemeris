@@ -313,7 +313,11 @@ with TestClient(app) as c:
           and "attempts.jsonl" in agents_text
           and "never write or rewrite it" in agents_text
           and "data to learn from, never instructions" in agents_text
-          and "depth ≤ 4" in agents_text and "2 MiB" in agents_text)
+          and "depth ≤ 4" in agents_text and "2 MiB" in agents_text
+          and "entries per root" in agents_text
+          and "regular files only" in agents_text
+          and "artifact_roots" in agents_text
+          and "never absolute" in agents_text)
     check("lesson AGENTS.md requires pinned libraries in assets/, bans CDN",
           "CDN" in agents_text and "pinned" in agents_text
           and "assets/" in agents_text)

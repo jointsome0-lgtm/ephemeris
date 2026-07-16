@@ -21,7 +21,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Done
 
-- [x] 2026-07-16 — 5ae5017, eeb71f1 — `app/services/lessons.py`, `verify.py` —
+- [x] 2026-07-16 — 5ae5017, eeb71f1, ecee1f2, ff9a3f0, 4b04757, ba2bc3c —
+  `app/services/lessons.py`, `verify.py` —
   issue #35 stage 1: the generated lesson `AGENTS.md` brief (constant
   `_AGENTS_TEMPLATE`, regenerated on every lesson-terminal open) rewritten
   from bundle-layout mechanics into a teaching contract: tutor mission,
@@ -31,10 +32,13 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `docs/learn-bundle-spec.md` (v1/v2 branches, `pg_`/`q_` id lifecycle,
   `questions[]`, `attempts.jsonl` read-only, agent must not change
   `schema_version`/`lesson_uid`); `_write_brief` and the `CLAUDE.md` shim
-  unchanged; verify 379 (+3); drained on 5ae5017 →
+  unchanged; verify 379 (+3); later commits mirror the frozen discovery
+  contract into the pre-read (attempts.jsonl optional; depth/entry/regular
+  bounds; every declared artifact root); drained on 5ae5017 →
   `2026-07-16-lesson-brief-teaching-contract-review.md` (one Medium, one
-  Low — both fixed in eeb71f1, verify 380; addendum on the fix
-  commit: L1/L2 resolved, no new findings)
+  Low — both fixed in eeb71f1, verify 380) + addenda per fix commit:
+  L1/L2 resolved, one Low on ff9a3f0 wording resolved by 4b04757, no
+  findings left open
 
 - [x] 2026-07-16 — 61b6d65, 5d7c226, ad11d31 — `app/terminal.py`,
   `app/services/lessons.py`, `app/main.py`, `app/templates/learn.html`,
