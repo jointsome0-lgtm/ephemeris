@@ -19,13 +19,14 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-16 — 10a8a71 — `app/services/lessons.py`, `verify.py` —
+## Done
+
+- [x] 2026-07-16 — 10a8a71 — `app/services/lessons.py`, `verify.py` —
   issue #14: generated lesson brief is now a constant (title/source URL no
   longer interpolated; the brief points the agent at `lesson.json` as data);
   `_write_brief` switched to same-directory 0600 tempfile + fsync + atomic
   `os.replace` (destination entry never opened); verify 345
-
-## Done
+  → `2026-07-16-brief-writer-review.md` (no findings)
 
 - [x] 2026-07-16 — 9747fc9, a3683d7 — `app/static/terminal.js` —
   issue #37: tab-active pointer split into durable (`storedActiveId`, the only
