@@ -483,3 +483,100 @@ correct, but N2 lets a malformed manifest steer the mandatory pre-read beyond
 the frozen artifact-root boundary. Land and re-review a dedicated path-validity
 guard before clearing this target. Wider network exposure remains unsupported
 regardless of prompt wording.
+
+## Fifth addendum — re-review of artifact-root containment fix `2851f69`
+
+**Scope and method:** re-applied the standing brief to the exact diff
+`ba2bc3c..2851f69`; `2851f69` is the current branch head. The runtime change is
+limited to the constant generated lesson brief, with accompanying verifier
+anchors and review/queue bookkeeping. The complete target lesson service,
+verifier, lesson-terminal caller, frozen path/root/discovery rules, and earlier
+reports for this surface were re-read. No listener, route, PTY/WS lifecycle,
+filesystem writer, preview policy, metadata interpolation path, or executable
+artifact reader changes in this range.
+
+### Finding status
+
+- **L1 — Remains resolved.** The diff does not weaken the instruction/data
+  boundary: learner answers, source material, lesson pages, assets, attempt
+  records, and learner files remain untrusted data whose embedded directives
+  cannot override the generated brief (`app/services/lessons.py:364-370`,
+  `app/services/lessons.py:403-411`).
+- **L2 — Remains resolved.** The bundle-wide per-component no-symlink rule is
+  unchanged (`app/services/lessons.py:412-414`), and every counted artifact root
+  retains the regular-file-only rule that explicitly skips symlinks
+  (`app/services/lessons.py:431-434`).
+- **N1 — Remains resolved.** The target still states depth at most four, at most
+  512 entries per root, regular files only, non-regular entries skipped, and
+  files over 2 MiB listed but not read (`app/services/lessons.py:431-434`). The
+  repaired verifier predicate now pins the entry-count and regular-file phrases
+  as well (`verify.py:310-320`).
+- **N2 — Narrowed, but not fully resolved (Low remains open).** The direct
+  containment escape reported by N2 is fixed: the brief now rejects absolute
+  roots and roots containing `.`/`..` segments, ignores values that do not meet
+  its stated condition, and says that manifest content never permits leaving
+  the bundle (`app/services/lessons.py:425-430`). A literal absolute or
+  parent-relative root therefore no longer conflicts with the opening
+  bundle-only instruction.
+
+  The finding's required valid-root/read-model condition is still incomplete.
+  The frozen grammar also requires a 1–200-character POSIX path with no
+  backslash, controls, empty segments, or trailing slash, and forbids paths
+  nested under a reserved name (`docs/learn-bundle-spec.md:180-190`). The root
+  rules further cap `artifact_roots` at eight, reject an over-limit manifest,
+  and drop nested/overlapping roots from the read model
+  (`docs/learn-bundle-spec.md:148-156`,
+  `docs/learn-bundle-spec.md:370-385`,
+  `docs/learn-bundle-spec.md:457-475`). The generated brief names none of those
+  conditions: for example, a ninth otherwise relative directory or an
+  overlapping root still "counts" under its text. Because the 512-entry limit
+  is per root, reading every such raw declaration removes the frozen aggregate
+  bound and can make a malformed/imported bundle drive duplicate or excessive
+  traversal. No implemented v2 reader normalizes the manifest before the study
+  agent sees it; the brief is the consumer's only rule today.
+
+  The verifier remains only a partial anchor. It requires the strings
+  `artifact_roots` and `never absolute`, but does not pin the no-dot-segment,
+  invalid-value-ignore, reserved-name, bundle-containment, eight-root, or
+  disjoint-root conditions (`verify.py:310-320`). It would therefore stay green
+  if most of the new guard or the remaining read-model bounds were absent. This
+  is regression-coverage evidence for the still-open N2, not a separate
+  finding.
+
+### New findings introduced by the fix
+
+No new distinct Critical, High, Medium, Low, or Info findings. The unresolved
+root-set validation and aggregate-bound gap is part of N2 as already described
+in the fourth addendum and its fix direction; the new wording materially narrows
+that finding by closing absolute and parent-traversal escapes. The queue
+bookkeeping assertion that no finding remains open is not credited by this
+independent re-review.
+
+### Fifth-addendum verification
+
+- `git diff --check ba2bc3c..2851f69` — passed.
+- Exact-target in-memory syntax compilation of `app/services/lessons.py` and
+  `verify.py` — passed.
+- Exact-template base/target probe — passed: `ba2bc3c` has the per-root
+  discovery bounds but no root-validity guard; `2851f69` adds the relative,
+  absolute/dot-segment, reserved-name, ignore-invalid, and stay-in-bundle
+  phrases while preserving the untrusted-data, read-only, no-symlink, depth,
+  entry-count, file-type, and size rules.
+- Exact-target root-set probe — confirmed that neither the generated brief nor
+  its verifier predicate states the eight-root cap or disjoint/overlap handling;
+  the verifier also does not anchor most of the newly added containment text.
+- `env -u ACTIVITY_DATA_DIR PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 timeout 55s
+  .venv/bin/python -u verify.py` — inconclusive in this environment: the two
+  terminal-wiring checks passed, then the run stalled and exited `124` without
+  a visible failing assertion.
+
+### Fifth revised deploy verdict
+
+**SAFE TO MAKE LIVE: NO for the exact lesson-agent teaching workflow at
+`2851f69`.** L1, L2, and N1 remain resolved, and N2's direct outside-bundle
+escape is closed, but N2 remains open because raw roots still do not have to
+survive the frozen complete path and root-set validation before the mandatory
+pre-read. Require the normalized valid-root set (including the eight-root and
+disjoint-root rules), pin that condition, and re-review before clearing the
+workflow. Wider network exposure remains unsupported regardless of prompt
+wording.
