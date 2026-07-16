@@ -470,26 +470,31 @@ def _read_pages(read: ManifestRead, raw: dict) -> list[dict]:
             read.add("type-mismatch", "pages[] item is not an object")
             continue
         pid, path = item.get("id"), item.get("path")
+        # id and path are validated independently: a duplicate is a duplicate
+        # in the raw declaration (§9.2), even when the other component would
+        # drop the item anyway.
+        pid_ok = False
         if not isinstance(pid, str):
             read.add("type-mismatch", f"page id {pid!r} is not a string")
-            continue
-        if not PAGE_ID_RE.match(pid):
+        elif not PAGE_ID_RE.match(pid):
             read.add("invalid-id", f"page id {pid!r}")
-            continue
-        if not isinstance(path, str):
-            read.add("type-mismatch", f"page {pid} path is not a string")
-            continue
-        if not valid_v2_path(path, html=True):
-            read.add("invalid-path", f"page path {path!r}")
-            continue
-        if pid in seen_ids:
+        elif pid in seen_ids:
             read.add("duplicate-id", f"page id {pid}")
-            continue
-        if path in seen_paths:
+        else:
+            seen_ids.add(pid)
+            pid_ok = True
+        path_ok = False
+        if not isinstance(path, str):
+            read.add("type-mismatch", f"page path {path!r} is not a string")
+        elif not valid_v2_path(path, html=True):
+            read.add("invalid-path", f"page path {path!r}")
+        elif path in seen_paths:
             read.add("duplicate-path", f"page path {path}")
+        else:
+            seen_paths.add(path)
+            path_ok = True
+        if not (pid_ok and path_ok):
             continue
-        seen_ids.add(pid)
-        seen_paths.add(path)
         title = item.get("title")
         if title is not None and not (isinstance(title, str) and len(title) <= MAX_TITLE_LEN):
             read.add("invalid-value", f"page {pid} title dropped")
@@ -571,16 +576,31 @@ def _read_blocks(
             read.add("type-mismatch", "blocks[] item is not an object")
             continue
         bid = item.get("id")
+        # id and file duplicates are raw-declaration facts (§9.2): they are
+        # recorded even when another component drops the block.
+        bid_ok = False
         if not isinstance(bid, str):
             read.add("type-mismatch", f"block id {bid!r} is not a string")
-            continue
-        if not BLOCK_ID_RE.match(bid):
+        elif not BLOCK_ID_RE.match(bid):
             read.add("invalid-id", f"block id {bid!r}")
-            continue
-        if bid in seen_ids:
+        elif bid in seen_ids:
             read.add("duplicate-id", f"block id {bid}")
+        else:
+            seen_ids.add(bid)
+            bid_ok = True
+        file = item.get("file")
+        file_ok = False
+        if not isinstance(file, str):
+            read.add("type-mismatch", f"block file {file!r} is not a string")
+        elif not valid_v2_path(file):
+            read.add("invalid-path", f"block file {file!r}")
+        elif file in seen_files:
+            read.add("duplicate-path", f"block file {file}")
+        else:
+            seen_files.add(file)
+            file_ok = True
+        if not (bid_ok and file_ok):
             continue
-        seen_ids.add(bid)
         page = item.get("page")
         if not isinstance(page, str):
             read.add("type-mismatch", f"block {bid} page is not a string")
@@ -592,20 +612,9 @@ def _read_blocks(
         if not isinstance(kind, str) or kind != "editor":  # v2 defines only editor (§4.4)
             read.add("unknown-kind", f"block {bid} kind {kind!r}")
             continue
-        file = item.get("file")
-        if not isinstance(file, str):
-            read.add("type-mismatch", f"block {bid} file is not a string")
-            continue
-        if not valid_v2_path(file):
-            read.add("invalid-path", f"block {bid} file {file!r}")
-            continue
         if not _under_root(file, read.artifact_roots):
             read.add("outside-root", f"block {bid} file {file!r} is outside every artifact root")
             continue
-        if file in seen_files:
-            read.add("duplicate-path", f"block file {file}")
-            continue
-        seen_files.add(file)
         language = item.get("language")
         if language is not None and not (isinstance(language, str) and LANGUAGE_RE.match(language)):
             read.add("invalid-value", f"block {bid} language dropped")

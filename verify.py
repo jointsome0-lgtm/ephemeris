@@ -547,6 +547,21 @@ with TestClient(app) as c:
     check("canonical writer round-trips all 10 fixture manifests byte-identically",
           len(_fx_roundtrips) == 10 and all(_fx_roundtrips))
 
+    # duplicate ids are raw-declaration facts: an id repeated on an item that
+    # is dropped for its path still rejects the manifest (PR-48 round 2)
+    _dup_masked = bschema.read_manifest_text(json.dumps({
+        "schema_version": 2,
+        "lesson_uid": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
+        "entry": "index.html",
+        "pages": [
+            {"id": "pg_maskdup01", "path": "../escape.html"},
+            {"id": "pg_maskdup01", "path": "index.html"},
+        ],
+    }))
+    check("duplicate page id behind a dropped path still rejects",
+          _dup_masked.outcome == "rejected"
+          and {"duplicate-id", "invalid-path"} <= _dup_masked.codes())
+
     # lesson identity (§3): minted once at creation, echoed in manifest + event
     _uid_conn = get_conn()
     try:
