@@ -762,6 +762,24 @@ with TestClient(app) as c:
           and any(f["code"] == "symlinked-bundle" for f in _symp_meta["findings"])
           and _symp_manifest.is_symlink())
 
+    # a DANGLING symlink at the bundle dir rejects visibly, never a 500
+    _dang_conn = get_conn()
+    try:
+        _dang_id = lessons_svc.create_lesson(_dang_conn, "Dangling Bundle Demo")
+        _dang = lessons_svc.get_lesson(_dang_conn, _dang_id)
+    finally:
+        _dang_conn.close()
+    _dang_dir = Path(lessons_svc.LESSONS_DIR) / _dang["slug"]
+    import shutil as _shutil
+    _shutil.rmtree(_dang_dir)
+    _os.symlink(Path(lessons_svc.LESSONS_DIR) / "no-such-target-dir", _dang_dir)
+    _dang_resp = c.get(f"/learn/lessons/{_dang_id}/preview-meta")
+    check("dangling bundle-dir symlink rejects as symlinked-bundle, not a 500",
+          _dang_resp.status_code == 200
+          and _dang_resp.json()["outcome"] == "rejected"
+          and any(f["code"] == "symlinked-bundle" for f in _dang_resp.json()["findings"])
+          and _dang_dir.is_symlink())
+
     # a non-regular node at lesson.json rejects visibly — never a 500 — and
     # finding details never leak the absolute runtime path
     _dirm_conn = get_conn()

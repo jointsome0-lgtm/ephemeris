@@ -520,9 +520,11 @@ def _bundle_dir_is_safe(lesson_dir: Path) -> bool:
     an existing one must be a real directory that is a direct child of the resolved
     lessons root. Best-effort against a hostile/imported bundle, not a same-user
     TOCTOU race (that user already owns the process)."""
+    if lesson_dir.is_symlink():
+        return False  # incl. a dangling link: exists() follows and says False
     if not lesson_dir.exists():
         return True
-    if lesson_dir.is_symlink() or not lesson_dir.is_dir():
+    if not lesson_dir.is_dir():
         return False
     try:
         return lesson_dir.resolve(strict=True).parent == LESSONS_DIR.resolve()
