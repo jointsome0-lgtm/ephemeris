@@ -665,3 +665,24 @@ head `89adcbc`, under the documented terminal opt-in and direct-loopback-only
 posture.** L1, L2, and N1 remain resolved; N2's final Low root-set residual is
 resolved; and this closing pass found no new findings. Wider network exposure
 remains unsupported and was not made safe by prompt wording.
+
+## Seventh addendum — `38dd11b`
+
+Written by the session converging this drain, documenting resolution (not an
+adversarial pass). After the closing verdict at `89adcbc`, the PR review bot's
+round-6 pass raised one more contract-fidelity finding against the brief: the
+pre-read and layout sections said "default `attempts/`", which reads as
+declared-list-or-default — but the frozen read model (learn-bundle-spec.md §7)
+always injects `attempts` into the normalized root set when a declared
+`artifact_roots` list omits it, so a tutor following the brief literally could
+adapt the lesson without reading learner work the app records there.
+
+`38dd11b` is a wording-only change to `_AGENTS_TEMPLATE` (no code paths): both
+passages now state that `attempts/` always counts as an artifact root, even
+when the manifest's declared list omits it. No new capability, path, or bound
+is introduced; the change narrows the gap between the brief and the frozen
+read model. verify 380 passed, 0 failed on `38dd11b`.
+
+The closing deploy verdict is unchanged and extends to this head: safe for the
+documented terminal opt-in, direct-loopback-only posture; wider exposure
+remains unsupported.
