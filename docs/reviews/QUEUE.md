@@ -19,6 +19,18 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
+- [ ] 2026-07-16 — 5ae5017 — `app/services/lessons.py`, `verify.py` —
+  issue #35 stage 1: the generated lesson `AGENTS.md` brief (constant
+  `_AGENTS_TEMPLATE`, regenerated on every lesson-terminal open) rewritten
+  from bundle-layout mechanics into a teaching contract: tutor mission,
+  per-section concept/visualization/prediction/reveal loop, self-check,
+  no-fabricated-references rule, pinned-libraries-in-`assets/` rule (remote
+  URLs disallowed), and the frozen v2 manifest names from
+  `docs/learn-bundle-spec.md` (v1/v2 branches, `pg_`/`q_` id lifecycle,
+  `questions[]`, `attempts.jsonl` read-only, agent must not change
+  `schema_version`/`lesson_uid`); `_write_brief` and the `CLAUDE.md` shim
+  unchanged; verify 379 (+3)
+
 ## Done
 
 - [x] 2026-07-16 — 61b6d65, 5d7c226, ad11d31 — `app/terminal.py`,
