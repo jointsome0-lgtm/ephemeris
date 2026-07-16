@@ -562,6 +562,23 @@ with TestClient(app) as c:
           _dup_masked.outcome == "rejected"
           and {"duplicate-id", "invalid-path"} <= _dup_masked.codes())
 
+    # file-vs-roots containment is a raw-declaration fact too: a block dropped
+    # for its unknown kind still reports its outside-root file (PR-48 round 15)
+    _blk_masked = bschema.read_manifest_text(json.dumps({
+        "schema_version": 2,
+        "lesson_uid": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
+        "entry": "index.html",
+        "pages": [{"id": "pg_blkmask01", "path": "index.html"}],
+        "blocks": [{
+            "id": "blk_blkmask01",
+            "page": "pg_blkmask01",
+            "kind": "mystery",
+            "file": "scratch/work.py",
+        }],
+    }))
+    check("unknown-kind block still reports its outside-root file",
+          {"unknown-kind", "outside-root"} <= _blk_masked.codes())
+
     # lesson identity (§3): minted once at creation, echoed in manifest + event
     _uid_conn = get_conn()
     try:
