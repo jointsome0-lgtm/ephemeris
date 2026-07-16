@@ -700,6 +700,13 @@ with TestClient(app) as c:
           _rej_meta2["outcome"] == "rejected"
           and any(f["code"] == "unsupported-version" for f in _rej_meta2["findings"])
           and "Unsupported manifest version." in _rej_prev2.text)
+    # placeholder-to-placeholder transitions are visible to the live-reload
+    # poller: the version token tracks the manifest state, not a flat "0"
+    check("placeholder version tokens track the manifest state",
+          _rej_meta["version"].startswith("rejected:")
+          and _rej_meta2["version"].startswith("rejected:")
+          and _rej_meta["version"] != _rej_meta2["version"]
+          and _mf_meta["version"].startswith("missing:"))
     # rejected means NO page render — direct file fetches included (§9.2)
     (Path(lessons_svc.LESSONS_DIR) / _rej["slug"] / "index.html").write_text(
         "<html>Vera Example orphan page</html>", encoding="utf-8")

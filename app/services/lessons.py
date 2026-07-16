@@ -242,6 +242,17 @@ def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:
     return read
 
 
+def _manifest_version(lesson: dict) -> str:
+    """Manifest mtime token (lstat — never follows a planted link). Folded
+    into placeholder versions so the Learn live-reload poller sees
+    placeholder-to-placeholder transitions (missing ↔ rejected ↔ fixed),
+    which all used to report the same version \"0\"."""
+    try:
+        return str(os.lstat(_manifest_path(lesson["slug"])).st_mtime_ns)
+    except OSError:
+        return "0"
+
+
 def _finding_views(read: bundle_schema.ManifestRead) -> list[dict]:
     """Findings for the preview metadata — readers MUST surface them (§9.2)."""
     return [
@@ -277,7 +288,7 @@ def _file_info(lesson: dict, read: bundle_schema.ManifestRead, entry: str | None
             "path": str(_manifest_path(lesson["slug"])),
             "rel_path": f"{lesson['slug']}/{MANIFEST_NAME}",
             "exists": False,
-            "version": "0",
+            "version": f"rejected:{_manifest_version(lesson)}",
             "size": 0,
             "outcome": read.outcome,
             "findings": _finding_views(read),
@@ -311,7 +322,7 @@ def _file_info(lesson: dict, read: bundle_schema.ManifestRead, entry: str | None
         # server's absolute filesystem layout (home dir, username) to clients.
         "rel_path": f"{lesson['slug']}/{entry}",
         "exists": exists,
-        "version": str(stat.st_mtime_ns) if stat else "0",
+        "version": str(stat.st_mtime_ns) if stat else f"missing:{_manifest_version(lesson)}",
         "size": stat.st_size if stat else 0,
         "outcome": outcome,
         "findings": findings,
