@@ -21,6 +21,13 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Done
 
+- [x] 2026-07-16 — 9747fc9, a3683d7 — `app/static/terminal.js` —
+  issue #37: tab-active pointer split into durable (`storedActiveId`, the only
+  value persisted) and in-memory (`activeId`); off-Learn boot activates the
+  first non-lesson tab in memory only; `connectAllTabs()` skips lesson tabs
+  off-Learn (explicit switch still connects)
+  → `2026-07-16-terminal-tab-scoping-review.md` (one Low fixed in a3683d7)
+
 - [x] 2026-07-03 — multi-session terminal core — `app/terminal.py` —
   detach/reattach + fd lifecycle → `terminal-multisession-review.md`
   (F1–F4 fixed in 6f9538b)
