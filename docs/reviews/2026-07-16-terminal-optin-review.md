@@ -211,3 +211,23 @@ with T1 accepted posture and no open review finding.** T2, T3, and the empty
 `?lesson=` fail-open are resolved without weakening the previously confirmed
 terminal trust, lifecycle, opt-in, or lesson-containment controls. Wider or
 proxy-adjacent terminal deployment remains unsupported.
+
+## Second-pass convergence (2026-07-16, independent Opus review of 61b6d65)
+
+An independent second pass (Opus subagent, same standing brief) returned
+**APPROVE — no High/Medium findings, no regressions**, independently ran both
+verifier suites green (366+28 at that commit), and confirmed: complete opt-in
+gating on both consumers with a clean cutover from the old opt-out variable;
+the lesson refusal costing no fd/process (workspace prep precedes
+`pty.openpty()`, `_CREATE_LOCK` released on the exception path); the totality
+of `prepare_terminal_workspace` against a hostile bundle (defensive
+`_normalise_manifest`, all raisers covered by the outer except); redaction
+correctness on hand-checked edge shapes; and the absolute-path leak closed on
+every client surface (the remaining `info["path"]` use is a server-side
+`FileResponse` only).
+
+Two informational notes, converged into `docs/security-model.md` (no code
+change): `SSH_AUTH_SOCK` on the allowlist deliberately forwards the user's
+live SSH identity to shells and agents (acceptable only under the single-user
+loopback posture); and proxy credentials necessarily remain in the child
+environment — `_redact_userinfo` scopes to what is displayed, aligning with T1.

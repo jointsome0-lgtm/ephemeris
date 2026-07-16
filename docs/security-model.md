@@ -70,10 +70,17 @@ shell and agents launched from it; it is **not** secret isolation. The shell is
 a same-user child of the service process and can still read the parent's live
 environment (for example via `/proc/<pid>/environ`), so anything that must stay
 hidden from the terminal user needs a real OS boundary (separate account /
-sandbox — tracked as the remaining scope of issue #16), not this list. Egress
-proxy variables are then re-derived deliberately (`EPHEMERIS_TERM_PROXY`
-override, service-configured proxy, or local auto-detection); when a proxy URL
-is shown in the terminal banner, any `user:password@` credentials are redacted.
+sandbox — tracked as the remaining scope of issue #16), not this list. One
+deliberate pass-through to be aware of: `SSH_AUTH_SOCK` is on the allowlist,
+so shells and agents launched from them can use the user's live SSH identity
+(git-over-SSH) — acceptable only under the single-user loopback posture.
+
+Egress proxy variables are re-derived deliberately (`EPHEMERIS_TERM_PROXY`
+override, service-configured proxy, or local auto-detection) and reach the
+child with their real credentials, because clients need them to authenticate.
+When a proxy URL is shown in the terminal banner, any `user:password@`
+credentials are redacted — the redaction covers what is *displayed*, not the
+child environment.
 
 A lesson-scoped terminal (`/terminal/ws?lesson=<slug>`) fails closed: if the
 lesson workspace cannot be prepared — unknown slug, symlinked bundle directory,
