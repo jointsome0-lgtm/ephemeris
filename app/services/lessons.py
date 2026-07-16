@@ -426,8 +426,8 @@ is one you verified.
   files per root, symlinks skipped, files over 2 MiB listed but not read.
 - `attempts.jsonl` — app-owned log of the learner's recorded attempts, one
   JSON object per line (`question_id`, `page_id`, `answer`, `created_at`).
-  It may be absent or lag behind. Read-only for you: never write or
-  rewrite it.
+  It may be absent or lag behind. Read-only for you:
+  never write or rewrite it.
 - `AGENTS.md` / `CLAUDE.md` — app-generated briefs (this file); never
   author or repurpose these names.
 
