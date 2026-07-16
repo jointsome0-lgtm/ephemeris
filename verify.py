@@ -329,13 +329,14 @@ with TestClient(app) as c:
     # Fail-closed lesson sessions, allowlisted child env, redacted proxy banner.
     import asyncio as _asyncio
     import app.terminal as _term
-    _ws_refused = False
-    try:
-        _asyncio.run(_term._create_session("no-such-lesson-slug"))
-    except _term._LessonWorkspaceError:
-        _ws_refused = True
-    check("lesson terminal fails closed when the workspace cannot be prepared",
-          _ws_refused)
+    _ws_refused = 0
+    for _bad_slug in ("no-such-lesson-slug", "", "../evil"):
+        try:
+            _asyncio.run(_term._create_session(_bad_slug))
+        except _term._LessonWorkspaceError:
+            _ws_refused += 1
+    check("lesson terminal fails closed when the workspace cannot be prepared "
+          "(unknown, empty, and junk slugs)", _ws_refused == 3)
     os.environ["EPHEMERIS_VERIFY_CANARY"] = "leak-probe"
     try:
         _child_env = _term._child_env()

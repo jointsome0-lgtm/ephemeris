@@ -463,10 +463,11 @@ def _ensure_reaper() -> None:
 
 async def _create_session(lesson: str | None = None) -> "_TermSession | None":
     """Spawn a fresh shell on a PTY and register it. Returns None at capacity or on a
-    spawn failure. `lesson` (a Learn slug) scopes the shell to that lesson's bundle
-    dir with a regenerated AGENTS.md brief; if that workspace cannot be prepared,
-    raises _LessonWorkspaceError — a lesson request never falls back to the repo
-    root. Serialized via _CREATE_LOCK so the capacity check is atomic."""
+    spawn failure. `lesson` is None for a plain shell; any provided value — even an
+    empty or junk one — makes this a lesson-scoped request that must resolve to the
+    lesson's bundle dir (with a regenerated AGENTS.md brief) or raise
+    _LessonWorkspaceError: a lesson request never falls back to the repo root.
+    Serialized via _CREATE_LOCK so the capacity check is atomic."""
     async with _CREATE_LOCK:
         if len(_SESSIONS) >= _MAX_SESSIONS:
             _reap_idle(force_oldest=True)
@@ -478,7 +479,7 @@ async def _create_session(lesson: str | None = None) -> "_TermSession | None":
         # cost a PTY. prepare_terminal_workspace is total (never raises; None means
         # "could not prepare") and its DB + file I/O runs in a worker thread.
         workspace = None
-        if lesson:
+        if lesson is not None:  # param present at all = lesson-scoped; "" must refuse too
             workspace = await asyncio.to_thread(prepare_terminal_workspace, lesson)
             if workspace is None:
                 raise _LessonWorkspaceError(lesson)
