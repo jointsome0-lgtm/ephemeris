@@ -70,9 +70,12 @@ Reader mapping: a manifest-referenced path (entry, page, block `file`,
 artifact root) that exists but resolves through a symlink is treated as a
 missing file with a `symlinked-path` finding (degraded — for pages this
 means the "no HTML yet" placeholder, not a drop from `pages[]`); the bundle
-directory itself being a symlink rejects the bundle with its own code,
-`symlinked-bundle` (rejected), so the §9.2 severity aggregation needs no
-special case. Artifact enumeration skips symlinks with `symlinked-path`.
+directory itself — or `lesson.json` itself — being a symlink rejects the
+bundle with its own code, `symlinked-bundle` (rejected), so the §9.2
+severity aggregation needs no special case. A symlinked manifest is a
+bundle-integrity failure, never "missing" (no default-skeleton creation —
+that would mask a planted link). Artifact enumeration skips symlinks with
+`symlinked-path`.
 
 ## 3. Identity model
 
@@ -461,7 +464,7 @@ outcome). This is why one fixture can require several codes at once.
 | `overlapping-roots`  | degraded  | §7; the nested root is dropped |
 | `invalid-ref`        | degraded  | malformed `path`/`concepts` entry, or orphan/non-integer/out-of-range `step`; the ref/step is dropped |
 | `identity-mismatch`  | degraded  | manifest `lesson_uid` ≠ DB `uid`; render as `legacy-display`, refuse attempt writes |
-| `symlinked-bundle`   | rejected  | §2; the bundle directory itself is a symlink |
+| `symlinked-bundle`   | rejected  | §2; the bundle directory itself, or `lesson.json` itself, is a symlink |
 | `symlinked-path`     | degraded  | §2; a referenced path resolves through a symlink — treated as a missing file |
 | `invalid-value`      | info*     | an optional display/value field (`pages[].title`, `label`, `kind`, `language`, `updated_by_agent_at`) violates its grammar or limit — the field is dropped, the item stays; *a §4 type mismatch on a field or list item degrades instead (the field is treated as absent / the item dropped) |
 | `missing-attempts-root` | info   | §7; `attempts` injected into the read model |
