@@ -302,6 +302,19 @@ with TestClient(app) as c:
     check("lesson AGENTS.md teaches stage=page + the manifest contract",
           "related/" in agents_text and "updated_by_agent_at" in agents_text
           and "reading order" in agents_text)
+    check("lesson AGENTS.md carries the teaching contract (tutor/interleave/reveal)",
+          "tutor, not a document converter" in agents_text
+          and "Never paste" in agents_text
+          and "<details>" in agents_text
+          and "redo it" in agents_text)
+    check("lesson AGENTS.md cites the frozen v2 identity + attempts conventions",
+          "schema_version" in agents_text and "lesson_uid" in agents_text
+          and "pg_" in agents_text and "q_" in agents_text
+          and "attempts.jsonl" in agents_text
+          and "never write or rewrite it" in agents_text)
+    check("lesson AGENTS.md requires pinned libraries in assets/, bans CDN",
+          "CDN" in agents_text and "pinned" in agents_text
+          and "assets/" in agents_text)
     claude_text = ""
     if ws_info:
         _claude_path = Path(ws_info["dir"]) / "CLAUDE.md"
