@@ -12,7 +12,9 @@ per-route (or absent):
 
 2. Write guard. Every unsafe-method request (POST/PUT/PATCH/DELETE — anything
    a new route could add) passes one origin policy; a route cannot opt out by
-   forgetting a call. The policy, each case deliberate:
+   forgetting a call. Load-bearing invariant: safe methods are NOT guarded,
+   so GET/HEAD routes must stay side-effect-free — a mutating GET would sit
+   outside this policy. The policy, each case deliberate:
    - Origin present: every value (getlist — duplicates can't smuggle) must be
      a serialized http(s) origin (no userinfo/path/query/fragment) equal to
      the request's own (scheme, hostname, port) — scheme from the ASGI scope,
@@ -38,9 +40,10 @@ per-route (or absent):
      sandbox CSP with the narrow frame-ancestors 'self' exception.
 
 The middleware never *accepts* a WebSocket — a bad handshake Host is refused
-with 403 before the app sees it; everything else passes through to the
-terminal gate in app/terminal.py, which stays the stricter authority
-(loopback peer + loopback Host + exact-origin).
+pre-accept (close code 1008; HTTP requests get a 400) before the app sees
+it; everything else passes through to the terminal gate in app/terminal.py,
+which stays the stricter authority (loopback peer + loopback Host +
+exact-origin).
 """
 from __future__ import annotations
 

@@ -8,11 +8,12 @@ PR #43, branch `fix/15-b2-write-guard`.
 
 - Adversarial pass: Codex (`codex exec`, gpt-5.6, standing brief
   `docs/reviews/review-prompt.md` applied by file reference).
+- Second independent pass: Opus subagent pointed at the same brief, reviewing
+  the combined a74eab1+e50090d state (it ran long — a first attempt appeared
+  dead and a retry was spawned; the retry delivered after this report was
+  first committed, so its findings were converged in a follow-up commit).
 - Correctness half: Claude (this file's convergence; built the change, then
   re-reviewed the combined diff for lifecycle/parsing/ASGI-scope issues).
-- A second independent pass (Opus subagent pointed at the same brief) was
-  attempted twice; both agents became unresponsive and returned nothing.
-  Recorded here so nobody assumes a second clean pass happened.
 
 ## Codex verdict
 
@@ -43,6 +44,36 @@ Host, duplicate-Origin, exact authority, stale writer/control, attach/reaper)
 handshakes and never accepts a WebSocket itself; `/terminal/ws` keeps the
 stricter gate.
 
+## Opus second pass
+
+Verdict: no High or Medium findings; verify 361/361 reproduced; direct
+probes of the guard (userinfo smuggling `http://host:port@evil.com`, scheme
+mismatch, wrong port, suffix-host `testserver.evil.com`, `null`, path/query
+variants, odd schemes) all rejected; same-origin case-insensitive and
+default-port cases allowed. Confirms W1's fix is a real tightening and that
+`app/terminal.py` (F1–F4, env-rename) is untouched — no regression.
+
+Four Low/informational notes, converged as follows:
+
+1. `scope["scheme"]` is not proxy-aware: behind a TLS proxy that doesn't
+   forward the scheme, legitimate https same-origin writes would 403.
+   Fail-closed (breakage, never bypass) and out of the documented
+   no-proxy-headers posture — accepted, no change.
+2. The guard covers unsafe methods only; a future mutating GET would sit
+   outside it. Real invariant, previously undocumented — now stated in the
+   `app/security.py` docstring (GET/HEAD must stay side-effect-free).
+3. No-Origin + no-Sec-Fetch-Site requests are allowed by design (non-browser
+   loopback clients). Already documented as defense in depth, not a CSRF/auth
+   substitute — no action.
+4. Host userinfo is silently dropped by parsing (`Host: evil.com@localhost`
+   → trusted `localhost`). Not reachable from a browser (Host is a forbidden
+   header; DNS rebinding presents the navigated domain without userinfo);
+   the terminal gate parses identically. Accepted, no change.
+
+Plus one doc nit — the docstring said a bad-Host WS handshake gets "403"
+while the code closes with 1008 (HTTP gets 400) — fixed with item 2 in the
+same follow-up commit.
+
 ## Correctness half (Claude)
 
 - Middleware sees every route including mounts; the deliberately unguarded
@@ -58,5 +89,6 @@ stricter gate.
 
 ## Outcome
 
-Entry drained. W1 fixed in e50090d; nothing else to carry. Deploy gate
-clears for this surface once the PR merges.
+Entry drained. W1 fixed in e50090d; the Opus pass's two documentation gaps
+fixed in the follow-up commit; the remaining Lows are accepted posture,
+recorded above. Deploy gate clears for this surface once the PR merges.
