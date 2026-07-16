@@ -25,12 +25,22 @@ WorkingDirectory=%h/projects/ephemeris
 Environment=APP_TIMEZONE=Europe/Moscow
 # The ledger must live outside the public checkout; adjust this path in your copy.
 Environment=ACTIVITY_DATA_DIR=%h/.local/share/ephemeris
+# The embedded terminal (a real shell over a websocket) is OFF by default.
+# Opt in ONLY on a single-user desktop with --host 127.0.0.1 and never with
+# --proxy-headers (see docs/security-model.md), by uncommenting:
+#Environment=EPHEMERIS_ENABLE_TERMINAL=1
 # Concrete venv interpreter built by `uv sync` — no PATH/shim dependency.
 # Default 127.0.0.1 = desktop-only (safe). The app has NO AUTH.
 # For phone/LAN access change to --host 0.0.0.0 — ONLY on a trusted network.
 ExecStart=%h/projects/ephemeris/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 Restart=on-failure
 RestartSec=3
+# New files (DB, exports, lesson briefs) stay private to the service user.
+UMask=0077
+# Bound the service (and anything spawned inside it, e.g. an opted-in terminal
+# shell): the whole cgroup is capped, runaway processes get killed, not the host.
+MemoryMax=2G
+TasksMax=256
 
 [Install]
 WantedBy=default.target

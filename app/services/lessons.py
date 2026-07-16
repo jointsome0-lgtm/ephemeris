@@ -240,6 +240,9 @@ def lesson_file_info(lesson: dict, entry: str | None = None) -> dict:
         "entry": entry,
         "label": _entry_label(entry),
         "path": str(path),
+        # Display form: bundle-relative, so templates/APIs never leak the
+        # server's absolute filesystem layout (home dir, username) to clients.
+        "rel_path": f"{lesson['slug']}/{entry}",
         "exists": exists,
         "version": str(stat.st_mtime_ns) if stat else "0",
         "size": stat.st_size if stat else 0,
