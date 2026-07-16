@@ -1028,6 +1028,67 @@ with TestClient(app) as c:
                follow_redirects=False)
     check("cross-origin POST /export/jsonl -> 403", r.status_code == 403, str(r.status_code))
 
+    # --- Event identity: persistent UUIDs + idempotent backfill (#17 B4, v9) ----
+    import sqlite3 as _sqlite3
+    from uuid import UUID as _UUID
+    from app.db import append_event as _append_event, backfill_event_uuids as _backfill, \
+        now_iso as _now_iso
+
+    uconn = get_conn()
+    try:
+        # append_event returns the persistent identity it stored
+        with uconn:
+            probe_uuid = _append_event(uconn, "verify_uuid_probe", {"probe": 1})
+        stored = uconn.execute(
+            "SELECT uuid FROM events WHERE type = 'verify_uuid_probe'").fetchone()
+        check("append_event returns the stored event UUID",
+              stored is not None and stored["uuid"] == probe_uuid, str(probe_uuid))
+        check("event UUID is canonical", str(_UUID(probe_uuid)) == probe_uuid, probe_uuid)
+
+        # every event written during this run carries a distinct UUID
+        total, filled, distinct = uconn.execute(
+            "SELECT COUNT(*), COUNT(uuid), COUNT(DISTINCT uuid) FROM events").fetchone()
+        check("every event carries a UUID", total == filled, f"{filled}/{total}")
+        check("event UUIDs are unique", filled == distinct, f"{distinct}/{filled}")
+
+        # uniqueness is schema-enforced, not convention
+        try:
+            with uconn:
+                uconn.execute(
+                    "INSERT INTO events (uuid, timestamp, type, payload_version, payload_json) "
+                    "VALUES (?, ?, 'verify_uuid_dup', 1, '{}')", (probe_uuid, _now_iso()))
+            check("duplicate event UUID rejected by the schema", False, "insert succeeded")
+        except _sqlite3.IntegrityError:
+            check("duplicate event UUID rejected by the schema", True)
+
+        # backfill: pre-v9 rows (uuid NULL) get stamped; payload/timestamp untouched
+        legacy_payload = '{"legacy": true}'
+        with uconn:
+            for _ in range(2):
+                uconn.execute(
+                    "INSERT INTO events (timestamp, type, payload_version, payload_json) "
+                    "VALUES ('2026-01-01T00:00:00+03:00', 'verify_uuid_legacy', 1, ?)",
+                    (legacy_payload,))
+        with uconn:
+            stamped = _backfill(uconn)
+        legacy = uconn.execute(
+            "SELECT uuid, timestamp, payload_json FROM events "
+            "WHERE type = 'verify_uuid_legacy' ORDER BY id").fetchall()
+        check("backfill stamps exactly the NULL-uuid rows",
+              stamped == 2 and all(r["uuid"] for r in legacy), str(stamped))
+        check("backfill never rewrites payload/timestamp history",
+              all(r["payload_json"] == legacy_payload
+                  and r["timestamp"] == "2026-01-01T00:00:00+03:00" for r in legacy))
+        first_uuids = [r["uuid"] for r in legacy]
+        with uconn:
+            restamped = _backfill(uconn)
+        legacy2 = uconn.execute(
+            "SELECT uuid FROM events WHERE type = 'verify_uuid_legacy' ORDER BY id").fetchall()
+        check("backfill rerun is an idempotent no-op",
+              restamped == 0 and [r["uuid"] for r in legacy2] == first_uuids, str(restamped))
+    finally:
+        uconn.close()
+
     # --- Calendar events: recurrence engine + CRUD (M1, sec32 §4/§10) -----------
     from datetime import date as _d
     from app.services import calendar_events as ce
@@ -1101,7 +1162,7 @@ with TestClient(app) as c:
             except ce.CalendarEventError:
                 check(label, True)
 
-        check("schema migrated to v8", cconn.execute("PRAGMA user_version").fetchone()[0] == 8)
+        check("schema migrated to v9", cconn.execute("PRAGMA user_version").fetchone()[0] == 9)
         oid = ce.create_event(cconn, "Orbit Drill", start_date="2027-04-07", freq="weekly",
                               byweekday="1010100", start_time="09:10", end_time="09:55")
         sid = ce.create_event(cconn, "Signal Lab", start_date="2027-04-07", freq="weekly",

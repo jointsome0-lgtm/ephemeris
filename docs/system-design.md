@@ -617,8 +617,14 @@ CREATE INDEX idx_checkins_date ON checkins(date);
 
 Later schema versions add the task-manager tables (`lists`, `tasks`, `tags`,
 `task_tags` — v2, sec30.1), habit fields on `routine_items` (v3, sec31),
-`focus_sessions` (v4, sec15.4), and `calendar_events` (v5, sec32 §3 — the row IS
-the recurring series; occurrences are expanded on read, never materialized).
+`focus_sessions` (v4, sec15.4), `calendar_events` (v5, sec32 §3 — the row IS
+the recurring series; occurrences are expanded on read, never materialized),
+the Learn `lessons` table and its bundle-navigation columns (v6/v7),
+`focus_sessions.lesson_id` (v8), and a persistent unique `events.uuid` (v9 —
+service-owned identity stamped by `append_event()` and returned to the caller;
+pre-v9 rows are backfilled once, payload history untouched; the backfill is
+idempotent and re-run on every `init_db()` to heal rows written by a not-yet-
+restarted pre-v9 process).
 
 ### 13.2 Status Enum
 

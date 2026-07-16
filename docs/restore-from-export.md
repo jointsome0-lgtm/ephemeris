@@ -77,10 +77,12 @@ separate calls.
 
 ## Known gaps and proposals
 
-- Stable event identity: add an immutable exported event ID or UUID and enforce
-  it as a unique importer receipt. Content hashes cannot distinguish two valid,
-  identical same-second events. Until then, import is fresh-target-only and
-  redelivery is not idempotent.
+- Stable event identity: the database now stores a unique `events.uuid` per row
+  (schema v9; pre-v9 rows backfilled once, payload history untouched), but the
+  export envelope does not carry it yet, so the importer still has no receipt to
+  deduplicate on. Until the envelope exports the UUID and the importer enforces
+  it, import is fresh-target-only and redelivery is not idempotent; restored
+  rows get fresh local UUIDs, like restored autoincrement IDs.
 - Tasks/lists: emit complete post-write row snapshots, including every row
   changed by respace and list archive, or add versioned typed-table snapshots.
 - Focus: include note/date/timestamps or snapshot the table.

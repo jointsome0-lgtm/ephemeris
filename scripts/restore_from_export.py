@@ -352,6 +352,9 @@ def _build_into(records: list[Record], staging: Path) -> dict[str, Any]:
             for record in snapshots:
                 _insert_calendar_snapshot(conn, record, unresolved_links)
             sequence_bumps = _bump_id_sequences(conn, records)
+            # Export lines carry no event identity yet (issue #17 tail), so
+            # restored rows get fresh local UUIDs, like restored autoincrement ids.
+            db.backfill_event_uuids(conn)
 
         fk_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
         if fk_errors:

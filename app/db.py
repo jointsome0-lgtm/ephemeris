@@ -14,6 +14,7 @@ import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 # --- paths -----------------------------------------------------------------
@@ -87,15 +88,21 @@ def is_not_future(s: str) -> bool:
 # --- event ledger (sec14.1): append-only audit feed -------------------------
 
 
-def append_event(conn: sqlite3.Connection, type_: str, payload: dict) -> None:
+def append_event(conn: sqlite3.Connection, type_: str, payload: dict) -> str:
     """Append one audit event — call inside the same transaction as the write it
     describes. One owner of the ledger write contract (payload_version, JSON form,
-    timestamp source) for every service."""
+    timestamp source) for every service.
+
+    Returns the event's persistent UUID (schema v9): the stable identity that
+    survives export/redelivery, for callers that need to reference the event
+    (issue #17 audit-export slice)."""
+    event_uuid = str(uuid4())
     conn.execute(
-        "INSERT INTO events (timestamp, type, payload_version, payload_json) "
-        "VALUES (?, ?, 1, ?)",
-        (now_iso(), type_, json.dumps(payload, ensure_ascii=False)),
+        "INSERT INTO events (uuid, timestamp, type, payload_version, payload_json) "
+        "VALUES (?, ?, ?, 1, ?)",
+        (event_uuid, now_iso(), type_, json.dumps(payload, ensure_ascii=False)),
     )
+    return event_uuid
 
 
 # --- connections (sec13.3 connection policy) -------------------------------
@@ -117,7 +124,7 @@ def get_conn() -> sqlite3.Connection:
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -378,6 +385,36 @@ def _migrate_to_8(conn: sqlite3.Connection) -> None:
             conn.execute(stmt)
 
 
+# v9 — persistent event identity (issue #17, audit-export slice): every ledger
+# row carries a service-owned UUID so an exported event can later be redelivered
+# idempotently downstream. The backfill stamps ONLY the new column on pre-v9
+# rows — payload_json / timestamp / type history is never rewritten. The unique
+# index tolerates NULLs (SQLite), so a not-yet-restarted pre-v9 process can
+# still insert rows into an already-migrated database; backfill_event_uuids()
+# runs on every init_db() to heal any such rows on the next start.
+
+
+def backfill_event_uuids(conn: sqlite3.Connection) -> int:
+    """Stamp a UUID on every event row that lacks one; returns how many were
+    stamped. Idempotent: rows that already carry a uuid are never touched, so a
+    rerun is a no-op. Only the uuid column is written — payload history stays
+    byte-identical."""
+    ids = [r["id"] for r in conn.execute("SELECT id FROM events WHERE uuid IS NULL")]
+    conn.executemany(
+        "UPDATE events SET uuid = ? WHERE id = ? AND uuid IS NULL",
+        [(str(uuid4()), event_id) for event_id in ids],
+    )
+    return len(ids)
+
+
+def _migrate_to_9(conn: sqlite3.Connection) -> None:
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(events)")}
+    if "uuid" not in have:
+        conn.execute("ALTER TABLE events ADD COLUMN uuid TEXT")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_events_uuid ON events(uuid)")
+    backfill_event_uuids(conn)
+
+
 # Ordered, idempotent steps. A schema change must NEVER require deleting the
 # ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
 _MIGRATIONS = [
@@ -389,6 +426,7 @@ _MIGRATIONS = [
     (6, _migrate_to_6),
     (7, _migrate_to_7),
     (8, _migrate_to_8),
+    (9, _migrate_to_9),
 ]
 
 
@@ -405,5 +443,9 @@ def init_db() -> None:
                 conn.execute(f"PRAGMA user_version = {target}")
                 conn.commit()
                 version = target
+        # Heal rows a pre-v9 process may have inserted after the migration ran
+        # (the live service lags the working tree until its next restart).
+        if backfill_event_uuids(conn):
+            conn.commit()
     finally:
         conn.close()
