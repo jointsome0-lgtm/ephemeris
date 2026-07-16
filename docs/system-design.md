@@ -1,6 +1,6 @@
 # Ephemeris — System Design Document
 
-Status: Draft v0.1  
+Status: Living implementation design and v0.1 baseline
 Primary target: Linux + Samsung browser  
 Storage model: local-first SQLite  
 Product type: personal activity/routine/path tracker  
@@ -1572,8 +1572,10 @@ learning traces
 ### v0.5+
 
 ```text
-agent-readable API
-Atlas integration
+versioned export surfaces
+shell navigation and configured URL embed points
+deterministic cross-system adapters owned by Selfos
+no peer-schema knowledge inside Ephemeris
 Story translation/workflow support
 worldbuilding references
 calendar/telegram integrations
@@ -1631,7 +1633,20 @@ memory readers
 
 ### Atlas
 
-Future knowledge/path layer.
+Atlas is a separate knowledge-state engine and viewer. Ephemeris may embed its
+configured URL; it does not build or parse the Atlas graph.
+
+Not part of MVP.
+
+### Exp2Res
+
+The verified global Mirror and unanswered Gap Questions remain an Exp2Res-owned
+view. Ephemeris may embed its configured URL; it does not parse Exp2Res
+assessment companion files.
+
+Integration v1 embeds peer views on the same machine over loopback. Phone/LAN
+gateway support is deferred, and Ephemeris remains usable when either peer URL
+is unset.
 
 Not part of MVP.
 

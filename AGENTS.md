@@ -1,5 +1,24 @@
 # Agent Operating Guide
 
+## Current stage
+
+Ephemeris is an implementation repository. No repository-wide SDD freeze
+applies: changes proceed through the normal issue, security, test, review-queue,
+and PR protocols. Integration v1 follows
+[selfos#25](https://github.com/jointsome0-lgtm/selfos/issues/25) and the relevant
+Ephemeris issues ([#1](https://github.com/jointsome0-lgtm/ephemeris/issues/1),
+[#2](https://github.com/jointsome0-lgtm/ephemeris/issues/2),
+[#17](https://github.com/jointsome0-lgtm/ephemeris/issues/17),
+[#35](https://github.com/jointsome0-lgtm/ephemeris/issues/35),
+[#36](https://github.com/jointsome0-lgtm/ephemeris/issues/36),
+[#38](https://github.com/jointsome0-lgtm/ephemeris/issues/38), and
+[#39](https://github.com/jointsome0-lgtm/ephemeris/issues/39)): peer systems
+remain separate and are integrated by configured URLs only, with deterministic
+cross-system adapters owned by Selfos.
+
+The existing special review rules for `app/terminal.py`, `app/agent/`, and
+listening surfaces remain binding.
+
 ## Public Data Boundary
 
 Treat this repository as public by default.
