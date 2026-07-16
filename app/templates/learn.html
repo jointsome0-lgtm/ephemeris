@@ -102,7 +102,7 @@
       <header class="lesson-preview-head">
         <div class="lesson-preview-title">
           <h2>{{ selected.title }}</h2>
-          <span class="lesson-file-path">{{ selected.file.path }}</span>
+          <span class="lesson-file-path">{{ selected.file.rel_path }}</span>
           {% if selected.pages %}
           <nav class="lesson-page-tabs" aria-label="Lesson pages">
             {% for page in selected.pages %}

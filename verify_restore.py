@@ -18,7 +18,7 @@ SOURCE_DIR = WORK_DIR / "source"
 # The real app must bind to the throwaway source before it is imported.
 os.environ["ACTIVITY_DATA_DIR"] = str(SOURCE_DIR)
 os.environ.pop("ACTIVITY_DB", None)
-os.environ["EPHEMERIS_DISABLE_TERMINAL"] = "1"
+os.environ.pop("EPHEMERIS_ENABLE_TERMINAL", None)  # terminal is opt-in; stay at the default (off)
 # TestClient presents Host: testserver; force the allowlist to a known value
 # so an ambient LAN setting can't 400 every request under test.
 os.environ["EPHEMERIS_TRUSTED_HOSTS"] = "testserver,localhost,127.0.0.1,::1"
@@ -138,7 +138,7 @@ def reexport(target: Path) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["ACTIVITY_DATA_DIR"] = str(target)
     env.pop("ACTIVITY_DB", None)
-    env["EPHEMERIS_DISABLE_TERMINAL"] = "1"
+    env.pop("EPHEMERIS_ENABLE_TERMINAL", None)  # terminal is opt-in; stay at the default (off)
     return subprocess.run(
         [sys.executable, "-c", _REEXPORT],
         cwd=ROOT,
@@ -162,7 +162,7 @@ def boot_app_and_reexport(target: Path) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["ACTIVITY_DATA_DIR"] = str(target)
     env.pop("ACTIVITY_DB", None)
-    env["EPHEMERIS_DISABLE_TERMINAL"] = "1"
+    env.pop("EPHEMERIS_ENABLE_TERMINAL", None)  # terminal is opt-in; stay at the default (off)
     return subprocess.run(
         [sys.executable, "-c", _BOOT_AND_REEXPORT],
         cwd=ROOT,

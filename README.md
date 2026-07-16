@@ -70,8 +70,9 @@ Then on the phone browse to `http://<linux-lan-ip>:8000`. Without the
 
 The supported boundary is localhost by default, or a trusted LAN when explicitly
 enabled; public-internet deployment is unsupported in v0. The embedded terminal
-remains loopback-only. See the [security model](docs/security-model.md) for the
-deployment assumptions, known limitations, and terminal kill switch.
+is off by default (opt in with `EPHEMERIS_ENABLE_TERMINAL=1`) and remains
+loopback-only when enabled. See the [security model](docs/security-model.md)
+for the deployment assumptions and known limitations.
 The ecosystem-wide security policy lives in [selfos `SECURITY.md`](https://github.com/jointsome0-lgtm/selfos/blob/main/SECURITY.md);
 this repo's security model stays authoritative for ephemeris-specific deployment
 assumptions.
@@ -125,9 +126,10 @@ systemctl --user status ephemeris   # verify THIS unit is the listener
 ```
 
 The env switches were renamed and the old names are **no longer honored** —
-if you set `TICKLIKE_DISABLE_TERMINAL` or `TICKLIKE_TERM_PROXY`, re-set them
-as `EPHEMERIS_DISABLE_TERMINAL` / `EPHEMERIS_TERM_PROXY` before restarting,
-or the terminal comes back enabled / the proxy override is ignored.
+`TICKLIKE_TERM_PROXY` must be re-set as `EPHEMERIS_TERM_PROXY` or the proxy
+override is ignored. The terminal toggle also changed polarity: it is now
+**off by default** and only `EPHEMERIS_ENABLE_TERMINAL=1` turns it on
+(`TICKLIKE_DISABLE_TERMINAL` / `EPHEMERIS_DISABLE_TERMINAL` are ignored).
 
 ## Configuration
 
@@ -136,6 +138,7 @@ or the terminal comes back enabled / the proxy override is ignored.
 | `APP_TIMEZONE`      | host local zone                      | The ledger clock; defines "today" (§13.3).                     |
 | `ACTIVITY_DATA_DIR` | (required — refuses to start if unset) | Private data path outside the public checkout.                 |
 | `ACTIVITY_DB`       | `<data>/activity.sqlite`             | Override the DB path directly.                                 |
+| `EPHEMERIS_ENABLE_TERMINAL` | unset (terminal off)         | Opt-in: `1`/`true`/`yes`/`on` registers the loopback-only terminal websocket and UI. |
 
 ## Data
 

@@ -1,6 +1,6 @@
 # Standing brief: draining the security review queue
 
-Audience: the reviewer this brief is handed to (Codex via the codex plugin, or
+Audience: the reviewer this brief is handed to (Codex via a direct `codex exec`, or
 an independent review subagent). It is passed by file reference; apply it as
 written. Written once so that queue entries and drain requests stay neutral.
 

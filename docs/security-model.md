@@ -19,9 +19,11 @@ running service and its private runtime data stay inside that local boundary.
 ## Embedded terminal
 
 The terminal is a higher-risk surface than the main app: a successful connection
-grants a shell with the server process's operating-system permissions. Even when
-the main app listens on a trusted LAN, the terminal is supported only from the
-server machine through `localhost`, `127.0.0.1`, or another loopback address.
+grants a shell with the server process's operating-system permissions. It is
+therefore **off by default** and exists only when the process was started with
+`EPHEMERIS_ENABLE_TERMINAL=1` (see below). Even when the main app listens on a
+trusted LAN, the terminal is supported only from the server machine through
+`localhost`, `127.0.0.1`, or another loopback address.
 
 The WebSocket at `/terminal/ws` applies several independent checks:
 
@@ -41,20 +43,49 @@ Uvicorn's `--no-proxy-headers`; do not put the terminal behind a proxy that
 rewrites the client address from forwarded headers. Otherwise
 `scope["client"]` can become attacker-influenced and weaken the loopback check.
 
-### Disable the terminal
+### Enabling the terminal (opt-in)
 
-Set `EPHEMERIS_DISABLE_TERMINAL` before starting the process:
+The terminal is disabled unless `EPHEMERIS_ENABLE_TERMINAL` is set to a truthy
+value (`1`, `true`, `yes`, `on`) before starting the process:
 
 ```bash
-EPHEMERIS_DISABLE_TERMINAL=1 uv run uvicorn app.main:app \
+EPHEMERIS_ENABLE_TERMINAL=1 uv run uvicorn app.main:app \
   --host 127.0.0.1 --port 8000 --no-proxy-headers
 ```
 
-The switch is presence-based: any value, including an empty value or `0`,
-disables the terminal. It is read when the app is imported, so restart the
-process after setting or unsetting it. When disabled, `/terminal/ws` is not
-registered and the terminal UI is not rendered. With the variable unset, the
-existing loopback-only behavior remains the default.
+Any other value — unset, empty, `0`, a typo — leaves it off. The variable is
+read when the app is imported, so restart the process after setting or
+unsetting it. While disabled, `/terminal/ws` is not registered and the terminal
+UI is not rendered. The committed systemd example ships with the variable
+commented out; enable it only on a single-user desktop deployment.
+(The previous opt-out switch, `EPHEMERIS_DISABLE_TERMINAL`, is no longer
+honored.)
+
+### Shell environment and lesson scoping
+
+The spawned shell does not inherit the full service environment. It starts from
+a small allowlist (identity, locale, session paths; `TERM`/`PATH` normalized).
+This reduces *accidental* propagation of service-side configuration into the
+shell and agents launched from it; it is **not** secret isolation. The shell is
+a same-user child of the service process and can still read the parent's live
+environment (for example via `/proc/<pid>/environ`), so anything that must stay
+hidden from the terminal user needs a real OS boundary (separate account /
+sandbox — tracked as the remaining scope of issue #16), not this list. One
+deliberate pass-through to be aware of: `SSH_AUTH_SOCK` is on the allowlist,
+so shells and agents launched from them can use the user's live SSH identity
+(git-over-SSH) — acceptable only under the single-user loopback posture.
+
+Egress proxy variables are re-derived deliberately (`EPHEMERIS_TERM_PROXY`
+override, service-configured proxy, or local auto-detection) and reach the
+child with their real credentials, because clients need them to authenticate.
+When a proxy URL is shown in the terminal banner, any `user:password@`
+credentials are redacted — the redaction covers what is *displayed*, not the
+child environment.
+
+A lesson-scoped terminal (`/terminal/ws?lesson=<slug>`) fails closed: if the
+lesson workspace cannot be prepared — unknown slug, symlinked bundle directory,
+filesystem or database error — the connection is refused with a visible message
+instead of opening a shell anywhere else (in particular, never the repo root).
 
 ## Private data
 

@@ -12,7 +12,7 @@ Claude-only rule — the reason is Fable-specific, and in AGENTS.md it would jus
 
 Adversarial security reviews of the sensitive surfaces — the terminal PTY/WS core (`app/terminal.py`), the future `app/agent/`, and anything about to be exposed on a live port — are **delegated to Codex**, not run by Claude in the first person.
 
-- Do not open, narrate, or carry out a red-team / adversarial security pass yourself. Hand that framing to Codex from the start (`codex:rescue` or the codex plugin) and let it drive the attack-surface analysis.
+- Do not open, narrate, or carry out a red-team / adversarial security pass yourself. Hand that framing to Codex from the start (a direct `codex exec` with a self-contained prompt) and let it drive the attack-surface analysis.
 - Claude's role is the **correctness half** (does the code do what it should, race/lifecycle/fd bugs, plan alignment) and **converging** Codex's findings with its own — see the `route-security-reviews-to-codex` and `use-codex-as-second-reviewer` memories.
 - Reason, so nobody "fixes" this later: routing avoids a real workflow failure. Fable's safeguards false-positive on security-review framing and interrupt mid-task (switching models, dropping the thread) — officially documented behavior: the Fable 5 announcement (anthropic.com) describes the safeguards as a fallback to Claude Opus 4.8 on cybersecurity/bio/distillation requests. Codex is unaffected and gives a genuinely independent adversarial view.
 - This is a routing rule, **not** a license to ignore security. The Public Data Boundary and Public-Safety Check in AGENTS.md still apply to every change, and a security concern noticed in passing still gets surfaced plainly — it just gets handed to Codex to review rather than adversarially probed by Claude.
@@ -59,11 +59,12 @@ How to apply:
 - Never use Haiku.
 - Mechanics: gpt-5.6 is only reachable through the Codex CLI — `codex exec` /
   `codex review` (my `~/.codex/config.toml` defaults to `gpt-5.6-sol` at xhigh
-  effort). Use the codex plugin skills (`codex:rescue` for delegated
-  diagnosis/fix passes, `codex:setup` for CLI health checks); for work they
-  don't cover (investigation, data analysis, verification), run
-  `codex exec -s read-only` directly with a self-contained prompt, and drop the
-  sandbox flag only when codex must edit files.
+  effort). Always run `codex exec` directly via Bash
+  with a self-contained prompt you wrote: `-s read-only` for pure
+  reading/analysis; `-s workspace-write` when it must edit files OR run
+  tests/builds — test runs write caches and temp state, so read-only makes
+  them fail or stall (this produced a false "verify.py hangs" finding once).
+  Health check: `codex --version` plus a trivial exec.
 - Claude models (sonnet-5, opus-4.8, fable-5) run via the Agent/Workflow model
   parameter.
 

@@ -12,8 +12,9 @@ clients. Access it from the machine running the server, via
 http://localhost:<port> / http://127.0.0.1:<port> — NOT the LAN IP.
 NOTE: do NOT run uvicorn with --proxy-headers or behind a forwarded-headers proxy, or
 `scope["client"]` could become attacker-influenced and weaken the loopback peer check.
-Set EPHEMERIS_DISABLE_TERMINAL (to any value) before startup to omit both the
-websocket route and the local-only terminal UI.
+The terminal is OFF unless explicitly opted in: set EPHEMERIS_ENABLE_TERMINAL=1
+before startup to register the websocket route and the local-only terminal UI.
+With the variable unset (the default, including the systemd example) neither exists.
 
 The UI is a GCP-style bottom drawer docked over any page (toggled from the rail icon
 or Ctrl+`); there is no dedicated page route, only this websocket.
@@ -43,7 +44,18 @@ from .services.lessons import prepare_terminal_workspace
 # Repo root: a sensible cwd so agents/commands run against the project by default.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _LOOPBACK_CLOSE = 1008  # WebSocket "policy violation"
-_TERMINAL_DISABLED = "EPHEMERIS_DISABLE_TERMINAL" in os.environ
+# Opt-in, not opt-out: a full shell must never appear because a deploy forgot a
+# kill switch. Only an explicit truthy value enables it; anything else stays off.
+_TERMINAL_ENABLED = (
+    os.environ.get("EPHEMERIS_ENABLE_TERMINAL", "").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
+
+class _LessonWorkspaceError(Exception):
+    """A lesson slug was given but its workspace could not be prepared. The shell
+    must NOT open somewhere else instead (e.g. the repo root): the caller asked
+    for a lesson-scoped shell and gets a visible refusal, not a silent rescope."""
 
 
 def is_local_host(host: str | None) -> bool:
@@ -63,7 +75,7 @@ def is_local_host(host: str | None) -> bool:
 def client_is_local(request: Request) -> bool:
     """Template helper: should local-only terminal UI render for this request?"""
     return (
-        not _TERMINAL_DISABLED
+        _TERMINAL_ENABLED
         and bool(request.client)
         and is_local_host(request.client.host)
     )
@@ -169,8 +181,9 @@ def _detect_proxy_env() -> dict[str, str]:
       4. else auto-detect the xray client on its default loopback ports.
 
     Contract: the return value is the COMPLETE set of proxy vars the child shell
-    should have. The caller clears any ambient proxy vars first, then applies this,
-    so an empty dict reliably means "connect directly".
+    should have. The child env is built from _child_env(), whose allowlist admits
+    no proxy vars, then this is applied on top — so an empty dict reliably means
+    "connect directly".
     """
     override = os.environ.get("EPHEMERIS_TERM_PROXY", "").strip()
     if override.lower() in {"off", "none", "0", "false"}:
@@ -203,6 +216,45 @@ def _detect_proxy_env() -> dict[str, str]:
     if socks_url:
         env["ALL_PROXY"] = env["all_proxy"] = socks_url
     return env
+
+
+# The child shell starts from this allowlist, NOT the full service environment:
+# the service env carries app config (data paths, trust lists, deploy toggles)
+# that a shell — and any agent launched from it — has no business inheriting.
+# Identity, locale, and session paths pass through; TERM/PATH are normalized in
+# _child_env; proxy vars are deliberately absent here and re-derived afterwards
+# by _detect_proxy_env, which reads the service env itself — so a proxy set on
+# the service (the xray egress) still reaches the shell.
+_ENV_ALLOWLIST = frozenset({
+    "HOME", "USER", "LOGNAME", "SHELL", "PATH", "LANG", "LANGUAGE", "TZ",
+    "XDG_RUNTIME_DIR", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+    "XDG_STATE_HOME", "SSH_AUTH_SOCK",
+})
+_ENV_ALLOW_PREFIXES = ("LC_",)
+
+
+def _child_env() -> dict[str, str]:
+    """Allowlisted base environment for the child shell (proxy vars are layered
+    on top by the caller from _detect_proxy_env)."""
+    env = {
+        k: v for k, v in os.environ.items()
+        if k in _ENV_ALLOWLIST or k.startswith(_ENV_ALLOW_PREFIXES)
+    }
+    env["TERM"] = "xterm-256color"
+    # Help find user-installed agent CLIs even under a minimal service PATH.
+    home = os.path.expanduser("~")
+    env["PATH"] = f"{home}/.local/bin:/usr/local/bin:" + env.get("PATH", "/usr/bin:/bin")
+    return env
+
+
+def _redact_userinfo(url: str) -> str:
+    """Strip any user:password@ from a URL's authority for display: an inherited
+    proxy URL may carry credentials that must not land in the banner/scrollback."""
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        scheme, sep, rest = "", "", url
+    netloc, slash, tail = rest.partition("/")
+    return scheme + sep + netloc.rpartition("@")[2] + slash + tail
 
 
 # --- persistent terminal sessions -----------------------------------------------
@@ -411,34 +463,36 @@ def _ensure_reaper() -> None:
 
 async def _create_session(lesson: str | None = None) -> "_TermSession | None":
     """Spawn a fresh shell on a PTY and register it. Returns None at capacity or on a
-    spawn failure. `lesson` (a Learn slug) scopes the shell to that lesson's bundle
-    dir with a regenerated AGENTS.md brief; anything invalid quietly falls back to
-    the repo root. Serialized via _CREATE_LOCK so the capacity check is atomic."""
+    spawn failure. `lesson` is None for a plain shell; any provided value — even an
+    empty or junk one — makes this a lesson-scoped request that must resolve to the
+    lesson's bundle dir (with a regenerated AGENTS.md brief) or raise
+    _LessonWorkspaceError: a lesson request never falls back to the repo root.
+    Serialized via _CREATE_LOCK so the capacity check is atomic."""
     async with _CREATE_LOCK:
         if len(_SESSIONS) >= _MAX_SESSIONS:
             _reap_idle(force_oldest=True)
             if len(_SESSIONS) >= _MAX_SESSIONS:
                 return None
 
+        # Lesson-scoped shell (Learn tab): resolve the slug to its bundle dir and
+        # refresh the agent brief there, BEFORE any spawn work — a refusal must not
+        # cost a PTY. prepare_terminal_workspace is total (never raises; None means
+        # "could not prepare") and its DB + file I/O runs in a worker thread.
+        workspace = None
+        if lesson is not None:  # param present at all = lesson-scoped; "" must refuse too
+            workspace = await asyncio.to_thread(prepare_terminal_workspace, lesson)
+            if workspace is None:
+                raise _LessonWorkspaceError(lesson)
+
         shell = os.environ.get("SHELL") or "/bin/bash"
-        env = {**os.environ, "TERM": "xterm-256color"}
-        # Help find user-installed agent CLIs even under a minimal service PATH.
-        home = os.path.expanduser("~")
-        env["PATH"] = f"{home}/.local/bin:/usr/local/bin:" + env.get("PATH", "/usr/bin:/bin")
-        # Route agent CLIs around country-level blocks via the user's local proxy (if any).
-        # Clear the ambient proxy slate first so EPHEMERIS_TERM_PROXY=off truly means direct.
+        env = _child_env()
+        # Route agent CLIs around country-level blocks via the user's local proxy (if
+        # any); the allowlisted base env has no proxy vars, so what _detect_proxy_env
+        # returns is the whole story and EPHEMERIS_TERM_PROXY=off truly means direct.
         # Detection runs in a worker thread: its socket probes block (up to ~0.15s/port),
         # which must not stall the event loop (and every other PTY pump) mid-detect.
-        for _k in _PROXY_ENV_VARS:
-            env.pop(_k, None)
         proxy = await asyncio.to_thread(_detect_proxy_env)
         env.update(proxy)
-        # Lesson-scoped shell (Learn tab): resolve the slug to its bundle dir and
-        # refresh the agent brief there. prepare_terminal_workspace is total (never
-        # raises) and its DB + file I/O runs in a worker thread like the probe above.
-        workspace = None
-        if lesson:
-            workspace = await asyncio.to_thread(prepare_terminal_workspace, lesson)
 
         master_fd, slave_fd = pty.openpty()
         os.set_blocking(master_fd, False)  # pump + input writes are add_reader/add_writer-driven
@@ -459,7 +513,8 @@ async def _create_session(lesson: str | None = None) -> "_TermSession | None":
         sess = _TermSession(token_urlsafe(18), proc, master_fd)
         _SESSIONS[sess.sid] = sess
         if proxy.get("HTTP_PROXY"):  # informational banner, replayed with the scrollback
-            shown = "".join(c for c in proxy["HTTP_PROXY"] if c.isprintable())  # defang control bytes
+            # Redact credentials, then defang control bytes.
+            shown = "".join(c for c in _redact_userinfo(proxy["HTTP_PROXY"]) if c.isprintable())
             sess.remember(
                 (f"\x1b[2m· terminal egress via proxy {shown} — agents bypass geo-blocks; "
                  f"localhost direct (EPHEMERIS_TERM_PROXY=off to disable).\x1b[0m\r\n").encode()
@@ -570,7 +625,19 @@ async def _serve_ws(ws: WebSocket) -> None:
     if sess is None:
         # `lesson` only scopes a NEW session's cwd (attach-by-sid ignores it), so a
         # reaped lesson session heals into a fresh shell in the same lesson dir.
-        sess = await _create_session(ws.query_params.get("lesson"))
+        try:
+            sess = await _create_session(ws.query_params.get("lesson"))
+        except _LessonWorkspaceError:
+            # Fail closed with a visible reason — never a shell somewhere else.
+            try:
+                await ws.send_bytes(
+                    b"\r\n\x1b[31m[terminal: lesson workspace unavailable - "
+                    b"refusing to open a shell outside it]\x1b[0m\r\n"
+                )
+            except (RuntimeError, WebSocketDisconnect):
+                pass
+            await ws.close()
+            return
         if sess is None:
             try:
                 await ws.send_bytes(b"\r\n\x1b[31m[terminal: too many sessions]\x1b[0m\r\n")
@@ -632,7 +699,7 @@ def setup_terminal(app: FastAPI) -> None:
     """Register the localhost-only terminal websocket. (The drawer UI it serves is
     gated in base.html by `client_is_local`, registered with the other template
     globals in main.py.)"""
-    if _TERMINAL_DISABLED:
+    if not _TERMINAL_ENABLED:
         return
 
     @app.websocket("/terminal/ws")

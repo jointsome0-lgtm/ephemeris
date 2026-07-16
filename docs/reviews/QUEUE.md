@@ -21,6 +21,23 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Done
 
+- [x] 2026-07-16 — 61b6d65, 5d7c226, ad11d31 — `app/terminal.py`,
+  `app/services/lessons.py`, `app/main.py`, `app/templates/learn.html`,
+  `deploy/ephemeris.service.example`, `docs/security-model.md`, `README.md`,
+  `verify.py`, `verify_restore.py` — issue #16 first slice: terminal websocket
+  route and UI now register only when `EPHEMERIS_ENABLE_TERMINAL` is truthy
+  (previous opt-out var no longer honored; systemd example ships it commented
+  out with UMask/MemoryMax/TasksMax added); a `?lesson=` request whose
+  workspace cannot be prepared — including a present-but-empty or junk slug —
+  is refused with a visible message instead of spawning at the repo root; the
+  child shell env is built from an allowlist plus `_detect_proxy_env` output
+  instead of full `os.environ`; the proxy banner strips URL userinfo; Learn
+  UI, preview-meta, and the missing-file preview placeholder expose a
+  bundle-relative lesson path; verify wiring probes inverted, 368+28 green
+  → `2026-07-16-terminal-optin-review.md` (drained on 61b6d65: two Low, one
+  Info — T2/T3 fixed in 5d7c226, T1 accepted posture documented; addendum
+  covers 5d7c226 + ad11d31: resolved, no new findings)
+
 - [x] 2026-07-16 — a74eab1, e50090d — `app/security.py`, `app/main.py`,
   `verify.py`, `verify_restore.py`, `docs/security-model.md` — issue #15
   first slice: new ASGI middleware owns a trusted-host allowlist

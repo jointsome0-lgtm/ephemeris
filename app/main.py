@@ -1183,7 +1183,7 @@ def get_lesson_preview_meta(lesson_id: int, entry: str | None = None):
         "ok": True,
         "exists": info["exists"],
         "version": info["version"],
-        "path": info["path"],
+        "path": info["rel_path"],
         "preview_url": _lesson_preview_url(lesson_id, info["entry"], exists=info["exists"]),
         "file_url": _lesson_preview_url(lesson_id, info["entry"]),
     })

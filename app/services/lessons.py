@@ -240,6 +240,9 @@ def lesson_file_info(lesson: dict, entry: str | None = None) -> dict:
         "entry": entry,
         "label": _entry_label(entry),
         "path": str(path),
+        # Display form: bundle-relative, so templates/APIs never leak the
+        # server's absolute filesystem layout (home dir, username) to clients.
+        "rel_path": f"{lesson['slug']}/{entry}",
         "exists": exists,
         "version": str(stat.st_mtime_ns) if stat else "0",
         "size": stat.st_size if stat else 0,
@@ -431,12 +434,13 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
     Codex et al. read AGENTS.md).
 
     Runs in a worker thread off the websocket accept path, so it opens its own
-    short-lived DB connection. Total by design — returns None (meaning "spawn at
-    the repo root instead") for an unknown/invalid slug, a symlink-redirected
-    bundle dir, and any DB/filesystem error: a broken or hostile lesson dir must
-    never block opening a plain terminal. Briefs are written to same-directory
-    temporary files and atomically replace their destination entries, so a
-    pre-planted link or special file at a brief path is replaced, not opened."""
+    short-lived DB connection. Total by design — returns None (meaning "REFUSE
+    the lesson-scoped request"; the caller must not open a shell elsewhere
+    instead) for an unknown/invalid slug, a symlink-redirected bundle dir, and
+    any DB/filesystem error. A plain terminal never calls this function. Briefs
+    are written to same-directory temporary files and atomically replace their
+    destination entries, so a pre-planted link or special file at a brief path
+    is replaced, not opened."""
     slug = (slug or "").strip()
     if len(slug) > 80 or not _SLUG_RE.match(slug):
         return None
@@ -641,7 +645,9 @@ def preview_html(lesson: dict, entry: str | None = None) -> tuple[str, dict]:
     if info["exists"]:
         return Path(info["path"]).read_text(encoding="utf-8", errors="replace"), info
     title = escape(lesson["title"])
-    path = escape(info["path"])
+    # Bundle-relative on purpose: this document reaches any client that can open
+    # the preview, so the server's absolute filesystem layout stays out of it.
+    path = escape(info["rel_path"])
     html = f"""<!doctype html>
 <html lang="en">
 <head>
