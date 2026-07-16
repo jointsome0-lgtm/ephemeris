@@ -13,8 +13,12 @@ per-route (or absent):
 2. Write guard. Every unsafe-method request (POST/PUT/PATCH/DELETE — anything
    a new route could add) passes one origin policy; a route cannot opt out by
    forgetting a call. The policy, each case deliberate:
-   - Origin present: every value (getlist — duplicates can't smuggle) must
-     parse to exactly the Host's (hostname, port). Cross-anything -> 403.
+   - Origin present: every value (getlist — duplicates can't smuggle) must be
+     a serialized http(s) origin (no userinfo/path/query/fragment) equal to
+     the request's own (scheme, hostname, port) — scheme from the ASGI scope,
+     hostname/port from Host, default ports normalized so "http://host" and
+     "http://host:80" are the same origin. Cross-anything, including a scheme
+     mismatch (https page writing to the http app), -> 403.
    - "Origin: null" -> 403. An opaque origin is what the sandboxed lesson
      iframe would send on a direct form POST; the sanctioned write path for
      lesson content is the postMessage bridge (issue #36), never a direct POST.
@@ -76,18 +80,39 @@ def _host_parts(host_header: str | None) -> tuple[str, int | None] | None:
         return None
 
 
-def _write_rejection(headers: Headers, own: tuple[str, int | None]) -> str | None:
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _write_rejection(
+    headers: Headers, own: tuple[str, int | None], scheme: str
+) -> str | None:
     """Why this unsafe-method request must be refused, or None to allow."""
     origins = headers.getlist("origin")
     if origins:
+        expected = (scheme, own[0], own[1] or _DEFAULT_PORTS.get(scheme))
         for origin in origins:
             if origin == "null":
                 return "opaque-origin (null) write rejected"
             try:
                 parts = urlsplit(origin)
-                if (parts.hostname, parts.port) != own:
+                # A browser-serialized origin is scheme://host[:port] and
+                # nothing else; anything richer is not an origin — reject.
+                if (
+                    parts.scheme not in _DEFAULT_PORTS
+                    or parts.path
+                    or parts.query
+                    or parts.fragment
+                    or "@" in parts.netloc
+                ):
                     return "cross-origin write rejected"
+                got = (
+                    parts.scheme,
+                    parts.hostname,
+                    parts.port or _DEFAULT_PORTS[parts.scheme],
+                )
             except ValueError:
+                return "cross-origin write rejected"
+            if got != expected:
                 return "cross-origin write rejected"
         return None
     site = headers.get("sec-fetch-site")
@@ -117,7 +142,7 @@ class SecurityMiddleware:
             return
 
         if scope["method"] in _UNSAFE_METHODS:
-            reason = _write_rejection(headers, own)
+            reason = _write_rejection(headers, own, scope.get("scheme", "http"))
             if reason is not None:
                 await self._refuse(scope, receive, send, 403, reason)
                 return

@@ -612,6 +612,15 @@ with TestClient(app) as c:
     r = c.post("/verify-only/unguarded", headers={"Origin": "http://testserver"})
     check("guard: same-origin Origin accepted",
           r.status_code == 200 and r.json()["ok"] is True, str(r.status_code))
+    r = c.post("/verify-only/unguarded", headers={"Origin": "https://testserver"})
+    check("guard: scheme mismatch (https origin, http app) -> 403",
+          r.status_code == 403, str(r.status_code))
+    r = c.post("/verify-only/unguarded", headers={"Origin": "http://testserver:80"})
+    check("guard: default port normalized to the same origin",
+          r.status_code == 200, str(r.status_code))
+    r = c.post("/verify-only/unguarded", headers={"Origin": "http://testserver/x"})
+    check("guard: non-serialized Origin (path) -> 403",
+          r.status_code == 403, str(r.status_code))
     r = c.post("/verify-only/unguarded")
     check("guard: no-Origin non-browser client accepted",
           r.status_code == 200, str(r.status_code))

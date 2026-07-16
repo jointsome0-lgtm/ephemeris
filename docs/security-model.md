@@ -81,8 +81,10 @@ first slice). It owns three things:
 - **Central write guard.** Every unsafe-method request (`POST`/`PUT`/`PATCH`/
   `DELETE`) passes one origin policy in middleware — a newly added route
   cannot forget it. Each case is deliberate: any present `Origin` (all values,
-  so duplicates can't smuggle) must match the `Host` authority exactly, port
-  included; `Origin: null` (an opaque origin, e.g. a sandboxed lesson iframe
+  so duplicates can't smuggle) must be a serialized http(s) origin equal to
+  the request's own scheme, hostname, and port — scheme from the ASGI scope,
+  default ports normalized, so an https page cannot write to the http app
+  even on the same host; `Origin: null` (an opaque origin, e.g. a sandboxed lesson iframe
   posting directly) is rejected — the sanctioned lesson write path is the
   postMessage bridge; an absent `Origin` with no fetch metadata is allowed
   (non-browser loopback clients such as curl or an agent CLI; browsers always
