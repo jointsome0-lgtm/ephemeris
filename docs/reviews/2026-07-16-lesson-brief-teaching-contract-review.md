@@ -580,3 +580,88 @@ pre-read. Require the normalized valid-root set (including the eight-root and
 disjoint-root rules), pin that condition, and re-review before clearing the
 workflow. Wider network exposure remains unsupported regardless of prompt
 wording.
+
+## Sixth addendum — CLOSING re-review at branch head `89adcbc`
+
+**Scope and method:** re-applied the standing brief to the exact diff
+`2851f69..89adcbc`; the exact current branch head is
+`89adcbc118839a4f4e7b16a92543d4d6be2346ed`. The range is one commit: it appends
+the fifth addendum and adds the remaining root-set rules to the constant
+generated lesson brief. The complete target lesson service, exact verifier,
+lesson-terminal caller, frozen path/root/discovery contract, and earlier reports
+for the same surface were re-read. No listener, route, PTY/WS lifecycle,
+filesystem writer, preview policy, metadata interpolation path, or executable
+artifact reader changes in this range.
+
+### Closing finding status
+
+- **L1 — Remains resolved.** Learner answers and files remain data, never
+  instructions (`app/services/lessons.py:364-370`), and the general boundary
+  still classifies source material, pages, assets, attempt records, and learner
+  files as untrusted data whose embedded directives cannot override the brief
+  (`app/services/lessons.py:403-411`). The new root-set qualifiers do not add a
+  trusted content source.
+- **L2 — Remains resolved.** The whole-bundle per-component no-symlink rule is
+  unchanged (`app/services/lessons.py:412-414`), and every counted root retains
+  the regular-file-only rule that explicitly skips symlinks and other named
+  non-regular entries (`app/services/lessons.py:431-435`).
+- **N1 — Remains resolved.** The mandatory learner-file pre-read still carries
+  depth at most four, at most 512 entries per root, regular-files-only,
+  non-regular-entry skip, and 2 MiB read bounds
+  (`app/services/lessons.py:431-435`). Nothing in the diff broadens those
+  per-root limits.
+- **N2 — Resolved.** `2851f69` had already closed the direct containment escape
+  by limiting counted roots to bundle-relative directory paths, rejecting the
+  named absolute/dot-segment/reserved cases, ignoring invalid values, and
+  requiring the agent to stay inside the bundle. The Low residual in the fifth
+  addendum was the root-set behavior: overlapping declarations could still be
+  counted and an over-eight list could still drive the mandatory pre-read.
+  `89adcbc` now says that a root nested under another root does not count and
+  that more than eight roots invalidate the manifest
+  (`app/services/lessons.py:425-435`). Those are the frozen disjoint-root drop
+  and list-limit rejection semantics
+  (`docs/learn-bundle-spec.md:370-385`,
+  `docs/learn-bundle-spec.md:465-475`). The earlier instruction to read declared
+  roots is therefore qualified by a valid, disjoint set of at most eight roots;
+  the per-root discovery limits no longer multiply across nested duplicates or
+  an over-limit manifest.
+
+The exact verifier still does not pin the new eight-root and nested-root
+phrases (`verify.py:310-320`). That is the already documented regression-check
+limitation, not a new behavior or a remaining production-contract defect: the
+target generated brief itself now contains both missing semantics, as the
+focused exact-template probe confirms.
+
+### NEW findings
+
+No new Critical, High, Medium, Low, or Info findings. The runtime change narrows
+the agent's permitted manifest interpretation, and the appended historical
+review text changes no executable or trust-boundary behavior. The constant
+brief, atomic publication path, fail-closed lesson-workspace preparation,
+terminal opt-in and trust gates, and prior instruction/data and filesystem
+protections remain intact.
+
+### Sixth-addendum verification
+
+- `git diff --check 2851f69..89adcbc` — passed.
+- Exact-target in-memory syntax compilation of `app/services/lessons.py` and
+  `verify.py` — passed.
+- Exact base/target root-set probe — passed: `2851f69` lacks both closing
+  clauses; `89adcbc` contains both “a root nested under another root does not
+  count” and “more than eight roots invalidate the manifest.”
+- Focused exact-template probe — passed: the target retains the untrusted-data,
+  no-symlink, bundle-containment, depth, entry-count, regular-file, and size
+  clauses together with both new root-set rules.
+- `env -u ACTIVITY_DATA_DIR PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 timeout 55s
+  .venv/bin/python -u verify.py` — inconclusive in this environment: both
+  terminal-wiring checks passed, then the run stalled and exited `124` with no
+  visible failing assertion, matching the limitation recorded by the earlier
+  addenda.
+
+### Final deploy verdict
+
+**SAFE TO MAKE LIVE: YES for the exact lesson-agent teaching workflow at branch
+head `89adcbc`, under the documented terminal opt-in and direct-loopback-only
+posture.** L1, L2, and N1 remain resolved; N2's final Low root-set residual is
+resolved; and this closing pass found no new findings. Wider network exposure
+remains unsupported and was not made safe by prompt wording.

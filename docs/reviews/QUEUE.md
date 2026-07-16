@@ -21,8 +21,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Done
 
-- [x] 2026-07-16 — 5ae5017, eeb71f1, ecee1f2, ff9a3f0, 4b04757, ba2bc3c —
-  `app/services/lessons.py`, `verify.py` —
+- [x] 2026-07-16 — 5ae5017, eeb71f1, ecee1f2, ff9a3f0, 4b04757, ba2bc3c,
+  2851f69, 89adcbc — `app/services/lessons.py`, `verify.py` —
   issue #35 stage 1: the generated lesson `AGENTS.md` brief (constant
   `_AGENTS_TEMPLATE`, regenerated on every lesson-terminal open) rewritten
   from bundle-layout mechanics into a teaching contract: tutor mission,
@@ -32,13 +32,15 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `docs/learn-bundle-spec.md` (v1/v2 branches, `pg_`/`q_` id lifecycle,
   `questions[]`, `attempts.jsonl` read-only, agent must not change
   `schema_version`/`lesson_uid`); `_write_brief` and the `CLAUDE.md` shim
-  unchanged; verify 379 (+3); later commits mirror the frozen discovery
-  contract into the pre-read (attempts.jsonl optional; depth/entry/regular
-  bounds; every declared artifact root); drained on 5ae5017 →
+  unchanged; verify 379 (+3, later 380); the later commits mirror the
+  frozen discovery contract into the pre-read (attempts.jsonl optional;
+  depth/entry/regular-file bounds; every declared artifact root, roots
+  valid only as disjoint in-bundle paths, ≤ 8); drained on 5ae5017 →
   `2026-07-16-lesson-brief-teaching-contract-review.md` (one Medium, one
-  Low — both fixed in eeb71f1, verify 380) + addenda per fix commit:
-  L1/L2 resolved, one Low on ff9a3f0 wording resolved by 4b04757, no
-  findings left open
+  Low — both fixed in eeb71f1) + six addenda, one per fix commit: L1/L2,
+  N1 (bounds wording), N2 (root grammar/containment) all resolved; the
+  closing addendum's verdict at 89adcbc clears this entry under the
+  loopback-only posture
 
 - [x] 2026-07-16 — 61b6d65, 5d7c226, ad11d31 — `app/terminal.py`,
   `app/services/lessons.py`, `app/main.py`, `app/templates/learn.html`,
