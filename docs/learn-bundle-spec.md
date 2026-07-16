@@ -70,8 +70,9 @@ Reader mapping: a manifest-referenced path (entry, page, block `file`,
 artifact root) that exists but resolves through a symlink is treated as a
 missing file with a `symlinked-path` finding (degraded — for pages this
 means the "no HTML yet" placeholder, not a drop from `pages[]`); the bundle
-directory itself being a symlink rejects the bundle (`symlinked-path`,
-rejected). Artifact enumeration skips symlinks with the same finding.
+directory itself being a symlink rejects the bundle with its own code,
+`symlinked-bundle` (rejected), so the §9.2 severity aggregation needs no
+special case. Artifact enumeration skips symlinks with `symlinked-path`.
 
 ## 3. Identity model
 
@@ -316,8 +317,11 @@ today's v1 `_default_manifest`): `schema_version` 2, the DB-minted
  "created_at": "2026-07-16T12:00:00+00:00", "stale": false}
 ```
 
-- `v` versions the record shape; unknown record versions and malformed lines
-  are skipped by readers with a finding, never a crash;
+- `v` versions the record shape; unknown record versions and malformed
+  lines are skipped by readers, never a crash. These are out-of-band
+  conditions (reconcile reporting, adapter-side findings), NOT §9.2
+  manifest findings — the preview finding contract is manifest-scoped, and
+  the reconcile pass repairs the projection from the authority anyway;
 - `answer` is free text, ≤ 32 KiB UTF-8; whole line ≤ 64 KiB;
 - `created_at` is UTC ISO-8601.
 
@@ -457,7 +461,8 @@ outcome). This is why one fixture can require several codes at once.
 | `overlapping-roots`  | degraded  | §7; the nested root is dropped |
 | `invalid-ref`        | degraded  | malformed `path`/`concepts` entry, or orphan/non-integer/out-of-range `step`; the ref/step is dropped |
 | `identity-mismatch`  | degraded  | manifest `lesson_uid` ≠ DB `uid`; render as `legacy-display`, refuse attempt writes |
-| `symlinked-path`     | degraded  | §2; a referenced path resolves through a symlink — treated as a missing file; the bundle dir itself being a symlink rejects the bundle |
+| `symlinked-bundle`   | rejected  | §2; the bundle directory itself is a symlink |
+| `symlinked-path`     | degraded  | §2; a referenced path resolves through a symlink — treated as a missing file |
 | `invalid-value`      | info*     | an optional display/value field (`pages[].title`, `label`, `kind`, `language`, `updated_by_agent_at`) violates its grammar or limit — the field is dropped, the item stays; *a §4 type mismatch on a field or list item degrades instead (the field is treated as absent / the item dropped) |
 | `missing-attempts-root` | info   | §7; `attempts` injected into the read model |
 | `stale-metadata`     | info      | `slug`/`title`/`source_url` copy differs from DB or violates its own grammar/limit; DB wins |
@@ -523,8 +528,11 @@ byte-identity so the definition can't drift.
 
 ## 10. v1 → v2 migration mapping (consumed by C4)
 
-The migration input is the **normalized v1 read model** of §9.2 (what
-`_normalise_manifest` yields), never the raw strings.
+The migration's **structural** input is the normalized v1 read model of
+§9.2 (what `_normalise_manifest` yields for `entry`/`related`), never the
+raw strings. Unknown-field preservation and the collision stop-condition
+below operate on the **raw parsed object** — normalization drops unknown
+keys from the read model, so the tool must read both.
 
 | v2 field | source |
 |----------|--------|

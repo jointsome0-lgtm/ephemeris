@@ -30,7 +30,7 @@ file carries the "Vera Example" marker that
 - Codes and behaviors with no fixture here need runtime context and are
   synthesized in C3/C4 tests instead: `manifest-too-large` (an oversized
   file), `identity-mismatch` / `stale-metadata` (need a DB row to disagree
-  with), `symlinked-path` (needs a filesystem), migration
+  with), `symlinked-path` / `symlinked-bundle` (need a filesystem), migration
   rerun/idempotency, rename/edit id stability, and the §10 current-entry
   head-insertion.
 
