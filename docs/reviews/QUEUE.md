@@ -21,7 +21,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Done
 
-- [x] 2026-07-17 — 5250768, 5d37a97, 1227d29, 41224b5 —
+- [x] 2026-07-17 — 5250768, 5d37a97, 1227d29, 41224b5, 53b5232, ca4a7fd,
+  9c188d7, 5388efe —
   `app/services/bundle_schema.py` (new), `app/services/lessons.py`, `app/db.py`,
   `app/main.py`, `verify.py` — issue #39 session C3: typed v1/v2
   lesson-manifest readers and findings, canonical/atomic writer, v2 creation,
@@ -29,12 +30,17 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   preview metadata; follow-ups block direct page renders for rejected manifests,
   surface stale v2 selections, harden standard bundle-subdir creation/path
   checks, reject duplicate identities even when another field drops the item,
-  harden manifest error/bounds handling, narrow the generic file route, remove
-  the creation-event title echo, and aggregate selected-page symlink outcome
-  → `2026-07-17-bundle-schema-runtime-review.md` (addendum for `41224b5`: B2,
-  B5, and the PR-bot finding resolved; B1, B3, and B4 narrowed but remain Low;
-  no separate new finding; direct-loopback deploy allowed, wider deployment
-  unsupported)
+  harden manifest error/bounds handling, remove the creation-event title echo,
+  aggregate selected-page symlink outcome, compare v2 selections exactly,
+  reject non-standard JSON constants and huge-integer parse failures, bind the
+  legacy bridge read to one no-follow regular-file descriptor, restrict v2
+  `/files/` to declared pages plus assets, and preserve exact declared pages
+  over overlapping artifact roots
+  → `2026-07-17-bundle-schema-runtime-review.md` (final addendum through
+  `9c188d7`: B1–B5 and the PR-bot findings resolved; no remaining security-
+  severity finding; the one Info canonical-JSON closure finding N1 fixed in
+  `5388efe` per the closing note; direct-loopback deploy allowed, wider
+  deployment unsupported)
 
 - [x] 2026-07-16 — 61b6d65, 5d7c226, ad11d31 — `app/terminal.py`,
   `app/services/lessons.py`, `app/main.py`, `app/templates/learn.html`,

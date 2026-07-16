@@ -362,3 +362,173 @@ elsewhere by this fix.
 B2's path disclosure and B5's contract mismatch are closed. **Wider deployment:
 NO** — v0 still has no authentication, and the residual generic-file exposure
 alone prevents treating `/files/` as a wider-client-safe preview boundary.
+
+## Final addendum — `53b5232`, `ca4a7fd`, and `9c188d7`
+
+**Scope:** the three commits after `41224b5`, reviewed at exact branch head
+`9c188d7`. `53b5232` addresses exact v2 selection comparison and non-standard
+JSON constants. `ca4a7fd` claims the remaining B1/B3/B4 fixes; `9c188d7`
+adjusts that new `/files/` policy so an exact declared page wins over an
+overlapping artifact root. Together this is the base C3 commit plus all six
+same-branch fix follow-ups.
+
+**Method:** diffed `41224b5..9c188d7`, read the changed schema/lesson code and
+its route, DB-write, canonical-writer, and contract call sites, and treated the
+new verifier cases as claims rather than evidence. Independent invented probes
+exercised the huge-integer and all three non-standard constant tokens, a
+regular/symlink/FIFO legacy source, a deterministic source-path swap after
+open, exact and normalizable v2 read/write selections, and the v2 resource
+matrix (declared page, overlapping root, asset, undeclared file, artifact, and
+reserved manifest).
+
+**Final addendum verdict:** B1, B3, and B4 are resolved. B2 and B5 remain
+resolved, as does the earlier selected-page outcome finding. Both `53b5232`
+PR-bot findings and `9c188d7`'s declared-page precedence claim also hold. No
+Critical, High, Medium, or Low finding remains from this review. One new
+informational canonical-JSON closure issue was found; it does not reopen the
+preview availability or `/files/` findings.
+
+### Per-finding status
+
+#### B1 — Resolved
+
+The JSON boundary now maps every decoder `ValueError` to
+`manifest-unreadable`, in addition to the existing UTF-8 and recursion handling
+(`app/services/bundle_schema.py:270-289`). A 5,000-digit integer token returned
+a rejected `ManifestRead` carrying `manifest-unreadable`; it no longer escaped
+the reader. The original malformed-URL, deep-nesting, special-file, and finding-
+amplification cases remain closed by `41224b5`. N1 below concerns accepted
+numeric semantics and writer output, not an exception escaping a preview read.
+
+#### B2 — Resolved (unchanged)
+
+The sanitized filesystem-error details from `41224b5` remain in place
+(`app/services/bundle_schema.py:303-342`). None of the three later commits
+reintroduces a client-visible absolute manifest path.
+
+#### B3 — Resolved
+
+`_read_regular_no_follow()` opens the legacy source with nonblocking
+`O_NOFOLLOW`, requires the opened descriptor itself to be regular via
+`fstat()`, and reads bytes through that same descriptor
+(`app/services/lessons.py:175-192`, `231-240`). Regular input still bridged;
+an already linked source and FIFO were refused immediately. In the decisive
+race probe, the pathname was replaced with a symlink after `open()` but before
+`fstat()`; the helper returned the original opened file's bytes, not the
+symlink target. The prior check/use gap is closed.
+
+#### B4 — Resolved
+
+For v2, `bundle_resource_info()` now positively admits only exact declared
+pages and `assets/`, then blocks learner work under artifact roots, reserved or
+undeclared paths, rejected manifests, and symlinked paths
+(`app/services/lessons.py:327-378`). The independent matrix served
+`index.html`, a declared related page, and an asset; it refused an undeclared
+top-level HTML file, an undeclared file below an artifact root,
+`attempts/note.txt`, and `lesson.json`.
+
+`9c188d7` correctly gives an exact declared page precedence over an overlapping
+artifact root while leaving other content under that root blocked
+(`app/services/lessons.py:339-355`). A declared `related/page.html` remained
+servable with `related` also declared as an artifact root, while
+`related/draft.html` stayed unavailable. V1 retains its explicitly documented
+compatibility tolerance behind the same reserved/artifact/symlink exclusions;
+that is not a residual v2 allowlist gap.
+
+#### B5 — Resolved (unchanged)
+
+The title-free `lesson_created` payload from `41224b5` is unchanged
+(`app/services/lessons.py:585-618`). The later commits do not modify lesson
+event payloads.
+
+#### Earlier PR-bot selected-page outcome finding — Resolved (unchanged)
+
+The selected-page symlink branch still promotes an otherwise `ok` outcome to
+`degraded` and surfaces `symlinked-path`
+(`app/services/lessons.py:270-318`). No later diff weakens that aggregation.
+
+#### PR-bot exact v2 selection comparison — Resolved
+
+`_resolve_entry()` compares the requested/stored v2 string directly with
+`page_paths()` before any cleanup, falling back with `invalid-entry`; only v1
+uses `_clean_html_ref()` (`app/services/lessons.py:253-267`). The explicit DB
+write follows the same version split (`app/services/lessons.py:635-655`). A
+`./related/page.html` probe degraded and fell back on read, was refused without
+mutating `current_entry` on write, and the exact `related/page.html` value was
+accepted and stored.
+
+#### PR-bot NaN/Infinity rejection — Resolved as stated
+
+`json.loads()` now uses a `parse_constant` callback that rejects `NaN`,
+`Infinity`, and `-Infinity`; the encompassing `ValueError` handler returns
+`manifest-unreadable` (`app/services/bundle_schema.py:252-289`). Independent
+probes confirmed that result for all three tokens. N1 is adjacent but distinct:
+its input uses valid JSON number syntax rather than any of those extension
+tokens.
+
+#### PR-bot declared-page precedence — Resolved
+
+The `declared_page` decision is computed once and exempts only that exact path
+from the artifact-root block (`app/services/lessons.py:339-348`). The overlap
+probe described under B4 confirms both halves: the page stays servable and
+undeclared sibling work does not.
+
+### New finding
+
+#### N1 — Exponent overflow can make an accepted read serialize as invalid JSON (Info, confirmed)
+
+The decoder's default float conversion accepts a valid JSON number such as
+`1e9999` as Python positive infinity. `parse_constant` is not invoked because
+the input contains no `Infinity` token. A complete invented v2 manifest with an
+unknown `"x_number": 1e9999` therefore read as `ok` and preserved `inf` in
+`ManifestRead.raw`; `canonical_dumps()` then emitted `"x_number": Infinity`,
+which the hardened reader rejected on the next read
+(`app/services/bundle_schema.py:270-300`, `787-809`). This violates the
+unknown-field semantic-preservation and accepted canonical round-trip contract
+(`docs/learn-bundle-spec.md:512-540`).
+
+This is informational in the current C3 runtime: the app calls the manifest
+writer for a missing-manifest creation skeleton, not to rewrite an existing
+accepted v2 manifest (`app/services/lessons.py:217-221`). It is nevertheless a
+real writer-boundary defect for a later migration/editor that round-trips
+`read.raw`. Reject non-finite `parse_float` results at read time and make the
+writer fail closed with `allow_nan=False`; add the exponent form beside the
+literal-token probes.
+
+### Final addendum verification
+
+- Commit ancestry from `5250768` through the six fix follow-ups is linear;
+  exact head was `9c188d7`. `git diff 41224b5..9c188d7 --check` passed.
+- Independent targeted assertions — 19/19 passed: huge integer; three literal
+  constants; regular, linked, FIFO, and swapped legacy sources; seven v2
+  resource decisions; exact/normalizable selection reads and DB writes.
+- Existing fixture expectations — 11/11 passed; canonical fixture byte-round-
+  trips — 10/10 passed.
+- The separate exponent-overflow probe read the valid v2 input as `ok`, emitted
+  `Infinity` through the canonical writer, then rejected that output as
+  `manifest-unreadable`, confirming N1.
+- `PYTHONDONTWRITEBYTECODE=1 timeout 90s .venv/bin/python -u verify.py` on
+  `9c188d7` passed both terminal-wiring subprocess checks, then timed out at the
+  previously documented TestClient startup boundary (exit 124). No failing
+  assertion appeared, so this addendum does not independently claim the commit
+  messages' full-suite count.
+
+### Final superseding deploy verdict
+
+**Direct-loopback deployment: YES, with no remaining security-severity
+follow-up from this review; N1 is an informational canonical-writer cleanup.**
+**Wider deployment: NO** — v0 remains unauthenticated, so resolving B4's file-
+route policy does not authorize widening the documented loopback-only posture.
+
+## Closing note — `5388efe` resolves N1
+
+Written by the session converging this drain, documenting resolution (not an
+adversarial pass): the PR review bot independently reported N1's exact shape
+(a `1e10000` token) against head `9c188d7`, converging with the final
+addendum. `5388efe` closes it at the same total parse boundary —
+`json.loads` now runs with a `parse_float` that rejects non-finite values, so
+an overflowing exponent reads as `manifest-unreadable` and the canonical
+writer is never handed a non-finite value to re-emit as `Infinity`. verify
+carries the matching probe ("overflowing float token is manifest-unreadable");
+427 green on `5388efe`. With N1 closed, no finding from this review — any
+severity — remains open on the branch head.
