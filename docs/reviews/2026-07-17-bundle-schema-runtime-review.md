@@ -218,3 +218,147 @@ data only to clients already inside the loopback trust boundary, and the initial
 fail-open reader gaps are fixed on current head. **Wider deployment: NO** — v0
 still has no authentication, and B2–B4 add concrete path/content disclosure
 reasons not to widen the binding.
+
+## Addendum — `41224b5` fix review
+
+**Scope:** commit `41224b5`, whose exact parent is `1227d29`. The fix changes
+the manifest reader, lesson service, and verifier to address B1–B5 above plus a
+PR-bot finding about symlinked selected-page outcome aggregation. Its additions
+to this report and the queue were treated as claims to verify, not review
+evidence.
+
+**Method:** diffed `1227d29..41224b5`, read both changed service modules in
+full, and traced the affected paths through the file and preview-meta routes,
+event writer/exporter, frozen bundle contract, and earlier lesson-security
+reports. Invented temporary probes repeated every original B1–B5 reproducer,
+exercised a Python-valid oversized integer token, swapped the legacy source
+between its stat and open, requested reserved, artifact, declared-asset, and
+undeclared files, and checked the selected-page outcome and creation-event
+payload.
+
+**Addendum verdict:** B2, B5, and the PR-bot finding are resolved. B1, B3, and
+B4 are materially narrowed but not fully resolved, so three Low findings remain
+under the direct-loopback posture. The fix commit introduces no separate new
+finding; the newly confirmed integer-token failure is another B1 totality case,
+and the B3/B4 issues below are residual parts of the original findings.
+
+### Per-finding status
+
+#### B1 — Partially resolved; parser totality still has an uncaught valid-JSON failure (Low remains)
+
+The fix closes all four original reproducers. `_valid_source_url()` now catches
+`urlsplit()` failures; `json.loads()` recursion becomes
+`manifest-unreadable`; `read_manifest_path()` opens nonblocking, requires a
+regular file by `fstat()`, and catches read errors; list walks truncate at their
+contract limits; and findings/details are capped
+(`app/services/bundle_schema.py:47-50`, `167-172`, `234-241`, `263-332`,
+`476-486`, `530-539`, `583-594`, `669-678`, `725-732`). Focused probes
+confirmed that the malformed URL returned `stale-metadata`, 5,000-level JSON
+nesting rejected, and directory/FIFO manifests returned immediately as
+`manifest-unreadable`. The former 200 KiB amplification shape now produced 100
+findings and a 9,371-byte JSON representation rather than 100,003 findings and
+9.4 MiB.
+
+However, the parse boundary catches `JSONDecodeError` and `RecursionError`, not
+the other `ValueError` that Python's JSON decoder can raise
+(`app/services/bundle_schema.py:274-279`). A 5,000-digit integer in an unknown
+field is valid JSON and only about 5 KiB, but current Python raises its integer-
+conversion limit `ValueError`; `read_manifest_text()` propagates it instead of
+returning `manifest-unreadable`. The preview-meta caller does not catch that
+exception, so a planted manifest can still turn a poll into a 500. This remains
+Low for the same reason as B1: it needs local/importer influence over private
+runtime bundle bytes. Make the JSON decode boundary catch this parse-time
+`ValueError` as unreadable and add the large-integer probe alongside the depth
+case.
+
+#### B2 — Resolved
+
+All filesystem `OSError` details returned by `read_manifest_path()` now use
+`exc.strerror` (or a fixed fallback), and non-regular nodes use a constant
+detail (`app/services/bundle_schema.py:304-326`). An invented `ENOTDIR` open
+failure surfaced only `Not a directory`; the temporary root did not appear in
+the finding. No other changed reader path attaches the manifest pathname to a
+client-visible detail.
+
+#### B3 — Partially resolved; the legacy read remains check/use raceable (Low remains)
+
+A source that is already a symlink is now refused, and the original planted-
+symlink probe no longer created `index.html`. The implementation still performs
+three separate operations, though: `is_symlink()`, following `is_file()`, then
+following `read_text()` (`app/services/lessons.py:210-219`). It does not bind
+the regular-file decision to the file descriptor from which bytes are read.
+
+An invented deterministic swap immediately after `is_file()` returned true
+replaced the checked regular source with a symlink; `read_text()` followed it
+and copied the external decoy bytes into `index.html`. This is a narrower,
+concurrent-filesystem version of B3, not a new finding, but it contradicts the
+§2 rule and the new comment that a linked source is never read. Retain the Low
+severity under the existing posture: a race requires local bundle-tree
+influence, while a future less-trusted importer/writer would make the boundary
+meaningful. Open the legacy source with `O_NOFOLLOW`, require a regular file by
+`fstat()`, and read from that same descriptor.
+
+#### B4 — Partially resolved; the generic route is still a denylist (Low remains)
+
+The route now returns missing for a rejected manifest, every reserved top-level
+name, and every path at or below the validated artifact roots; the original
+`lesson.json`, generated-brief, and `attempts/note.txt` probes all returned
+missing (`app/services/lessons.py:307-328`). Declared pages and files under
+`assets/` remained available as intended.
+
+It still serves every other regular file in the bundle, because the allow path
+is simply “not rejected, reserved, artifact-rooted, or symlinked.” An invented
+`undeclared-private.html` outside `artifact_roots` was reported as existing and
+active even though it was absent from `pages[]`. Thus the original fix direction
+— declared pages plus the intended public asset area — is not implemented, and
+private/misplaced files remain reachable by a guessed `/files/` path. Keep B4
+Low on loopback; for a future wider client this remains a content-disclosure
+surface. Make page eligibility come from `read.page_paths()` and define the
+non-page asset area positively rather than treating all remaining bundle files
+as preview resources.
+
+#### B5 — Resolved
+
+`create_lesson()` no longer includes `title` in `lesson_created`; it retains the
+stable UID and the previously allowed lifecycle/location echoes
+(`app/services/lessons.py:551-577`). An invented in-memory creation produced a
+payload with `lesson_id`, `lesson_uid`, `source_url`, `slug`, and `status`, but
+no `title`; the export path preserves that corrected payload unchanged.
+
+#### PR-bot selected-page outcome finding — Resolved
+
+`_file_info()` now promotes an otherwise `ok` outcome to `degraded` when the
+selected page resolves through a symlink, alongside the existing
+`symlinked-path` finding (`app/services/lessons.py:250-298`). That is the helper
+used by preview-meta. The focused probe returned `exists: false`, outcome
+`degraded`, and `symlinked-path`.
+
+### New findings introduced by `41224b5`
+
+None. The large-integer exception is a newly exercised instance of B1's
+unresolved totality requirement. The B3 stat/open window and B4 denylist are
+unclosed portions of their existing findings, not separate regressions created
+elsewhere by this fix.
+
+### Addendum verification
+
+- `git diff 1227d29..41224b5 --check` — passed.
+- B1 probes — malformed URL, deep JSON, directory/FIFO, and bounded finding
+  materialization fixes passed; a 5,000-digit JSON integer raised uncaught
+  `ValueError`.
+- B2–B5 and PR-bot probes — sanitized open detail, planted legacy symlink
+  refusal, reserved/artifact 404 decisions, title-free creation event, and
+  selected-page degraded outcome passed. The deterministic legacy-source swap
+  copied the decoy, and an undeclared HTML file remained directly available.
+- `PYTHONDONTWRITEBYTECODE=1 timeout 90s .venv/bin/python -u verify.py` passed
+  the two terminal-wiring checks, then timed out at the known TestClient startup
+  boundary (exit 124). `verify_restore.py` timed out at the same boundary (exit
+  124). No failing assertion was observed, so this addendum does not
+  independently claim the commit message's 419+28 result.
+
+### Superseding deploy verdict
+
+**Direct-loopback deployment: YES, with three Low follow-ups (B1, B3, B4).**
+B2's path disclosure and B5's contract mismatch are closed. **Wider deployment:
+NO** — v0 still has no authentication, and the residual generic-file exposure
+alone prevents treating `/files/` as a wider-client-safe preview boundary.

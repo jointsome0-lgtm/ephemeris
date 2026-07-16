@@ -783,6 +783,16 @@ with TestClient(app) as c:
     _v2_note.write_text("Vera Example learner note", encoding="utf-8")
     check("artifact-root files are not served through /files/",
           c.get(f"/learn/lessons/{_v2_id}/files/attempts/note.txt").status_code == 404)
+    # v2 serving is a positive allowlist: declared pages + assets/ only
+    (_v2_dir / "undeclared-private.html").write_text(
+        "<html>Vera Example private draft</html>", encoding="utf-8")
+    (_v2_dir / "assets").mkdir(exist_ok=True)
+    (_v2_dir / "assets" / "diagram.svg").write_text(
+        "<svg xmlns='http://www.w3.org/2000/svg'/>", encoding="utf-8")
+    check("v2 /files/ serves declared pages + assets only",
+          c.get(f"/learn/lessons/{_v2_id}/files/undeclared-private.html").status_code == 404
+          and c.get(f"/learn/lessons/{_v2_id}/files/assets/diagram.svg").status_code == 200
+          and c.get(f"/learn/lessons/{_v2_id}/files/related/01-stage.html").status_code == 200)
 
     # the legacy flat-file bridge refuses a symlinked source (§2)
     _leg_conn = get_conn()
@@ -797,6 +807,14 @@ with TestClient(app) as c:
     lessons_svc.lesson_file_info(_leg)  # runs the ensure/bridge path
     check("legacy flat-file bridge refuses a symlinked source (§2)",
           not (_leg_dir / "index.html").exists())
+    # ...while a regular legacy source still bridges (fd-bound read)
+    _leg_flat = Path(lessons_svc.LESSONS_DIR) / f"{_leg['slug']}.html"
+    _leg_flat.unlink()
+    _leg_flat.write_text("<html>Vera Example legacy body</html>", encoding="utf-8")
+    lessons_svc.lesson_file_info(_leg)
+    check("legacy flat-file bridge still copies a regular source",
+          (_leg_dir / "index.html").is_file()
+          and "Vera Example legacy body" in (_leg_dir / "index.html").read_text(encoding="utf-8"))
 
     # hostile manifests stay bounded: finding count, deep JSON, malformed URL
     _flood = bschema.read_manifest_text(json.dumps({
@@ -824,6 +842,10 @@ with TestClient(app) as c:
     _nan = bschema.read_manifest_text('{"schema_version": 2, "x_weight": NaN}')
     check("non-standard JSON constants are manifest-unreadable",
           _nan.outcome == "rejected" and "manifest-unreadable" in _nan.codes())
+    _bigint = bschema.read_manifest_text(
+        '{"schema_version": 2, "x_big": ' + "9" * 5000 + "}")
+    check("huge integer token is manifest-unreadable, not a crash",
+          _bigint.outcome == "rejected" and "manifest-unreadable" in _bigint.codes())
 
     # v2 selections compare exactly (§4.1): a normalizable variant is not repaired
     _norm_meta = c.get(f"/learn/lessons/{_v2_id}/preview-meta",

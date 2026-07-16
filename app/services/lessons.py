@@ -10,6 +10,7 @@ import mimetypes
 import os
 import re
 import sqlite3
+import stat as stat_module
 import tempfile
 from html import escape
 from pathlib import Path, PurePosixPath
@@ -171,6 +172,26 @@ def _write_manifest(path: Path, data: dict) -> None:
     bundle_schema.write_manifest(path, data)
 
 
+def _read_regular_no_follow(path: Path) -> str | None:
+    """Read a file as UTF-8 (errors replaced) only if the very descriptor the
+    bytes come from is a regular non-symlink file; None otherwise (§2)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    try:
+        if not stat_module.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as fh:
+            fd = -1
+            return fh.read()
+    except OSError:
+        return None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
 def _mkdir_no_follow(path: Path) -> None:
     """Create a standard bundle subdir only when nothing (including a
     pre-planted symlink) occupies its name — never through a link (§2)."""
@@ -210,13 +231,13 @@ def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:
     # Non-destructive bridge from the earlier flat-file prototype:
     # data/lessons/<slug>.html -> data/lessons/<slug>/index.html. Neither
     # side may be (or pass through) a symlink (§2): the destination is never
-    # written through a planted link, and a linked source is never read and
-    # republished into the bundle.
-    legacy = _legacy_lesson_path(lesson["slug"])
+    # written through a planted link, and the source's regular-file decision
+    # is bound to the descriptor the bytes are read from (no stat/open gap).
     index = lesson_dir / DEFAULT_ENTRY
-    if (not legacy.is_symlink() and legacy.is_file()
-            and not index.exists() and not index.is_symlink()):
-        index.write_text(legacy.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+    if not index.exists() and not index.is_symlink():
+        legacy_text = _read_regular_no_follow(_legacy_lesson_path(lesson["slug"]))
+        if legacy_text is not None:
+            index.write_text(legacy_text, encoding="utf-8")
 
     return read
 
@@ -307,16 +328,25 @@ def bundle_resource_info(lesson: dict, ref: str) -> dict:
     """Runtime metadata for a bundle-relative file, including assets."""
     read = _ensure_bundle_manifest(lesson)
     ref = _clean_bundle_ref(ref)
-    # This route serves the preview surface only. Blocked as missing: any
-    # fetch under a rejected manifest (§9.2 — no page render), the reserved
-    # bundle names, learner work under artifact roots (§7 — that surface
-    # belongs to dedicated attempt/editor APIs), and §2 symlinked paths
-    # (checked before any resolve() so the link is never followed).
+    # This route serves the preview surface only. For v2 that is a positive
+    # allowlist — declared pages plus the `assets/` area — minus learner work
+    # under artifact roots (§7: that surface belongs to dedicated
+    # attempt/editor APIs). v1 keeps its historical tolerance (undeclared
+    # pages may be selected) behind a denylist of the same exclusions. Both
+    # versions: nothing under a rejected manifest (§9.2 — no page render),
+    # no reserved names, no §2 symlinked paths (checked before any resolve()
+    # so the link is never followed).
+    in_artifact_root = any(
+        ref == root or ref.startswith(root + "/") for root in read.artifact_roots
+    )
+    if read.version == bundle_schema.SCHEMA_V2:
+        allowed = ref in read.page_paths() or ref.startswith("assets/")
+    else:
+        allowed = ref.split("/", 1)[0] not in bundle_schema.RESERVED_NAMES
     blocked = (
         read.rejected
-        or ref.split("/", 1)[0] in bundle_schema.RESERVED_NAMES
-        or any(ref == root or ref.startswith(root + "/")
-               for root in read.artifact_roots)
+        or not allowed
+        or in_artifact_root
         or bundle_schema.path_has_symlink(_lesson_dir(lesson["slug"]), ref)
     )
     if blocked:

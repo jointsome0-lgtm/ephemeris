@@ -280,7 +280,10 @@ def read_manifest_bytes(
         return rejected_read("manifest-too-large", f"{len(data)} bytes")
     try:
         raw = json.loads(data.decode("utf-8"), parse_constant=_reject_nonstandard)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, ValueError) as exc:
+        # ValueError covers JSONDecodeError AND the decoder's other parse-time
+        # failures (e.g. the int-conversion digit limit on a huge number
+        # token): the parse boundary is total — unreadable, never a crash.
         return rejected_read("manifest-unreadable", str(exc)[:MAX_FINDING_DETAIL])
     except RecursionError:  # pathologically deep JSON is unreadable, not a crash
         return rejected_read("manifest-unreadable", "manifest nesting too deep")

@@ -21,17 +21,20 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Done
 
-- [x] 2026-07-17 — 5250768, 5d37a97, 1227d29 —
+- [x] 2026-07-17 — 5250768, 5d37a97, 1227d29, 41224b5 —
   `app/services/bundle_schema.py` (new), `app/services/lessons.py`, `app/db.py`,
   `app/main.py`, `verify.py` — issue #39 session C3: typed v1/v2
   lesson-manifest readers and findings, canonical/atomic writer, v2 creation,
   stable `lessons.uid`, declared-page selection, lesson-event UID echoes, and
   preview metadata; follow-ups block direct page renders for rejected manifests,
   surface stale v2 selections, harden standard bundle-subdir creation/path
-  checks, and reject duplicate identities even when another field drops the item
-  → `2026-07-17-bundle-schema-runtime-review.md` (four Low, one Info on current
-  head; three original gaps fixed in the two follow-ups; direct-loopback deploy
-  allowed, wider deployment unsupported)
+  checks, reject duplicate identities even when another field drops the item,
+  harden manifest error/bounds handling, narrow the generic file route, remove
+  the creation-event title echo, and aggregate selected-page symlink outcome
+  → `2026-07-17-bundle-schema-runtime-review.md` (addendum for `41224b5`: B2,
+  B5, and the PR-bot finding resolved; B1, B3, and B4 narrowed but remain Low;
+  no separate new finding; direct-loopback deploy allowed, wider deployment
+  unsupported)
 
 - [x] 2026-07-16 — 61b6d65, 5d7c226, ad11d31 — `app/terminal.py`,
   `app/services/lessons.py`, `app/main.py`, `app/templates/learn.html`,
