@@ -21,6 +21,17 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Done
 
+- [x] 2026-07-16 — a74eab1, e50090d — `app/security.py`, `app/main.py`,
+  `verify.py`, `verify_restore.py`, `docs/security-model.md` — issue #15
+  first slice: new ASGI middleware owns a trusted-host allowlist
+  (`EPHEMERIS_TRUSTED_HOSTS`, loopback defaults), one origin policy for all
+  unsafe methods (serialized http(s) origin == scheme+host+effective port,
+  `null` rejected, absent Origin allowed only without cross-site fetch
+  metadata), and global response headers (nosniff, Referrer-Policy, CSP
+  `frame-ancestors 'none'` unless the route sets its own); the 28 per-route
+  `_check_origin()` calls are removed; verify 361
+  → `2026-07-16-write-guard-review.md` (one Low fixed in e50090d)
+
 - [x] 2026-07-16 — 10a8a71 — `app/services/lessons.py`, `verify.py` —
   issue #14: generated lesson brief is now a constant (title/source URL no
   longer interpolated; the brief points the agent at `lesson.json` as data);

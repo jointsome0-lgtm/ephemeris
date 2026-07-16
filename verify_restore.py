@@ -19,6 +19,9 @@ SOURCE_DIR = WORK_DIR / "source"
 os.environ["ACTIVITY_DATA_DIR"] = str(SOURCE_DIR)
 os.environ.pop("ACTIVITY_DB", None)
 os.environ["EPHEMERIS_DISABLE_TERMINAL"] = "1"
+# TestClient presents Host: testserver; force the allowlist to a known value
+# so an ambient LAN setting can't 400 every request under test.
+os.environ["EPHEMERIS_TRUSTED_HOSTS"] = "testserver,localhost,127.0.0.1,::1"
 sys.path.insert(0, str(ROOT))
 
 from fastapi.testclient import TestClient  # noqa: E402

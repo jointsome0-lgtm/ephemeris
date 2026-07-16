@@ -440,10 +440,13 @@ Run locally on Linux. Two modes:
 
 ```bash
 # Desktop-only (safe default — not reachable from other devices):
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers
 
-# Trusted home Wi-Fi (lets Samsung connect — read sec20 first):
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+# Trusted home Wi-Fi (lets Samsung connect — read sec20 first).
+# The trusted-host allowlist defaults to loopback names only, so name the
+# LAN IP/hostname the phone will use (docs/security-model.md):
+EPHEMERIS_TRUSTED_HOSTS="localhost,127.0.0.1,::1,<lan-ip>" \
+  uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-proxy-headers
 ```
 
 Bind `0.0.0.0` ONLY on a network you trust: the app has no auth (sec20), so on

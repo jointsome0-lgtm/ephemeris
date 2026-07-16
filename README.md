@@ -53,13 +53,18 @@ The app has **no auth** — only do this on a network you trust (see
 `docs/system-design.md` §20).
 
 ```bash
-# Trusted home Wi-Fi only — lets other devices on the LAN connect:
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+hostname -I    # find your Linux box's LAN IP first
 
-hostname -I    # find your Linux box's LAN IP
+# Trusted home Wi-Fi only — lets other devices on the LAN connect.
+# The host allowlist admits only loopback names by default, so include
+# the LAN IP (or hostname) your phone will put in the URL:
+EPHEMERIS_TRUSTED_HOSTS="localhost,127.0.0.1,::1,<linux-lan-ip>" \
+  uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-proxy-headers
 ```
 
-Then on the phone browse to `http://<linux-lan-ip>:8000`.
+Then on the phone browse to `http://<linux-lan-ip>:8000`. Without the
+`EPHEMERIS_TRUSTED_HOSTS` entry the app answers LAN requests with
+`400 untrusted Host` (see `docs/security-model.md`).
 
 ## Security
 

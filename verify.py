@@ -17,6 +17,10 @@ from pathlib import Path
 # Isolated DB before importing the app.
 os.environ["ACTIVITY_DATA_DIR"] = tempfile.mkdtemp(prefix="al-verify-")
 os.environ.pop("EPHEMERIS_DISABLE_TERMINAL", None)
+# TestClient presents Host: testserver; force the allowlist to a known value
+# (app/security.py reads it at import) so an ambient LAN setting can't 400
+# every request under test.
+os.environ["EPHEMERIS_TRUSTED_HOSTS"] = "testserver,localhost,127.0.0.1,::1"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -584,6 +588,66 @@ with TestClient(app) as c:
                headers={"Origin": "http://evil.example", "Host": "testserver"},
                follow_redirects=False)
     check("cross-origin POST -> 403", r.status_code == 403, str(r.status_code))
+
+    # --- central write guard + host perimeter (issue #15 slice) ----------
+    # A brand-new route with NO guard code of its own must still be covered:
+    # the middleware in app/security.py owns the policy, not the handler.
+    @app.post("/verify-only/unguarded")
+    def _unguarded_probe():
+        return {"ok": True}
+
+    r = c.post("/verify-only/unguarded",
+               headers={"Origin": "http://evil.example", "Host": "testserver"})
+    check("guard: unguarded new route still rejects cross-origin",
+          r.status_code == 403, str(r.status_code))
+    r = c.post("/verify-only/unguarded", headers={"Origin": "null"})
+    check("guard: opaque origin (Origin: null) -> 403",
+          r.status_code == 403, str(r.status_code))
+    r = c.post("/verify-only/unguarded",
+               headers=[("Origin", "http://testserver"),
+                        ("Origin", "http://evil.example")])
+    check("guard: smuggled duplicate Origin -> 403",
+          r.status_code == 403, str(r.status_code))
+    r = c.post("/verify-only/unguarded", headers={"Origin": "http://testserver"})
+    check("guard: same-origin Origin accepted",
+          r.status_code == 200 and r.json()["ok"] is True, str(r.status_code))
+    r = c.post("/verify-only/unguarded", headers={"Origin": "https://testserver"})
+    check("guard: scheme mismatch (https origin, http app) -> 403",
+          r.status_code == 403, str(r.status_code))
+    r = c.post("/verify-only/unguarded", headers={"Origin": "http://testserver:80"})
+    check("guard: default port normalized to the same origin",
+          r.status_code == 200, str(r.status_code))
+    r = c.post("/verify-only/unguarded", headers={"Origin": "http://testserver/x"})
+    check("guard: non-serialized Origin (path) -> 403",
+          r.status_code == 403, str(r.status_code))
+    r = c.post("/verify-only/unguarded")
+    check("guard: no-Origin non-browser client accepted",
+          r.status_code == 200, str(r.status_code))
+    r = c.post("/verify-only/unguarded", headers={"Sec-Fetch-Site": "cross-site"})
+    check("guard: absent Origin but Sec-Fetch-Site: cross-site -> 403",
+          r.status_code == 403, str(r.status_code))
+    r = c.post("/verify-only/unguarded", headers={"Sec-Fetch-Site": "same-site"})
+    check("guard: Sec-Fetch-Site: same-site (another local port) -> 403",
+          r.status_code == 403, str(r.status_code))
+    r = c.post("/verify-only/unguarded", headers={"Sec-Fetch-Site": "same-origin"})
+    check("guard: Sec-Fetch-Site: same-origin accepted",
+          r.status_code == 200, str(r.status_code))
+
+    # Trusted-host allowlist covers every method, GET included (DNS rebinding)
+    r = c.get("/today", headers={"Host": "evil.example"})
+    check("perimeter: untrusted Host -> 400", r.status_code == 400, str(r.status_code))
+    r = c.get("/today", headers={"Host": "[::1]:8765"})
+    check("perimeter: bracketed IPv6 loopback Host accepted",
+          r.status_code == 200, str(r.status_code))
+    r = c.get("/today")
+    check("perimeter: security headers on every response",
+          r.headers.get("x-content-type-options") == "nosniff"
+          and r.headers.get("referrer-policy") == "same-origin"
+          and r.headers.get("content-security-policy") == "frame-ancestors 'none'",
+          str(dict(r.headers)))
+    r = c.get("/static/style.css")
+    check("perimeter: headers reach mounted static files",
+          r.headers.get("x-content-type-options") == "nosniff")
 
     # --- habit stats: streaks / weekly dots / detail page ---------------
     from datetime import date as _d, timedelta as _td
@@ -1233,6 +1297,12 @@ with TestClient(app) as c:
                 headers={"Origin": "http://evil.example", "Host": "testserver"},
                 follow_redirects=False)
     check("cross-origin POST lesson status -> 403", rX.status_code == 403, str(rX.status_code))
+
+    rP = c.get(f"/learn/lessons/{lid}/preview")
+    check("lesson preview keeps its own CSP (frame-ancestors 'self' exception)",
+          rP.status_code == 200
+          and "frame-ancestors 'self'" in rP.headers.get("content-security-policy", ""),
+          f"{rP.status_code} {rP.headers.get('content-security-policy', '')}")
 
     c.post(f"/learn/lessons/{lid}/archive", follow_redirects=False)
     lconn = get_conn()

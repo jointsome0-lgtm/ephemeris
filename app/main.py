@@ -15,7 +15,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import date as _date, timedelta
 from pathlib import Path
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, urlencode
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .db import get_conn, init_db, is_not_future, is_valid_date, now_iso, today_str
+from .security import install_security
 from .services import calendar_events, checkins, export, focus, items, lessons, lists, quickadd, stats, tasks
 from .terminal import client_is_local, setup_terminal, shutdown_terminal
 
@@ -67,6 +68,9 @@ async def _lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Ephemeris", lifespan=_lifespan)
+# Request perimeter (issue #15): trusted-host allowlist + central write guard
+# for ALL unsafe methods + global security headers — see app/security.py.
+install_security(app)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 # Status display metadata (sec16.5): a distinct glyph per status so state reads
@@ -180,14 +184,9 @@ setup_terminal(app)
 
 
 # --- security / validation (sec20, sec13.3) --------------------------------
-
-
-def _check_origin(request: Request) -> None:
-    origin = request.headers.get("origin")
-    if origin is None:
-        return
-    if urlparse(origin).netloc != request.headers.get("host"):
-        raise HTTPException(status_code=403, detail="cross-origin POST rejected")
+# The same-origin write guard is no longer a per-route call: app/security.py
+# enforces it in middleware for every unsafe-method request, so a new POST
+# route is covered without remembering anything.
 
 
 def _validated_write_date(date: str) -> str:
@@ -866,7 +865,6 @@ def post_event_create(
     end_date: str = Form(""),
     return_to: str = Form("/calendar"),
 ):
-    _check_origin(request)
     conn = get_conn()
     try:
         calendar_events.create_event(
@@ -901,7 +899,6 @@ def post_event_update(
 ):
     """Update the whole series ("All events" — v1 has no per-occurrence override;
     use Skip for one day). exdates survive the edit (the service preserves them)."""
-    _check_origin(request)
     conn = get_conn()
     try:
         calendar_events.update_event(
@@ -919,7 +916,6 @@ def post_event_update(
 
 @app.post("/calendar/events/{event_id}/archive")
 def post_event_archive(request: Request, event_id: int, return_to: str = Form("/calendar")):
-    _check_origin(request)
     conn = get_conn()
     try:
         calendar_events.archive_event(conn, event_id)  # soft: series stays in the ledger
@@ -933,7 +929,6 @@ def post_event_archive(request: Request, event_id: int, return_to: str = Form("/
 @app.post("/calendar/events/{event_id}/skip")
 def post_event_skip(request: Request, event_id: int, date: str = Form(...),
                     return_to: str = Form("/calendar")):
-    _check_origin(request)
     conn = get_conn()
     try:
         calendar_events.skip_occurrence(conn, event_id, date)
@@ -947,7 +942,6 @@ def post_event_skip(request: Request, event_id: int, date: str = Form(...),
 @app.post("/calendar/events/{event_id}/unskip")
 def post_event_unskip(request: Request, event_id: int, date: str = Form(...),
                       return_to: str = Form("/calendar")):
-    _check_origin(request)
     conn = get_conn()
     try:
         calendar_events.unskip_occurrence(conn, event_id, date)
@@ -962,7 +956,6 @@ def post_event_unskip(request: Request, event_id: int, date: str = Form(...),
 def post_event_move(request: Request, event_id: int, date: str = Form(...),
                     return_to: str = Form("/calendar")):
     """Drag-and-drop a non-recurring event to another day (Mode A/B)."""
-    _check_origin(request)
     json_mode = _wants_json(request)
     conn = get_conn()
     try:
@@ -1203,7 +1196,6 @@ def post_lesson_create(
     source_url: str = Form(""),
     return_to: str = Form("/learn"),
 ):
-    _check_origin(request)
     conn = get_conn()
     try:
         lesson_id = lessons.create_lesson(conn, title, source_url)
@@ -1223,7 +1215,6 @@ def post_lesson_entry(
     entry: str = Form(...),
     return_to: str = Form("/learn"),
 ):
-    _check_origin(request)
     conn = get_conn()
     try:
         lessons.set_current_entry(conn, lesson_id, entry)
@@ -1244,7 +1235,6 @@ def post_lesson_status(
     status: str = Form(...),
     return_to: str = Form("/learn"),
 ):
-    _check_origin(request)
     conn = get_conn()
     try:
         lessons.set_status(conn, lesson_id, status)
@@ -1259,7 +1249,6 @@ def post_lesson_status(
 
 @app.post("/learn/lessons/{lesson_id}/archive")
 def post_lesson_archive(request: Request, lesson_id: int, return_to: str = Form("/learn")):
-    _check_origin(request)
     conn = get_conn()
     try:
         lessons.archive_lesson(conn, lesson_id)
@@ -1274,7 +1263,6 @@ def post_lesson_archive(request: Request, lesson_id: int, return_to: str = Form(
 
 @app.post("/learn/lessons/{lesson_id}/restore")
 def post_lesson_restore(request: Request, lesson_id: int, return_to: str = Form("/learn")):
-    _check_origin(request)
     conn = get_conn()
     try:
         lessons.restore_lesson(conn, lesson_id)
@@ -1316,7 +1304,6 @@ def post_focus_session(
     return_to: str = Form("/focus"),
 ):
     """Record a finished Pomodoro / stopwatch span. Mode B returns refreshed stats."""
-    _check_origin(request)
     json_mode = _wants_json(request)
     conn = get_conn()
     try:
@@ -1359,7 +1346,6 @@ def get_export(request: Request):
 @app.post("/export/jsonl")
 def post_export_jsonl(request: Request):
     """Write data/exports/events-<stamp>.jsonl AND stream it back as a download."""
-    _check_origin(request)
     conn = get_conn()
     try:
         path, text, _count = export.export_events(conn)
@@ -1489,7 +1475,6 @@ def post_checkin(
     note: str | None = Form(None),
     return_to: str | None = Form(None),
 ):
-    _check_origin(request)
     date = _validated_write_date(date)
     anchor = f"item-{routine_item_id}"
     json_mode = _wants_json(request)
@@ -1527,7 +1512,6 @@ def post_daily_note(
     date: str = Form(...),
     text: str = Form(""),
 ):
-    _check_origin(request)
     date = _validated_write_date(date)
     conn = get_conn()
     try:
@@ -1545,7 +1529,6 @@ def post_daily_note(
 @app.post("/lists")
 def post_list_create(request: Request, name: str = Form(...), emoji: str = Form("")):
     """Create a user list from the sidebar's + modal, then open it."""
-    _check_origin(request)
     conn = get_conn()
     try:
         list_id = lists.create_list(conn, name, emoji=emoji)
@@ -1566,7 +1549,6 @@ def post_task_create(
     smart: str = Form(""),
     return_to: str = Form("/today"),
 ):
-    _check_origin(request)
     priority = 0
     parsed_label = ""
     if smart in ("1", "true", "on"):
@@ -1600,7 +1582,6 @@ def post_task_create(
 
 @app.post("/tasks/{task_id}/complete")
 def post_task_complete(request: Request, task_id: int, return_to: str = Form("/today")):
-    _check_origin(request)
     json_mode = _wants_json(request)
     conn = get_conn()
     try:
@@ -1627,7 +1608,6 @@ def post_task_update(
     list_id: int = Form(...),
     return_to: str = Form("/today"),
 ):
-    _check_origin(request)
     conn = get_conn()
     try:
         tasks.update_task(
@@ -1652,7 +1632,6 @@ def post_task_move(
 ):
     """Drag-and-drop reposition (matrix): `priority` = target quadrant (optional),
     `after`/`before` = the task ids now above/below the drop slot."""
-    _check_origin(request)
     json_mode = _wants_json(request)
 
     def _int_or_none(v: str):
@@ -1693,7 +1672,6 @@ def post_habit_create(
     constant_reminder: str | None = Form(None),
     return_to: str = Form("/habits"),
 ):
-    _check_origin(request)
     conn = get_conn()
     try:
         items.create_item(
@@ -1723,7 +1701,6 @@ def post_habit_edit(
     constant_reminder: str | None = Form(None),
     return_to: str = Form("/habits"),
 ):
-    _check_origin(request)
     conn = get_conn()
     try:
         items.update_item(
@@ -1740,7 +1717,6 @@ def post_habit_edit(
 
 @app.post("/habits/{item_id}/archive")
 def post_habit_archive(request: Request, item_id: int, return_to: str = Form("/habits")):
-    _check_origin(request)
     conn = get_conn()
     try:
         items.deactivate_item(conn, item_id)  # soft retire; history kept
@@ -1753,7 +1729,6 @@ def post_habit_archive(request: Request, item_id: int, return_to: str = Form("/h
 
 @app.post("/habits/{item_id}/delete")
 def post_habit_delete(request: Request, item_id: int, return_to: str = Form("/habits")):
-    _check_origin(request)
     conn = get_conn()
     try:
         items.delete_item(conn, item_id)  # hard delete (events keep the audit trail)
@@ -1807,7 +1782,6 @@ def get_items(request: Request, flash: str | None = None):
 
 @app.post("/items")
 def post_item_create(request: Request, title: str = Form(...), group_name: str = Form("")):
-    _check_origin(request)
     conn = get_conn()
     try:
         items.create_item(conn, title, group_name)
@@ -1820,7 +1794,6 @@ def post_item_create(request: Request, title: str = Form(...), group_name: str =
 
 @app.post("/items/{item_id}/edit")
 def post_item_edit(request: Request, item_id: int, title: str = Form(...), group_name: str = Form("")):
-    _check_origin(request)
     conn = get_conn()
     try:
         items.update_item(conn, item_id, title, group_name)
@@ -1833,7 +1806,6 @@ def post_item_edit(request: Request, item_id: int, title: str = Form(...), group
 
 @app.post("/items/{item_id}/deactivate")
 def post_item_deactivate(request: Request, item_id: int):
-    _check_origin(request)
     conn = get_conn()
     try:
         items.deactivate_item(conn, item_id)
@@ -1846,7 +1818,6 @@ def post_item_deactivate(request: Request, item_id: int):
 
 @app.post("/items/{item_id}/reactivate")
 def post_item_reactivate(request: Request, item_id: int):
-    _check_origin(request)
     conn = get_conn()
     try:
         items.reactivate_item(conn, item_id)

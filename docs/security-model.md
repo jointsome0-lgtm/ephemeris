@@ -67,21 +67,49 @@ copies of real data.
 Keeping these files out of Git is not access control: in LAN mode, any client
 that can reach the unauthenticated app can use the routes the app exposes.
 
+## Main-app request perimeter
+
+`app/security.py` installs one middleware in front of every route (issue #15,
+first slice). It owns three things:
+
+- **Trusted-host allowlist.** Every HTTP request and WebSocket handshake must
+  carry a `Host` whose hostname is in `EPHEMERIS_TRUSTED_HOSTS`
+  (comma-separated hostnames; default `localhost,127.0.0.1,::1`; read at
+  import, so restart to change). This blocks DNS rebinding for the whole app,
+  `GET` routes included. LAN deployments must list the names or addresses
+  clients will actually use.
+- **Central write guard.** Every unsafe-method request (`POST`/`PUT`/`PATCH`/
+  `DELETE`) passes one origin policy in middleware — a newly added route
+  cannot forget it. Each case is deliberate: any present `Origin` (all values,
+  so duplicates can't smuggle) must be a serialized http(s) origin equal to
+  the request's own scheme, hostname, and port — scheme from the ASGI scope,
+  default ports normalized, so an https page cannot write to the http app
+  even on the same host; `Origin: null` (an opaque origin, e.g. a sandboxed lesson iframe
+  posting directly) is rejected — the sanctioned lesson write path is the
+  postMessage bridge; an absent `Origin` with no fetch metadata is allowed
+  (non-browser loopback clients such as curl or an agent CLI; browsers always
+  send `Origin` on cross-origin unsafe requests); an absent `Origin` with
+  `Sec-Fetch-Site` other than `same-origin`/`none` is rejected, including
+  `same-site` — a page on another local port must not write here, the same
+  stance as the terminal gate.
+- **Security headers on every response.** `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: same-origin`, and `Content-Security-Policy:
+  frame-ancestors 'none'` when the route sets no CSP of its own — the
+  lesson-preview responses keep their sandbox CSP with its narrow
+  `frame-ancestors 'self'` exception.
+
+The terminal gate in `app/terminal.py` remains the stricter authority for
+`/terminal/ws` (loopback peer + loopback Host + exact origin); the middleware
+only vets the handshake's `Host` before it.
+
 ## Known v0 limitations
 
 These are documented limitations, not fixes made in this pass:
 
-- The main app's Origin check is manually applied to state-changing `POST`
-  handlers. It does not protect `GET` routes, accepts requests with no `Origin`,
-  and only compares the supplied Origin authority with `Host`.
-- Unlike the terminal gate, the main app has no `Host` allowlist. DNS rebinding
-  can therefore reach `GET` routes and can present matching hostile `Host` and
-  `Origin` values to the weaker POST check. The intended fix is a `TrustedHost`
-  allowlist covering the configured local names and addresses.
 - The main app has no authentication, including in LAN mode, and no CSRF tokens.
   The intended fixes are single-user session authentication and CSRF protection
-  for state-changing requests. The current Origin check is defense in depth,
-  not a substitute for either.
+  for state-changing requests. The origin-policy middleware is defense in
+  depth, not a substitute for either.
 - The lesson-preview CSP permits external network connections through
   `connect-src ... https:`. The intended fix is a tighter `connect-src` policy
   or an explicit minimal allowlist for lesson content that genuinely needs it.
