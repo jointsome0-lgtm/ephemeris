@@ -19,6 +19,19 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
+- [ ] 2026-07-17 — 5250768 — `app/services/bundle_schema.py` (new),
+  `app/services/lessons.py`, `app/db.py`, `app/main.py`, `verify.py` —
+  issue #39 session C3: new module owns typed v1/v2 lesson-manifest readers
+  (finding codes per docs/learn-bundle-spec.md §9.2), canonical manifest
+  serialization, the v2 creation skeleton, and atomic manifest writes;
+  schema v10 adds `lessons.uid` (unique index + idempotent backfill, minted
+  in `create_lesson`); manifest read path dual-reads v1/v2 with visible
+  rejects for corrupt/oversized/unsupported/symlinked manifests and treats
+  paths that resolve through symlinks as missing; v2 page selection accepts
+  only declared `pages[].path`; `lesson_*` events written from now on carry
+  `lesson_uid`; preview-meta exposes read outcome + findings; verify 407,
+  verify_restore 28
+
 ## Done
 
 - [x] 2026-07-16 — 61b6d65, 5d7c226, ad11d31 — `app/terminal.py`,
