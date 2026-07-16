@@ -590,9 +590,10 @@ with TestClient(app) as c:
     check("v2 bundle gets its default artifact root dir",
           (Path(lessons_svc.LESSONS_DIR) / _uid_lesson["slug"] / "attempts").is_dir())
     _uid_created = json.loads(events_of("lesson_created")[-1]["payload_json"])
-    check("lesson_created event echoes lesson_uid",
+    check("lesson_created event echoes lesson_uid, never title (§8)",
           _uid_created.get("lesson_uid") == _uid_lesson["uid"]
-          and _uid_created.get("lesson_id") == _uid_id)
+          and _uid_created.get("lesson_id") == _uid_id
+          and "title" not in _uid_created)
 
     # rename churn never re-mints (§3): uid survives title+slug change,
     # backfill rerun is a no-op, a NULL-uid row (stale pre-v10 writer) heals
@@ -742,6 +743,9 @@ with TestClient(app) as c:
     _symp_file = c.get(f"/learn/lessons/{_symp_id}/files/index.html")
     check("symlinked page is treated as missing (§2)",
           _symp_info["exists"] is False and _symp_file.status_code == 404)
+    check("symlinked page degrades the reported outcome (§9.2)",
+          _symp_info["outcome"] == "degraded"
+          and any(f["code"] == "symlinked-path" for f in _symp_info["findings"]))
     _symp_manifest = _symp_dir / "lesson.json"
     _symp_manifest.unlink()
     _os.symlink(_symp_target, _symp_manifest)
@@ -750,6 +754,73 @@ with TestClient(app) as c:
           _symp_meta["outcome"] == "rejected"
           and any(f["code"] == "symlinked-bundle" for f in _symp_meta["findings"])
           and _symp_manifest.is_symlink())
+
+    # a non-regular node at lesson.json rejects visibly — never a 500 — and
+    # finding details never leak the absolute runtime path
+    _dirm_conn = get_conn()
+    try:
+        _dirm_id = lessons_svc.create_lesson(_dirm_conn, "Directory Manifest Demo")
+        _dirm = lessons_svc.get_lesson(_dirm_conn, _dirm_id)
+    finally:
+        _dirm_conn.close()
+    _dirm_path = Path(lessons_svc.LESSONS_DIR) / _dirm["slug"] / "lesson.json"
+    _dirm_path.unlink()
+    _dirm_path.mkdir()
+    _dirm_resp = c.get(f"/learn/lessons/{_dirm_id}/preview-meta")
+    _dirm_meta = _dirm_resp.json()
+    check("directory at lesson.json rejects as manifest-unreadable, not a 500",
+          _dirm_resp.status_code == 200
+          and _dirm_meta["outcome"] == "rejected"
+          and any(f["code"] == "manifest-unreadable" for f in _dirm_meta["findings"]))
+    check("finding details never leak the absolute runtime path",
+          str(lessons_svc.LESSONS_DIR) not in _dirm_resp.text)
+
+    # the preview file route serves the preview surface only
+    check("reserved bundle names are not served through /files/",
+          c.get(f"/learn/lessons/{_v2_id}/files/lesson.json").status_code == 404)
+    _v2_note = _v2_dir / "attempts" / "note.txt"
+    _v2_note.parent.mkdir(exist_ok=True)
+    _v2_note.write_text("Vera Example learner note", encoding="utf-8")
+    check("artifact-root files are not served through /files/",
+          c.get(f"/learn/lessons/{_v2_id}/files/attempts/note.txt").status_code == 404)
+
+    # the legacy flat-file bridge refuses a symlinked source (§2)
+    _leg_conn = get_conn()
+    try:
+        _leg_id = lessons_svc.create_lesson(_leg_conn, "Legacy Symlink Demo")
+        _leg = lessons_svc.get_lesson(_leg_conn, _leg_id)
+    finally:
+        _leg_conn.close()
+    _leg_dir = Path(lessons_svc.LESSONS_DIR) / _leg["slug"]
+    (_leg_dir / "index.html").unlink(missing_ok=True)
+    _os.symlink(_symp_target, Path(lessons_svc.LESSONS_DIR) / f"{_leg['slug']}.html")
+    lessons_svc.lesson_file_info(_leg)  # runs the ensure/bridge path
+    check("legacy flat-file bridge refuses a symlinked source (§2)",
+          not (_leg_dir / "index.html").exists())
+
+    # hostile manifests stay bounded: finding count, deep JSON, malformed URL
+    _flood = bschema.read_manifest_text(json.dumps({
+        "schema_version": 2,
+        "lesson_uid": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
+        "entry": "index.html",
+        "pages": [{"id": "pg_flood0001", "path": "index.html"}] + [7] * 5000,
+    }))
+    check("hostile manifest findings stay bounded",
+          _flood.outcome == "rejected"
+          and len(_flood.findings) <= bschema.MAX_FINDINGS + 5)
+    _deep = bschema.read_manifest_text('{"x":' * 5000 + "1" + "}" * 5000)
+    check("pathologically deep JSON is manifest-unreadable, not a crash",
+          _deep.outcome == "rejected" and "manifest-unreadable" in _deep.codes())
+    _badurl = bschema.read_manifest_text(json.dumps({
+        "schema_version": 2,
+        "lesson_uid": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
+        "slug": "vera-example", "title": "Vera Example",
+        "source_url": "http://[::1",
+        "entry": "index.html",
+        "pages": [{"id": "pg_badurl001", "path": "index.html"}],
+    }))
+    check("malformed source_url copy degrades to stale-metadata, not a crash",
+          _badurl.outcome == "ok" and "stale-metadata" in _badurl.codes())
 
     tday = c.get("/today").text
     check("Today title carries the Ephemeris identity", "· Ephemeris" in tday)

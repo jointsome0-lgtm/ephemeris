@@ -208,11 +208,14 @@ def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:
         _mkdir_no_follow(lesson_dir / bundle_schema.DEFAULT_ARTIFACT_ROOT)
 
     # Non-destructive bridge from the earlier flat-file prototype:
-    # data/lessons/<slug>.html -> data/lessons/<slug>/index.html. Never
-    # writes through a pre-planted symlink (§2).
+    # data/lessons/<slug>.html -> data/lessons/<slug>/index.html. Neither
+    # side may be (or pass through) a symlink (§2): the destination is never
+    # written through a planted link, and a linked source is never read and
+    # republished into the bundle.
     legacy = _legacy_lesson_path(lesson["slug"])
     index = lesson_dir / DEFAULT_ENTRY
-    if legacy.is_file() and not index.exists() and not index.is_symlink():
+    if (not legacy.is_symlink() and legacy.is_file()
+            and not index.exists() and not index.is_symlink()):
         index.write_text(legacy.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
 
     return read
@@ -261,14 +264,18 @@ def _file_info(lesson: dict, read: bundle_schema.ManifestRead, entry: str | None
         }
     entry = _resolve_entry(lesson, read, entry)
     findings = _finding_views(read)
+    outcome = read.outcome
     # §2 symlink policy: a path that resolves through a symlink is missing —
-    # checked before any resolve() so the link is never followed.
+    # checked before any resolve() so the link is never followed. The finding
+    # degrades the reported outcome too (§9.2 severity aggregation).
     if bundle_schema.path_has_symlink(_lesson_dir(lesson["slug"]), entry):
         findings.append({
             "code": "symlinked-path",
             "severity": bundle_schema.DEGRADED,
             "detail": f"{entry} resolves through a symlink",
         })
+        if outcome == bundle_schema.OK:
+            outcome = bundle_schema.DEGRADED
         path = _lesson_dir(lesson["slug"]) / PurePosixPath(entry)
         exists = False
     else:
@@ -286,7 +293,7 @@ def _file_info(lesson: dict, read: bundle_schema.ManifestRead, entry: str | None
         "exists": exists,
         "version": str(stat.st_mtime_ns) if stat else "0",
         "size": stat.st_size if stat else 0,
-        "outcome": read.outcome,
+        "outcome": outcome,
         "findings": findings,
     }
 
@@ -301,10 +308,19 @@ def bundle_resource_info(lesson: dict, ref: str) -> dict:
     """Runtime metadata for a bundle-relative file, including assets."""
     read = _ensure_bundle_manifest(lesson)
     ref = _clean_bundle_ref(ref)
-    # A rejected manifest renders nothing — direct file fetches included
-    # (§9.2); and a path that resolves through a symlink is missing (§2),
-    # checked before any resolve() so the link is never followed.
-    if read.rejected or bundle_schema.path_has_symlink(_lesson_dir(lesson["slug"]), ref):
+    # This route serves the preview surface only. Blocked as missing: any
+    # fetch under a rejected manifest (§9.2 — no page render), the reserved
+    # bundle names, learner work under artifact roots (§7 — that surface
+    # belongs to dedicated attempt/editor APIs), and §2 symlinked paths
+    # (checked before any resolve() so the link is never followed).
+    blocked = (
+        read.rejected
+        or ref.split("/", 1)[0] in bundle_schema.RESERVED_NAMES
+        or any(ref == root or ref.startswith(root + "/")
+               for root in read.artifact_roots)
+        or bundle_schema.path_has_symlink(_lesson_dir(lesson["slug"]), ref)
+    )
+    if blocked:
         path = _lesson_dir(lesson["slug"]) / PurePosixPath(ref)
         exists = False
     else:
@@ -550,10 +566,11 @@ def create_lesson(conn: sqlite3.Connection, title: str, source_url: str | None =
             (uid, title, source_url, slug, ts),
         )
         lesson_id = cur.lastrowid
+        # No title echo (learn-bundle-spec.md §8): adapters resolve current
+        # metadata by lesson_uid; the DB row and manifest own the title.
         append_event(conn, "lesson_created", {
             "lesson_id": lesson_id,
             "lesson_uid": uid,
-            "title": title,
             "source_url": source_url,
             "slug": slug,
             "status": "backlog",

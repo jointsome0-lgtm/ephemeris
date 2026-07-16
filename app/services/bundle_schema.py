@@ -15,6 +15,7 @@ import errno
 import json
 import os
 import re
+import stat as stat_module
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -42,6 +43,11 @@ MAX_SLUG_LEN = 80
 MAX_URL_LEN = 1000
 MAX_REF_LEN = 200
 MIN_STEP, MAX_STEP = 1, 10000
+
+# Bounded finding materialization: a hostile manifest must not turn one
+# preview-metadata poll into megabytes of findings JSON or unbounded work.
+MAX_FINDINGS = 100
+MAX_FINDING_DETAIL = 200
 
 PROFILE_LEGACY = "legacy-display"
 PROFILE_INTERACTIVE = "interactive-local-v1"
@@ -159,7 +165,11 @@ class ManifestRead:
         return [p["path"] for p in self.pages]
 
     def add(self, code: str, detail: str = "", severity: str = "") -> None:
-        self.findings.append(Finding(code, detail, severity))
+        # Bounded: past the cap, only a not-yet-seen code is still recorded,
+        # so every applicable code surfaces (§9.2) at a bounded total size.
+        if len(self.findings) >= MAX_FINDINGS and any(f.code == code for f in self.findings):
+            return
+        self.findings.append(Finding(code, detail[:MAX_FINDING_DETAIL], severity))
 
 
 def rejected_read(code: str, detail: str = "") -> ManifestRead:
@@ -224,7 +234,10 @@ def clean_v1_ref(value: object, *, html_only: bool = False) -> str | None:
 def _valid_source_url(value: str) -> bool:
     if len(value) > MAX_URL_LEN:
         return False
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+    except ValueError:  # e.g. malformed bracketed IPv6 authority
+        return False
     return parsed.scheme.lower() in ("http", "https") and bool(parsed.netloc)
 
 
@@ -261,7 +274,9 @@ def read_manifest_bytes(
     try:
         raw = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        return rejected_read("manifest-unreadable", str(exc))
+        return rejected_read("manifest-unreadable", str(exc)[:MAX_FINDING_DETAIL])
+    except RecursionError:  # pathologically deep JSON is unreadable, not a crash
+        return rejected_read("manifest-unreadable", "manifest nesting too deep")
     if not isinstance(raw, dict):
         return rejected_read("manifest-unreadable", "manifest is not a JSON object")
 
@@ -287,7 +302,8 @@ def read_manifest_path(
     Returns None when the file genuinely does not exist (creation is the
     caller's decision)."""
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        # O_NONBLOCK so a planted FIFO cannot park the reader on open.
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
     except FileNotFoundError:
         if path.is_symlink():  # dangling symlink: present, planted, rejected
             return rejected_read("symlinked-bundle", "lesson.json is a symlink")
@@ -295,14 +311,19 @@ def read_manifest_path(
     except OSError as exc:
         if exc.errno == errno.ELOOP:
             return rejected_read("symlinked-bundle", "lesson.json is a symlink")
-        return rejected_read("manifest-unreadable", str(exc))
+        # strerror only: the finding detail reaches clients, the path must not
+        return rejected_read("manifest-unreadable", exc.strerror or "unreadable")
     try:
-        size = os.fstat(fd).st_size
-        if size > MAX_MANIFEST_BYTES:
-            return rejected_read("manifest-too-large", f"{size} bytes")
+        st = os.fstat(fd)
+        if not stat_module.S_ISREG(st.st_mode):
+            return rejected_read("manifest-unreadable", "lesson.json is not a regular file")
+        if st.st_size > MAX_MANIFEST_BYTES:
+            return rejected_read("manifest-too-large", f"{st.st_size} bytes")
         with os.fdopen(fd, "rb") as fh:
             fd = -1
             data = fh.read(MAX_MANIFEST_BYTES + 1)
+    except OSError as exc:
+        return rejected_read("manifest-unreadable", exc.strerror or "unreadable")
     finally:
         if fd >= 0:
             os.close(fd)
@@ -462,6 +483,7 @@ def _read_pages(read: ManifestRead, raw: dict) -> list[dict]:
         return []
     if len(items) > MAX_PAGES:
         read.add("limit-exceeded", f"{len(items)} pages (max {MAX_PAGES})")
+        items = items[:MAX_PAGES]  # already rejected; bound the walk
     pages: list[dict] = []
     seen_ids: set[str] = set()
     seen_paths: set[str] = set()
@@ -514,6 +536,7 @@ def _read_questions(read: ManifestRead, raw: dict, page_ids: set[str]) -> list[d
         return []
     if len(items) > MAX_QUESTIONS:
         read.add("limit-exceeded", f"{len(items)} questions (max {MAX_QUESTIONS})")
+        items = items[:MAX_QUESTIONS]  # already rejected; bound the walk
     questions: list[dict] = []
     seen_ids: set[str] = set()
     for item in items:
@@ -568,6 +591,7 @@ def _read_blocks(
         return []
     if len(items) > MAX_BLOCKS:
         read.add("limit-exceeded", f"{len(items)} blocks (max {MAX_BLOCKS})")
+        items = items[:MAX_BLOCKS]  # already rejected; bound the walk
     blocks: list[dict] = []
     seen_ids: set[str] = set()
     seen_files: set[str] = set()
@@ -651,6 +675,7 @@ def _read_artifact_roots(read: ManifestRead, raw: dict) -> list[str]:
         return [DEFAULT_ARTIFACT_ROOT]  # absent ⇒ default, no finding (§7)
     if len(items) > MAX_ARTIFACT_ROOTS:
         read.add("limit-exceeded", f"{len(items)} artifact roots (max {MAX_ARTIFACT_ROOTS})")
+        items = items[:MAX_ARTIFACT_ROOTS]  # already rejected; bound the walk
     valid: list[str] = []
     for item in items:
         if not isinstance(item, str):
@@ -704,6 +729,7 @@ def _read_opaque_refs(read: ManifestRead, raw: dict) -> None:
     if concepts:
         if len(concepts) > MAX_CONCEPTS:
             read.add("limit-exceeded", f"{len(concepts)} concepts (max {MAX_CONCEPTS})")
+            concepts = concepts[:MAX_CONCEPTS]  # already rejected; bound the walk
         for concept in concepts:
             if not valid_opaque_ref(concept):
                 read.add("invalid-ref", f"concept {concept!r} dropped")
