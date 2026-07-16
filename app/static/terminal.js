@@ -33,8 +33,22 @@
   var enc = new TextEncoder();
   var loaded = null;
   var tabs = [];
+  // Two pointers: activeId is the effective in-memory active tab; storedActiveId
+  // is the durable one — the only value persistTabs() ever writes. The off-Learn
+  // lesson-tab fallback changes activeId alone, so incidental persists (title
+  // change, sid arrival) can never leak the transient choice into storage.
   var activeId = null;
+  var storedActiveId = null;
   var idSeq = 0;
+
+  function onLearn() {
+    return document.body.dataset.rail === 'learn';
+  }
+
+  function setActive(id) {
+    activeId = id;
+    storedActiveId = id;
+  }
 
   function fail(m) {
     if (!statusEl) return;
@@ -73,19 +87,37 @@
         sentRows: 0, sentCols: 0
       };
     });
-    activeId = localStorage.getItem(ACTIVE_KEY);
-    if (!tabs.some(function (t) { return t.id === activeId; })) {
-      activeId = tabs[0] ? tabs[0].id : null;
+    storedActiveId = localStorage.getItem(ACTIVE_KEY);
+    if (!tabs.some(function (t) { return t.id === storedActiveId; })) {
+      storedActiveId = tabs[0] ? tabs[0].id : null;
     }
+    activeId = storedActiveId;
     if (tabs.length) persistTabs();
     localStorage.removeItem(LEGACY_SID_KEY);
+    // A lesson tab must not be auto-active outside Learn: fall back to the
+    // first plain tab (creating one in memory if every stored tab is a lesson
+    // tab). Transient by construction — storedActiveId still points at the
+    // lesson tab, so returning to Learn restores it as active.
+    var act = activeTab();
+    if (act && act.lesson && !onLearn()) {
+      var plain = tabs.find(function (t) { return !t.lesson; });
+      if (!plain && tabs.length < MAX_TABS) {
+        plain = {
+          id: newId(), sid: null, lesson: null, title: 'Terminal ' + (tabs.length + 1),
+          term: null, fit: null, search: null, clipboard: null, webgl: null, ws: null, screen: null, ro: null,
+          sentRows: 0, sentCols: 0
+        };
+        tabs.push(plain);
+      }
+      if (plain) activeId = plain.id;
+    }
   }
 
   function persistTabs() {
     localStorage.setItem(TABS_KEY, JSON.stringify(tabs.map(function (t) {
       return { id: t.id, sid: t.sid, lesson: t.lesson || null, title: t.title };
     })));
-    if (activeId) localStorage.setItem(ACTIVE_KEY, activeId);
+    if (storedActiveId) localStorage.setItem(ACTIVE_KEY, storedActiveId);
     else localStorage.removeItem(ACTIVE_KEY);
   }
 
@@ -100,7 +132,7 @@
       term: null, fit: null, search: null, clipboard: null, webgl: null, ws: null, screen: null, ro: null,
       sentRows: 0, sentCols: 0
     });
-    activeId = tabs[0].id;
+    setActive(tabs[0].id);
     persistTabs();
     renderTabs();
   }
@@ -384,6 +416,9 @@
 
   function connectAllTabs() {
     tabs.forEach(function (tab) {
+      // Lesson tabs stay visible everywhere but only auto-connect on Learn;
+      // elsewhere an explicit click still connects them via switchTab().
+      if (tab.lesson && !onLearn()) return;
       ensureRuntime(tab);
       connectTab(tab);
     });
@@ -483,7 +518,7 @@
 
   function switchTab(id) {
     if (!tabs.some(function (t) { return t.id === id; })) return;
-    activeId = id;
+    setActive(id);
     clearFail();
     tabs.forEach(function (tab) {
       if (tab.screen) tab.screen.hidden = tab.id !== activeId;
@@ -511,7 +546,7 @@
       sentRows: 0, sentCols: 0
     };
     tabs.push(tab);
-    activeId = tab.id;
+    setActive(tab.id);
     clearFail();
     persistTabs();
     renderTabs();
@@ -535,7 +570,7 @@
       };
       tabs.push(tab);
     }
-    activeId = tab.id;
+    setActive(tab.id);
     clearFail();
     persistTabs();
     renderTabs();
@@ -562,7 +597,7 @@
 
     var idx = tabs.indexOf(tab);
     tabs.splice(idx, 1);
-    activeId = tabs[Math.max(0, idx - 1)] ? tabs[Math.max(0, idx - 1)].id : null;
+    setActive(tabs[Math.max(0, idx - 1)] ? tabs[Math.max(0, idx - 1)].id : null);
     persistTabs();
     renderTabs();
     if (!tabs.length) {
