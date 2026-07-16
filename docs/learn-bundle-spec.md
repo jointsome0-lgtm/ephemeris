@@ -302,8 +302,8 @@ Deterministic adapter enumeration (no HTML parsing, no Atlas access):
 
 - All `lesson_*` events written after C3 include `lesson_uid` (alongside the
   existing `lesson_id` and, where already present, `slug`). History is never
-  rewritten; pre-C3 events stay as-is (adapters use `restore`/backfill-free
-  dual identity: `lesson_id` joins locally, `lesson_uid` travels).
+  rewritten; pre-C3 events stay as-is, and a consumer needing identity for
+  them joins on `lesson_id` against the local DB.
 - `lesson_attempt` (D4) event payload: `lesson_uid`, `lesson_id`, `slug`,
   `attempt_id`, `page_id`, `question_id`, `page_rev`, `answer`, `stale`.
 - Never echoed into events: `title`, `path`, `step`, `concepts`, `pages`.
