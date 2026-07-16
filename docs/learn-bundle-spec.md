@@ -66,6 +66,13 @@ per-segment enforcement (`lstat`/`O_NOFOLLOW` per component, or a
 realpath-within-root check that additionally rejects any symlink component)
 rather than reusing `resolve()`+containment.
 
+Reader mapping: a manifest-referenced path (entry, page, block `file`,
+artifact root) that exists but resolves through a symlink is treated as a
+missing file with a `symlinked-path` finding (degraded — for pages this
+means the "no HTML yet" placeholder, not a drop from `pages[]`); the bundle
+directory itself being a symlink rejects the bundle (`symlinked-path`,
+rejected). Artifact enumeration skips symlinks with the same finding.
+
 ## 3. Identity model
 
 Five identifiers, five owners:
@@ -89,7 +96,10 @@ Formats:
   MUST NOT be re-derived when the underlying file is renamed.
 
 Authority: the SQLite `lessons` table (column `uid`, added in C3) is the mint
-source and the truth for `lesson_uid`; the manifest carries an echo so a
+source and the truth for `lesson_uid`; after the C3 backfill the column is
+`NOT NULL UNIQUE`, minted exactly once per lesson — rerunning the DB
+migration or the C4 tool NEVER replaces an existing uid (the `events.uuid`
+backfill idiom from B4). The manifest carries an echo so a
 bundle is self-describing for the agent and adapters. On mismatch the DB
 wins, the reader reports `identity-mismatch`, and attempt writes are refused
 until the mismatch is resolved explicitly (re-keying is a migration-tool
@@ -150,6 +160,16 @@ fields. Readers do not necessarily reject on violation — reader recovery is
 defined per finding in §9.2 (e.g. a bad `entry` degrades with a fallback
 rather than rejecting).
 
+Type mismatches: a field whose JSON type contradicts this section is
+treated as ABSENT (then the field's absent-rule applies) with an
+`invalid-value` finding — e.g. a non-list `pages` is absent pages
+(`no-pages`, rejected), a non-object `runtime` falls to `legacy-display`, a
+non-string `entry` falls back (`invalid-entry`). A non-object item inside
+`pages[]`/`questions[]`/`blocks[]` is dropped (`invalid-value`, degraded);
+`runtime.profile` missing or non-string is handled as `unknown-profile`. A
+malformed `updated_by_agent_at` is treated as absent (`invalid-value`,
+info).
+
 ### 4.1 Path grammar
 
 Applies to `entry`, `pages[].path`, `blocks[].file`, `artifact_roots[]`:
@@ -176,7 +196,12 @@ convention, not a schema rule.
 - `title`: optional display label ≤ 240 (tabs/adapters; not identity).
 
 `pages[]` lists **every** page, entry included, in reading order. Reading
-order is the list order — there is no separate ordering field.
+order is the list order — there is no separate ordering field. For v2
+bundles the app's page-selection writes (`mark_opened`, `set_current_entry`)
+accept only declared `pages[].path`; v1's tolerance of selecting undeclared
+pages (and injecting them into the displayed list) does not carry into v2 —
+a stored selection absent from `pages[]` falls back to `entry` with an
+`invalid-entry` finding.
 
 ### 4.3 `questions[]`
 
@@ -311,6 +336,23 @@ today's v1 `_default_manifest`): `schema_version` 2, the DB-minted
   hash differs at record time, the attempt is still recorded, flagged
   `stale: true` — learning data is never dropped for being late.
 
+### 6.4 Attempt validity across lifecycle changes
+
+Validity is always checked against the **record-time** manifest; load-time
+identity travels in the submission only for staleness comparison. The line
+between the two rules — "reject undeclared questions" (§4.3) and "never
+drop late data" (§6.3) — is identity vs revision: a question that still
+EXISTS is recorded however stale; identity that no longer exists is
+rejected with a distinct response.
+
+| state at record time | result |
+|---|---|
+| question declared; binding and page bytes unchanged | recorded, `stale: false` |
+| question declared; page bytes differ (edit or rename) | recorded, `stale: true` |
+| question declared but now bound to a different page than submitted | recorded under the manifest's **current** binding, `stale: true` |
+| question not declared (removed, retired, or meaning-changed → new id) | rejected — distinct unknown-question response (D4), nothing written |
+| page file missing or unreadable at record time | recorded, `stale: true` (current revision unknowable — conservative flag) |
+
 ## 7. Artifact roots and deterministic discovery
 
 `artifact_roots` (default `["attempts"]`) bounds where learner-authored work
@@ -335,8 +377,16 @@ Deterministic adapter enumeration (no HTML parsing, no Atlas access):
 3. `path`/`step`/`concepts` passed through verbatim as opaque values;
 4. attempts from `attempts.jsonl` if present (per §6.2 tolerance);
 5. learner files: walk each artifact root lexicographically, depth ≤ 4,
-   at most 512 entries per root, regular files only, symlinks skipped with a
-   finding; files > 2 MiB are listed but not read.
+   at most 512 entries per root, regular files only, symlinks skipped
+   (`symlinked-path` finding); files > 2 MiB are listed but not read.
+
+The enumeration bounds ARE the discovery contract: files beyond them may
+exist on disk but are not promised to adapters — the #35 agent contract
+tells the agent and learner to keep discoverable work within them. And v2
+deliberately does not type non-block artifacts (code vs notes vs data): the
+contract gives location and bounds, block descriptors are the only typed
+artifacts, and any richer classification is the consumer's concern (an
+additive v2 field later if ever needed).
 
 ## 8. Ledger event echo policy
 
@@ -403,7 +453,8 @@ outcome). This is why one fixture can require several codes at once.
 | `overlapping-roots`  | degraded  | §7; the nested root is dropped |
 | `invalid-ref`        | degraded  | malformed `path`/`concepts` entry, or orphan/non-integer/out-of-range `step`; the ref/step is dropped |
 | `identity-mismatch`  | degraded  | manifest `lesson_uid` ≠ DB `uid`; render as `legacy-display`, refuse attempt writes |
-| `invalid-value`      | info      | an optional display/value field (`pages[].title`, `label`, `kind`, `language`) violates its grammar or limit; the field is dropped, the item stays |
+| `symlinked-path`     | degraded  | §2; a referenced path resolves through a symlink — treated as a missing file; the bundle dir itself being a symlink rejects the bundle |
+| `invalid-value`      | info*     | an optional display/value field (`pages[].title`, `label`, `kind`, `language`, `updated_by_agent_at`) violates its grammar or limit — the field is dropped, the item stays; *a §4 type mismatch on a field or list item degrades instead (the field is treated as absent / the item dropped) |
 | `missing-attempts-root` | info   | §7; `attempts` injected into the read model |
 | `stale-metadata`     | info      | `slug`/`title`/`source_url` copy differs from DB or violates its own grammar/limit; DB wins |
 | `duplicate-concept`  | info      | §4.5; deduped |
@@ -414,18 +465,36 @@ visible reject instead of silently rendering an empty default (#39's
 "silent projection" complaint). A *missing* manifest keeps today's behavior
 (a fresh default is created — creation, not repair).
 
-v1 reads otherwise keep today's tolerant normalization: invalid `entry`
-falls back to `index.html`, invalid/duplicate `related[]` items are dropped,
-`related` deduplicates against `entry`. C3 readers SHOULD emit the matching
-findings (`invalid-entry`, `invalid-path`, `duplicate-path`) for v1 instead
-of dropping silently; behavior (what renders) is unchanged.
+The v1 read model is normative and equals today's `_normalise_manifest`
+exactly — C3's dual-reader and C4's migration input are THIS, not the raw
+strings and not v2 grammar applied retroactively:
+
+- `entry` and each `related[]` item may be a string or an object whose
+  `path` member is a string (the object form is unwrapped);
+- each candidate is cleaned per `_clean_bundle_ref`: backslash, control
+  characters, absolute paths, and `..` are rejected; `PurePosixPath`
+  normalization collapses `./` prefixes, doubled slashes, and trailing
+  slashes; `entry` must additionally end `.html`;
+- an absent/non-string/invalid `entry` falls back to `index.html`; invalid
+  `related[]` items are dropped; `related` is deduplicated in first-seen
+  order and excludes the entry;
+- unknown fields are ignored (and survive on disk — v1 files are never
+  rewritten).
+
+C3 readers SHOULD emit the matching findings (`invalid-entry`,
+`invalid-path`, `duplicate-path`) for v1 instead of dropping silently;
+behavior (what renders) is unchanged.
 
 ### 9.3 Unknown fields
 
 Unknown fields — top-level or nested — are ignored by readers and preserved
-byte-faithfully by every writer (agent, app, migration tool). Additive
-evolution inside v2 means new OPTIONAL fields; any change to the meaning of
-an existing field requires v3.
+**semantically** by every writer (agent, app, migration tool): structurally
+identical values, original relative key order. Canonical output normalizes
+representation (whitespace, string escapes, number spelling), so literal
+byte preservation of a non-canonical input is not promised — parsing and
+re-dumping cannot provide it. Additive evolution inside v2 means new
+OPTIONAL fields; any change to the meaning of an existing field requires
+v3.
 
 Canonical serialization, exactly: Python's
 `json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"`, UTF-8 — the
@@ -439,26 +508,41 @@ items: `id`, `path`, `title`; `questions[]` items: `id`, `page`, `kind`,
 relative order. Absent optional fields are omitted, not written as `null`
 (`source_url: null` is accepted on read as absent, v1 heritage).
 
-Round-tripping a valid manifest through the canonical writer MUST be
-byte-identical (unknown fields, page order, and key order all preserved) —
-C4's hash-based post-verification depends on it. The fixture manifests are
-stored in canonical form, and C3's verify round-trips each accepted fixture
-and asserts byte-identity so the definition can't drift.
+Round-tripping a manifest **already in canonical form** through the
+canonical writer MUST be byte-identical (unknown fields, page order, and
+key order all preserved) — C4's hash-based post-verification depends on it,
+and every C4/C3-written manifest is canonical by construction. A valid but
+non-canonical input round-trips semantically; its first canonical rewrite
+normalizes representation. The fixture manifests are stored in canonical
+form, and C3's verify round-trips each accepted fixture and asserts
+byte-identity so the definition can't drift.
 
 ## 10. v1 → v2 migration mapping (consumed by C4)
+
+The migration input is the **normalized v1 read model** of §9.2 (what
+`_normalise_manifest` yields), never the raw strings.
 
 | v2 field | source |
 |----------|--------|
 | `schema_version` | `2` |
 | `lesson_uid` | SQLite `lessons.uid` (minted/backfilled in C3; the tool never mints) |
-| `slug`, `title`, `source_url` | copied from v1 (they already mirror the DB) |
-| `entry` | v1 `entry`, verbatim after v1 validation |
-| `pages` | `[entry, *related]`, order preserved; ids minted deterministically: `"pg_" + sha256(lesson_uid + "\n" + path)` first 16 hex — reproducible across dry-run/run/re-verification; NOT re-derived on later renames (§3.1) |
+| `slug`, `title`, `source_url` | copied from v1 (they already mirror the DB); a `null` `source_url` is omitted |
+| `entry` | the normalized v1 `entry` |
+| `pages` | `[entry, *related]` from the normalized read model, order preserved; additionally, a valid DB `current_entry` absent from that list is inserted at the head (today's display-injection position), `entry` unchanged; ids minted deterministically: `"pg_" + sha256(lesson_uid + "\n" + path)` first 16 hex — reproducible across dry-run/run/re-verification; NOT re-derived on later renames (§3.1) |
 | `questions`, `blocks`, `path`, `step`, `concepts` | absent (the agent adds them later per #35) |
 | `runtime` | `{"profile": "legacy-display"}` |
 | `artifact_roots` | `["attempts"]` |
-| `updated_by_agent_at` | preserved |
-| unknown v1 fields | preserved verbatim |
+| `updated_by_agent_at` | preserved; `null` is omitted (today's `_default_manifest` writes `null`); a malformed non-null value is preserved verbatim and the v2 reader treats it as absent (`invalid-value`) |
+| unknown v1 fields | preserved (semantically, §9.3) |
+
+Stop-before-write conditions — the tool fails visibly and leaves the
+manifest untouched (consistent with C4's stop-on-unsafe posture):
+
+- a normalized v1 page path still violates the v2 grammar or a §4 limit
+  (e.g. over-long path, too many pages);
+- an unknown v1 key collides with a v2-owned key (`lesson_uid`, `pages`,
+  `questions`, `blocks`, `path`, `step`, `concepts`, `runtime`,
+  `artifact_roots`) — there is no lossless place for both.
 
 Invariants: HTML page bytes untouched; the DB `current_entry` selection
 untouched; idempotent (a v2 input is a no-op); dry-run, atomic replacement,
@@ -489,12 +573,21 @@ tool tests.
 | `v2-unreadable.json.broken` | `rejected`: `manifest-unreadable` (`.broken` keeps it out of `*.json` globs) |
 | `v99-unsupported-version.json` | `rejected`: `unsupported-version` |
 
+Runner-dependent expectations are executable only against a registry:
+`cases.json` carries a fixture-only `runner_registry` context
+(`python-script-v1` known, `quantum-teleport-v9` unknown) that C3 tests
+MUST install regardless of what the real F3 registry contains. The
+migration case likewise carries its DB context (`lesson_uid`,
+`db_current_entry`) machine-readably.
+
 The projection record example lives inline in §6.2 (a committed
 `attempts.jsonl` would trip the repo-wide `*.jsonl` hygiene denial — the
-real file is runtime data and never enters Git). Codes with no fixture need
-runtime context and are synthesized in C3 tests instead:
+real file is runtime data and never enters Git). Codes and behaviors with
+no fixture need runtime context and are synthesized in C3/C4 tests instead:
 `manifest-too-large` (an oversized file), `identity-mismatch` and
-`stale-metadata` (require a DB row to disagree with).
+`stale-metadata` (require a DB row to disagree with), `symlinked-path`
+(needs a filesystem), migration rerun/idempotency, rename/edit id
+stability, and current-entry head-insertion (§10).
 
 ## 12. Write authority
 

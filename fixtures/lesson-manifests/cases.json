@@ -1,8 +1,11 @@
 {
-  "_note": "Vera Example demo data. Expectations for the sibling fixtures; consumed by verify.py reader tests (C3) and migration tool tests (C4). Outcomes and finding codes are defined in docs/learn-bundle-spec.md §9.2. 'findings' lists codes that MUST appear; additional findings MAY appear (e.g. informational duplicate-concept). All *.json manifests are stored in the canonical serialization (spec §9.3); v2-unreadable.json.broken is deliberately not JSON.",
+  "_note": "Vera Example demo data. Expectations for the sibling fixtures; consumed by verify.py reader tests (C3) and migration tool tests (C4). Outcomes and finding codes are defined in docs/learn-bundle-spec.md §9.2. 'findings' lists codes that MUST appear; additional findings MAY appear (e.g. informational duplicate-concept). All *.json manifests are stored in the canonical serialization (spec §9.3); v2-unreadable.json.broken is deliberately not JSON. Tests MUST install the fixture-only runner_registry below regardless of the real F3 registry contents.",
+  "context": {
+    "runner_registry": {"known": ["python-script-v1"], "unknown": ["quantum-teleport-v9"]}
+  },
   "cases": [
     {"file": "v1-valid.json", "read_as": 1, "expect": "ok", "findings": []},
-    {"file": "v1-migrated.json", "read_as": 2, "expect": "ok", "findings": [], "migrated_from": "v1-valid.json"},
+    {"file": "v1-migrated.json", "read_as": 2, "expect": "ok", "findings": [], "migrated_from": "v1-valid.json", "context": {"lesson_uid": "1b7e9c9e-4a5d-4f5e-9c6f-2a8b7d3e1f04", "db_current_entry": "index.html"}},
     {"file": "v2-valid.json", "read_as": 2, "expect": "ok", "findings": []},
     {"file": "v2-unknown-fields.json", "read_as": 2, "expect": "ok", "findings": [], "preserves_unknown_fields": true},
     {"file": "v2-invalid-paths.json", "read_as": 2, "expect": "degraded", "findings": ["invalid-entry", "invalid-path", "outside-root"]},
