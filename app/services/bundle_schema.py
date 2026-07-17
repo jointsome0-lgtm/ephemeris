@@ -656,23 +656,24 @@ def _read_blocks(
         if not (bid_ok and file_ok):
             continue
         page = item.get("page")
+        page_ok = True
         if not isinstance(page, str):
             read.add("type-mismatch", f"block {bid} page is not a string")
-            continue
-        if page not in page_ids:
+            page_ok = False
+        elif page not in page_ids:
             read.add("dangling-ref", f"block {bid} references page {page!r}")
-            continue
+            page_ok = False
         kind = item.get("kind")
         kind_ok = isinstance(kind, str) and kind == "editor"  # v2 defines only editor (§4.4)
         if not kind_ok:
             read.add("unknown-kind", f"block {bid} kind {kind!r}")
-        # file-vs-roots containment is checked independently of kind (§9.2
-        # aggregation): a block dropped for its kind still reports its
-        # outside-root file, so the agent repairs both fields in one pass.
+        # page, kind, and file-vs-roots containment are independent checks
+        # (§9.2 aggregation): every violation of the block's declaration is
+        # recorded before the drop, so the agent repairs it in one pass.
         in_root = _under_root(file, read.artifact_roots)
         if not in_root:
             read.add("outside-root", f"block {bid} file {file!r} is outside every artifact root")
-        if not (kind_ok and in_root):
+        if not (page_ok and kind_ok and in_root):
             continue
         language = item.get("language")
         if language is not None and not (isinstance(language, str) and LANGUAGE_RE.match(language)):

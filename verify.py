@@ -562,8 +562,9 @@ with TestClient(app) as c:
           _dup_masked.outcome == "rejected"
           and {"duplicate-id", "invalid-path"} <= _dup_masked.codes())
 
-    # file-vs-roots containment is a raw-declaration fact too: a block dropped
-    # for its unknown kind still reports its outside-root file (PR-48 round 15)
+    # block page/kind/root checks are independent (§9.2 aggregation): every
+    # violation of the declaration is recorded before the block is dropped
+    # (PR-48 rounds 15+18)
     _blk_masked = bschema.read_manifest_text(json.dumps({
         "schema_version": 2,
         "lesson_uid": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
@@ -571,13 +572,13 @@ with TestClient(app) as c:
         "pages": [{"id": "pg_blkmask01", "path": "index.html"}],
         "blocks": [{
             "id": "blk_blkmask01",
-            "page": "pg_blkmask01",
+            "page": "pg_ghostpage1",
             "kind": "mystery",
             "file": "scratch/work.py",
         }],
     }))
-    check("unknown-kind block still reports its outside-root file",
-          {"unknown-kind", "outside-root"} <= _blk_masked.codes())
+    check("dropped block reports dangling page, unknown kind, and outside-root together",
+          {"dangling-ref", "unknown-kind", "outside-root"} <= _blk_masked.codes())
 
     # §4.1: a path the request-cleaning layer would strip (edge whitespace)
     # is invalid, not repaired — the reader and the disk resolver would
