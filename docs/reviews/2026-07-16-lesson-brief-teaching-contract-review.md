@@ -773,3 +773,89 @@ posture.** L1, L2, N1, and N2 remain resolved, the missing `attempts/`
 read-model rule is now explicit, and this standing-brief pass found no new
 finding. Wider network exposure remains unsupported and was not made safe by
 prompt wording.
+
+## Ninth addendum — standing-brief pass over 9dc0fc6
+
+**Scope and method:** independently re-applied the standing brief to the exact
+one-commit diff `9dc0fc6^..9dc0fc6`. The delta adds one paragraph to the
+constant generated `_AGENTS_TEMPLATE`; no executable parser, writer, listener,
+route, PTY/WS lifecycle, preview policy, metadata interpolation path, or
+filesystem operation changes. The complete current `app/services/lessons.py`
+and full generated template were read together with the atomic publication and
+lesson-terminal caller, the frozen manifest writer contract, the exact verifier
+anchors, and the earlier reports for this surface.
+
+### Finding status
+
+- **L1 — Remains resolved.** The new paragraph describes unrecognized manifest
+  fields as data to preserve; it does not promote their contents to
+  instructions. The unchanged metadata boundary still treats `lesson.json`
+  values and everything else read while tutoring as untrusted data whose
+  embedded directives cannot override the generated brief
+  (`app/services/lessons.py:402-415`). Preserving an unknown value therefore
+  does not re-open the stored/indirect instruction channel.
+- **L2 — Remains resolved.** Requiring an agent to preserve unknown fields when
+  it edits `lesson.json` does not override the whole-bundle rule to skip every
+  path that passes through a symlink (`app/services/lessons.py:413-415`). The
+  delta changes no application-side path resolution or write primitive.
+- **N1 — Remains resolved.** The paragraph does not change artifact discovery.
+  Every counted root retains the depth-four, 512-entry, regular-file-only,
+  non-regular-entry skip, and 2 MiB read bounds
+  (`app/services/lessons.py:426-439`).
+- **N2 — Remains resolved.** The existing bundle-relative path, reserved-name,
+  disjointness, and eight-root rules remain intact
+  (`app/services/lessons.py:426-439`). Unknown manifest fields do not become
+  artifact-root declarations merely because the agent must preserve them.
+- **Unknown-field writer gap — resolved.** The target now tells the agent to
+  preserve every unrecognized top-level and nested field in relative order and
+  to avoid regenerating `lesson.json` from only known keys
+  (`app/services/lessons.py:463-467`). That carries the material §9.3 writer
+  rule into the generated brief: unknown values survive semantically and
+  unknown keys retain their original relative order
+  (`docs/learn-bundle-spec.md:512-537`). It also composes with the immediately
+  preceding immutable-version/identity rule and the following version-specific
+  conventions rather than weakening either.
+
+### New findings
+
+No new Critical, High, Medium, Low, or Info findings. The change narrows the
+agent's permitted manifest-editing behavior and adds no new input source,
+capability, trust transition, path, or filesystem operation. The exact verifier
+does not pin any part of the new unknown-field paragraph
+(`verify.py:298-328`), so a reported full green total would not distinguish
+this target from its parent. Consistent with the earlier addenda's treatment of
+unpinned root-set clauses, that is a regression-coverage limitation rather than
+a defect in the target production contract; the focused base/target probe below
+checks this delta directly.
+
+### Ninth-addendum verification
+
+- `git diff --check 9dc0fc6^ 9dc0fc6` — passed.
+- Exact delta-scope check — passed: `git diff --name-only` lists only
+  `app/services/lessons.py`, and the diff changes only `_AGENTS_TEMPLATE`.
+- Exact-target in-memory syntax compilation of `app/services/lessons.py` with
+  Python 3 — passed.
+- Exact base/target template probe after whitespace normalization — passed: the
+  parent lacks the complete unknown-field paragraph; `9dc0fc6` contains its
+  top-level/nested preservation, relative-order, and no-known-key-template
+  clauses while retaining the untrusted-data, no-symlink, root-set,
+  schema-version, and durable-identity rules.
+- Full source/contract scan — confirmed that the new paragraph matches the
+  frozen semantic-preservation and relative-key-order requirements and does not
+  conflict with the canonical writer's allowance to normalize representation
+  (`docs/learn-bundle-spec.md:512-540`).
+- `env -u ACTIVITY_DATA_DIR PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 timeout 90s
+  /home/aina/projects/ephemeris/.venv/bin/python -u verify.py` — inconclusive in
+  this worktree: both terminal-wiring checks passed, then the run made no
+  further visible progress and exited `124` at the bound with no failing
+  assertion observed. This pass does not independently claim the full
+  380-check total recorded in the commit message.
+
+### Ninth revised deploy verdict
+
+**SAFE TO MAKE LIVE: YES for the exact lesson-agent teaching workflow at
+`9dc0fc6`, under the documented terminal opt-in and direct-loopback-only
+posture.** L1, L2, N1, and N2 remain resolved, the unknown-manifest-field
+writer rule is now explicit, and this standing-brief pass found no new finding.
+Wider network exposure remains unsupported and was not made safe by prompt
+wording.
