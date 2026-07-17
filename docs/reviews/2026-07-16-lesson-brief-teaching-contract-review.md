@@ -686,3 +686,90 @@ read model. verify 380 passed, 0 failed on `38dd11b`.
 The closing deploy verdict is unchanged and extends to this head: safe for the
 documented terminal opt-in, direct-loopback-only posture; wider exposure
 remains unsupported.
+
+## Eighth addendum — standing-brief pass over 38dd11b
+
+**Scope and method:** independently re-applied the standing brief to the exact
+one-commit diff `38dd11b^..38dd11b`, then read the complete current
+`app/services/lessons.py`, the full generated `_AGENTS_TEMPLATE`, its atomic
+publication and lesson-terminal caller, the frozen artifact-root/read-model
+contract, the exact verifier anchors, and the earlier reports for this surface.
+The current `app/services/lessons.py` and `verify.py` blobs are byte-identical to
+their versions at `38dd11b`; the only later commit is review/queue
+documentation. No listener, route, PTY/WS lifecycle, filesystem operation,
+preview policy, metadata interpolation path, or executable artifact reader
+changes in the reviewed delta.
+
+### Finding status
+
+- **L1 — Remains resolved.** The new mandatory read covers the fixed
+  `attempts/` root when a v2 manifest's declared list omits it, but the learner's
+  content remains data, never instructions (`app/services/lessons.py:364-371`),
+  and the general boundary still classifies attempt records and learner files
+  as untrusted data whose embedded directives cannot override the generated
+  brief (`app/services/lessons.py:402-412`). The delta therefore does not
+  re-open the stored/indirect instruction channel.
+- **L2 — Remains resolved.** `attempts/` is a fixed in-bundle root rather than a
+  manifest-selected outside path, and the unchanged whole-bundle rule still
+  rejects any path that passes through a symlink
+  (`app/services/lessons.py:413-415`). The per-root discovery sentence also
+  continues to skip symlinks and other named non-regular entries
+  (`app/services/lessons.py:430-439`).
+- **N1 — Remains resolved.** Unconditionally including `attempts/` does not
+  weaken the depth-four, 512-entry, regular-file-only, non-regular-entry skip,
+  or 2 MiB read bounds that apply to every artifact root
+  (`app/services/lessons.py:430-439`).
+- **N2 — Remains resolved.** The delta distinguishes the injected fixed
+  `attempts/` root from additional manifest-declared roots. Those declarations
+  still count only after the existing in-bundle path, reserved-name,
+  disjointness, and list-limit rules are applied
+  (`app/services/lessons.py:426-439`). Stating that `attempts/` remains in the
+  read model when omitted matches the frozen contract exactly
+  (`docs/learn-bundle-spec.md:370-385`) and does not grant a manifest a new path
+  or escape primitive.
+
+### New findings
+
+No new Critical, High, Medium, Low, or Info findings. The change closes the
+declared-list-or-default ambiguity without weakening the previously reviewed
+instruction/data, filesystem, publication, terminal opt-in, or Host/Origin
+boundaries. The exact verifier still does not pin either new attempts-injection
+phrase (`verify.py:310-320`), so its reported 380-check result would not by
+itself distinguish this target from its parent. Consistent with the earlier
+addenda's treatment of unpinned root-set clauses, that is a regression-coverage
+limitation rather than a defect in the target production contract; the focused
+base/target probe below checks this delta directly.
+
+### Eighth-addendum verification
+
+- `git diff --check 38dd11b^ 38dd11b` — passed.
+- Exact runtime-blob comparison — passed: both
+  `38dd11b:app/services/lessons.py` and `38dd11b:verify.py` have the same object
+  ids as their current-HEAD counterparts.
+- Exact-target in-memory syntax compilation of `app/services/lessons.py` with
+  Python 3.10 — passed.
+- Exact base/target template probe — passed: the parent lacks both explicit
+  attempts-injection clauses; `38dd11b` contains them in the learner pre-read
+  and bundle-layout sections while retaining the untrusted-data, no-symlink,
+  root-validity, disjointness, list-limit, depth, entry-count, regular-file, and
+  size clauses.
+- Full source/contract scan — confirmed that the added fixed root matches the
+  frozen default/injection semantics, including the informational
+  `missing-attempts-root` read-model repair
+  (`docs/learn-bundle-spec.md:370-400`,
+  `docs/learn-bundle-spec.md:457-483`).
+- `env -u ACTIVITY_DATA_DIR PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 timeout 90s
+  /home/aina/projects/ephemeris/.venv/bin/python -u verify.py` — inconclusive in
+  this worktree: both terminal-wiring checks passed, then the run made no
+  further visible progress and exited `124` at the bound with no failing
+  assertion observed. This pass does not independently claim the full 380-check
+  total recorded by the converging session.
+
+### Eighth revised deploy verdict
+
+**SAFE TO MAKE LIVE: YES for the exact lesson-agent teaching workflow at
+`38dd11b`, under the documented terminal opt-in and direct-loopback-only
+posture.** L1, L2, N1, and N2 remain resolved, the missing `attempts/`
+read-model rule is now explicit, and this standing-brief pass found no new
+finding. Wider network exposure remains unsupported and was not made safe by
+prompt wording.

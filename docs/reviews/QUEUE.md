@@ -41,8 +41,10 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `2026-07-16-lesson-brief-teaching-contract-review.md` (one Medium, one
   Low — both fixed in eeb71f1) + seven addenda, one per fix commit: L1/L2,
   N1 (bounds wording), N2 (root grammar/containment) all resolved; the
-  closing addendum's verdict at 89adcbc plus the seventh addendum on
-  38dd11b clear this entry under the loopback-only posture; the entry
+  closing addendum's verdict at 89adcbc, the seventh (convergence) addendum
+  on 38dd11b, and the eighth addendum — a standing-brief pass over the
+  38dd11b delta (no new findings, verdict unchanged) — clear this entry
+  under the loopback-only posture; the entry
   stays current with the branch: any further commit touching the brief is
   appended here before any restart
 
