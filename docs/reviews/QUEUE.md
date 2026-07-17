@@ -45,8 +45,10 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   on 38dd11b, and the eighth addendum — a standing-brief pass over the
   38dd11b delta (no new findings, verdict unchanged) — clear this entry
   under the loopback-only posture; the entry
-  stays current with the branch: any further commit touching the brief is
-  appended here before any restart
+  stays current with the branch: any further commit touching the brief —
+  and the merge commit itself once the PR lands (this repository merges
+  via merge commits, so the landed tree is the reviewed branch head's
+  tree) — is appended here before any restart
 
 - [x] 2026-07-16 — 61b6d65, 5d7c226, ad11d31 — `app/terminal.py`,
   `app/services/lessons.py`, `app/main.py`, `app/templates/learn.html`,
