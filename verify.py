@@ -579,6 +579,23 @@ with TestClient(app) as c:
     check("unknown-kind block still reports its outside-root file",
           {"unknown-kind", "outside-root"} <= _blk_masked.codes())
 
+    # §4.1: a path the request-cleaning layer would strip (edge whitespace)
+    # is invalid, not repaired — the reader and the disk resolver would
+    # otherwise disagree about which file the page names (PR-48 round 17)
+    _sp_read = bschema.read_manifest_text(json.dumps({
+        "schema_version": 2,
+        "lesson_uid": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
+        "entry": "index.html",
+        "pages": [
+            {"id": "pg_spacepad01", "path": "index.html"},
+            {"id": "pg_spacepad02", "path": " spaced.html"},
+        ],
+    }))
+    check("v2 page path with edge whitespace is invalid-path, not repaired",
+          _sp_read.outcome == "degraded"
+          and "invalid-path" in _sp_read.codes()
+          and " spaced.html" not in _sp_read.page_paths())
+
     # lesson identity (§3): minted once at creation, echoed in manifest + event
     _uid_conn = get_conn()
     try:

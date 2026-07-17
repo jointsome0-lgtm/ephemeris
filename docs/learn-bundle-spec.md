@@ -185,6 +185,10 @@ Applies to `entry`, `pages[].path`, `blocks[].file`, `artifact_roots[]`:
 - no backslash, no control characters (U+0000–U+001F, U+007F);
 - not absolute, no `.` or `..` segments, no empty segments (`//`), no
   trailing slash;
+- equal to its own whitespace-stripped form: leading or trailing whitespace
+  (anything `str.strip()` removes) is invalid, not repaired — the app's
+  request-cleaning layer strips it, so such a path could never be resolved
+  or served verbatim (C3 review addition);
 - must not be, or be nested under, a reserved name (§2) — "nested under" is
   segment-wise (`attempts.jsonl/x` is nested, `attempts.jsonl-notes` is
   not);

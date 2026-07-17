@@ -194,6 +194,11 @@ def valid_v2_path(value: object, *, html: bool = False) -> bool:
         return False
     if "\\" in value or _has_control_chars(value):
         return False
+    if value != value.strip():
+        # §4.1: the app's request-cleaning layer strips edge whitespace, so
+        # such a path could never be resolved or served verbatim — invalid,
+        # not repaired (C3 round 17).
+        return False
     if value.startswith("/"):
         return False
     segments = value.split("/")
