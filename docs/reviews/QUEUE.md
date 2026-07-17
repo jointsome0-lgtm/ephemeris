@@ -22,7 +22,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 ## Done
 
 - [x] 2026-07-16 — 5ae5017, eeb71f1, ecee1f2, ff9a3f0, 4b04757, ba2bc3c,
-  2851f69, 89adcbc, 38dd11b, 9dc0fc6 — `app/services/lessons.py`, `verify.py` —
+  2851f69, 89adcbc, 38dd11b, 9dc0fc6, e7a2068, 250cd66 —
+  `app/services/lessons.py`, `docs/learn-bundle-spec.md`, `verify.py` —
   issue #35 stage 1: the generated lesson `AGENTS.md` brief (constant
   `_AGENTS_TEMPLATE`, regenerated on every lesson-terminal open) rewritten
   from bundle-layout mechanics into a teaching contract: tutor mission,
@@ -45,8 +46,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   on 38dd11b, and the eighth addendum — a standing-brief pass over the
   38dd11b delta (no new findings, verdict unchanged) — and the ninth
   addendum, the same standing-brief pass over 9dc0fc6 (unknown-field
-  preservation bullet; no new findings) — clear this entry under the
-  loopback-only posture; the entry
+  preservation bullet; no new findings) — and the tenth addendum over
+  e7a2068 (full §4.1/§7 root grammar in the brief; one Low: two cited
+  rules were C3 spec amendments not yet on this branch — resolved by
+  250cd66 mirroring them verbatim, resolution verified with a superseding
+  YES verdict) — clear this entry under the loopback-only posture; the entry
   stays current with the branch: any further commit touching the brief —
   and the merge commit itself once the PR lands (this repository merges
   via merge commits, so the landed tree is the reviewed branch head's

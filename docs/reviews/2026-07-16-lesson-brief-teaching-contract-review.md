@@ -859,3 +859,138 @@ posture.** L1, L2, N1, and N2 remain resolved, the unknown-manifest-field
 writer rule is now explicit, and this standing-brief pass found no new finding.
 Wider network exposure remains unsupported and was not made safe by prompt
 wording.
+
+## Tenth addendum — standing-brief pass over e7a2068
+
+**Scope and method:** independently re-applied the standing brief to the exact
+one-commit diff `e7a2068^..e7a2068`. The delta changes only the artifact-root
+validity paragraph in the constant generated `_AGENTS_TEMPLATE`; no executable
+parser, writer, listener, route, PTY/WS lifecycle, preview policy, metadata
+interpolation path, or filesystem operation changes. The complete current
+template was read together with its atomic publication and fail-closed
+lesson-terminal caller, the frozen §4.1 path grammar and §7 artifact-root
+contract, the exact verifier anchors, and the earlier reports for this surface.
+
+### Finding status
+
+- **L1 — Remains resolved.** The expanded validity paragraph introduces no new
+  content source or instruction authority. Learner answers, source material,
+  lesson pages, assets, attempt records, and learner files remain untrusted data
+  whose embedded directives cannot override the generated brief
+  (`app/services/lessons.py:364-371`,
+  `app/services/lessons.py:402-415`).
+- **L2 — Remains resolved.** The delta changes only which manifest strings the
+  tutor counts as roots. The whole-bundle rule still skips every path that
+  passes through a symlink, and the discovery rule still limits reads to regular
+  files while explicitly skipping symlinks and other named non-regular entries
+  (`app/services/lessons.py:413-415`,
+  `app/services/lessons.py:438-442`).
+- **N1 — Remains resolved.** Every root the brief counts retains the depth-four,
+  512-entry, regular-file-only, non-regular-entry skip, and 2 MiB read bounds
+  (`app/services/lessons.py:438-442`). The delta does not broaden those per-root
+  limits.
+- **N2 — Remains resolved.** The target now carries the previously omitted
+  1–200-character, backslash, control-character, empty-segment, trailing-slash,
+  and nested-reserved-name rules while retaining bundle-relative containment,
+  dot-segment rejection, disjointness, and the eight-root limit
+  (`app/services/lessons.py:430-442`). Malformed roots therefore do not regain
+  the outside-bundle or unbounded-enumeration behavior covered by N2.
+- **Unknown-field writer gap — Remains resolved.** The delta does not touch the
+  instruction to preserve unrecognized top-level and nested manifest fields in
+  relative order (`app/services/lessons.py:463-470`).
+
+### New findings
+
+#### N3 — The claimed full grammar rejects contract-valid artifact roots (Low, confirmed)
+
+The frozen shared grammar allows any 1–200-character bundle-relative POSIX path
+that has no backslash or control character, absolute form, dot/empty segment,
+trailing slash, or reserved-name segment
+(`docs/learn-bundle-spec.md:180-195`). Its reserved-name list is exactly
+`lesson.json`, `attempts.jsonl`, `AGENTS.md`, and `CLAUDE.md`; `assets` is a
+normal bundle directory (`docs/learn-bundle-spec.md:42-57`). Section 7 adds only
+the directory, disjoint-root, eight-item, and injected-`attempts` rules; it does
+not ban edge whitespace or `assets` roots
+(`docs/learn-bundle-spec.md:370-385`).
+
+The target nevertheless says that a root counts only if it has no leading or
+trailing whitespace and is neither equal to nor nested under `assets`
+(`app/services/lessons.py:430-437`). Both restrictions are absent from the
+frozen contract. A conforming v2 manifest may therefore declare an invented
+root such as `assets/work` (or a path with edge whitespace): app readers and
+adapters must retain and enumerate it, while a tutor following the generated
+brief must ignore it. That breaks the promised shared read model and can make
+the tutor omit learner work that deterministic consumers expose. It does not
+create an outside-bundle read or widen authority, so the impact is Low rather
+than a renewed N2 containment issue.
+
+The exact verifier still anchors only `artifact_roots`, `never absolute`, and
+the discovery-limit phrases (`verify.py:310-320`). It does not pin the newly
+added grammar list and would neither detect the two extra restrictions nor
+distinguish this target from a contract-exact version.
+
+*Fix direction:* make the generated clause reproduce the frozen §4.1 and §7
+rules exactly: do not reject edge whitespace or `assets` unless the frozen
+contract is separately changed by its owner. Add an exact regression probe for
+the complete accepted/rejected root grammar, then re-review the dedicated fix.
+
+No other new Critical, High, Medium, Low, or Info findings were found. The
+delta otherwise closes the previously documented omissions without weakening
+the instruction/data, filesystem, publication, terminal opt-in, or Host/Origin
+boundaries.
+
+### Tenth-addendum verification
+
+- `git diff --check e7a2068^ e7a2068` — passed.
+- Exact delta-scope check — passed: `git diff --name-only` lists only
+  `app/services/lessons.py`, and the diff changes only `_AGENTS_TEMPLATE`.
+- Exact-target in-memory syntax compilation of `app/services/lessons.py` with
+  Python 3 — passed.
+- Exact base/target template probe — passed: the target adds the missing
+  length, backslash, control-character, empty-segment, trailing-slash, and
+  nested-reserved-name clauses while retaining the untrusted-data, no-symlink,
+  disjoint-root, list-limit, and discovery-bound rules.
+- Focused grammar-drift probe — confirmed that the target template contains the
+  edge-whitespace and `assets` exclusions while neither exclusion appears in
+  the frozen §4.1 or §7 text.
+- `env -u ACTIVITY_DATA_DIR PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 timeout 90s
+  /home/aina/projects/ephemeris/.venv/bin/python -u verify.py` — inconclusive in
+  this worktree: both terminal-wiring checks passed, then the run made no
+  further visible progress and exited `124` at the bound with no failing
+  assertion observed. This pass does not independently claim the full
+  380-check total recorded in the commit message.
+
+### Tenth revised deploy verdict
+
+**SAFE TO MAKE LIVE: NO for the exact lesson-agent teaching workflow at
+`e7a2068`.** L1, L2, N1, N2, and the unknown-field writer gap remain resolved,
+but N3 makes the generated tutor contract disagree with the frozen shared path
+and artifact-root grammar and can hide contract-valid learner work from the
+tutor. Land and re-review a dedicated contract-exact wording fix before
+clearing this target. Wider network exposure remains unsupported and was not
+made safe by prompt wording.
+
+### Tenth addendum — resolution verification (250cd66)
+
+**N3 / Low — Resolved.** Commit `250cd66` changes only
+`docs/learn-bundle-spec.md` and mirrors the two C3 amendments from
+`fix/39-c3-bundle-schema-runtime` verbatim. Section 4.1 now makes leading or
+trailing whitespace invalid rather than repairable, matching the template's
+`no leading or trailing whitespace` rule (`docs/learn-bundle-spec.md:188-191`;
+`app/services/lessons.py:432-435`). Section 7 now excludes a root equal to or
+nested under `assets`, matching the template's corresponding artifact-root
+exclusion (`docs/learn-bundle-spec.md:379-386`;
+`app/services/lessons.py:430-437`). The examples that supported N3 are
+therefore no longer contract-valid roots, and the brief and current branch spec
+now describe the same accepted root set.
+
+**Still inconsistent:** none. A fresh comparison of the complete current
+`_AGENTS_TEMPLATE` with the current branch spec found no other contradictory
+statement.
+
+**Superseding deploy verdict — SAFE TO MAKE LIVE: YES for the exact lesson-agent
+teaching workflow at `250cd66`, under the documented terminal opt-in and
+direct-loopback-only posture.** N3 is resolved by the aligned spec text; L1,
+L2, N1, N2, and the unknown-field writer gap remain resolved, with no remaining
+template/spec inconsistency found. Wider network exposure remains unsupported
+and was not made safe by this documentation alignment.
