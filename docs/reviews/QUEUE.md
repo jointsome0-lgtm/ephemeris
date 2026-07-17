@@ -55,7 +55,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   review bot on push, head `cdeda5b` approved 2026-07-16T23:20:56Z, the
   round-13 follow-up `dd9c1c3` reviewed on push with no code finding
   against it; this entry stays current with the branch: any further C3
-  commit touching these paths is appended here before any restart)
+  commit touching these paths — and the merge commit itself once the PR
+  lands (this repository merges via merge commits, so the landed tree is
+  the reviewed branch head's tree) — is appended here before any restart)
 
 - [x] 2026-07-16 — 61b6d65, 5d7c226, ad11d31 — `app/terminal.py`,
   `app/services/lessons.py`, `app/main.py`, `app/templates/learn.html`,
