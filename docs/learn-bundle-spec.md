@@ -185,6 +185,10 @@ Applies to `entry`, `pages[].path`, `blocks[].file`, `artifact_roots[]`:
 - no backslash, no control characters (U+0000–U+001F, U+007F);
 - not absolute, no `.` or `..` segments, no empty segments (`//`), no
   trailing slash;
+- equal to its own whitespace-stripped form: leading or trailing whitespace
+  (anything `str.strip()` removes) is invalid, not repaired — the app's
+  request-cleaning layer strips it, so such a path could never be resolved
+  or served verbatim (C3 review addition);
 - must not be, or be nested under, a reserved name (§2) — "nested under" is
   segment-wise (`attempts.jsonl/x` is nested, `attempts.jsonl-notes` is
   not);
@@ -376,7 +380,10 @@ lives. Rules:
   under) a reserved name; roots MUST be disjoint — segment-wise: no root is
   a path-segment prefix of another (`attempts` vs `attempts/deep` overlap;
   `attempts` vs `attempts-extra` do not). A nested root is dropped with an
-  `overlapping-roots` finding (degraded);
+  `overlapping-roots` finding (degraded). A root also MUST NOT be, or nest
+  under, `assets` — the presentation area pages reference (§2); such a root
+  is dropped the same way (C3 review addition: otherwise the preview file
+  surface and artifact discovery would claim the same files);
 - the list MUST always include `attempts` (writers); a manifest missing it
   gets `attempts` injected into the read model with a
   `missing-attempts-root` finding (informational);
