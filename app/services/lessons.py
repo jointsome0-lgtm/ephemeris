@@ -460,6 +460,11 @@ font, image) is forbidden.
 - Check `schema_version` first and never change it — nor `lesson_uid`, the
   lesson's durable identity. Version upgrades are the app's migration
   tool's job, not yours.
+- Preserve fields you do not recognize: a manifest may carry keys this
+  brief never mentions (adapter or future app data). When you edit
+  `lesson.json`, keep every unknown field — top-level and nested — in its
+  relative order; edit the file in place, never regenerate it from a
+  template of the keys you know.
 - v1 manifest (`schema_version` 1 or missing): `entry` is the default
   page; `related[]` lists the other pages in reading order. Do not add
   v2-only fields to a v1 manifest.
