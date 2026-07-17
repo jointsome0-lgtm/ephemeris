@@ -608,3 +608,12 @@ passed, 0 failed. (Round 16 was a documentation finding: the queue entry now
 states the merge commit will be appended at landing; its cited squash
 `6493eee` was the fourth fabricated hash and was rebutted in-thread with the
 API's 422.)
+
+### Round 18 — `1484362`
+
+Completion of the round-15 aggregation: the block reader's page checks
+(`type-mismatch`/`dangling-ref`) still dropped the block before the kind and
+file-vs-roots checks ran. `1484362` validates page, kind, and root
+containment independently with one gate at the end, so every violation of a
+block's declaration is recorded before the drop; the verify probe now pins
+all three findings on one hostile block; 437 passed, 0 failed.
