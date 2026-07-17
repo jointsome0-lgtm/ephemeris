@@ -23,7 +23,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 - [x] 2026-07-17 — 5250768, 5d37a97, 1227d29, 41224b5, 53b5232, ca4a7fd,
   9c188d7, 5388efe, 6a690b2, 825bec6, 5a9fd04, 6fde64a, 4d5b20d, cdeda5b,
-  dd9c1c3, 4b88b6f —
+  dd9c1c3, 4b88b6f, 36e7142 —
   `app/services/bundle_schema.py` (new), `app/services/lessons.py`, `app/db.py`,
   `app/main.py`, `docs/learn-bundle-spec.md`, `verify.py` — issue #39 session
   C3: typed v1/v2
@@ -44,14 +44,15 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   through the overlap pass while keeping v1's full historical file surface,
   snapshot bundle outcome/findings after selection resolution, fold the
   current page's symlink degradation into the top-level `bundle_info`
-  outcome, and report a dropped block's outside-root file independently of
-  its unknown kind
+  outcome, report a dropped block's outside-root file independently of
+  its unknown kind, and reject §4.1 paths carrying edge whitespace (spec
+  amendment) so the reader and the disk resolver always name the same file
   → `2026-07-17-bundle-schema-runtime-review.md` (final addendum through
   `9c188d7`: B1–B5 and the PR-bot findings resolved; no remaining security-
   severity finding; the one Info canonical-JSON closure finding N1 fixed in
   `5388efe` per the closing note; direct-loopback deploy allowed, wider
-  deployment unsupported; resolution section covers `6a690b2..4b88b6f` —
-  PR #48 review rounds 7–15, each commit reviewed individually by the PR
+  deployment unsupported; resolution section covers `6a690b2..36e7142` —
+  PR #48 review rounds 7–17, each commit reviewed individually by the PR
   review bot on push, head `cdeda5b` approved 2026-07-16T23:20:56Z, the
   round-13 follow-up `dd9c1c3` reviewed on push with no code finding
   against it; this entry stays current with the branch: any further C3

@@ -594,3 +594,17 @@ matching verify probe; 436 passed, 0 failed. (Round 14 itself was a
 documentation-coverage finding against the queue entry, addressed in
 `50e41b0`; its cited squash commit `96e224e` exists neither locally nor on
 GitHub and was rebutted in-thread.)
+
+### Round 17 — `36e7142`
+
+A real reader/runtime divergence: `valid_v2_path()` accepted a page path
+with leading whitespace, but every disk resolve goes through
+`_clean_bundle_ref()`, which strips it — the symlink check ran against the
+verbatim path while the existence check ran against the trimmed one, and
+`/files/` could never serve the verbatim path at all. `36e7142` amends §4.1
+(a path not equal to its own whitespace-stripped form is invalid, not
+repaired) and enforces it in `valid_v2_path`, with a verify probe; 437
+passed, 0 failed. (Round 16 was a documentation finding: the queue entry now
+states the merge commit will be appended at landing; its cited squash
+`6493eee` was the fourth fabricated hash and was rebutted in-thread with the
+API's 422.)
