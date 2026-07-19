@@ -1,0 +1,12 @@
+{
+  "name": "ephemeris-frontend-toolchain",
+  "private": true,
+  "description": "Dev-only TypeScript toolchain (issue #42). Sources live in app/static/src/*.ts; `npm run build` emits committed JS next to the other static files. Nothing here is a runtime dependency of the app.",
+  "scripts": {
+    "build": "tsc -p .",
+    "watch": "tsc -p . --watch"
+  },
+  "devDependencies": {
+    "typescript": "5.8.3"
+  }
+}

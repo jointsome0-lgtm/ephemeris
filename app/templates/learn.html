@@ -127,6 +127,9 @@
         </div>
       </header>
       <div class="lesson-frame-wrap">
+        {# sandbox tokens follow the effective runtime profile (D2); the
+           `is defined` guard keeps the legacy tokens while a stale live
+           process (pre-D2 Python, working-tree templates) renders this. #}
         <iframe
           id="lesson-preview-frame"
           class="lesson-frame"
@@ -135,7 +138,7 @@
           data-src="{{ selected.file_url }}"
           data-meta-url="{{ selected.preview_meta_url }}"
           data-version="{{ selected.file.version }}"
-          sandbox="allow-scripts allow-forms allow-popups allow-downloads"></iframe>
+          sandbox="{{ selected.sandbox if selected.sandbox is defined else 'allow-scripts allow-forms allow-popups allow-downloads' }}"></iframe>
       </div>
       {% else %}
       <div class="learn-empty">
@@ -146,6 +149,9 @@
     </section>
   </div>
 </section>
+{# Learn-only preview runtime: live-reload poll + lesson bridge parent (D2).
+   ES module (tsc emit, issue #42) — module scripts are deferred. #}
+<script type="module" src="{{ static_url('learn-bridge.js') }}"></script>
 {% endblock %}
 
 {% block detail %}{% endblock %}

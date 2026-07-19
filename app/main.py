@@ -1056,6 +1056,11 @@ def get_learn(
             selected["bundle"]["stale_selection"] or selected["entry"],
             meta=True,
         )
+        # D2: the iframe sandbox attribute follows the effective profile
+        # (same owner as the header-level directive); the profile is folded
+        # into the version token, so a flip reloads the frame and the parent
+        # runtime re-applies the tokens the metadata then carries.
+        selected["sandbox"] = _preview_sandbox(selected["file"]["profile"])
         for page in selected["pages"]:
             page["href"] = _learn_url(
                 status=status,
@@ -1159,6 +1164,15 @@ _LESSON_PREVIEW_CSPS = {
     bundle_schema.PROFILE_LEGACY: _LESSON_PREVIEW_CSP_LEGACY,
     bundle_schema.PROFILE_INTERACTIVE: _LESSON_PREVIEW_CSP_INTERACTIVE,
 }
+# The iframe sandbox ATTRIBUTE mirrors the header-level `sandbox` directive
+# per profile (D2; the header alone already covers direct opens). One owner:
+# learn.html renders these tokens and the preview metadata carries them, so
+# the parent runtime re-applies the server's value on profile flips instead
+# of keeping a second copy of this policy in the client.
+_LESSON_PREVIEW_SANDBOXES = {
+    bundle_schema.PROFILE_LEGACY: "allow-scripts allow-forms allow-popups allow-downloads",
+    bundle_schema.PROFILE_INTERACTIVE: "allow-scripts",
+}
 
 
 def _preview_csp(profile: str) -> str:
@@ -1166,6 +1180,13 @@ def _preview_csp(profile: str) -> str:
     # an unregistered value ever leaks through, default to the NARROW policy —
     # never the wide legacy one.
     return _LESSON_PREVIEW_CSPS.get(profile, _LESSON_PREVIEW_CSP_INTERACTIVE)
+
+
+def _preview_sandbox(profile: str) -> str:
+    # Same fail-closed default as _preview_csp: unknown ⇒ the narrow tokens.
+    return _LESSON_PREVIEW_SANDBOXES.get(
+        profile, _LESSON_PREVIEW_SANDBOXES[bundle_schema.PROFILE_INTERACTIVE]
+    )
 
 
 def _lesson_preview_url(
@@ -1262,6 +1283,12 @@ def get_lesson_preview_meta(lesson_id: int, entry: str | None = None):
         # rendered page and whether D2 may offer the postMessage port.
         "profile": info["profile"],
         "bridge": info["bridge"],
+        # D2: the sandbox tokens the iframe must carry for this profile (the
+        # parent runtime re-applies them before reloading on a profile flip)
+        # and the per-page identity the handshake hands to the lesson —
+        # parent-derived (§6.3), None whenever this page may not get a port.
+        "sandbox": _preview_sandbox(info["profile"]),
+        "bridge_page": info["bridge_page"],
         "preview_url": _lesson_preview_url(lesson_id, info["entry"], exists=info["exists"]),
         "file_url": _lesson_preview_url(lesson_id, info["entry"]),
     })

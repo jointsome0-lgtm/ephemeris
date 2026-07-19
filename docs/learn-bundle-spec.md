@@ -308,9 +308,13 @@ D1 (landed) pins the enforcement:
 - Bridge eligibility = manifest parsed as v2 AND not rejected AND profile
   `interactive-local-v1`. Degraded v2 findings do not revoke it (identity
   stays valid; D2 gates per page); every fail-closed-to-legacy path does.
-- The preview metadata carries the effective `profile` and `bridge`; the
-  iframe `sandbox` attribute is unchanged until D2 (the header-level
-  `sandbox` directive also covers a page opened outside the iframe).
+- The preview metadata carries the effective `profile` and `bridge`; D2
+  added the matching iframe `sandbox` tokens (attribute follows the profile,
+  same owner as the CSP map; the header-level `sandbox` directive also
+  covers a page opened outside the iframe) and — for a bridge-eligible,
+  declared, readable page only — the `bridge_page` identity
+  (`lesson_uid`/`page_id`/`page_rev`, §6.3) the parent runtime hands to the
+  lesson in the [bridge handshake](lesson-bridge-abi.md).
 - An existing page's live-reload version token folds the effective profile
   in, so a manifest-only profile flip (either direction) reloads the open
   document: the metadata never advertises a policy the displayed document
@@ -697,7 +701,8 @@ silently rewrites an agent's manifest to "fix" it.
 
 ## 13. Out of scope here (owned elsewhere)
 
-- Bridge ABI: handshake, `MessageChannel`, capability negotiation — D2.
+- Bridge ABI: handshake, `MessageChannel`, capability negotiation — D2,
+  frozen in [lesson-bridge-abi.md](lesson-bridge-abi.md).
 - Attempt endpoint semantics, rate limits, responses — D4/D5.
 - Runner registry contents and sandbox profiles — F3/E1.
 - Teaching-contract wording in `_AGENTS_TEMPLATE` — #35 (C2), which cites

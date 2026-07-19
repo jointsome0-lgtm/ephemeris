@@ -957,6 +957,114 @@ with TestClient(app) as c:
           and _d1_rejp_meta["bridge"] is False
           and _d1_rejp_prev.headers.get("content-security-policy") == _CSP_LEG)
 
+    # ---- D2: bridge page identity + sandbox tokens (§6.3, ABI doc) ----
+    # The metadata is what the parent runtime (learn-bridge.ts) binds its
+    # handshake to: identity present exactly for a bridge-eligible manifest's
+    # declared, readable page; sandbox tokens mirror the profile-keyed CSP.
+    from app.main import _preview_sandbox as _sandbox_for
+    _SANDBOX_LEG = "allow-scripts allow-forms allow-popups allow-downloads"
+    # entry pinned: the earlier set_current_entry checks moved this lesson's
+    # durable selection to the stage page
+    _d2_meta = c.get(
+        f"/learn/lessons/{_v2_id}/preview-meta",
+        params={"entry": "index.html"}).json()
+    check("preview-meta carries parent-derived bridge identity for an eligible page",
+          _d2_meta["bridge"] is True
+          and _d2_meta["bridge_page"] == {
+              "lesson_uid": _v2["uid"],
+              "page_id": _v2_raw["pages"][0]["id"],
+              "page_rev": "sha256:" + hashlib.sha256(
+                  (_v2_dir / "index.html").read_bytes()).hexdigest(),
+          }
+          and _d2_meta["sandbox"] == "allow-scripts")
+    _d2_meta_p2 = c.get(
+        f"/learn/lessons/{_v2_id}/preview-meta",
+        params={"entry": "related/01-stage.html"}).json()
+    check("bridge identity is per page: second declared page gets its own id + rev",
+          _d2_meta_p2["bridge_page"]["page_id"] == _v2_raw["pages"][1]["id"]
+          and _d2_meta_p2["bridge_page"]["page_rev"] == "sha256:" + hashlib.sha256(
+              (_v2_dir / "related" / "01-stage.html").read_bytes()).hexdigest())
+    # a page edit moves the reload token AND page_rev together — the parent
+    # re-binds on the token, so the identity it arms always describes the
+    # bytes the displayed document was served from
+    _d2_orig = (_v2_dir / "index.html").read_bytes()
+    (_v2_dir / "index.html").write_bytes(b"<html>Vera Example index edited</html>")
+    _d2_meta_ed = c.get(
+        f"/learn/lessons/{_v2_id}/preview-meta",
+        params={"entry": "index.html"}).json()
+    (_v2_dir / "index.html").write_bytes(_d2_orig)  # restore
+    check("page edit moves reload token and page_rev together",
+          _d2_meta_ed["version"] != _d2_meta["version"]
+          and _d2_meta_ed["bridge_page"]["page_rev"] == "sha256:" + hashlib.sha256(
+              b"<html>Vera Example index edited</html>").hexdigest())
+    # a stale selection falls back to a DECLARED page (§4.2), so the identity
+    # in the metadata describes the fallback actually rendered, never the
+    # requested ghost
+    _d2_ghost = c.get(
+        f"/learn/lessons/{_v2_id}/preview-meta",
+        params={"entry": "related/99-ghost.html"}).json()
+    check("stale selection: identity describes the rendered fallback page",
+          _d2_ghost["bridge"] is True
+          and _d2_ghost["bridge_page"]["page_id"] == _v2_raw["pages"][0]["id"])
+    # every no-bridge path carries no identity, and the sandbox tokens follow
+    # the effective profile (legacy stays the historical token set)
+    _d2_v1_meta = c.get(f"/learn/lessons/{_v1_id}/preview-meta").json()
+    _d2_rej_meta = c.get(f"/learn/lessons/{_rej_id}/preview-meta").json()
+    check("v1 and rejected bundles: no bridge identity, legacy sandbox tokens",
+          _d2_v1_meta["bridge_page"] is None
+          and _d2_v1_meta["sandbox"] == _SANDBOX_LEG
+          and _d2_rej_meta["bridge_page"] is None
+          and _d2_rej_meta["sandbox"] == _SANDBOX_LEG)
+    check("unregistered profile selects the narrow sandbox tokens",
+          _sandbox_for("weird-unregistered") == "allow-scripts"
+          and _sandbox_for("legacy-display") == _SANDBOX_LEG
+          and _sandbox_for("interactive-local-v1") == "allow-scripts")
+    # the Learn page renders the iframe sandbox attribute from the profile
+    # and loads the Learn-only bridge runtime as a module
+    _d2_learn_int = c.get(f"/learn?lesson={_v2_id}").text
+    _d2_learn_leg = c.get(f"/learn?lesson={_v1_id}").text
+    check("learn.html: iframe sandbox attribute follows the profile",
+          'sandbox="allow-scripts"' in _d2_learn_int
+          and f'sandbox="{_SANDBOX_LEG}"' in _d2_learn_leg)
+    check("learn.html loads learn-bridge.js as a module",
+          'type="module"' in _d2_learn_int
+          and "learn-bridge.js" in _d2_learn_int)
+    # the poll moved out of app.js — one runtime owns reload AND handshake
+    _d2_appjs = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    check("app.js no longer touches the preview frame",
+          "lesson-preview-frame" not in _d2_appjs)
+    # structural anchors in the parent runtime: source-of-truth .ts and the
+    # committed tsc emit (#42) both carry the membrane's key guards
+    _d2_ts = (ROOT / "app" / "static" / "src" / "learn-bridge.ts").read_text(encoding="utf-8")
+    _d2_js = (ROOT / "app" / "static" / "learn-bridge.js").read_text(encoding="utf-8")
+    for _d2_name, _d2_text in (("learn-bridge.ts", _d2_ts), ("learn-bridge.js", _d2_js)):
+        check(f"{_d2_name}: handshake membrane anchors",
+              "GENERATED-SOURCE NOTICE" in _d2_text
+              and "ev.source !== child" in _d2_text
+              and "new MessageChannel()" in _d2_text
+              and "ABI_VERSION = 1" in _d2_text
+              and 'msg["ephemeris"] !== "lesson-bridge"' in _d2_text
+              and "capabilities: []" in _d2_text
+              and "MAX_PORT_CHARS = 64 * 1024" in _d2_text)
+    check(".gitattributes marks the emitted runtime as generated",
+          "app/static/learn-bridge.js linguist-generated=true"
+          in (ROOT / ".gitattributes").read_text(encoding="utf-8"))
+    # committed emit freshness: recompile to a scratch dir and byte-compare.
+    # Runs only where the dev toolchain is installed (node_modules is not
+    # part of a fresh checkout; the dev machine and PR review are the gate).
+    _d2_tsc = ROOT / "node_modules" / ".bin" / "tsc"
+    if _d2_tsc.exists():
+        _d2_out = Path(tempfile.mkdtemp(prefix="al-verify-tsc-"))
+        _d2_cp = subprocess.run(
+            [str(_d2_tsc), "-p", str(ROOT), "--outDir", str(_d2_out)],
+            cwd=ROOT, capture_output=True, text=True, timeout=180)
+        check("committed learn-bridge.js matches a fresh tsc emit (#42)",
+              _d2_cp.returncode == 0
+              and (_d2_out / "learn-bridge.js").read_bytes() == _d2_js.encode("utf-8"),
+              extra=_d2_cp.stdout + _d2_cp.stderr)
+    else:
+        print("[info] tsc not installed; emit-freshness check skipped (npm ci to enable)")
+
     # §2 symlink policy: a page that resolves through a symlink is missing
     _symp_conn = get_conn()
     try:
@@ -972,6 +1080,8 @@ with TestClient(app) as c:
     _symp_file = c.get(f"/learn/lessons/{_symp_id}/files/index.html")
     check("symlinked page is treated as missing (§2)",
           _symp_info["exists"] is False and _symp_file.status_code == 404)
+    check("symlinked page never carries bridge identity (D2)",
+          _symp_info["bridge_page"] is None)
     check("symlinked page degrades the reported outcome (§9.2)",
           _symp_info["outcome"] == "degraded"
           and any(f["code"] == "symlinked-path" for f in _symp_info["findings"]))
