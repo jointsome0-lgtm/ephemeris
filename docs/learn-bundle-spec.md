@@ -310,6 +310,17 @@ D1 (landed) pins the enforcement:
   `sandbox` directive also covers a page opened outside the iframe).
 - An unregistered profile value reaching the CSP chooser (unreachable via
   the readers) selects the narrow interactive policy, never the wide one.
+- Known residual: same-frame navigation (script `location` assignment, a
+  plain link, meta refresh) is not blocked — the navigated-to document is
+  outside the lesson response's CSP. No shipped mechanism closes this:
+  CSP3's `navigate-to` was removed from the spec (Sept 2022) without any
+  browser implementation, and no iframe sandbox token governs a frame
+  navigating itself. Every in-document channel (fetch/beacon/WebSocket,
+  forms, popups, downloads, remote subresources) IS closed, so the channel
+  requires a whole-document navigation the learner can see. Accepted for
+  the loopback single-user deployment; D2's parent runtime — whose bridge
+  port dies with the document — is the layer that observes a frame leaving
+  the lesson and can tear it down/reload it.
 
 New app-created bundles start as `interactive-local-v1`; migrated v1 bundles
 start as `legacy-display` and are upgraded deliberately (§10, §12).

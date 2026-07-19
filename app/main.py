@@ -1129,6 +1129,15 @@ _LESSON_PREVIEW_CSP_LEGACY = (
 # script, 'unsafe-eval'), form submission, popup, download, plugin, nested
 # frame (default-src 'none') and network call (connect-src 'none' — the D2
 # bridge is postMessage, not fetch) is refused.
+#
+# Known residual (spec §5): SAME-FRAME NAVIGATION is not blocked — a page can
+# still `location.href = remote` or follow a plain link, and the destination
+# document is outside this response's CSP. No shipped header can close that
+# channel: CSP3's `navigate-to` was removed from the spec (Sep 2022) without
+# ever shipping in a browser, and no sandbox token governs self-navigation.
+# The layer that can observe the frame leaving the lesson document is the D2
+# parent runtime (its bridge port dies with the document); until then this
+# stays an accepted, documented residual of the loopback deployment.
 _LESSON_PREVIEW_CSP_INTERACTIVE = (
     "sandbox allow-scripts; "
     "default-src 'none'; "
