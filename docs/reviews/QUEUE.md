@@ -21,7 +21,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Done
 
-- [x] 2026-07-19 — ec3c112, a7acb6c, 40a7888, 3310e2b, 41c5134, fbd315b —
+- [x] 2026-07-19 — ec3c112, a7acb6c, 40a7888, 3310e2b, 41c5134, fbd315b,
+  f487b30, 7e3ead9, c4c9b62, fe6012a —
   `scripts/migrate_bundles.py` (new), `verify.py` —
   issue #39 session C4: offline migration tool that rewrites v1 `lesson.json`
   manifests to schema v2 per spec §10 (the rewritten manifests are consumed by
@@ -35,12 +36,20 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   ledger shape validation, fsynced rollback material and directories (3310e2b);
   rollback dir + parents fsynced before the first mutation (41c5134); DB-row
   stale guard before apply, bundle-dir fsync after rollback restore (fbd315b);
-  verify 502. PR #51: bot reviewed every push, 👍 APPROVED on head fbd315b
-  2026-07-19T19:48:20Z
+  migrated manifests always carry usable slug/title, DB row fills missing
+  copies (f487b30); pre-apply guard covers the DB title, title bound on the
+  emitted length (7e3ead9); invalid source_url copy never emitted (c4c9b62);
+  pre-apply guard covers source_url too (fe6012a); verify 506. This list
+  names every code commit on the branch — later branch commits are
+  docs-only (this entry + the review report). PR #51: bot reviewed every
+  push (👍 APPROVED fbd315b 19:48Z; each later head's findings fixed in
+  the next named commit)
   → `2026-07-19-bundle-migration-tool-review.md` (M1+L5 resolved in
-  a7acb6c/40a7888; addendum: L1–L3 resolved at 3310e2b; closing note: L4
-  resolved at 41c5134; final private-instance migration verdict YES —
-  dry-run first; wider deployment remains NO/unauthenticated)
+  a7acb6c/40a7888; addendum: L1–L3 resolved at 3310e2b; closing notes:
+  L4 resolved at 41c5134, fbd315b clean, f487b30's two Lows resolved at
+  7e3ead9; final chain closes at the last code head — private-instance
+  migration verdict per the report's final closing note; wider deployment
+  remains NO/unauthenticated)
 
 - [x] 2026-07-17 — 5250768, 5d37a97, 1227d29, 41224b5, 53b5232, ca4a7fd,
   9c188d7, 5388efe, 6a690b2, 825bec6, 5a9fd04, 6fde64a, 4d5b20d, cdeda5b,
