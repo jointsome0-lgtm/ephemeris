@@ -347,3 +347,52 @@ at `41c5134` does not carry to head. Cover every DB value used by the plan in
 the immediate pre-apply comparison (including a DB-sourced title), validate
 the emitted title's actual length, and re-probe both cases. Wider deployment
 remains NO because v0 is unauthenticated.
+
+## Final closing note — exact-`7e3ead9` / exact-`c4c9b62` / exact-`fe6012a` re-probe
+
+**Scope and method:** re-diffed each commit from its parent, read the complete
+final migration tool plus the source-URL validator, metadata reader, and §4 / §10
+mapping it calls into, and ran invented temporary-private-instance probes against
+each exact commit. The probes repeated both open title cases, exercised valid,
+invalid, malformed, non-string, over-limit, and null `source_url` copies with and
+without a usable DB fallback, and changed DB title/source URL values between
+planning and apply.
+
+- **`7e3ead9` — both open Low findings RESOLVED.** The pre-apply comparison now
+  includes the DB title, and the title predicate bounds the actual value that
+  would be emitted (`7e3ead9:scripts/migrate_bundles.py:328-349,651-668`). An
+  exact-commit DB-title drift returned 1, preserved the v1 manifest byte-for-byte,
+  and created neither a rollback copy nor a ledger entry. The prior 242-character
+  title fell back to the usable DB title; when both copies exceeded 240 characters
+  the plan stopped; and an actual 240-character nonblank title remained accepted.
+- **`c4c9b62` — emission handling passed, with one intermediate Low found.** A
+  valid v1 `source_url` value is kept unchanged; an invalid non-null copy uses a
+  valid DB value, otherwise it is omitted with a plan note; and `null` remains
+  omitted (`c4c9b62:scripts/migrate_bundles.py:350-365`). Every generated case
+  re-read as `ok`, including malformed bracketed HTTP, non-string, and over-limit
+  inputs. At exact `c4c9b62`, however, the new DB fallback was not yet in the
+  pre-apply comparison: changing only the DB source URL after planning returned 0
+  and emitted the planned old URL, which the fresh row reported as
+  `stale-metadata`. This was the source-URL analogue of the earlier title gap.
+- **`fe6012a` — the intermediate source-URL Low is RESOLVED.** The fresh-row
+  comparison now covers `uid`, `current_entry`, `title`, and `source_url`; a slug
+  drift still makes the by-slug re-read fail
+  (`fe6012a:scripts/migrate_bundles.py:661-676`). The exact-commit source-URL
+  drift returned 1, preserved the v1 bytes, and created neither a rollback copy
+  nor a ledger entry. Re-running the title drift and the combined over-long-title
+  plus invalid-source fallback cases on `fe6012a` also passed. No earlier finding
+  regressed, and no finding remains on this final code head.
+
+**Verification:** `git diff --check f487b30..fe6012a --
+scripts/migrate_bundles.py verify.py` passed. Fourteen focused exact-commit probes
+passed with zero failures. `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. timeout 180s
+.venv/bin/python verify.py` remained inconclusive in the previously documented
+TestClient startup phase: after its deprecation warning it emitted no test output
+and timed out (exit 124), with no failing assertion observed; this note therefore
+does not independently claim the commit messages' 506 checks.
+
+**Final private-instance migration verdict: YES.** No finding in this report
+remains a C4 migration blocker. Run the dry-run first and perform the migration
+with the service and lesson agents stopped, under the documented private/local
+posture. **Wider deployment remains NO** because v0 is unauthenticated; this
+offline migration does not alter that boundary.
