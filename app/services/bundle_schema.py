@@ -159,6 +159,19 @@ class ManifestRead:
     def rejected(self) -> bool:
         return self.outcome == REJECTED
 
+    @property
+    def bridge_eligible(self) -> bool:
+        """§5 (enforced in D1): the postMessage bridge may only be offered for
+        a manifest that parsed as v2, was not rejected, and carries the
+        interactive profile. v1, rejected reads, and every fail-closed-to-
+        legacy path (missing/unknown profile) never get the bridge; degraded
+        v2 findings keep it — identity stays valid, D2 gates per page."""
+        return (
+            self.version == SCHEMA_V2
+            and not self.rejected
+            and self.profile == PROFILE_INTERACTIVE
+        )
+
     def codes(self) -> set[str]:
         return {f.code for f in self.findings}
 

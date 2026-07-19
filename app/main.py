@@ -24,7 +24,7 @@ from fastapi.templating import Jinja2Templates
 
 from .db import get_conn, init_db, is_not_future, is_valid_date, now_iso, today_str
 from .security import install_security
-from .services import calendar_events, checkins, export, focus, items, lessons, lists, quickadd, retro, stats, tasks
+from .services import bundle_schema, calendar_events, checkins, export, focus, items, lessons, lists, quickadd, retro, stats, tasks
 from .terminal import client_is_local, setup_terminal, shutdown_terminal
 
 log = logging.getLogger("activity_ledger")
@@ -1102,7 +1102,18 @@ def _learn_url(
     return "/learn" + (f"?{urlencode(query)}" if query else "")
 
 
-_LESSON_PREVIEW_CSP = (
+# Preview CSP is selected by the manifest's runtime profile
+# (learn-bundle-spec.md §5; enforcement is D1's). The manifest can only pick
+# a registered profile — never compose or widen policy — and the readers
+# fail-close missing/unknown profiles to legacy-display, so the profile
+# reaching here is always registered. The iframe sandbox *attribute* in
+# learn.html is unchanged here (D2 owns it); the header-level `sandbox`
+# directive below also covers a page opened directly, outside the iframe.
+#
+# legacy-display: the historical permissive policy, verbatim, so pre-v2
+# bundles keep rendering — but the profile carries no bridge/attempt/run
+# affordances (those flags are computed off the manifest read, not the CSP).
+_LESSON_PREVIEW_CSP_LEGACY = (
     "sandbox allow-scripts allow-forms allow-popups allow-downloads; "
     "default-src 'self' data: blob: https:; "
     "script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; "
@@ -1112,6 +1123,35 @@ _LESSON_PREVIEW_CSP = (
     "connect-src 'self' data: blob: https:; "
     "object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
 )
+# interactive-local-v1: everything local. Pages are self-contained documents
+# with inline script/style and pinned libraries under assets/ ('self'), so
+# inline stays allowed while every remote source, eval vector (data:/blob:
+# script, 'unsafe-eval'), form submission, popup, download, plugin, nested
+# frame (default-src 'none') and network call (connect-src 'none' — the D2
+# bridge is postMessage, not fetch) is refused.
+_LESSON_PREVIEW_CSP_INTERACTIVE = (
+    "sandbox allow-scripts; "
+    "default-src 'none'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; "
+    "media-src 'self' data: blob:; "
+    "font-src 'self' data:; "
+    "connect-src 'none'; "
+    "form-action 'none'; object-src 'none'; base-uri 'none'; "
+    "frame-ancestors 'self'"
+)
+_LESSON_PREVIEW_CSPS = {
+    bundle_schema.PROFILE_LEGACY: _LESSON_PREVIEW_CSP_LEGACY,
+    bundle_schema.PROFILE_INTERACTIVE: _LESSON_PREVIEW_CSP_INTERACTIVE,
+}
+
+
+def _preview_csp(profile: str) -> str:
+    # Unreachable via the readers (they fail-close to legacy-display), but if
+    # an unregistered value ever leaks through, default to the NARROW policy —
+    # never the wide legacy one.
+    return _LESSON_PREVIEW_CSPS.get(profile, _LESSON_PREVIEW_CSP_INTERACTIVE)
 
 
 def _lesson_preview_url(
@@ -1155,7 +1195,7 @@ def get_lesson_bundle_file(lesson_id: int, resource: str):
         "X-Content-Type-Options": "nosniff",
     }
     if info["active"]:
-        headers["Content-Security-Policy"] = _LESSON_PREVIEW_CSP
+        headers["Content-Security-Policy"] = _preview_csp(info["profile"])
         headers["X-Lesson-Preview-Version"] = info["version"]
     return FileResponse(info["path"], media_type=info["media_type"], headers=headers)
 
@@ -1176,7 +1216,7 @@ def get_lesson_preview(lesson_id: int, entry: str | None = None):
         media_type="text/html; charset=utf-8",
         headers={
             "Cache-Control": "no-store",
-            "Content-Security-Policy": _LESSON_PREVIEW_CSP,
+            "Content-Security-Policy": _preview_csp(info["profile"]),
             "X-Content-Type-Options": "nosniff",
             "X-Lesson-Preview-Version": info["version"],
         },
@@ -1203,6 +1243,11 @@ def get_lesson_preview_meta(lesson_id: int, entry: str | None = None):
         # readers must surface findings to the preview metadata.
         "outcome": info["outcome"],
         "findings": info["findings"],
+        # Effective runtime profile + bridge eligibility (§5, D1): the
+        # metadata is where the app states which policy set governs the
+        # rendered page and whether D2 may offer the postMessage port.
+        "profile": info["profile"],
+        "bridge": info["bridge"],
         "preview_url": _lesson_preview_url(lesson_id, info["entry"], exists=info["exists"]),
         "file_url": _lesson_preview_url(lesson_id, info["entry"]),
     })

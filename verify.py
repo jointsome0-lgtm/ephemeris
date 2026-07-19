@@ -845,6 +845,76 @@ with TestClient(app) as c:
     check("v1 manifest is never rewritten by the read path",
           (_v1_dir / "lesson.json").read_text(encoding="utf-8") == _v1_text)
 
+    # profile-keyed CSP enforcement (§5, D1): interactive-local-v1 serves
+    # under the strict local-only policy, legacy-display keeps the historical
+    # permissive one, and the preview metadata surfaces the effective profile
+    # plus bridge eligibility (v2 ∧ not rejected ∧ interactive)
+    from app.main import (  # local: only these checks use them
+        _LESSON_PREVIEW_CSP_INTERACTIVE as _CSP_INT,
+        _LESSON_PREVIEW_CSP_LEGACY as _CSP_LEG,
+        _preview_csp as _csp_for,
+    )
+    _d1_file = c.get(f"/learn/lessons/{_v2_id}/files/index.html")
+    _d1_prev = c.get(f"/learn/lessons/{_v2_id}/preview")
+    _d1_csp = _d1_file.headers.get("content-security-policy", "")
+    check("v2 interactive pages serve under the strict D1 CSP (files + preview)",
+          _d1_file.status_code == 200 and _d1_csp == _CSP_INT
+          and _d1_prev.headers.get("content-security-policy") == _CSP_INT)
+    check("strict CSP: no network, no eval, no forms/popups/downloads",
+          "connect-src 'none'" in _d1_csp
+          and "default-src 'none'" in _d1_csp
+          and "form-action 'none'" in _d1_csp
+          and "base-uri 'none'" in _d1_csp
+          and "https:" not in _d1_csp
+          and "unsafe-eval" not in _d1_csp
+          and "sandbox allow-scripts;" in _d1_csp
+          and "allow-forms" not in _d1_csp
+          and "allow-popups" not in _d1_csp
+          and "allow-downloads" not in _d1_csp)
+    _d1_meta = c.get(f"/learn/lessons/{_v2_id}/preview-meta").json()
+    check("preview-meta surfaces interactive profile + bridge eligibility",
+          _d1_meta["profile"] == "interactive-local-v1"
+          and _d1_meta["bridge"] is True
+          and lessons_svc.bundle_info(_v2)["bridge"] is True)
+    # degraded v2 findings keep profile and bridge — identity stays valid,
+    # D2 gates per page; only fail-closed-to-legacy paths revoke them
+    _d1_stale = c.get(
+        f"/learn/lessons/{_v2_id}/preview-meta",
+        params={"entry": "related/99-ghost.html"}).json()
+    check("degraded v2 read keeps profile + bridge",
+          _d1_stale["outcome"] == "degraded"
+          and _d1_stale["profile"] == "interactive-local-v1"
+          and _d1_stale["bridge"] is True)
+    _d1_v1 = c.get(f"/learn/lessons/{_v1_id}/files/index.html")
+    _d1_v1_meta = c.get(f"/learn/lessons/{_v1_id}/preview-meta").json()
+    check("v1 bundle keeps the legacy CSP and never gets the bridge",
+          _d1_v1.headers.get("content-security-policy") == _CSP_LEG
+          and _d1_v1_meta["profile"] == "legacy-display"
+          and _d1_v1_meta["bridge"] is False)
+    # unknown profile fails closed: forced legacy-display, no bridge; the
+    # wide policy is only ever reached via the *registered* legacy profile
+    bschema.write_manifest(
+        _v2_dir / "lesson.json",
+        dict(_v2_raw, runtime={"profile": "interactive-local-v2"}))
+    _d1_unk_meta = c.get(f"/learn/lessons/{_v2_id}/preview-meta").json()
+    _d1_unk_file = c.get(f"/learn/lessons/{_v2_id}/files/index.html")
+    check("unknown profile fails closed to legacy-display without bridge",
+          _d1_unk_meta["profile"] == "legacy-display"
+          and _d1_unk_meta["bridge"] is False
+          and any(f["code"] == "unknown-profile" for f in _d1_unk_meta["findings"])
+          and _d1_unk_file.headers.get("content-security-policy") == _CSP_LEG)
+    bschema.write_manifest(_v2_dir / "lesson.json", _v2_raw)  # restore
+    _d1_rej_meta = c.get(f"/learn/lessons/{_rej_id}/preview-meta").json()
+    _d1_rej_prev = c.get(f"/learn/lessons/{_rej_id}/preview")
+    check("rejected manifest: legacy profile, no bridge, placeholder CSP",
+          _d1_rej_meta["profile"] == "legacy-display"
+          and _d1_rej_meta["bridge"] is False
+          and _d1_rej_prev.headers.get("content-security-policy") == _CSP_LEG)
+    check("an unregistered profile value selects the narrow policy",
+          _csp_for("weird-unregistered") == _CSP_INT
+          and _csp_for("legacy-display") == _CSP_LEG
+          and _csp_for("interactive-local-v1") == _CSP_INT)
+
     # §2 symlink policy: a page that resolves through a symlink is missing
     _symp_conn = get_conn()
     try:

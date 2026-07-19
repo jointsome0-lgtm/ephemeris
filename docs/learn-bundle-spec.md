@@ -286,6 +286,31 @@ fragments, no capability lists in the manifest).
   manifest into interactivity.
 - The preview metadata surfaces the effective profile (D1) and any findings.
 
+D1 (landed) pins the enforcement:
+
+- Two header-level CSPs live in the app, keyed by the effective profile from
+  the manifest read; the manifest never carries CSP fragments (§5 intro).
+- `legacy-display` keeps the historical permissive policy verbatim (remote
+  `https:`, `'unsafe-eval'`, forms/popups/downloads) so pre-v2 bundles render
+  unchanged. The profile still grants no bridge/attempt/editor/run
+  affordances — those flags come from the manifest read, not the CSP.
+- `interactive-local-v1` is local-only: `sandbox allow-scripts`;
+  `default-src 'none'`; `script-src`/`style-src` `'self' 'unsafe-inline'`
+  (pages are self-contained, pinned libraries under `assets/` are
+  same-origin); `img-src`/`media-src` `'self' data: blob:`;
+  `font-src 'self' data:`; `connect-src 'none'` (the D2 bridge is
+  postMessage, not fetch); `form-action`/`object-src`/`base-uri` `'none'`;
+  `frame-ancestors 'self'`. No remote loads, no eval vectors (no
+  `'unsafe-eval'`, no `data:`/`blob:` script), no nested frames.
+- Bridge eligibility = manifest parsed as v2 AND not rejected AND profile
+  `interactive-local-v1`. Degraded v2 findings do not revoke it (identity
+  stays valid; D2 gates per page); every fail-closed-to-legacy path does.
+- The preview metadata carries the effective `profile` and `bridge`; the
+  iframe `sandbox` attribute is unchanged until D2 (the header-level
+  `sandbox` directive also covers a page opened outside the iframe).
+- An unregistered profile value reaching the CSP chooser (unreachable via
+  the readers) selects the narrow interactive policy, never the wide one.
+
 New app-created bundles start as `interactive-local-v1`; migrated v1 bundles
 start as `legacy-display` and are upgraded deliberately (§10, §12).
 Concretely, post-C3 `create_lesson` writes a **v2** skeleton (replacing
@@ -651,7 +676,6 @@ silently rewrites an agent's manifest to "fix" it.
 ## 13. Out of scope here (owned elsewhere)
 
 - Bridge ABI: handshake, `MessageChannel`, capability negotiation — D2.
-- CSP profile enforcement details — D1.
 - Attempt endpoint semantics, rate limits, responses — D4/D5.
 - Runner registry contents and sandbox profiles — F3/E1.
 - Teaching-contract wording in `_AGENTS_TEMPLATE` — #35 (C2), which cites
