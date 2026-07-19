@@ -309,6 +309,10 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             capabilities: [],
         }, "*", [channel.port2]);
     };
+    /* In-flight latch for the late-initialisation rescue bind below (PR-55
+     * round 6): child `ready` retries (or a hostile fast poster) must not fan
+     * out one /preview-meta fetch each while the first is still pending. */
+    let rescueBinding = false;
     window.addEventListener("message", (ev) => {
         /* Narrow by state first, then by source — only the document this runtime
          * navigated into the preview frame can ever be answered. */
@@ -327,8 +331,11 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
              * armFromMeta) and, for a settled document that will never get a
              * load-driven bind because the module initialised after the initial
              * load, start one. The child's retry lands once armed. */
-            if (generation === 0 && !navPending) {
-                void bind(generation);
+            if (generation === 0 && !navPending && !rescueBinding) {
+                rescueBinding = true;
+                void bind(generation).finally(() => {
+                    rescueBinding = false;
+                });
             }
             return;
         }
