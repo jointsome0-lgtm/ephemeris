@@ -532,8 +532,16 @@ def rollback(rollback_dir: Path) -> int:
         bundle_schema.atomic_write_text(
             manifest_path, old_bytes.decode("utf-8")
         )
+        _fsync_dir(bundle_dir)  # same rename-durability rule as the migrate path
         print(f"[restored] {slug}")
     return 1 if failures else 0
+
+
+def _reread_lesson(slug: str) -> dict | None:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM lessons WHERE slug = ?", (slug,)).fetchone()
+    return dict(row) if row else None
 
 
 def _load_lessons(slugs: list[str] | None) -> list[dict]:
@@ -616,6 +624,19 @@ def run(*, dry_run: bool, slugs: list[str] | None) -> int:
             failed += 1
             continue
         if plan.action == ACTION_MIGRATE and not dry_run:
+            # The DB row is part of the plan's input (uid copy, current_entry
+            # head-fold): re-read it right before the write and refuse a
+            # stale plan, exactly like the manifest-bytes guard in apply.
+            fresh = _reread_lesson(lesson["slug"])
+            if (
+                fresh is None
+                or fresh.get("uid") != lesson.get("uid")
+                or fresh.get("current_entry") != lesson.get("current_entry")
+            ):
+                print("    ERROR: refused: DB lesson row changed since planning; "
+                      "re-plan and rerun")
+                failed += 1
+                continue
             errors = apply_plan(LESSONS_DIR / plan.slug, plan, lesson, rollback_dir)
             for error in errors:
                 print(f"    ERROR: {error}")
