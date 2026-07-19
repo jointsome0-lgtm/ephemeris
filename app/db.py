@@ -124,7 +124,7 @@ def get_conn() -> sqlite3.Connection:
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -415,6 +415,40 @@ def _migrate_to_9(conn: sqlite3.Connection) -> None:
     backfill_event_uuids(conn)
 
 
+# v10 — retro_entries (docs/retro-spec.md): owner-typed retrospectives captured
+# for the future exp2res feed (issue #49). period_raw is the owner-typed truth —
+# the field a selfos adapter hands to exp2res, which re-resolves it in its own
+# workspace timezone; period_start/period_end are ephemeris-local derivations
+# kept only for list ordering and display. The period grammar (precision /
+# confidence vocabularies, accepted period formats) mirrors exp2res
+# services/time_input.py verbatim so anything accepted here imports cleanly
+# there. Soft-archived, never hard-deleted (sec14.1 joinability).
+_SCHEMA_V10 = """
+CREATE TABLE IF NOT EXISTS retro_entries (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  uuid         TEXT NOT NULL UNIQUE,
+  period_raw   TEXT NOT NULL DEFAULT '',   -- '' iff precision='unknown'
+  precision    TEXT NOT NULL CHECK(precision IN
+               ('exact_datetime','exact_day','week','month','quarter','year',
+                'date_range','approximate_range','unknown')),
+  confidence   TEXT NOT NULL CHECK(confidence IN ('low','medium','high','unknown')),
+  period_start TEXT,            -- ISO 8601 with offset; NULL iff precision='unknown'
+  period_end   TEXT,            -- non-NULL iff range precision; > period_start
+  project      TEXT,            -- optional label; validated non-blank under NFC+casefold
+  text         TEXT NOT NULL CHECK(length(text) > 0),
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT,
+  archived_at  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_retro_start ON retro_entries(period_start);
+"""
+
+
+def _migrate_to_10(conn: sqlite3.Connection) -> None:
+    conn.executescript(_SCHEMA_V10)
+
+
 # Ordered, idempotent steps. A schema change must NEVER require deleting the
 # ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
 _MIGRATIONS = [
@@ -427,6 +461,7 @@ _MIGRATIONS = [
     (7, _migrate_to_7),
     (8, _migrate_to_8),
     (9, _migrate_to_9),
+    (10, _migrate_to_10),
 ]
 
 
