@@ -19,6 +19,24 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
+- [ ] 2026-07-20 — e57d6bd, 7630977 —
+  `app/static/src/learn-bridge.ts` + emitted `app/static/learn-bridge.js`
+  (new), `app/static/app.js`, `app/templates/learn.html`, `app/main.py`,
+  `app/services/lessons.py`, `docs/lesson-bridge-abi.md` (new),
+  `fixtures/lesson-bridge/` (new), `package.json`/`tsconfig.json` (new,
+  dev-only) —
+  issue #36 session D2: new Learn-page parent runtime for the lesson preview
+  iframe — it now owns the preview reload poll (moved out of app.js), sets
+  the iframe `sandbox` attribute from the manifest's runtime profile, and
+  implements the postMessage/MessageChannel handshake documented in
+  `docs/lesson-bridge-abi.md` (versioned, one grant per loaded document,
+  identity from the preview metadata; ABI v1 has no write operations —
+  ping/pong only). The preview-meta endpoint additionally returns per-page
+  `lesson_uid`/`page_id`/`page_rev` (sha256 of page bytes) and the sandbox
+  token string. Browser e2e fixtures for six handshake scenarios are
+  committed under `fixtures/lesson-bridge/`. First TypeScript sources in the
+  repo (issue #42): tsc-emitted JS is committed and served as-is.
+
 ## Done
 
 - [x] 2026-07-20 — 66defd3, 2ce1c0e, 38ef45e, f7db9e1, 625bbb8 —
