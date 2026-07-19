@@ -19,6 +19,13 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
+- [ ] 2026-07-19 — ec3c112 — `scripts/migrate_bundles.py` (new), `verify.py` —
+  issue #39 session C4: offline migration tool that rewrites v1 `lesson.json`
+  manifests to schema v2 per spec §10 (the rewritten manifests are consumed by
+  the live Learn preview/file routes); dry-run, idempotent rerun, atomic
+  replacement, rollback manifest under `data/migrations/`, hash
+  post-verification of manifest and page bytes; verify 495
+
 ## Done
 
 - [x] 2026-07-17 — 5250768, 5d37a97, 1227d29, 41224b5, 53b5232, ca4a7fd,
