@@ -59,7 +59,8 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
      * parse time, before any load task can have dispatched) counts loads in
      * data-loaded, so a settled document is never mistaken for our pending
      * navigation (PR-55 round 2). */
-    let navPending = !(Number(frame.dataset["loaded"]) > 0);
+    const earlyLoads = Number(frame.dataset["loaded"]) || 0;
+    let navPending = earlyLoads === 0;
     let reasserts = 0;
     /* Terminal for the current frame content (PR-55 round 5): set when a
      * document exhausts the re-assert budget by fighting the forced return
@@ -67,6 +68,18 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
      * successor must never be granted the expected page's identity — until
      * a parent-owned navigation (version/identity change) starts fresh. */
     let quarantined = false;
+    if (earlyLoads > 1) {
+        /* More than one load happened before this module initialised: the
+         * expected page loaded and the frame was navigated again (drain R1).
+         * The currently settled document is NOT trustworthy as the expected
+         * page — fail closed with a parent-owned re-assert (consuming one
+         * budget slot) instead of ever arming it. */
+        reasserts = 1;
+        const url = new URL(expectedSrc);
+        url.searchParams.set("_v", String(Date.now()));
+        navPending = true;
+        frame.src = url.toString();
+    }
     /* Per-document handshake state (cleared on every load/teardown). */
     let armed = null;
     let granted = false;

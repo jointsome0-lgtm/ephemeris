@@ -194,3 +194,115 @@ remains unauthenticated.**
 Per the caller's explicit file-scope constraint, this report does not move the
 queue entry; it remains Pending and therefore continues to block a live
 restart under `AGENTS.md`.
+
+## ADDENDUM — fix commits `8cfcb9d`, `b74fd0e`, `4315bab`, `1565bd4`
+
+**Scope:** re-review of the exact requested range `7630977..1565bd4`, with the
+four named fix commits evaluated against L1–L3 and the resulting source checked
+for regressions. References below name the tree at `1565bd4`.
+
+### L1 — partially resolved; Low residual is acceptable only for current ABI v1
+
+The exact buffered-announcement race demonstrated in the original report is
+resolved. `4315bab` centralizes arming and refuses it during a parent-observed
+pending navigation, and `1565bd4` removes `pendingReady` entirely: an
+announcement received before arming is dropped and can be answered only when a
+child retry arrives after arming (`app/static/src/learn-bridge.ts:157-185`,
+`313-333`). `b74fd0e` also adds an inline load observer before the separately
+fetched module, closing the ordinary missed-initial-load case
+(`app/templates/learn.html:142-150`; `app/static/src/learn-bridge.ts:74-83`).
+
+The finding is not fully resolved because the parent still has no
+document-generation identity stronger than the iframe's navigation-stable
+`WindowProxy`. The ABI now correctly records the pre-own-load and in-flight
+delivery residuals (`docs/lesson-bridge-abi.md:134-160`), but one additional
+startup interleaving introduced by the new observer remains: it counts every
+load, while the runtime reduces every positive count to the same
+`navPending = false` state (`app/static/src/learn-bridge.ts:82`). If the expected
+page finishes loading and self-navigates again before the module initializes,
+`data-loaded` is `2`; the already-settled successor is nevertheless treated as
+the expected settled document and can be armed and granted.
+
+A fresh invented headless-Chrome probe delayed `learn-bridge.js` until after
+that two-load sequence. The observer reported `2`, the iframe was on the
+successor document, and that successor received the expected page id plus a
+working `pong`. This contradicts the ABI's unqualified statement that
+post-load self-navigation is detected and re-asserted. Independently, a live
+`ready`, `welcome`, or port message can still cross a navigation because its
+source/destination remains the same `WindowProxy`; removing the buffer narrows
+that window but cannot remove it.
+
+These residuals are acceptable for the current direct-loopback ABI-v1 build:
+the granted capability set is empty and the only operation is `ping`. They are
+not acceptable as authority for D4/D5 writes. Before capabilities land, the
+startup observer must fail closed or re-assert when it has observed more than
+the one expected load, the navigation cases need browser regressions, and every
+state-changing operation must re-validate lesson/page/revision and current
+manifest authority server-side rather than trusting possession of the port.
+
+### L2 — partially resolved; Low residual is acceptable only for current ABI v1
+
+`1565bd4` resolves the mtime-preserving replacement demonstrated in the
+original probe. Eligible bridge-page versions now include a digest prefix, the
+initial Learn render takes the same identity-producing path as the metadata
+poll, and digest plus closing stat come from one no-follow descriptor
+(`app/services/lessons.py:211-243`, `393-406`, `419-434`, `562-566`). Thus a
+replacement that restores `st_mtime_ns` still changes both `page_rev` and the
+reload token.
+
+The stronger L2 contract remains open: the token and `page_rev` still are not
+bound to the bytes the iframe actually received. The normal page route first
+resolves metadata through `bundle_resource_info()` and later gives the path to
+`FileResponse`, which opens it independently (`app/main.py:1215-1235`); the
+placeholder path similarly hashes in `lesson_file_info()` and then performs a
+separate `Path.read_text()` (`app/services/lessons.py:1142-1148`). A replacement
+between the hash and response open can therefore serve bytes different from
+the granted full digest even though the new content-bound token makes the next
+poll self-heal. This is acceptable for ping-only loopback operation, but not
+proof that D4 records the revision the learner actually saw. D4/D5 still need a
+single served-content snapshot (or an equivalently strong design) plus
+record-time server validation and race tests.
+
+### L3 — partially resolved; remaining availability risk is acceptable for direct loopback
+
+`1565bd4` removes the steady-state amplification: an unchanged page reuses a
+digest cached by device, inode, mtime, size, and ctime, and only a stable
+before/after identity is cached (`app/services/lessons.py:196-243`). An idle
+visible tab therefore no longer hashes the whole unchanged page every 1.2
+seconds.
+
+There is still no page-size bound. Every cold or invalidated cache miss hashes
+the complete file, and local churn can invalidate the ctime/inode key on each
+poll. A working set that reaches the 64-entry limit also clears the entire
+cache rather than evicting one entry. The original always-rehash claim is fixed,
+but the unbounded-work availability finding is only reduced, not eliminated.
+That residual remains Low and acceptable for the current single-user,
+direct-loopback posture; it should be closed with a supported page-size limit
+and non-thrashing bounded cache policy before any wider exposure. It is not by
+itself a D4/D5 integrity blocker, but capability work must not treat L3 as fully
+closed.
+
+### Regression check and verification
+
+- **New Low regression R1:** the pre-module two-load case described under L1
+  grants the successor document. It was reproduced in headless Chrome with a
+  working v1 port and is not covered by the committed structural observer
+  assertion.
+- Manifest-only identity drift now tears down/reloads an armed document, and a
+  transient load-time metadata failure can be recovered by a same-version poll
+  (`app/static/src/learn-bridge.ts:337-360`). These changes did not widen the
+  capability membrane, eligibility rules, sandbox/CSP selection, or bundle
+  file allowlist.
+- `git diff --check 7630977..1565bd4` passed. A fresh TypeScript emit was
+  byte-identical to committed `app/static/learn-bridge.js`.
+- The full `verify.py` run reached the same previously documented TestClient
+  startup boundary and timed out after 150 seconds (exit 124), with no failing
+  assertion emitted; this addendum therefore does not independently claim the
+  commit message's 534-check result.
+
+**Updated final verdict — (a) current ABI-v1 direct-loopback deployment: YES,
+with L1–L3 only partially resolved and R1 remaining Low because the port is
+ping-only; (b) D4/D5 capability extensions: NO on this exact handshake until
+the L1/R1 document-confusion paths and L2 served-byte binding are resolved and
+browser-tested, with per-operation server-side authority/revision validation
+mandatory.**
