@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -540,6 +541,521 @@ with TestClient(app) as c:
           _atomic_res is None
           and _atomic_agents.read_text(encoding="utf-8") == _atomic_before
           and not list(_atomic_dir.glob(".brief-*")))
+
+    # --- C3: bundle schema v2 (learn-bundle-spec.md) — readers, writer, identity
+    from app import db as db_mod
+    from app.services import bundle_schema as bschema
+
+    # every cases.json expectation holds under the fixture-only runner registry
+    _fx_dir = ROOT / "fixtures" / "lesson-manifests"
+    _fx_cases = json.loads((_fx_dir / "cases.json").read_text(encoding="utf-8"))
+    _fx_registry = frozenset(_fx_cases["context"]["runner_registry"]["known"])
+    for _case in _fx_cases["cases"]:
+        _fx_text = (_fx_dir / _case["file"]).read_text(encoding="utf-8")
+        _fx_read = bschema.read_manifest_text(_fx_text, runner_registry=_fx_registry)
+        check(f"fixture {_case['file']}: {_case['expect']}, read as {_case['read_as']}",
+              _fx_read.outcome == _case["expect"]
+              and _fx_read.version == _case["read_as"]
+              and set(_case["findings"]) <= _fx_read.codes(),
+              f"outcome={_fx_read.outcome} version={_fx_read.version} "
+              f"codes={sorted(_fx_read.codes())}")
+
+    # §9.3: round-tripping a canonical manifest is byte-identical
+    _fx_roundtrips = [
+        bschema.canonical_dumps(
+            json.loads(_fx_file.read_text(encoding="utf-8")),
+            json.loads(_fx_file.read_text(encoding="utf-8")).get("schema_version", 1),
+        ) == _fx_file.read_text(encoding="utf-8")
+        for _fx_file in sorted(_fx_dir.glob("*.json"))
+        if _fx_file.name != "cases.json"
+    ]
+    check("canonical writer round-trips all 10 fixture manifests byte-identically",
+          len(_fx_roundtrips) == 10 and all(_fx_roundtrips))
+
+    # duplicate ids are raw-declaration facts: an id repeated on an item that
+    # is dropped for its path still rejects the manifest (PR-48 round 2)
+    _dup_masked = bschema.read_manifest_text(json.dumps({
+        "schema_version": 2,
+        "lesson_uid": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
+        "entry": "index.html",
+        "pages": [
+            {"id": "pg_maskdup01", "path": "../escape.html"},
+            {"id": "pg_maskdup01", "path": "index.html"},
+        ],
+    }))
+    check("duplicate page id behind a dropped path still rejects",
+          _dup_masked.outcome == "rejected"
+          and {"duplicate-id", "invalid-path"} <= _dup_masked.codes())
+
+    # block page/kind/root checks are independent (§9.2 aggregation): every
+    # violation of the declaration is recorded before the block is dropped
+    # (PR-48 rounds 15+18)
+    _blk_masked = bschema.read_manifest_text(json.dumps({
+        "schema_version": 2,
+        "lesson_uid": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
+        "entry": "index.html",
+        "pages": [{"id": "pg_blkmask01", "path": "index.html"}],
+        "blocks": [{
+            "id": "blk_blkmask01",
+            "page": "pg_ghostpage1",
+            "kind": "mystery",
+            "file": "scratch/work.py",
+        }],
+    }))
+    check("dropped block reports dangling page, unknown kind, and outside-root together",
+          {"dangling-ref", "unknown-kind", "outside-root"} <= _blk_masked.codes())
+
+    # §4.1: a path the request-cleaning layer would strip (edge whitespace)
+    # is invalid, not repaired — the reader and the disk resolver would
+    # otherwise disagree about which file the page names (PR-48 round 17)
+    _sp_read = bschema.read_manifest_text(json.dumps({
+        "schema_version": 2,
+        "lesson_uid": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
+        "entry": "index.html",
+        "pages": [
+            {"id": "pg_spacepad01", "path": "index.html"},
+            {"id": "pg_spacepad02", "path": " spaced.html"},
+        ],
+    }))
+    check("v2 page path with edge whitespace is invalid-path, not repaired",
+          _sp_read.outcome == "degraded"
+          and "invalid-path" in _sp_read.codes()
+          and " spaced.html" not in _sp_read.page_paths())
+
+    # lesson identity (§3): minted once at creation, echoed in manifest + event
+    _uid_conn = get_conn()
+    try:
+        _uid_id = lessons_svc.create_lesson(
+            _uid_conn, "Uid Mint Demo", "https://learning.example/uid-demo")
+        _uid_lesson = lessons_svc.get_lesson(_uid_conn, _uid_id)
+    finally:
+        _uid_conn.close()
+    check("create_lesson mints a lesson uid",
+          bool(_uid_lesson["uid"])
+          and bschema.UUID_RE.match(_uid_lesson["uid"]) is not None)
+    _uid_manifest_path = Path(lessons_svc.LESSONS_DIR) / _uid_lesson["slug"] / "lesson.json"
+    _uid_manifest_text = _uid_manifest_path.read_text(encoding="utf-8")
+    _uid_manifest = json.loads(_uid_manifest_text)
+    check("create_lesson writes the v2 skeleton manifest (§5)",
+          _uid_manifest.get("schema_version") == 2
+          and _uid_manifest.get("lesson_uid") == _uid_lesson["uid"]
+          and _uid_manifest.get("entry") == "index.html"
+          and [p.get("path") for p in _uid_manifest.get("pages", [])] == ["index.html"]
+          and bschema.PAGE_ID_RE.match(_uid_manifest["pages"][0]["id"]) is not None
+          and _uid_manifest.get("runtime") == {"profile": "interactive-local-v1"}
+          and _uid_manifest.get("artifact_roots") == ["attempts"]
+          and _uid_manifest.get("source_url") == "https://learning.example/uid-demo")
+    check("v2 skeleton is canonical on disk",
+          bschema.canonical_dumps(_uid_manifest) == _uid_manifest_text)
+    check("v2 bundle gets its default artifact root dir",
+          (Path(lessons_svc.LESSONS_DIR) / _uid_lesson["slug"] / "attempts").is_dir())
+    _uid_created = json.loads(events_of("lesson_created")[-1]["payload_json"])
+    check("lesson_created event echoes lesson_uid, never title (§8)",
+          _uid_created.get("lesson_uid") == _uid_lesson["uid"]
+          and _uid_created.get("lesson_id") == _uid_id
+          and "title" not in _uid_created)
+
+    # rename churn never re-mints (§3): uid survives title+slug change,
+    # backfill rerun is a no-op, a NULL-uid row (stale pre-v11 writer) heals
+    _uid_conn = get_conn()
+    try:
+        with _uid_conn:
+            _uid_conn.execute(
+                "UPDATE lessons SET title='Uid Mint Demo Renamed', "
+                "slug='uid-mint-demo-renamed' WHERE id=?", (_uid_id,))
+        _restamped = db_mod.backfill_lesson_uids(_uid_conn)
+        _uid_conn.commit()
+        _uid_after = lessons_svc.get_lesson(_uid_conn, _uid_id)
+        with _uid_conn:
+            _uid_conn.execute(
+                "INSERT INTO lessons (title, slug, status, created_at) "
+                "VALUES ('Stale Writer Demo', 'stale-writer-demo', 'backlog', ?)",
+                (db_mod.now_iso(),))
+        _healed = db_mod.backfill_lesson_uids(_uid_conn)
+        _uid_conn.commit()
+        _stale_uid = _uid_conn.execute(
+            "SELECT uid FROM lessons WHERE slug='stale-writer-demo'").fetchone()["uid"]
+    finally:
+        _uid_conn.close()
+    check("rename does not change the lesson uid",
+          _restamped == 0 and _uid_after["uid"] == _uid_lesson["uid"])
+    check("uid backfill stamps exactly the NULL-uid rows",
+          _healed == 1 and _stale_uid and bschema.UUID_RE.match(_stale_uid) is not None)
+
+    # v10→v11 renumbering hazard: a DB that ran the uid step while it was
+    # numbered v10 sits at user_version=10 WITHOUT retro_entries, and the
+    # landed v10 step is skipped on its way to 11 — _migrate_to_11 must
+    # converge that shape itself
+    _ren = sqlite3.connect(":memory:")
+    _ren.row_factory = sqlite3.Row
+    _ren.execute("CREATE TABLE lessons (id INTEGER PRIMARY KEY, title TEXT, uid TEXT)")
+    _ren.execute("INSERT INTO lessons (title) VALUES ('Renumber Demo')")
+    db_mod._migrate_to_11(_ren)
+    _ren_tabs = {r["name"] for r in _ren.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    _ren_uid = _ren.execute("SELECT uid FROM lessons").fetchone()["uid"]
+    _ren.close()
+    check("v11 on a branch-v10 DB creates retro_entries and backfills uids",
+          "retro_entries" in _ren_tabs and _ren_uid
+          and bschema.UUID_RE.match(_ren_uid) is not None)
+
+    # v2 read path: declared pages only (§4.2), unknown fields preserved (§9.3)
+    _v2_conn = get_conn()
+    try:
+        _v2_id = lessons_svc.create_lesson(_v2_conn, "V2 Reader Demo")
+        _v2 = lessons_svc.get_lesson(_v2_conn, _v2_id)
+    finally:
+        _v2_conn.close()
+    _v2_dir = Path(lessons_svc.LESSONS_DIR) / _v2["slug"]
+    _v2_raw = json.loads((_v2_dir / "lesson.json").read_text(encoding="utf-8"))
+    _v2_raw["pages"].append({"id": "pg_stagetwo01", "path": "related/01-stage.html"})
+    _v2_raw["x_note"] = {"keep": ["me"]}
+    bschema.write_manifest(_v2_dir / "lesson.json", _v2_raw)
+    (_v2_dir / "index.html").write_text("<html>Vera Example index</html>", encoding="utf-8")
+    (_v2_dir / "related" / "01-stage.html").write_text(
+        "<html>Vera Example stage</html>", encoding="utf-8")
+    _v2_view = lessons_svc.with_bundle_info(_v2)
+    check("v2 bundle lists exactly the declared pages, in order",
+          [p["entry"] for p in _v2_view["pages"]] == ["index.html", "related/01-stage.html"]
+          and _v2_view["bundle"]["schema_version"] == 2
+          and _v2_view["bundle"]["outcome"] == "ok"
+          and _v2_view["bundle"]["profile"] == "interactive-local-v1")
+    _v2_ghost = lessons_svc.bundle_info(_v2, entry="related/99-ghost.html")
+    check("v2 undeclared selection falls back to the manifest entry (§4.2)",
+          _v2_ghost["entry"] == "index.html"
+          and all(p["entry"] != "related/99-ghost.html" for p in _v2_ghost["pages"]))
+    check("stale selection degrades the top-level bundle outcome too",
+          _v2_ghost["outcome"] == "degraded"
+          and any(f["code"] == "invalid-entry" for f in _v2_ghost["findings"]))
+    _v2_ghost_meta = c.get(
+        f"/learn/lessons/{_v2_id}/preview-meta",
+        params={"entry": "related/99-ghost.html"}).json()
+    check("stale v2 selection surfaces invalid-entry, never a silent ok (§4.2)",
+          _v2_ghost_meta["outcome"] == "degraded"
+          and any(f["code"] == "invalid-entry" for f in _v2_ghost_meta["findings"]))
+    check("unknown manifest fields survive the canonical writer",
+          json.loads((_v2_dir / "lesson.json").read_text(encoding="utf-8"))
+          .get("x_note") == {"keep": ["me"]})
+    _v2_conn = get_conn()
+    try:
+        _v2_refused = False
+        try:
+            lessons_svc.set_current_entry(_v2_conn, _v2_id, "related/99-ghost.html")
+        except lessons_svc.LessonError:
+            _v2_refused = True
+        lessons_svc.set_current_entry(_v2_conn, _v2_id, "related/01-stage.html")
+        _v2_after = lessons_svc.get_lesson(_v2_conn, _v2_id)
+    finally:
+        _v2_conn.close()
+    _v2_entry_event = json.loads(events_of("lesson_entry_changed")[-1]["payload_json"])
+    check("set_current_entry refuses an undeclared v2 page",
+          _v2_refused and _v2_after["current_entry"] == "related/01-stage.html")
+    check("lesson_entry_changed event echoes lesson_uid",
+          _v2_entry_event.get("lesson_uid") == _v2["uid"]
+          and _v2_entry_event.get("to_entry") == "related/01-stage.html")
+
+    # a page removed from the manifest AFTER being selected leaves a stale
+    # stored selection: the render falls back visibly, the fallback is NOT
+    # persisted over the evidence, and the metadata poll URL carries the
+    # stale candidate so every poll re-surfaces the finding (§4.2)
+    _v2_cut = json.loads((_v2_dir / "lesson.json").read_text(encoding="utf-8"))
+    _v2_cut["pages"] = [p for p in _v2_cut["pages"] if p["path"] != "related/01-stage.html"]
+    bschema.write_manifest(_v2_dir / "lesson.json", _v2_cut)
+    _v2_conn = get_conn()
+    try:
+        _v2_stale = lessons_svc.bundle_info(lessons_svc.get_lesson(_v2_conn, _v2_id))
+        _learn_html = c.get(f"/learn?lesson={_v2_id}").text
+        _v2_kept = lessons_svc.get_lesson(_v2_conn, _v2_id)["current_entry"]
+    finally:
+        _v2_conn.close()
+    check("stale stored selection is exposed and never silently persisted",
+          _v2_stale["stale_selection"] == "related/01-stage.html"
+          and _v2_stale["entry"] == "index.html"
+          and _v2_kept == "related/01-stage.html")
+    check("preview-meta poll URL keeps the stale candidate, not the fallback",
+          "preview-meta?entry=related%2F01-stage.html" in _learn_html)
+    _v2_stale_meta = c.get(
+        f"/learn/lessons/{_v2_id}/preview-meta",
+        params={"entry": "related/01-stage.html"}).json()
+    check("polling the stale candidate re-surfaces invalid-entry each time",
+          _v2_stale_meta["outcome"] == "degraded"
+          and any(f["code"] == "invalid-entry" for f in _v2_stale_meta["findings"])
+          and _v2_stale_meta["exists"] is True)
+    # restore the two-page manifest — later sections rely on it
+    bschema.write_manifest(_v2_dir / "lesson.json", _v2_raw)
+
+    # corrupt / unsupported manifests reject visibly (§9.1) and stay untouched
+    _rej_conn = get_conn()
+    try:
+        _rej_id = lessons_svc.create_lesson(_rej_conn, "Reject Demo")
+        _rej = lessons_svc.get_lesson(_rej_conn, _rej_id)
+    finally:
+        _rej_conn.close()
+    _rej_path = Path(lessons_svc.LESSONS_DIR) / _rej["slug"] / "lesson.json"
+    _rej_path.write_text('{"schema_version": 2, "broken', encoding="utf-8")
+    _rej_meta = c.get(f"/learn/lessons/{_rej_id}/preview-meta").json()
+    _rej_prev = c.get(f"/learn/lessons/{_rej_id}/preview")
+    check("corrupt manifest is a visible reject, not a silent default",
+          _rej_meta["outcome"] == "rejected"
+          and any(f["code"] == "manifest-unreadable" for f in _rej_meta["findings"])
+          and "lesson.json is not readable JSON." in _rej_prev.text
+          and _rej_path.read_text(encoding="utf-8") == '{"schema_version": 2, "broken')
+    check("GET /learn stays 200 with a rejected manifest selected",
+          c.get(f"/learn?lesson={_rej_id}").status_code == 200)
+    _rej_path.write_text(
+        json.dumps({"schema_version": 99, "entry": "index.html"}) + "\n", encoding="utf-8")
+    _rej_meta2 = c.get(f"/learn/lessons/{_rej_id}/preview-meta").json()
+    _rej_prev2 = c.get(f"/learn/lessons/{_rej_id}/preview")
+    check("unsupported manifest version rejects visibly",
+          _rej_meta2["outcome"] == "rejected"
+          and any(f["code"] == "unsupported-version" for f in _rej_meta2["findings"])
+          and "Unsupported manifest version." in _rej_prev2.text)
+    # placeholder-to-placeholder transitions are visible to the live-reload
+    # poller: the version token tracks the manifest state, not a flat "0"
+    check("placeholder version tokens track the manifest state",
+          _rej_meta["version"].startswith("rejected:")
+          and _rej_meta2["version"].startswith("rejected:")
+          and _rej_meta["version"] != _rej_meta2["version"]
+          and _mf_meta["version"].startswith("missing:"))
+    # rejected means NO page render — direct file fetches included (§9.2)
+    (Path(lessons_svc.LESSONS_DIR) / _rej["slug"] / "index.html").write_text(
+        "<html>Vera Example orphan page</html>", encoding="utf-8")
+    check("rejected manifest blocks direct bundle file renders too (§9.2)",
+          c.get(f"/learn/lessons/{_rej_id}/files/index.html").status_code == 404)
+
+    # v1 manifests dual-read unchanged (§9.2) and are never rewritten (§9.1)
+    _v1_conn = get_conn()
+    try:
+        _v1_id = lessons_svc.create_lesson(_v1_conn, "V1 Dual Read Demo")
+        _v1 = lessons_svc.get_lesson(_v1_conn, _v1_id)
+    finally:
+        _v1_conn.close()
+    _v1_dir = Path(lessons_svc.LESSONS_DIR) / _v1["slug"]
+    _v1_text = (_fx_dir / "v1-valid.json").read_text(encoding="utf-8")
+    (_v1_dir / "lesson.json").write_text(_v1_text, encoding="utf-8")
+    (_v1_dir / "index.html").write_text("<html>Vera Example v1</html>", encoding="utf-8")
+    _v1_view = lessons_svc.with_bundle_info(_v1)
+    check("v1 manifest dual-reads with entry + related pages, legacy profile",
+          _v1_view["bundle"]["schema_version"] == 1
+          and [p["entry"] for p in _v1_view["pages"]]
+          == ["index.html", "related/01-gravity-gradient.html",
+              "related/02-spring-and-neap.html"]
+          and _v1_view["bundle"]["profile"] == "legacy-display"
+          and _v1_view["bundle"]["outcome"] == "ok")
+    check("v1 manifest is never rewritten by the read path",
+          (_v1_dir / "lesson.json").read_text(encoding="utf-8") == _v1_text)
+
+    # §2 symlink policy: a page that resolves through a symlink is missing
+    _symp_conn = get_conn()
+    try:
+        _symp_id = lessons_svc.create_lesson(_symp_conn, "Symlink Page Demo")
+        _symp = lessons_svc.get_lesson(_symp_conn, _symp_id)
+    finally:
+        _symp_conn.close()
+    _symp_dir = Path(lessons_svc.LESSONS_DIR) / _symp["slug"]
+    _symp_target = Path(lessons_svc.LESSONS_DIR) / "decoy-page.html"
+    _symp_target.write_text("<html>outside the bundle</html>", encoding="utf-8")
+    _os.symlink(_symp_target, _symp_dir / "index.html")
+    _symp_info = lessons_svc.lesson_file_info(_symp)
+    _symp_file = c.get(f"/learn/lessons/{_symp_id}/files/index.html")
+    check("symlinked page is treated as missing (§2)",
+          _symp_info["exists"] is False and _symp_file.status_code == 404)
+    check("symlinked page degrades the reported outcome (§9.2)",
+          _symp_info["outcome"] == "degraded"
+          and any(f["code"] == "symlinked-path" for f in _symp_info["findings"]))
+    _symp_bundle = lessons_svc.bundle_info(_symp)
+    check("symlinked current page degrades the TOP-LEVEL bundle_info outcome",
+          _symp_bundle["outcome"] == "degraded"
+          and any(f["code"] == "symlinked-path" for f in _symp_bundle["findings"]))
+    _symp_manifest = _symp_dir / "lesson.json"
+    _symp_manifest.unlink()
+    _os.symlink(_symp_target, _symp_manifest)
+    _symp_meta = c.get(f"/learn/lessons/{_symp_id}/preview-meta").json()
+    check("symlinked lesson.json rejects as symlinked-bundle, no skeleton overwrite",
+          _symp_meta["outcome"] == "rejected"
+          and any(f["code"] == "symlinked-bundle" for f in _symp_meta["findings"])
+          and _symp_manifest.is_symlink())
+
+    # a DANGLING symlink at the bundle dir rejects visibly, never a 500
+    _dang_conn = get_conn()
+    try:
+        _dang_id = lessons_svc.create_lesson(_dang_conn, "Dangling Bundle Demo")
+        _dang = lessons_svc.get_lesson(_dang_conn, _dang_id)
+    finally:
+        _dang_conn.close()
+    _dang_dir = Path(lessons_svc.LESSONS_DIR) / _dang["slug"]
+    import shutil as _shutil
+    _shutil.rmtree(_dang_dir)
+    _os.symlink(Path(lessons_svc.LESSONS_DIR) / "no-such-target-dir", _dang_dir)
+    _dang_resp = c.get(f"/learn/lessons/{_dang_id}/preview-meta")
+    check("dangling bundle-dir symlink rejects as symlinked-bundle, not a 500",
+          _dang_resp.status_code == 200
+          and _dang_resp.json()["outcome"] == "rejected"
+          and any(f["code"] == "symlinked-bundle" for f in _dang_resp.json()["findings"])
+          and _dang_dir.is_symlink())
+
+    # a non-regular node at lesson.json rejects visibly — never a 500 — and
+    # finding details never leak the absolute runtime path
+    _dirm_conn = get_conn()
+    try:
+        _dirm_id = lessons_svc.create_lesson(_dirm_conn, "Directory Manifest Demo")
+        _dirm = lessons_svc.get_lesson(_dirm_conn, _dirm_id)
+    finally:
+        _dirm_conn.close()
+    _dirm_path = Path(lessons_svc.LESSONS_DIR) / _dirm["slug"] / "lesson.json"
+    _dirm_path.unlink()
+    _dirm_path.mkdir()
+    _dirm_resp = c.get(f"/learn/lessons/{_dirm_id}/preview-meta")
+    _dirm_meta = _dirm_resp.json()
+    check("directory at lesson.json rejects as manifest-unreadable, not a 500",
+          _dirm_resp.status_code == 200
+          and _dirm_meta["outcome"] == "rejected"
+          and any(f["code"] == "manifest-unreadable" for f in _dirm_meta["findings"]))
+    check("finding details never leak the absolute runtime path",
+          str(lessons_svc.LESSONS_DIR) not in _dirm_resp.text)
+
+    # the preview file route serves the preview surface only
+    check("reserved bundle names are not served through /files/",
+          c.get(f"/learn/lessons/{_v2_id}/files/lesson.json").status_code == 404)
+    _v2_note = _v2_dir / "attempts" / "note.txt"
+    _v2_note.parent.mkdir(exist_ok=True)
+    _v2_note.write_text("Vera Example learner note", encoding="utf-8")
+    check("artifact-root files are not served through /files/",
+          c.get(f"/learn/lessons/{_v2_id}/files/attempts/note.txt").status_code == 404)
+    # v2 serving is a positive allowlist: declared pages + assets/ only
+    (_v2_dir / "undeclared-private.html").write_text(
+        "<html>Vera Example private draft</html>", encoding="utf-8")
+    (_v2_dir / "assets").mkdir(exist_ok=True)
+    (_v2_dir / "assets" / "diagram.svg").write_text(
+        "<svg xmlns='http://www.w3.org/2000/svg'/>", encoding="utf-8")
+    check("v2 /files/ serves declared pages + assets only",
+          c.get(f"/learn/lessons/{_v2_id}/files/undeclared-private.html").status_code == 404
+          and c.get(f"/learn/lessons/{_v2_id}/files/assets/diagram.svg").status_code == 200
+          and c.get(f"/learn/lessons/{_v2_id}/files/related/01-stage.html").status_code == 200)
+    # a declared page stays servable even when a root claims its directory
+    _v2_roots_raw = json.loads((_v2_dir / "lesson.json").read_text(encoding="utf-8"))
+    _v2_roots_raw["artifact_roots"] = ["related", "attempts"]
+    bschema.write_manifest(_v2_dir / "lesson.json", _v2_roots_raw)
+    check("declared page wins over an overlapping artifact root",
+          c.get(f"/learn/lessons/{_v2_id}/files/related/01-stage.html").status_code == 200
+          and c.get(f"/learn/lessons/{_v2_id}/files/attempts/note.txt").status_code == 404)
+    # ...and so does the assets/ preview area when a root claims it
+    _v2_roots_raw["artifact_roots"] = ["assets", "attempts"]
+    bschema.write_manifest(_v2_dir / "lesson.json", _v2_roots_raw)
+    check("preview assets win over an overlapping artifact root",
+          c.get(f"/learn/lessons/{_v2_id}/files/assets/diagram.svg").status_code == 200
+          and c.get(f"/learn/lessons/{_v2_id}/files/attempts/note.txt").status_code == 404)
+    _v2_roots_raw["artifact_roots"] = ["attempts"]
+    bschema.write_manifest(_v2_dir / "lesson.json", _v2_roots_raw)
+    # the injected mandatory root joins the overlap pass: a nested root
+    # declared without "attempts" is dropped, the final set stays disjoint
+    _inj = bschema.read_manifest_text(json.dumps({
+        "schema_version": 2,
+        "lesson_uid": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
+        "entry": "index.html",
+        "pages": [{"id": "pg_inject001", "path": "index.html"}],
+        "artifact_roots": ["attempts/deep"],
+    }))
+    check("injected attempts root keeps the root set disjoint",
+          _inj.artifact_roots == ["attempts"]
+          and {"overlapping-roots", "missing-attempts-root"} <= _inj.codes()
+          and _inj.outcome == "degraded")
+    # ...and a root intruding into the assets preview area is dropped visibly
+    _assets_root = bschema.read_manifest_text(json.dumps({
+        "schema_version": 2,
+        "lesson_uid": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
+        "entry": "index.html",
+        "pages": [{"id": "pg_assets001", "path": "index.html"}],
+        "artifact_roots": ["assets/work", "attempts"],
+    }))
+    check("asset-nested artifact root is dropped with overlapping-roots",
+          _assets_root.artifact_roots == ["attempts"]
+          and "overlapping-roots" in _assets_root.codes()
+          and _assets_root.outcome == "degraded")
+
+    # v1 keeps its historical surface: an undeclared page under attempts/
+    # (v1 tolerance allows selecting it) still serves
+    (_v1_dir / "attempts").mkdir(exist_ok=True)
+    (_v1_dir / "attempts" / "extra.html").write_text(
+        "<html>Vera Example v1 undeclared page</html>", encoding="utf-8")
+    check("v1 undeclared page under attempts/ stays servable",
+          c.get(f"/learn/lessons/{_v1_id}/files/attempts/extra.html").status_code == 200)
+
+    # the legacy flat-file bridge refuses a symlinked source (§2)
+    _leg_conn = get_conn()
+    try:
+        _leg_id = lessons_svc.create_lesson(_leg_conn, "Legacy Symlink Demo")
+        _leg = lessons_svc.get_lesson(_leg_conn, _leg_id)
+    finally:
+        _leg_conn.close()
+    _leg_dir = Path(lessons_svc.LESSONS_DIR) / _leg["slug"]
+    (_leg_dir / "index.html").unlink(missing_ok=True)
+    _os.symlink(_symp_target, Path(lessons_svc.LESSONS_DIR) / f"{_leg['slug']}.html")
+    lessons_svc.lesson_file_info(_leg)  # runs the ensure/bridge path
+    check("legacy flat-file bridge refuses a symlinked source (§2)",
+          not (_leg_dir / "index.html").exists())
+    # ...while a regular legacy source still bridges (fd-bound read)
+    _leg_flat = Path(lessons_svc.LESSONS_DIR) / f"{_leg['slug']}.html"
+    _leg_flat.unlink()
+    _leg_flat.write_text("<html>Vera Example legacy body</html>", encoding="utf-8")
+    lessons_svc.lesson_file_info(_leg)
+    check("legacy flat-file bridge still copies a regular source",
+          (_leg_dir / "index.html").is_file()
+          and "Vera Example legacy body" in (_leg_dir / "index.html").read_text(encoding="utf-8"))
+
+    # hostile manifests stay bounded: finding count, deep JSON, malformed URL
+    _flood = bschema.read_manifest_text(json.dumps({
+        "schema_version": 2,
+        "lesson_uid": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
+        "entry": "index.html",
+        "pages": [{"id": "pg_flood0001", "path": "index.html"}] + [7] * 5000,
+    }))
+    check("hostile manifest findings stay bounded",
+          _flood.outcome == "rejected"
+          and len(_flood.findings) <= bschema.MAX_FINDINGS + 5)
+    _deep = bschema.read_manifest_text('{"x":' * 5000 + "1" + "}" * 5000)
+    check("pathologically deep JSON is manifest-unreadable, not a crash",
+          _deep.outcome == "rejected" and "manifest-unreadable" in _deep.codes())
+    _badurl = bschema.read_manifest_text(json.dumps({
+        "schema_version": 2,
+        "lesson_uid": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
+        "slug": "vera-example", "title": "Vera Example",
+        "source_url": "http://[::1",
+        "entry": "index.html",
+        "pages": [{"id": "pg_badurl001", "path": "index.html"}],
+    }))
+    check("malformed source_url copy degrades to stale-metadata, not a crash",
+          _badurl.outcome == "ok" and "stale-metadata" in _badurl.codes())
+    _nan = bschema.read_manifest_text('{"schema_version": 2, "x_weight": NaN}')
+    check("non-standard JSON constants are manifest-unreadable",
+          _nan.outcome == "rejected" and "manifest-unreadable" in _nan.codes())
+    _bigint = bschema.read_manifest_text(
+        '{"schema_version": 2, "x_big": ' + "9" * 5000 + "}")
+    check("huge integer token is manifest-unreadable, not a crash",
+          _bigint.outcome == "rejected" and "manifest-unreadable" in _bigint.codes())
+    _inf = bschema.read_manifest_text('{"schema_version": 2, "x_big": 1e10000}')
+    check("overflowing float token is manifest-unreadable (writer stays JSON)",
+          _inf.outcome == "rejected" and "manifest-unreadable" in _inf.codes())
+
+    # v2 selections compare exactly (§4.1): a normalizable variant is not repaired
+    _norm_meta = c.get(f"/learn/lessons/{_v2_id}/preview-meta",
+                       params={"entry": "./index.html"}).json()
+    check("normalizable v2 selection degrades instead of silent repair (§4.1)",
+          _norm_meta["outcome"] == "degraded"
+          and any(f["code"] == "invalid-entry" for f in _norm_meta["findings"])
+          and _norm_meta["path"].endswith("/index.html"))
+    _norm_conn = get_conn()
+    try:
+        _norm_refused = False
+        try:
+            lessons_svc.set_current_entry(_norm_conn, _v2_id, "./related/01-stage.html")
+        except lessons_svc.LessonError:
+            _norm_refused = True
+        _norm_after = lessons_svc.get_lesson(_norm_conn, _v2_id)
+    finally:
+        _norm_conn.close()
+    check("set_current_entry refuses a normalizable v2 variant, stores exact paths",
+          _norm_refused and _norm_after["current_entry"] == "related/01-stage.html")
 
     tday = c.get("/today").text
     check("Today title carries the Ephemeris identity", "· Ephemeris" in tday)

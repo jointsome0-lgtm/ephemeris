@@ -1026,7 +1026,11 @@ def get_learn(
         if selected is None and rows:
             selected = rows[0]
         selected = lessons.with_bundle_info(selected, entry=selected_entry)
-        if selected:
+        # A rejected manifest has no selectable entry — show the placeholder
+        # without persisting a selection. A stale v2 selection (§4.2) keeps
+        # its stored/requested candidate too: persisting the fallback would
+        # make the very next read report `ok` and erase the finding.
+        if selected and selected["entry"] and not selected["bundle"]["stale_selection"]:
             lessons.mark_opened(conn, selected["id"], selected["entry"])
     finally:
         conn.close()
@@ -1041,7 +1045,17 @@ def get_learn(
             selected["entry"],
             exists=selected["file"]["exists"],
         )
-        selected["preview_meta_url"] = _lesson_preview_url(selected["id"], selected["entry"], meta=True)
+        # The metadata poll re-resolves its `entry` param on every request, so
+        # it must carry the ORIGINAL stale candidate when the render fell back
+        # (§4.2): polling the fallback entry would answer `ok` and silently
+        # clear the invalid-entry finding the page just surfaced. The version
+        # token still tracks the fallback file — the one actually displayed —
+        # because resolution inside the meta route lands on the same fallback.
+        selected["preview_meta_url"] = _lesson_preview_url(
+            selected["id"],
+            selected["bundle"]["stale_selection"] or selected["entry"],
+            meta=True,
+        )
         for page in selected["pages"]:
             page["href"] = _learn_url(
                 status=status,
@@ -1185,6 +1199,10 @@ def get_lesson_preview_meta(lesson_id: int, entry: str | None = None):
         "exists": info["exists"],
         "version": info["version"],
         "path": info["rel_path"],
+        # Manifest read outcome + findings (learn-bundle-spec.md §9.2):
+        # readers must surface findings to the preview metadata.
+        "outcome": info["outcome"],
+        "findings": info["findings"],
         "preview_url": _lesson_preview_url(lesson_id, info["entry"], exists=info["exists"]),
         "file_url": _lesson_preview_url(lesson_id, info["entry"]),
     })

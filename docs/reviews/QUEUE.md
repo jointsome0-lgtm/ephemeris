@@ -21,6 +21,58 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Done
 
+- [x] 2026-07-17 — 5250768, 5d37a97, 1227d29, 41224b5, 53b5232, ca4a7fd,
+  9c188d7, 5388efe, 6a690b2, 825bec6, 5a9fd04, 6fde64a, 4d5b20d, cdeda5b,
+  dd9c1c3, 4b88b6f, 36e7142, 1484362 —
+  `app/services/bundle_schema.py` (new), `app/services/lessons.py`, `app/db.py`,
+  `app/main.py`, `docs/learn-bundle-spec.md`, `verify.py` — issue #39 session
+  C3: typed v1/v2
+  lesson-manifest readers and findings, canonical/atomic writer, v2 creation,
+  stable `lessons.uid`, declared-page selection, lesson-event UID echoes, and
+  preview metadata; follow-ups block direct page renders for rejected manifests,
+  surface stale v2 selections, harden standard bundle-subdir creation/path
+  checks, reject duplicate identities even when another field drops the item,
+  harden manifest error/bounds handling, remove the creation-event title echo,
+  aggregate selected-page symlink outcome, compare v2 selections exactly,
+  reject non-standard JSON constants and huge-integer parse failures, bind the
+  legacy bridge read to one no-follow regular-file descriptor, restrict v2
+  `/files/` to declared pages plus assets, preserve exact declared pages
+  over overlapping artifact roots, derive placeholder version tokens from
+  manifest state, reject a dangling bundle-directory symlink as
+  `symlinked-bundle` instead of erroring, keep artifact roots out of the
+  `assets/` preview area (spec §7 amendment), run the injected `attempts` root
+  through the overlap pass while keeping v1's full historical file surface,
+  snapshot bundle outcome/findings after selection resolution, fold the
+  current page's symlink degradation into the top-level `bundle_info`
+  outcome, report a dropped block's outside-root file independently of
+  its unknown kind (completed in 1484362: page, kind, and root checks are
+  fully independent), and reject §4.1 paths carrying edge whitespace (spec
+  amendment) so the reader and the disk resolver always name the same file
+  → `2026-07-17-bundle-schema-runtime-review.md` (final addendum through
+  `9c188d7`: B1–B5 and the PR-bot findings resolved; no remaining security-
+  severity finding; the one Info canonical-JSON closure finding N1 fixed in
+  `5388efe` per the closing note; direct-loopback deploy allowed, wider
+  deployment unsupported; resolution section covers `6a690b2..1484362` —
+  PR #48 review rounds 7–18, each commit reviewed individually by the PR
+  review bot on push, head `cdeda5b` approved 2026-07-16T23:20:56Z, the
+  round-13 follow-up `dd9c1c3` reviewed on push with no code finding
+  against it; this entry stays current with the branch: any further C3
+  commit touching these paths — and the merge commit itself once the PR
+  lands (this repository merges via merge commits, so the landed tree is
+  the reviewed branch head's tree) — is appended here before any restart;
+  c7a315e merges main back into the branch: retro_entries (#49) keeps
+  schema v10 as landed on main, the `lessons.uid` step is renumbered to
+  v11 with its content unchanged, `verify.py` keeps main's
+  SCHEMA_VERSION-relative version check, both branches' Done entries
+  kept — verify 473, verify_restore 28; fe98b63 (PR-bot round 19 on the
+  merge): `_migrate_to_11` re-runs the IF-NOT-EXISTS retro DDL so a DB
+  that ran the uid step under its pre-renumber v10 label still gains
+  `retro_entries`, and a stale v2 selection is no longer erased by its
+  own fallback — `bundle_info` exposes `stale_selection`, `GET /learn`
+  skips persisting the fallback, and the preview-meta poll URL carries
+  the stale candidate so each poll re-derives the invalid-entry finding
+  — verify 477, verify_restore 28)
+
 - [x] 2026-07-16 — 5ae5017, eeb71f1, ecee1f2, ff9a3f0, 4b04757, ba2bc3c,
   2851f69, 89adcbc, 38dd11b, 9dc0fc6, e7a2068, 250cd66 —
   `app/services/lessons.py`, `docs/learn-bundle-spec.md`, `verify.py` —

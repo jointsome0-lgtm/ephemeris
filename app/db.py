@@ -124,7 +124,7 @@ def get_conn() -> sqlite3.Connection:
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -449,6 +449,43 @@ def _migrate_to_10(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA_V10)
 
 
+# v11 — lesson identity (learn-bundle-spec.md §3): `lessons.uid` is the mint
+# source and the truth for lesson_uid; the bundle manifest only carries an
+# echo. Same idiom as events.uuid (v9): nullable column + unique index +
+# idempotent backfill that NEVER replaces an existing uid — a lesson is minted
+# exactly once, and rename/status/archive churn must not touch it. The
+# backfill also reruns on every init_db() to stamp rows a not-yet-restarted
+# pre-v11 process inserts after the migration ran. (This step shipped as v10
+# on its feature branch and was renumbered when retro_entries landed first;
+# it is column-existence-guarded, so a DB that already ran it as v10 upgrades
+# cleanly.)
+
+
+def backfill_lesson_uids(conn: sqlite3.Connection) -> int:
+    """Mint a UUID for every lesson row that lacks one; returns how many were
+    stamped. Idempotent: an existing uid is never replaced, so a rerun is a
+    no-op and the uid survives title/slug renames and re-migration."""
+    ids = [r["id"] for r in conn.execute("SELECT id FROM lessons WHERE uid IS NULL")]
+    conn.executemany(
+        "UPDATE lessons SET uid = ? WHERE id = ? AND uid IS NULL",
+        [(str(uuid4()), lesson_id) for lesson_id in ids],
+    )
+    return len(ids)
+
+
+def _migrate_to_11(conn: sqlite3.Connection) -> None:
+    # Renumbering hazard: a DB that ran the uid step while it was numbered
+    # v10 sits at user_version=10 WITHOUT retro_entries, so the landed v10
+    # step above is skipped on its way here. The retro DDL is IF NOT EXISTS
+    # throughout — re-running it converges that shape (fresh DBs no-op).
+    conn.executescript(_SCHEMA_V10)
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(lessons)")}
+    if "uid" not in have:
+        conn.execute("ALTER TABLE lessons ADD COLUMN uid TEXT")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_lessons_uid ON lessons(uid)")
+    backfill_lesson_uids(conn)
+
+
 # Ordered, idempotent steps. A schema change must NEVER require deleting the
 # ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
 _MIGRATIONS = [
@@ -462,6 +499,7 @@ _MIGRATIONS = [
     (8, _migrate_to_8),
     (9, _migrate_to_9),
     (10, _migrate_to_10),
+    (11, _migrate_to_11),
 ]
 
 
@@ -478,9 +516,12 @@ def init_db() -> None:
                 conn.execute(f"PRAGMA user_version = {target}")
                 conn.commit()
                 version = target
-        # Heal rows a pre-v9 process may have inserted after the migration ran
-        # (the live service lags the working tree until its next restart).
-        if backfill_event_uuids(conn):
+        # Heal rows a pre-v9/pre-v11 process may have inserted after the
+        # migration ran (the live service lags the working tree until its
+        # next restart).
+        healed = backfill_event_uuids(conn)
+        healed += backfill_lesson_uids(conn)
+        if healed:
             conn.commit()
     finally:
         conn.close()
