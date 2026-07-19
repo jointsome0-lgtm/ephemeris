@@ -339,6 +339,18 @@ def apply_plan(
     errors: list[str] = []
     manifest_path = bundle_dir / MANIFEST_NAME
 
+    # Stale-plan guard: run() plans every bundle before the first write, so by
+    # the time a later lesson is reached its manifest may have been edited
+    # (app or study agent). Refuse rather than overwrite bytes the rollback
+    # copy does not contain — the caller re-plans and reruns.
+    current, err = _read_bytes_no_follow(manifest_path)
+    if current != plan.old_bytes:
+        return [
+            "refused: manifest changed since planning"
+            + (f" ({err})" if err else "")
+            + "; re-plan and rerun"
+        ]
+
     # Durable rollback data BEFORE any mutation: the original bytes as a file,
     # and the ledger entry in rollback.json (rewritten per bundle, so a crash
     # mid-run still leaves every already-migrated bundle restorable).

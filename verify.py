@@ -1166,6 +1166,20 @@ with TestClient(app) as c:
           _mig_soon.action == mig.ACTION_MIGRATE
           and json.loads(_mig_soon.new_text)["updated_by_agent_at"] == "soon-ish")
 
+    # a manifest edited between plan and apply is refused, never overwritten
+    _mig_race = mig.plan_bundle(_mig_head_dir, dict(_mig_head_db, current_entry=None))
+    _mig_race_edit = json.dumps({
+        "schema_version": 1, "entry": "index.html",
+        "x_note": "Vera Example concurrent edit",
+    }) + "\n"
+    (_mig_head_dir / "lesson.json").write_text(_mig_race_edit, encoding="utf-8")
+    _mig_race_errors = mig.apply_plan(_mig_head_dir, _mig_race, _mig_head_db, _mig_rb1)
+    check("apply refuses a manifest edited since planning",
+          _mig_race.action == mig.ACTION_MIGRATE
+          and any("changed since planning" in e for e in _mig_race_errors)
+          and (_mig_head_dir / "lesson.json").read_text(encoding="utf-8")
+          == _mig_race_edit)
+
     # §10 stop-before-write conditions leave the manifest untouched
     def _mig_stop_case(label: str, manifest: dict, needle: str) -> None:
         _stop_dir = Path(lessons_svc.LESSONS_DIR) / "vera-example-stop"
