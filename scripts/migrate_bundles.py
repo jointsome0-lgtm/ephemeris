@@ -662,14 +662,12 @@ def run(*, dry_run: bool, slugs: list[str] | None) -> int:
             # head-fold): re-read it right before the write and refuse a
             # stale plan, exactly like the manifest-bytes guard in apply.
             # Every DB value the plan can consume is compared: uid (identity
-            # copy), current_entry (head-fold), title (slug/title fallback).
-            # A drifted slug makes the by-slug re-read return None.
+            # copy), current_entry (head-fold), title and source_url (copy
+            # fallbacks). A drifted slug makes the by-slug re-read return None.
             fresh = _reread_lesson(lesson["slug"])
-            if (
-                fresh is None
-                or fresh.get("uid") != lesson.get("uid")
-                or fresh.get("current_entry") != lesson.get("current_entry")
-                or fresh.get("title") != lesson.get("title")
+            if fresh is None or any(
+                fresh.get(name) != lesson.get(name)
+                for name in ("uid", "current_entry", "title", "source_url")
             ):
                 print("    ERROR: refused: DB lesson row changed since planning; "
                       "re-plan and rerun")
