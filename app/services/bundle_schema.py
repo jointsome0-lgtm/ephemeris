@@ -160,6 +160,15 @@ class ManifestRead:
         return self.outcome == REJECTED
 
     @property
+    def effective_profile(self) -> str:
+        """§5: a rejected read has no trusted runtime profile — legacy-display
+        regardless of what the raw manifest declared. A v2 parse can assign
+        the interactive profile and only afterwards accumulate a rejecting
+        finding (no-pages, duplicate-id, …); consumers must never see that
+        parsed value, so they read this accessor, not the raw field."""
+        return PROFILE_LEGACY if self.rejected else self.profile
+
+    @property
     def bridge_eligible(self) -> bool:
         """§5 (enforced in D1): the postMessage bridge may only be offered for
         a manifest that parsed as v2, was not rejected, and carries the
@@ -169,7 +178,7 @@ class ManifestRead:
         return (
             self.version == SCHEMA_V2
             and not self.rejected
-            and self.profile == PROFILE_INTERACTIVE
+            and self.effective_profile == PROFILE_INTERACTIVE
         )
 
     def codes(self) -> set[str]:

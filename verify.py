@@ -943,6 +943,19 @@ with TestClient(app) as c:
           any(f["code"] == "identity-mismatch" for f in _d1_mid_meta["findings"])
           and _d1_mid_meta["profile"] == "legacy-display"
           and _d1_mid_meta["bridge"] is False)
+    # PR-bot round 3: a v2 parse can assign the interactive profile and only
+    # afterwards reject (no-pages) — the rejected metadata must still report
+    # the forced legacy profile, never the parsed interactive value
+    bschema.write_manifest(_v2_dir / "lesson.json", dict(_v2_raw, pages=[]))
+    _d1_rejp_meta = c.get(f"/learn/lessons/{_v2_id}/preview-meta").json()
+    _d1_rejp_prev = c.get(f"/learn/lessons/{_v2_id}/preview")
+    bschema.write_manifest(_v2_dir / "lesson.json", _v2_raw)  # restore
+    check("late-rejected interactive manifest reports legacy, no bridge",
+          _d1_rejp_meta["outcome"] == "rejected"
+          and any(f["code"] == "no-pages" for f in _d1_rejp_meta["findings"])
+          and _d1_rejp_meta["profile"] == "legacy-display"
+          and _d1_rejp_meta["bridge"] is False
+          and _d1_rejp_prev.headers.get("content-security-policy") == _CSP_LEG)
 
     # §2 symlink policy: a page that resolves through a symlink is missing
     _symp_conn = get_conn()
