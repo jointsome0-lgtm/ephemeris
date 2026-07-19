@@ -123,15 +123,10 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             return typeof field === "string" && field.length > 0 && field.length <= 256;
         });
     };
-    const bind = async (gen) => {
-        const meta = await fetchMeta();
-        if (gen !== generation || meta === null)
+    const armFromMeta = (meta) => {
+        if (armed !== null || granted)
             return;
-        if (String(meta.version ?? "0") !== expectedVersion) {
-            navigate(meta); // stale before it ever bound; reload and re-enter
-            return;
-        }
-        if (meta.bridge === true && isBridgePage(meta.bridge_page) && !granted) {
+        if (meta.bridge === true && isBridgePage(meta.bridge_page)) {
             armed = {
                 lesson_uid: meta.bridge_page.lesson_uid,
                 page_id: meta.bridge_page.page_id,
@@ -144,6 +139,16 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
                     handleReady(queued);
             }
         }
+    };
+    const bind = async (gen) => {
+        const meta = await fetchMeta();
+        if (gen !== generation || meta === null)
+            return;
+        if (String(meta.version ?? "0") !== expectedVersion) {
+            navigate(meta); // stale before it ever bound; reload and re-enter
+            return;
+        }
+        armFromMeta(meta);
     };
     frame.addEventListener("load", () => {
         generation += 1;
@@ -305,8 +310,18 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         inFlight = true;
         try {
             const meta = await fetchMeta();
-            if (meta !== null && String(meta.version ?? "0") !== expectedVersion) {
-                navigate(meta);
+            if (meta !== null) {
+                if (String(meta.version ?? "0") !== expectedVersion) {
+                    navigate(meta);
+                }
+                else if (!navPending) {
+                    /* Same version, settled document: if the load-driven bind lost its
+                     * best-effort meta fetch, this is the retry that arms an eligible
+                     * document (PR-55 round 1). Never during a pending navigation —
+                     * the outgoing document could still announce into the gap and be
+                     * granted the incoming page's identity. */
+                    armFromMeta(meta);
+                }
             }
         }
         finally {

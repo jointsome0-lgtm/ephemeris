@@ -133,6 +133,18 @@ that is the forward-compatibility room minor additions use.
   bound or granted; the parent re-asserts the expected page (bounded — a
   document that fights the re-assert simply stays unbridged). This is the
   observer for the §5 "same-frame navigation" residual.
+
+  Known residual within that residual: a document that navigates the frame
+  BEFORE its own load event completes is indistinguishable from the
+  parent's navigation completing — the frame is opaque-origin, load events
+  carry no URL, and no other browser signal exists (same class as the spec
+  §5 `navigate-to` gap). The successor document can then be bound and
+  announce under the expected page's identity. This grants nothing the
+  redirecting page did not already have: it is itself lesson content that
+  could have completed the handshake and rendered arbitrary content under
+  that identity, and `page_rev` still describes the manifest page's bytes
+  on disk — which is what the attempt backend records against (§6.3).
+  Post-load self-navigation IS detected and re-asserted.
 - **Profile flip:** the effective profile is folded into the version token,
   so a manifest-only flip reloads the document under the new CSP and sandbox
   tokens; the metadata never advertises a policy the displayed document was
