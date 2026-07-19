@@ -19,17 +19,27 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-20 — 66defd3 — `app/main.py`, `app/services/bundle_schema.py`,
-  `app/services/lessons.py`, `verify.py`, `docs/learn-bundle-spec.md` —
+## Done
+
+- [x] 2026-07-20 — 66defd3, 2ce1c0e, 38ef45e, f7db9e1, 625bbb8 —
+  `app/main.py`, `app/services/bundle_schema.py`, `app/services/lessons.py`,
+  `verify.py`, `docs/learn-bundle-spec.md` —
   issue #39 session D1: the lesson preview/file routes now select the
   Content-Security-Policy header by the manifest's runtime profile
   (`legacy-display` keeps the previous policy, `interactive-local-v1` gets a
   new stricter one); `ManifestRead` gains a `bridge_eligible` property and
   the preview metadata / bundle info now report `profile` and `bridge`
-  fields; spec §5 records the landed details. Iframe sandbox attributes in
-  templates are unchanged.
-
-## Done
+  fields; spec §5 records the landed details; iframe sandbox attributes in
+  templates are unchanged. Follow-ups: same-frame-navigation residual
+  documented (2ce1c0e); existing-page reload token folds the effective
+  profile in (38ef45e); `webrtc 'block'` added to the strict policy with
+  partial-enforcement note (f7db9e1); `effective_profile` accessor forces
+  legacy on late-rejected reads (625bbb8). Drained →
+  `2026-07-20-csp-profiles-review.md` (one Low C1, resolved in 38ef45e;
+  three addenda, closing verdict YES for direct-loopback). Opus second pass
+  APPROVE (its 'self'-opaque-origin Low refuted by live browser probe;
+  identity-mismatch Info became a verify check). PR #54 bot 👍 APPROVED
+  head 625bbb8 2026-07-19T22:02:42Z after 3 finding rounds.
 
 - [x] 2026-07-19 — ec3c112, a7acb6c, 40a7888, 3310e2b, 41c5134, fbd315b,
   f487b30, 7e3ead9, c4c9b62, fe6012a —
