@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<!-- Vera Example — lesson-bridge ABI v1 e2e child: performs the documented
+     handshake (docs/lesson-bridge-abi.md), pings over the granted port, and
+     exposes every observation as data-* on #state for the browser driver.
+     Also verifies one-grant-per-document by announcing ready twice. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Vera Example valid child</title></head>
+<body>
+<h1>Vera Example — valid bridge child</h1>
+<div id="state" data-bridge="init"></div>
+<script>
+(() => {
+  const state = document.getElementById("state");
+  const set = (key, value) => { state.dataset[key] = String(value); };
+  if (window.parent === window) { set("bridge", "absent"); return; }
+  const appOrigin = new URL(location.href).origin;
+  let port = null;
+  let welcomes = 0;
+  let answered = false;
+  const announce = () => window.parent.postMessage(
+    { ephemeris: "lesson-bridge", type: "ready", abi: [1], want: ["attempts"] },
+    appOrigin);
+  // ABI §2: re-announce until answered, give up on the silence budget
+  const retry = setInterval(() => { if (!answered) announce(); }, 250);
+  const silent = setTimeout(() => {
+    clearInterval(retry);
+    if (!answered) set("bridge", "silent");
+  }, 2000);
+  window.addEventListener("message", (ev) => {
+    const d = ev.data;
+    if (!d || d.ephemeris !== "lesson-bridge") return;
+    if (d.type === "welcome") {
+      welcomes += 1;
+      set("welcomes", welcomes);
+      if (welcomes > 1) return; // MUST NOT happen for one document
+      answered = true;
+      clearInterval(retry);
+      clearTimeout(silent);
+      set("bridge", "welcome");
+      set("abi", d.abi);
+      set("lessonUid", d.lesson.lesson_uid);
+      set("pageId", d.lesson.page_id);
+      set("pageRev", d.lesson.page_rev);
+      set("caps", JSON.stringify(d.capabilities));
+      port = ev.ports[0];
+      port.onmessage = (pe) => { set("last", JSON.stringify(pe.data)); };
+      port.postMessage({ op: "ping", request_id: "r1" });
+      // extra ready on the same document: parent must stay silent
+      announce();
+    } else if (d.type === "reject") {
+      answered = true;
+      clearInterval(retry);
+      clearTimeout(silent);
+      set("bridge", "reject:" + d.reason);
+    }
+  });
+  announce();
+})();
+</script>
+</body>
+</html>

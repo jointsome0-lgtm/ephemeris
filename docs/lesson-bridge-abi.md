@@ -55,6 +55,17 @@ negotiate with). The child SHOULD post to `window.parent` with targetOrigin
 `new URL(location.href).origin` (its own document URL is the app origin even
 though `window.origin` is `"null"` in the sandbox).
 
+A child usually announces the moment its script runs — before the parent
+has finished binding identity for the freshly loaded document (and, across
+a parent-initiated reload, possibly before the parent processed the load).
+Children MUST therefore re-announce `ready` periodically (every 250–500 ms
+is fine) until they receive a `welcome` or `reject`, giving up after the
+~2 s silence budget below. The parent additionally buffers the latest valid
+announcement while its identity binding is in flight and answers it on arm,
+so in the common case the first or second announcement completes the
+handshake. Duplicate announcements after a `welcome` are ignored (one grant
+per document).
+
 On a valid announcement whose `abi` contains a version the parent speaks
 (v1: the literal `1`), the parent replies **once per loaded document**:
 

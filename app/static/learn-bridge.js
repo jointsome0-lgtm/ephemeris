@@ -62,6 +62,11 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     let port = null;
     let protocolErrors = 0;
     let rejects = 0;
+    /* A child typically announces `ready` the moment its script runs — before
+     * the identity-binding meta fetch resolves. The latest valid announcement
+     * from the current document is buffered and answered on arm; navigation
+     * clears it with the rest of the document state. */
+    let pendingReady = null;
     const teardown = () => {
         if (port)
             port.close();
@@ -70,6 +75,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         granted = false;
         protocolErrors = 0;
         rejects = 0;
+        pendingReady = null;
     };
     const fetchMeta = async () => {
         try {
@@ -131,10 +137,24 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
                 page_id: meta.bridge_page.page_id,
                 page_rev: meta.bridge_page.page_rev,
             };
+            if (pendingReady !== null) {
+                const queued = pendingReady;
+                pendingReady = null;
+                if (isReady(queued))
+                    handleReady(queued);
+            }
         }
     };
     frame.addEventListener("load", () => {
         generation += 1;
+        if (navPending && granted) {
+            /* Gen-0 rescue path: the grant already went to this same pending
+             * navigation's document (its script announced before its own load
+             * event completed) — completing the load must not tear it down and
+             * hand the SAME document a second welcome. */
+            navPending = false;
+            return;
+        }
         teardown();
         if (!navPending) {
             /* Self-navigation: the lesson document went somewhere on its own. The
@@ -152,11 +172,6 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         navPending = false;
         void bind(generation);
     });
-    /* If the document finished loading before this script ran, no load event
-     * will come for it — bind the current generation directly. (When the load
-     * IS still pending, this early meta read can only arm the same identity
-     * the load-bind would, or detect staleness one tick sooner.) */
-    void bind(generation);
     /* ---- handshake membrane (the only global listener; everything after the
      * welcome flows over the transferred MessagePort) ---- */
     const jsonLength = (value) => {
@@ -225,20 +240,11 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         /* ABI v1 has no other operations (writes arrive with D4/D5). */
         return protocolError("unknown-op", requestId);
     };
-    window.addEventListener("message", (ev) => {
-        /* Narrow by state first, then by source — only the document this runtime
-         * navigated into the preview frame can ever be answered. */
-        if (armed === null || granted)
-            return;
+    const handleReady = (data) => {
         const child = frame.contentWindow;
-        if (!child || ev.source !== child)
+        if (armed === null || granted || !child)
             return;
-        const size = jsonLength(ev.data);
-        if (size === null || size > MAX_READY_CHARS)
-            return;
-        if (!isReady(ev.data))
-            return;
-        if (!ev.data.abi.includes(ABI_VERSION)) {
+        if (!data.abi.includes(ABI_VERSION)) {
             if (rejects < MAX_REJECTS) {
                 rejects += 1;
                 child.postMessage({
@@ -263,6 +269,33 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
              * granted set is empty — the ABI ships before any capability. */
             capabilities: [],
         }, "*", [channel.port2]);
+    };
+    window.addEventListener("message", (ev) => {
+        /* Narrow by state first, then by source — only the document this runtime
+         * navigated into the preview frame can ever be answered. */
+        if (granted)
+            return;
+        const child = frame.contentWindow;
+        if (!child || ev.source !== child)
+            return;
+        const size = jsonLength(ev.data);
+        if (size === null || size > MAX_READY_CHARS)
+            return;
+        if (!isReady(ev.data))
+            return;
+        if (armed === null) {
+            pendingReady = ev.data; // answered when (and if) identity arms
+            if (generation === 0) {
+                /* No load event has been observed, yet the frame's document is
+                 * demonstrably running (it just announced): the document finished
+                 * loading before this module initialised, so no load-driven bind is
+                 * coming — bind here. Children re-announce until answered (ABI §2),
+                 * so the flush-or-retry pair completes the handshake. */
+                void bind(generation);
+            }
+            return;
+        }
+        handleReady(ev.data);
     });
     /* ---- live-reload poll (the pre-D2 app.js block, now owning binding) ---- */
     let inFlight = false;
