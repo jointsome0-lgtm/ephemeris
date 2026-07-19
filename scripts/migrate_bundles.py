@@ -48,6 +48,7 @@ import os
 import sqlite3
 import stat as stat_module
 import sys
+import tempfile
 from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -132,21 +133,91 @@ def _read_bytes_no_follow(path: Path) -> tuple[bytes | None, str | None]:
             os.close(fd)
 
 
+def _hash_file_no_follow(path: Path) -> str | None:
+    """Streamed sha256 from one no-follow regular-file descriptor: no whole-file
+    allocation, no blocking on a planted special file, and no gap between the
+    existence check and the read — the descriptor is the only source."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    try:
+        if not stat_module.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(fd, 1 << 16)
+            if not chunk:
+                return digest.hexdigest()
+            digest.update(chunk)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
 def _hash_pages(bundle_dir: Path, paths: list[str], notes: list[str]) -> dict[str, str]:
-    """sha256 of every declared page that exists as a plain file. A missing or
-    symlinked page is noted, not fatal — the invariant under test is that the
-    tool changes no page bytes, not that every page exists."""
+    """sha256 of every declared page that exists as a plain file. A missing,
+    symlinked, or non-regular page is noted, not fatal — the invariant under
+    test is that the tool changes no page bytes, not that every page exists."""
     hashes: dict[str, str] = {}
     for rel in paths:
         if bundle_schema.path_has_symlink(bundle_dir, rel):
             notes.append(f"page {rel!r} resolves through a symlink; not hashed")
             continue
-        file = bundle_dir / rel
-        if not file.is_file():
-            notes.append(f"page {rel!r} is missing on disk")
+        digest = _hash_file_no_follow(bundle_dir / rel)
+        if digest is None:
+            notes.append(f"page {rel!r} is missing or not a regular file")
             continue
-        hashes[rel] = hashlib.sha256(file.read_bytes()).hexdigest()
+        hashes[rel] = digest
     return hashes
+
+
+def _bundle_dir_safe(bundle_dir: Path) -> bool:
+    """The runtime's containment posture (lessons.py `_bundle_dir_is_safe`):
+    the bundle path must be a real directory whose resolved parent is its
+    literal parent — never a symlink and never a traversal out of the root."""
+    if bundle_dir.is_symlink() or not bundle_dir.is_dir():
+        return False
+    try:
+        return bundle_dir.resolve(strict=True).parent == bundle_dir.parent.resolve()
+    except OSError:
+        return False
+
+
+def _valid_slug(slug: object) -> bool:
+    return (
+        isinstance(slug, str)
+        and len(slug) <= bundle_schema.MAX_SLUG_LEN
+        and bundle_schema.SLUG_RE.match(slug) is not None
+    )
+
+
+def _fsync_dir(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _write_bytes_durable(path: Path, data: bytes) -> None:
+    """Rollback material must survive a crash that happens after the manifest
+    replacement: 0600 tempfile, file fsync, atomic replace, directory fsync."""
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".rollback-")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    _fsync_dir(path.parent)
 
 
 def _check_item_collisions(label: str, item: dict, stops: list[str]) -> None:
@@ -275,12 +346,12 @@ def plan_bundle(bundle_dir: Path, db_lesson: dict) -> BundlePlan:
     slug = db_lesson.get("slug") or bundle_dir.name
     plan = BundlePlan(slug=slug, action=ACTION_STOP)
 
-    if bundle_dir.is_symlink() or (bundle_dir.exists() and not bundle_dir.is_dir()):
-        plan.reasons.append("bundle dir is not a real directory")
-        return plan
-    if not bundle_dir.exists():
+    if not bundle_dir.is_symlink() and not bundle_dir.exists():
         plan.action = ACTION_SKIP
         plan.reasons.append("no bundle directory")
+        return plan
+    if not _bundle_dir_safe(bundle_dir):
+        plan.reasons.append("bundle dir is not a real directory under the lessons root")
         return plan
 
     data, err = _read_bytes_no_follow(bundle_dir / MANIFEST_NAME)
@@ -347,6 +418,11 @@ def apply_plan(
     errors: list[str] = []
     manifest_path = bundle_dir / MANIFEST_NAME
 
+    # The containment boundary holds at write time, not only at plan time:
+    # the bundle must still be a real direct child of its literal parent.
+    if not _bundle_dir_safe(bundle_dir):
+        return ["refused: bundle dir is not a real directory under the lessons root"]
+
     # Stale-plan guard: run() plans every bundle before the first write, so by
     # the time a later lesson is reached its manifest may have been edited
     # (app or study agent). Refuse rather than overwrite bytes the rollback
@@ -359,10 +435,11 @@ def apply_plan(
             + "; re-plan and rerun"
         ]
 
-    # Durable rollback data BEFORE any mutation: the original bytes as a file,
-    # and the ledger entry in rollback.json (rewritten per bundle, so a crash
-    # mid-run still leaves every already-migrated bundle restorable).
-    (rollback_dir / f"{plan.slug}.lesson.json").write_bytes(plan.old_bytes)
+    # Durable rollback data BEFORE any mutation: the original bytes as an
+    # fsynced file, then the ledger entry (rewritten per bundle and fsynced
+    # with its directory) — a crash at any later point, power loss included,
+    # leaves every already-migrated bundle restorable.
+    _write_bytes_durable(rollback_dir / f"{plan.slug}.lesson.json", plan.old_bytes)
     ledger_path = rollback_dir / ROLLBACK_MANIFEST
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
     ledger["entries"] = [e for e in ledger["entries"] if e["slug"] != plan.slug]
@@ -373,8 +450,10 @@ def apply_plan(
         "new_sha256": hashlib.sha256(plan.new_text.encode("utf-8")).hexdigest(),
     })
     bundle_schema.atomic_write_text(ledger_path, json.dumps(ledger, indent=2) + "\n")
+    _fsync_dir(rollback_dir)
 
     bundle_schema.atomic_write_text(manifest_path, plan.new_text)
+    _fsync_dir(bundle_dir)
 
     # Post-verification by hashes: the manifest on disk is exactly the planned
     # bytes, it reads back as clean v2 against the DB row, and no declared
@@ -399,19 +478,44 @@ def apply_plan(
 
 def rollback(rollback_dir: Path) -> int:
     """Restore recorded pre-migration manifests. A bundle whose manifest no
-    longer matches the migrated bytes is refused, never overwritten."""
+    longer matches the migrated bytes is refused, never overwritten. The
+    ledger and the copies are data, not authority: every shape is validated,
+    every path is derived from the validated slug, and every read goes
+    through the no-follow regular-file boundary."""
     ledger = json.loads((rollback_dir / ROLLBACK_MANIFEST).read_text(encoding="utf-8"))
+    entries = ledger.get("entries") if isinstance(ledger, dict) else None
+    if not isinstance(entries, list):
+        raise SystemExit(f"malformed rollback ledger in {rollback_dir}")
     failures = 0
-    for entry in ledger["entries"]:
+    for entry in entries:
+        if not isinstance(entry, dict) or not all(
+            isinstance(entry.get(k), str)
+            for k in ("slug", "old_sha256", "new_sha256")
+        ):
+            print(f"[refused] malformed ledger entry {entry!r}")
+            failures += 1
+            continue
         slug = entry["slug"]
-        if not isinstance(slug, str) or not bundle_schema.SLUG_RE.match(slug):
+        if not _valid_slug(slug):
             print(f"[refused] {slug!r} — ledger slug violates the slug grammar")
             failures += 1
             continue
-        manifest_path = LESSONS_DIR / slug / MANIFEST_NAME
+        bundle_dir = LESSONS_DIR / slug
+        if not _bundle_dir_safe(bundle_dir):
+            print(f"[refused] {slug} — bundle dir is not a real directory "
+                  "under the lessons root")
+            failures += 1
+            continue
+        manifest_path = bundle_dir / MANIFEST_NAME
         # The copy path is derived from the validated slug, like the write
         # path — the ledger's `file` value is a record, never a path input.
-        old_bytes = (rollback_dir / f"{slug}.lesson.json").read_bytes()
+        old_bytes, copy_err = _read_bytes_no_follow(
+            rollback_dir / f"{slug}.lesson.json")
+        if old_bytes is None:
+            print(f"[refused] {slug} — rollback copy is "
+                  f"{copy_err or 'missing'}")
+            failures += 1
+            continue
         if hashlib.sha256(old_bytes).hexdigest() != entry["old_sha256"]:
             print(f"[refused] {slug} — rollback copy does not match its recorded hash")
             failures += 1
@@ -458,6 +562,13 @@ def run(*, dry_run: bool, slugs: list[str] | None) -> int:
 
     plans: list[tuple[dict, BundlePlan]] = []
     for lesson in lessons:
+        # A DB slug is data: the runtime's slug grammar gates every join, so
+        # a corrupt/imported row can never turn into a filesystem path.
+        if not _valid_slug(lesson["slug"]):
+            bad = BundlePlan(slug=repr(lesson["slug"]), action=ACTION_STOP)
+            bad.reasons.append("DB slug violates the slug grammar")
+            plans.append((lesson, bad))
+            continue
         bundle_dir = LESSONS_DIR / lesson["slug"]
         plans.append((lesson, plan_bundle(bundle_dir, lesson)))
 

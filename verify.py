@@ -1238,6 +1238,67 @@ with TestClient(app) as c:
           mig.plan_bundle(_mig_dir, {"slug": "vera-example-tides"}).action
           == mig.ACTION_STOP)
 
+    # containment: a traversal DB slug stops before any filesystem join
+    _esc_conn = get_conn()
+    try:
+        with _esc_conn:
+            _esc_conn.execute(
+                "INSERT INTO lessons (uid, title, slug, status, created_at) "
+                "VALUES ('4e0b2f2b-7d8a-4c3d-af4e-5d1e0a6b4c37', "
+                "'Vera Example Escape', '../../vera-escape', 'backlog', ?)",
+                (db_mod.now_iso(),))
+    finally:
+        _esc_conn.close()
+    with _contextlib.redirect_stdout(_io.StringIO()) as _esc_out:
+        _esc_code = mig.run(dry_run=False, slugs=["../../vera-escape"])
+    check("traversal DB slug stops before any filesystem join",
+          _esc_code == 1 and "violates the slug grammar" in _esc_out.getvalue())
+    _esc_conn = get_conn()
+    try:
+        with _esc_conn:
+            _esc_conn.execute("DELETE FROM lessons WHERE slug='../../vera-escape'")
+    finally:
+        _esc_conn.close()
+
+    # rollback trusts nothing: a symlinked bundle dir and a symlinked
+    # rollback copy both refuse before any read or write through the link
+    _rbh = mig.MIGRATIONS_DIR / "v1v2-test-hardening"
+    _rbh.mkdir(parents=True)
+    (_rbh / "rollback.json").write_text(json.dumps({"created_at": "test", "entries": [
+        {"slug": "vera-example-rbsym", "file": "vera-example-rbsym.lesson.json",
+         "old_sha256": hashlib.sha256(b"Vera Example old").hexdigest(),
+         "new_sha256": hashlib.sha256(b"Vera Example new").hexdigest()}]}) + "\n",
+        encoding="utf-8")
+    _rbh_target = Path(lessons_svc.LESSONS_DIR) / "vera-rbsym-target"
+    _rbh_target.mkdir(exist_ok=True)
+    _os.symlink(_rbh_target, Path(lessons_svc.LESSONS_DIR) / "vera-example-rbsym")
+    with _contextlib.redirect_stdout(_io.StringIO()) as _rbh_out:
+        _rbh_code = mig.rollback(_rbh)
+    check("rollback refuses a symlinked bundle dir",
+          _rbh_code == 1 and "not a real directory" in _rbh_out.getvalue())
+    (Path(lessons_svc.LESSONS_DIR) / "vera-example-rbsym").unlink()
+    _rbh_dir = Path(lessons_svc.LESSONS_DIR) / "vera-example-rbsym"
+    _rbh_dir.mkdir(exist_ok=True)
+    (_rbh_dir / "lesson.json").write_bytes(b"Vera Example new")
+    _os.symlink(_rbh / "rollback.json", _rbh / "vera-example-rbsym.lesson.json")
+    with _contextlib.redirect_stdout(_io.StringIO()) as _rbh_out2:
+        _rbh_code2 = mig.rollback(_rbh)
+    check("rollback refuses a symlinked rollback copy",
+          _rbh_code2 == 1 and "rollback copy is" in _rbh_out2.getvalue()
+          and (_rbh_dir / "lesson.json").read_bytes() == b"Vera Example new")
+
+    # a declared page that is a FIFO is noted, never opened blocking
+    (_mig_head_dir / "related").mkdir(exist_ok=True)
+    (_mig_head_dir / "lesson.json").write_text(json.dumps({
+        "schema_version": 1, "entry": "index.html",
+        "related": ["related/02-fifo.html"]}) + "\n", encoding="utf-8")
+    _os.mkfifo(_mig_head_dir / "related" / "02-fifo.html")
+    _mig_fifo = mig.plan_bundle(_mig_head_dir, dict(_mig_head_db, current_entry=None))
+    check("declared FIFO page is noted and skipped, not opened blocking",
+          _mig_fifo.action == mig.ACTION_MIGRATE
+          and "related/02-fifo.html" not in _mig_fifo.page_hashes
+          and any("not a regular file" in n for n in _mig_fifo.notes))
+
     # end-to-end run over the DB enumeration: dry-run writes nothing, the run
     # migrates, a rerun reports the no-op
     _mig_run_before = (_v1_dir / "lesson.json").read_text(encoding="utf-8")

@@ -19,12 +19,22 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-19 — ec3c112 — `scripts/migrate_bundles.py` (new), `verify.py` —
+- [ ] 2026-07-19 — ec3c112, a7acb6c, 40a7888, + this branch's follow-ups —
+  `scripts/migrate_bundles.py` (new), `verify.py` —
   issue #39 session C4: offline migration tool that rewrites v1 `lesson.json`
   manifests to schema v2 per spec §10 (the rewritten manifests are consumed by
   the live Learn preview/file routes); dry-run, idempotent rerun, atomic
   replacement, rollback manifest under `data/migrations/`, hash
-  post-verification of manifest and page bytes; verify 495
+  post-verification of manifest and page bytes. Follow-ups: apply refuses a
+  manifest changed since planning (a7acb6c); collision stop covers dropped
+  object-form items, rollback copy path derived from the validated slug
+  (40a7888); DB-slug grammar gate before joins, bundle-dir containment at
+  write time, no-follow streamed page hashing, no-follow rollback-copy read +
+  ledger shape validation, fsynced rollback material and directories.
+  This entry stays current with the branch: it covers every C4 commit
+  touching these paths through the PR #51 merge; verify 502
+  → `2026-07-19-bundle-migration-tool-review.md` (M1, L5 resolved in
+  a7acb6c/40a7888; L1–L4 addressed by the follow-ups above, addendum pending)
 
 ## Done
 
