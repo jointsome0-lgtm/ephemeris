@@ -1143,6 +1143,7 @@ with TestClient(app) as c:
     }) + "\n", encoding="utf-8")
     _mig_head_db = {"uid": "2c8f0d0f-5b6e-4a1b-8d2e-3b9c8e4f2a15",
                     "slug": "vera-example-head",
+                    "title": "Vera Example Head",
                     "current_entry": "related/09-note.html"}
     _mig_head = mig.plan_bundle(_mig_head_dir, _mig_head_db)
     _mig_head_obj = json.loads(_mig_head.new_text)
@@ -1156,6 +1157,15 @@ with TestClient(app) as c:
     check("null source_url and updated_by_agent_at copies are omitted (§10)",
           "source_url" not in _mig_head_obj
           and "updated_by_agent_at" not in _mig_head_obj)
+    check("missing v1 slug/title copies are filled from the DB row (§12)",
+          _mig_head_obj["slug"] == "vera-example-head"
+          and _mig_head_obj["title"] == "Vera Example Head"
+          and sum("filled from the DB row" in n for n in _mig_head.notes) == 2)
+    _mig_nometa = mig.plan_bundle(
+        _mig_head_dir, {"uid": _mig_head_db["uid"], "slug": "vera-example-head"})
+    check("no usable title anywhere stops the migration",
+          _mig_nometa.action == mig.ACTION_STOP
+          and any("no usable title" in r for r in _mig_nometa.reasons))
     (_mig_head_dir / "lesson.json").write_text(json.dumps({
         "schema_version": 1,
         "entry": "index.html",

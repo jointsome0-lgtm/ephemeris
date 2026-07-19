@@ -320,9 +320,28 @@ def _build_v2(
 
     uid = db_lesson["uid"]
     out: dict = {"schema_version": bundle_schema.SCHEMA_V2, "lesson_uid": uid}
-    for name in ("slug", "title"):
-        if name in raw:
-            out[name] = raw[name]
+    # slug/title are §4-required for a conforming v2 writer. The v1 copy wins
+    # when it is usable (§10: copied from v1); a missing or grammar-violating
+    # copy is filled from the DB row, which owns these fields (§12). With no
+    # usable value on either side the migration stops rather than emit a
+    # non-conforming manifest.
+    copy_checks = {
+        "slug": _valid_slug,
+        "title": lambda v: (
+            isinstance(v, str) and 0 < len(v.strip()) <= bundle_schema.MAX_TITLE_LEN
+        ),
+    }
+    for name, valid in copy_checks.items():
+        value = raw.get(name)
+        if valid(value):
+            out[name] = value
+        elif valid(db_lesson.get(name)):
+            out[name] = db_lesson[name]
+            notes.append(f"{name} copy filled from the DB row")
+        else:
+            stops.append(f"no usable {name} in the v1 manifest or the DB row")
+    if stops:
+        return None
     if raw.get("source_url") is not None:
         out["source_url"] = raw["source_url"]  # a null copy is omitted (§10)
     out["entry"] = entry
