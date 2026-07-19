@@ -19,6 +19,16 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
+- [ ] 2026-07-20 — 66defd3 — `app/main.py`, `app/services/bundle_schema.py`,
+  `app/services/lessons.py`, `verify.py`, `docs/learn-bundle-spec.md` —
+  issue #39 session D1: the lesson preview/file routes now select the
+  Content-Security-Policy header by the manifest's runtime profile
+  (`legacy-display` keeps the previous policy, `interactive-local-v1` gets a
+  new stricter one); `ManifestRead` gains a `bridge_eligible` property and
+  the preview metadata / bundle info now report `profile` and `bridge`
+  fields; spec §5 records the landed details. Iframe sandbox attributes in
+  templates are unchanged.
+
 ## Done
 
 - [x] 2026-07-19 — ec3c112, a7acb6c, 40a7888, 3310e2b, 41c5134, fbd315b,
