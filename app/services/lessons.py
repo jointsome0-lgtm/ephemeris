@@ -292,6 +292,11 @@ def _file_info(lesson: dict, read: bundle_schema.ManifestRead, entry: str | None
             "size": 0,
             "outcome": read.outcome,
             "findings": _finding_views(read),
+            # a rejected read has no trusted runtime profile: the accessor
+            # forces legacy-display even when the raw v2 manifest declared
+            # interactive before a later finding rejected it; bridge off (§5)
+            "profile": read.effective_profile,
+            "bridge": read.bridge_eligible,
         }
     entry = _resolve_entry(lesson, read, entry)
     findings = _finding_views(read)
@@ -322,10 +327,23 @@ def _file_info(lesson: dict, read: bundle_schema.ManifestRead, entry: str | None
         # server's absolute filesystem layout (home dir, username) to clients.
         "rel_path": f"{lesson['slug']}/{entry}",
         "exists": exists,
-        "version": str(stat.st_mtime_ns) if stat else f"missing:{_manifest_version(lesson)}",
+        # The reload token folds the effective profile in (drain C1): a
+        # manifest-only profile flip must reload the open page so the
+        # displayed document was actually served under the CSP the metadata
+        # now advertises — D2 grants the bridge against this binding.
+        "version": (
+            f"{stat.st_mtime_ns}:{read.effective_profile}"
+            if stat else f"missing:{_manifest_version(lesson)}"
+        ),
         "size": stat.st_size if stat else 0,
         "outcome": outcome,
         "findings": findings,
+        # Effective runtime profile + bridge eligibility (§5, D1). The serving
+        # routes pick the CSP by profile; D2 reads `bridge` before offering
+        # the postMessage port. Both are manifest-level facts — a degraded
+        # entry (symlinked/stale selection) does not flip them here.
+        "profile": read.effective_profile,
+        "bridge": read.bridge_eligible,
     }
 
 
@@ -392,6 +410,9 @@ def bundle_resource_info(lesson: dict, ref: str) -> dict:
         "media_type": media_type,
         "html": html,
         "active": active,
+        # CSP selector for the serving route (§5, D1) — v1 and every
+        # fail-closed read report legacy-display.
+        "profile": read.effective_profile,
     }
 
 
@@ -402,7 +423,8 @@ def bundle_info(lesson: dict, entry: str | None = None) -> dict:
         "manifest": read.raw,
         "manifest_path": str(_manifest_path(lesson["slug"])),
         "schema_version": read.version,
-        "profile": read.profile,
+        "profile": read.effective_profile,
+        "bridge": read.bridge_eligible,
     }
     if read.rejected:
         return {
