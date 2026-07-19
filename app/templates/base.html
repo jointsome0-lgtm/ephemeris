@@ -59,6 +59,7 @@
       <a class="rail-ico {% if R == 'habit' %}active{% endif %}" href="/habits" title="Habit">{{ ic.icon('habit') }}</a>
       <a class="rail-ico {% if R == 'countdown' %}active{% endif %}" href="/countdown" title="Countdown">{{ ic.icon('countdown') }}</a>
       <a class="rail-ico {% if R == 'learn' %}active{% endif %}" href="/learn" title="Learn">{{ ic.icon('learn') }}</a>
+      <a class="rail-ico {% if R == 'retro' %}active{% endif %}" href="/retro" title="Retro">{{ ic.icon('retro') }}</a>
       <a class="rail-ico {% if R == 'search' %}active{% endif %}" href="/search" title="Search">{{ ic.icon('search') }}</a>
 
       <span class="rail-spacer"></span>
@@ -89,13 +90,14 @@
     <a href="/focus" class="nav-link {% if R == 'focus' %}active{% endif %}">{{ ic.icon('focus') }}<span>Focus</span></a>
     <a href="/matrix" class="nav-link {% if R == 'matrix' %}active{% endif %}">{{ ic.icon('matrix') }}<span>Matrix</span></a>
     <a href="/habits" class="nav-link {% if R == 'habit' %}active{% endif %}">{{ ic.icon('habit') }}<span>Habit</span></a>
-    <label for="more-toggle" class="nav-link more-open{% if R in ['countdown','learn','search','export','items'] %} active{% endif %}" aria-controls="more-sheet">{{ ic.icon('more') }}<span>More</span></label>
+    <label for="more-toggle" class="nav-link more-open{% if R in ['countdown','learn','retro','search','export','items'] %} active{% endif %}" aria-controls="more-sheet">{{ ic.icon('more') }}<span>More</span></label>
   </nav>
   <label for="more-toggle" class="more-backdrop" aria-hidden="true"></label>
   <aside class="more-sheet" id="more-sheet" aria-label="More destinations">
     <div class="more-grip" aria-hidden="true"></div>
     <a class="more-item {% if R == 'countdown' %}active{% endif %}" href="/countdown">{{ ic.icon('countdown') }}<span>Countdown</span></a>
     <a class="more-item {% if R == 'learn' %}active{% endif %}" href="/learn">{{ ic.icon('learn') }}<span>Learn</span></a>
+    <a class="more-item {% if R == 'retro' %}active{% endif %}" href="/retro">{{ ic.icon('retro') }}<span>Retro</span></a>
     <a class="more-item {% if R == 'search' %}active{% endif %}" href="/search">{{ ic.icon('search') }}<span>Search</span></a>
     <a class="more-item {% if R == 'export' %}active{% endif %}" href="/export">{{ ic.icon('download') }}<span>Export</span></a>
     <a class="more-item {% if R == 'items' %}active{% endif %}" href="/items">{{ ic.icon('settings') }}<span>Manage</span></a>

@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Retro · Ephemeris{% endblock %}
+{% block content %}
+<header class="page-head"><h1>Retro</h1></header>
+
+{% if flash %}<p class="flash" role="status">{{ flash }}</p>{% endif %}
+
+{# Precision vocabulary + the period spelling each one expects. The option
+   labels double as the format hints so the form needs no JS to explain
+   itself; the grammar mirrors exp2res (docs/retro-spec.md — do not diverge). #}
+{% set precision_labels = {
+  'month':             'Month — 2026-05',
+  'quarter':           'Quarter — Q1 2026',
+  'week':              'Week — 2026-W23',
+  'year':              'Year — 2026',
+  'exact_day':         'Exact day — 2026-05-14',
+  'exact_datetime':    'Exact datetime — 2026-05-14T21:30',
+  'date_range':        'Date range — 2026-05-01/2026-06-15',
+  'approximate_range': 'Approximate range — 2026-05-01/2026-06-15',
+  'unknown':           'Unknown — leave period empty',
+} %}
+{% set form_order = ['month','quarter','week','year','exact_day','exact_datetime',
+                     'date_range','approximate_range','unknown'] %}
+
+<section class="retro-form" style="background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:18px">
+  <div class="section-title" style="margin-top:0">{{ 'Edit entry' if editing else 'New entry' }}</div>
+  <form method="post" action="{{ '/retro/' ~ editing.id ~ '/edit' if editing else '/retro' }}" autocomplete="off" style="display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <select name="precision" class="text-input" style="flex:1;min-width:210px" aria-label="Period precision">
+        {% for key in form_order %}
+        <option value="{{ key }}" {% if (editing and editing.precision == key) or (not editing and key == 'month') %}selected{% endif %}>{{ precision_labels[key] }}</option>
+        {% endfor %}
+      </select>
+      <input type="text" name="period" class="text-input" style="flex:1;min-width:170px"
+             placeholder="Period, e.g. 2026-05" aria-label="Period"
+             value="{{ editing.period_raw if editing else '' }}">
+      <select name="confidence" class="text-input" style="min-width:120px" aria-label="Confidence">
+        {% for key in confidences %}
+        <option value="{{ key }}" {% if (editing and editing.confidence == key) or (not editing and key == 'medium') %}selected{% endif %}>{{ key }}</option>
+        {% endfor %}
+      </select>
+      <input type="text" name="project" class="text-input" style="min-width:150px"
+             placeholder="Project (optional)" aria-label="Project"
+             value="{{ editing.project or '' if editing else '' }}">
+    </div>
+    <textarea name="text" class="text-input" rows="5" required
+              placeholder="What was this period about? What did you actually do?"
+              style="resize:vertical;min-height:90px">{{ editing.text if editing else '' }}</textarea>
+    <p class="muted" style="margin:0;color:var(--faint);font-size:12px">
+      Fuzzy memory? Pick <em>approximate range</em> with low/medium confidence —
+      downstream can never sharpen what you record here.
+    </p>
+    <div style="display:flex;gap:8px">
+      <button type="submit" class="btn-primary" style="height:36px">{{ 'Save changes' if editing else 'Add retro' }}</button>
+      {% if editing %}<a class="btn-text" href="/retro" style="align-self:center">Cancel</a>{% endif %}
+    </div>
+  </form>
+</section>
+
+<div class="section-title" style="display:flex;align-items:baseline;gap:10px">
+  <span>{{ 'Archived' if show_archived else 'Entries' }} · {{ rows|length }}</span>
+  <a class="btn-text" style="font-size:12px" href="{{ '/retro' if show_archived else '/retro?archived=1' }}">
+    {{ 'show active' if show_archived else 'show archived' }}</a>
+</div>
+
+{% if rows %}
+<div class="items-list">
+  {% for r in rows %}
+  <div class="manage-row" style="display:block;border-bottom:1px solid var(--border);padding:10px 4px">
+    <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+      <strong>{{ r.period_raw or 'unknown period' }}</strong>
+      <span class="muted" style="color:var(--faint);font-size:12px">{{ r.precision }} · {{ r.confidence }}</span>
+      {% if r.project %}<span class="muted" style="font-size:12px;border:1px solid var(--border);border-radius:9px;padding:0 8px">{{ r.project }}</span>{% endif %}
+      <span style="flex:1"></span>
+      <span style="display:flex;gap:10px;align-items:baseline;white-space:nowrap">
+        {% if not show_archived %}
+        <a class="btn-text" style="font-size:12px" href="/retro?edit={{ r.id }}">Edit</a>
+        <form method="post" action="/retro/{{ r.id }}/archive" style="display:inline;margin:0">
+          <button type="submit" class="btn-text" style="font-size:12px">Archive</button>
+        </form>
+        {% else %}
+        <form method="post" action="/retro/{{ r.id }}/unarchive" style="display:inline;margin:0">
+          <button type="submit" class="btn-text" style="font-size:12px">Unarchive</button>
+        </form>
+        {% endif %}
+      </span>
+    </div>
+    <p style="margin:6px 0 0;white-space:pre-wrap">{{ r.text }}</p>
+    <p class="muted" style="margin:4px 0 0;color:var(--faint);font-size:11px">
+      recorded {{ r.created_at }}{% if r.updated_at %} · edited {{ r.updated_at }}{% endif %}
+    </p>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+  <p class="empty">{{ 'Nothing archived.' if show_archived else 'No retro entries yet. Describe a period above — a month, a quarter, a fuzzy range.' }}</p>
+{% endif %}
+{% endblock %}

@@ -1653,6 +1653,11 @@ The verified global Mirror and unanswered Gap Questions remain an Exp2Res-owned
 view. Ephemeris may embed its configured URL; it does not parse Exp2Res
 assessment companion files.
 
+Ephemeris does, however, *capture* retrospectives locally — journaled
+`retro_entries` a future selfos adapter converts for Exp2Res import; see
+[docs/retro-spec.md](retro-spec.md) (sec33). The boundary holds: ephemeris
+never parses or calls Exp2Res, it only exports its own ledger.
+
 Integration v1 embeds peer views on the same machine over loopback. Phone/LAN
 gateway support is deferred, and Ephemeris remains usable when either peer URL
 is unset.

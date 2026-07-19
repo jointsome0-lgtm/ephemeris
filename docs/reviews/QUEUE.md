@@ -61,6 +61,41 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   lands (this repository merges via merge commits, so the landed tree is
   the reviewed branch head's tree) — is appended here before any restart)
 
+- [x] 2026-07-16 — 5ae5017, eeb71f1, ecee1f2, ff9a3f0, 4b04757, ba2bc3c,
+  2851f69, 89adcbc, 38dd11b, 9dc0fc6, e7a2068, 250cd66 —
+  `app/services/lessons.py`, `docs/learn-bundle-spec.md`, `verify.py` —
+  issue #35 stage 1: the generated lesson `AGENTS.md` brief (constant
+  `_AGENTS_TEMPLATE`, regenerated on every lesson-terminal open) rewritten
+  from bundle-layout mechanics into a teaching contract: tutor mission,
+  per-section concept/visualization/prediction/reveal loop, self-check,
+  no-fabricated-references rule, pinned-libraries-in-`assets/` rule (remote
+  URLs disallowed), and the frozen v2 manifest names from
+  `docs/learn-bundle-spec.md` (v1/v2 branches, `pg_`/`q_` id lifecycle,
+  `questions[]`, `attempts.jsonl` read-only, agent must not change
+  `schema_version`/`lesson_uid`); `_write_brief` and the `CLAUDE.md` shim
+  unchanged; verify 379 (+3, later 380); the later commits mirror the
+  frozen discovery contract into the pre-read (attempts.jsonl optional;
+  depth/entry/regular-file bounds; every declared artifact root, roots
+  valid only as disjoint in-bundle paths, ≤ 8; `attempts/` stated as always
+  part of the root set even when a declared list omits it, mirroring the
+  frozen read model's injection); drained on 5ae5017 →
+  `2026-07-16-lesson-brief-teaching-contract-review.md` (one Medium, one
+  Low — both fixed in eeb71f1) + seven addenda, one per fix commit: L1/L2,
+  N1 (bounds wording), N2 (root grammar/containment) all resolved; the
+  closing addendum's verdict at 89adcbc, the seventh (convergence) addendum
+  on 38dd11b, and the eighth addendum — a standing-brief pass over the
+  38dd11b delta (no new findings, verdict unchanged) — and the ninth
+  addendum, the same standing-brief pass over 9dc0fc6 (unknown-field
+  preservation bullet; no new findings) — and the tenth addendum over
+  e7a2068 (full §4.1/§7 root grammar in the brief; one Low: two cited
+  rules were C3 spec amendments not yet on this branch — resolved by
+  250cd66 mirroring them verbatim, resolution verified with a superseding
+  YES verdict) — clear this entry under the loopback-only posture; the entry
+  stays current with the branch: any further commit touching the brief —
+  and the merge commit itself once the PR lands (this repository merges
+  via merge commits, so the landed tree is the reviewed branch head's
+  tree) — is appended here before any restart
+
 - [x] 2026-07-16 — 61b6d65, 5d7c226, ad11d31 — `app/terminal.py`,
   `app/services/lessons.py`, `app/main.py`, `app/templates/learn.html`,
   `deploy/ephemeris.service.example`, `docs/security-model.md`, `README.md`,

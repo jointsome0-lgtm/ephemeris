@@ -124,7 +124,7 @@ def get_conn() -> sqlite3.Connection:
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -415,13 +415,50 @@ def _migrate_to_9(conn: sqlite3.Connection) -> None:
     backfill_event_uuids(conn)
 
 
-# v10 — lesson identity (learn-bundle-spec.md §3): `lessons.uid` is the mint
+# v10 — retro_entries (docs/retro-spec.md): owner-typed retrospectives captured
+# for the future exp2res feed (issue #49). period_raw is the owner-typed truth —
+# the field a selfos adapter hands to exp2res, which re-resolves it in its own
+# workspace timezone; period_start/period_end are ephemeris-local derivations
+# kept only for list ordering and display. The period grammar (precision /
+# confidence vocabularies, accepted period formats) mirrors exp2res
+# services/time_input.py verbatim so anything accepted here imports cleanly
+# there. Soft-archived, never hard-deleted (sec14.1 joinability).
+_SCHEMA_V10 = """
+CREATE TABLE IF NOT EXISTS retro_entries (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  uuid         TEXT NOT NULL UNIQUE,
+  period_raw   TEXT NOT NULL DEFAULT '',   -- '' iff precision='unknown'
+  precision    TEXT NOT NULL CHECK(precision IN
+               ('exact_datetime','exact_day','week','month','quarter','year',
+                'date_range','approximate_range','unknown')),
+  confidence   TEXT NOT NULL CHECK(confidence IN ('low','medium','high','unknown')),
+  period_start TEXT,            -- ISO 8601 with offset; NULL iff precision='unknown'
+  period_end   TEXT,            -- non-NULL iff range precision; > period_start
+  project      TEXT,            -- optional label; validated non-blank under NFC+casefold
+  text         TEXT NOT NULL CHECK(length(text) > 0),
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT,
+  archived_at  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_retro_start ON retro_entries(period_start);
+"""
+
+
+def _migrate_to_10(conn: sqlite3.Connection) -> None:
+    conn.executescript(_SCHEMA_V10)
+
+
+# v11 — lesson identity (learn-bundle-spec.md §3): `lessons.uid` is the mint
 # source and the truth for lesson_uid; the bundle manifest only carries an
 # echo. Same idiom as events.uuid (v9): nullable column + unique index +
 # idempotent backfill that NEVER replaces an existing uid — a lesson is minted
 # exactly once, and rename/status/archive churn must not touch it. The
 # backfill also reruns on every init_db() to stamp rows a not-yet-restarted
-# pre-v10 process inserts after the migration ran.
+# pre-v11 process inserts after the migration ran. (This step shipped as v10
+# on its feature branch and was renumbered when retro_entries landed first;
+# it is column-existence-guarded, so a DB that already ran it as v10 upgrades
+# cleanly.)
 
 
 def backfill_lesson_uids(conn: sqlite3.Connection) -> int:
@@ -436,7 +473,7 @@ def backfill_lesson_uids(conn: sqlite3.Connection) -> int:
     return len(ids)
 
 
-def _migrate_to_10(conn: sqlite3.Connection) -> None:
+def _migrate_to_11(conn: sqlite3.Connection) -> None:
     have = {r["name"] for r in conn.execute("PRAGMA table_info(lessons)")}
     if "uid" not in have:
         conn.execute("ALTER TABLE lessons ADD COLUMN uid TEXT")
@@ -457,6 +494,7 @@ _MIGRATIONS = [
     (8, _migrate_to_8),
     (9, _migrate_to_9),
     (10, _migrate_to_10),
+    (11, _migrate_to_11),
 ]
 
 
@@ -473,7 +511,7 @@ def init_db() -> None:
                 conn.execute(f"PRAGMA user_version = {target}")
                 conn.commit()
                 version = target
-        # Heal rows a pre-v9/pre-v10 process may have inserted after the
+        # Heal rows a pre-v9/pre-v11 process may have inserted after the
         # migration ran (the live service lags the working tree until its
         # next restart).
         healed = backfill_event_uuids(conn)
