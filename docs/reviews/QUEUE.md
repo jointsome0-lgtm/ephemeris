@@ -19,7 +19,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-19 — ec3c112, a7acb6c, 40a7888, + this branch's follow-ups —
+## Done
+
+- [x] 2026-07-19 — ec3c112, a7acb6c, 40a7888, 3310e2b, 41c5134, fbd315b —
   `scripts/migrate_bundles.py` (new), `verify.py` —
   issue #39 session C4: offline migration tool that rewrites v1 `lesson.json`
   manifests to schema v2 per spec §10 (the rewritten manifests are consumed by
@@ -30,13 +32,15 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   object-form items, rollback copy path derived from the validated slug
   (40a7888); DB-slug grammar gate before joins, bundle-dir containment at
   write time, no-follow streamed page hashing, no-follow rollback-copy read +
-  ledger shape validation, fsynced rollback material and directories.
-  This entry stays current with the branch: it covers every C4 commit
-  touching these paths through the PR #51 merge; verify 502
-  → `2026-07-19-bundle-migration-tool-review.md` (M1, L5 resolved in
-  a7acb6c/40a7888; L1–L4 addressed by the follow-ups above, addendum pending)
-
-## Done
+  ledger shape validation, fsynced rollback material and directories (3310e2b);
+  rollback dir + parents fsynced before the first mutation (41c5134); DB-row
+  stale guard before apply, bundle-dir fsync after rollback restore (fbd315b);
+  verify 502. PR #51: bot reviewed every push, 👍 APPROVED on head fbd315b
+  2026-07-19T19:48:20Z
+  → `2026-07-19-bundle-migration-tool-review.md` (M1+L5 resolved in
+  a7acb6c/40a7888; addendum: L1–L3 resolved at 3310e2b; closing note: L4
+  resolved at 41c5134; final private-instance migration verdict YES —
+  dry-run first; wider deployment remains NO/unauthenticated)
 
 - [x] 2026-07-17 — 5250768, 5d37a97, 1227d29, 41224b5, 53b5232, ca4a7fd,
   9c188d7, 5388efe, 6a690b2, 825bec6, 5a9fd04, 6fde64a, 4d5b20d, cdeda5b,
