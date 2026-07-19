@@ -1057,6 +1057,308 @@ with TestClient(app) as c:
     check("set_current_entry refuses a normalizable v2 variant, stores exact paths",
           _norm_refused and _norm_after["current_entry"] == "related/01-stage.html")
 
+    # --- C4: v1→v2 migration tool (learn-bundle-spec.md §10) -----------------
+    import contextlib as _contextlib
+    import io as _io
+
+    from scripts import migrate_bundles as mig
+
+    _mig_case = next(
+        _c for _c in _fx_cases["cases"] if _c["file"] == "v1-migrated.json")
+    _mig_uid = _mig_case["context"]["lesson_uid"]
+    _mig_dir = Path(lessons_svc.LESSONS_DIR) / "vera-example-tides"
+    _mig_dir.mkdir(exist_ok=True)
+    _mig_v1_text = (_fx_dir / "v1-valid.json").read_text(encoding="utf-8")
+    (_mig_dir / "lesson.json").write_text(_mig_v1_text, encoding="utf-8")
+    (_mig_dir / "index.html").write_text(
+        "<html>Vera Example tides page</html>", encoding="utf-8")
+    _mig_db = {
+        "uid": _mig_uid,
+        "slug": "vera-example-tides",
+        "title": "Vera Example: Why Tides Happen",
+        "source_url": "https://learning.example/tides-101",
+        "current_entry": _mig_case["context"]["db_current_entry"],
+    }
+    _mig_plan = mig.plan_bundle(_mig_dir, _mig_db)
+    _mig_expected = (_fx_dir / "v1-migrated.json").read_text(encoding="utf-8")
+    check("migration output matches the fixture pair byte-exactly (§10/§11)",
+          _mig_plan.action == mig.ACTION_MIGRATE
+          and _mig_plan.new_text == _mig_expected,
+          f"action={_mig_plan.action} reasons={_mig_plan.reasons}")
+    check("migration plan is deterministic across reruns",
+          mig.plan_bundle(_mig_dir, _mig_db).new_text == _mig_plan.new_text)
+    _mig_page_hash = hashlib.sha256(
+        (_mig_dir / "index.html").read_bytes()).hexdigest()
+
+    _mig_rb1 = mig.MIGRATIONS_DIR / "v1v2-test-apply"
+    _mig_rb1.mkdir(parents=True)
+    (_mig_rb1 / "rollback.json").write_text(
+        json.dumps({"created_at": "test", "entries": []}) + "\n", encoding="utf-8")
+    _mig_errors = mig.apply_plan(_mig_dir, _mig_plan, _mig_db, _mig_rb1)
+    check("apply writes the planned bytes atomically and post-verifies clean",
+          _mig_errors == []
+          and (_mig_dir / "lesson.json").read_text(encoding="utf-8") == _mig_expected,
+          "; ".join(_mig_errors))
+    check("HTML page bytes are untouched by migration (§10)",
+          hashlib.sha256((_mig_dir / "index.html").read_bytes()).hexdigest()
+          == _mig_page_hash)
+    check("migration is idempotent: a v2 manifest replans as a no-op",
+          mig.plan_bundle(_mig_dir, _mig_db).action == mig.ACTION_NOOP)
+
+    _mig_ledger = json.loads(
+        (_mig_rb1 / "rollback.json").read_text(encoding="utf-8"))
+    check("rollback ledger records the old/new manifest hashes",
+          [e["slug"] for e in _mig_ledger["entries"]] == ["vera-example-tides"]
+          and _mig_ledger["entries"][0]["old_sha256"]
+          == hashlib.sha256(_mig_v1_text.encode()).hexdigest()
+          and (_mig_rb1 / "vera-example-tides.lesson.json").read_text(encoding="utf-8")
+          == _mig_v1_text)
+    with _contextlib.redirect_stdout(_io.StringIO()) as _mig_out:
+        _mig_rb_code = mig.rollback(_mig_rb1)
+    check("rollback restores the pre-migration manifest byte-exactly",
+          _mig_rb_code == 0
+          and (_mig_dir / "lesson.json").read_text(encoding="utf-8") == _mig_v1_text)
+    # a manifest edited after migration is refused, never overwritten
+    _mig_errors2 = mig.apply_plan(_mig_dir, _mig_plan, _mig_db, _mig_rb1)
+    _mig_edited = _mig_expected.replace(
+        '"schema_version": 2', '"schema_version": 2, "x_agent_edit": true')
+    (_mig_dir / "lesson.json").write_text(_mig_edited, encoding="utf-8")
+    with _contextlib.redirect_stdout(_io.StringIO()):
+        _mig_rb_code2 = mig.rollback(_mig_rb1)
+    check("rollback refuses a manifest edited since migration",
+          _mig_errors2 == [] and _mig_rb_code2 == 1
+          and (_mig_dir / "lesson.json").read_text(encoding="utf-8") == _mig_edited)
+
+    # §10: a valid DB current_entry absent from the v1 list folds in at the
+    # head with entry unchanged; null source_url/updated_by_agent_at are
+    # omitted; a malformed updated_by_agent_at is preserved verbatim
+    _mig_head_dir = Path(lessons_svc.LESSONS_DIR) / "vera-example-head"
+    _mig_head_dir.mkdir(exist_ok=True)
+    (_mig_head_dir / "lesson.json").write_text(json.dumps({
+        "schema_version": 1,
+        "entry": "index.html",
+        "related": ["related/01-extra.html"],
+        "source_url": None,
+        "updated_by_agent_at": None,
+    }) + "\n", encoding="utf-8")
+    _mig_head_db = {"uid": "2c8f0d0f-5b6e-4a1b-8d2e-3b9c8e4f2a15",
+                    "slug": "vera-example-head",
+                    "title": "Vera Example Head",
+                    "current_entry": "related/09-note.html"}
+    _mig_head = mig.plan_bundle(_mig_head_dir, _mig_head_db)
+    _mig_head_obj = json.loads(_mig_head.new_text)
+    check("valid DB current_entry folds in at the head, entry unchanged (§10)",
+          _mig_head.action == mig.ACTION_MIGRATE
+          and _mig_head_obj["entry"] == "index.html"
+          and [p["path"] for p in _mig_head_obj["pages"]]
+          == ["related/09-note.html", "index.html", "related/01-extra.html"]
+          and _mig_head_obj["pages"][0]["id"]
+          == mig.deterministic_page_id(_mig_head_db["uid"], "related/09-note.html"))
+    check("null source_url and updated_by_agent_at copies are omitted (§10)",
+          "source_url" not in _mig_head_obj
+          and "updated_by_agent_at" not in _mig_head_obj)
+    check("missing v1 slug/title copies are filled from the DB row (§12)",
+          _mig_head_obj["slug"] == "vera-example-head"
+          and _mig_head_obj["title"] == "Vera Example Head"
+          and sum("filled from the DB row" in n for n in _mig_head.notes) == 2)
+    _mig_nometa = mig.plan_bundle(
+        _mig_head_dir, {"uid": _mig_head_db["uid"], "slug": "vera-example-head"})
+    check("no usable title anywhere stops the migration",
+          _mig_nometa.action == mig.ACTION_STOP
+          and any("no usable title" in r for r in _mig_nometa.reasons))
+    # an invalid source_url copy is never emitted: DB value wins, else omitted
+    (_mig_head_dir / "lesson.json").write_text(json.dumps({
+        "schema_version": 1, "entry": "index.html",
+        "source_url": "not a url",
+    }) + "\n", encoding="utf-8")
+    _mig_badsrc = mig.plan_bundle(_mig_head_dir, dict(
+        _mig_head_db, current_entry=None,
+        source_url="https://learning.example/vera-head"))
+    _mig_badsrc2 = mig.plan_bundle(_mig_head_dir, dict(_mig_head_db, current_entry=None))
+    check("invalid source_url copy: DB fallback, else omitted (§4)",
+          _mig_badsrc.action == mig.ACTION_MIGRATE
+          and json.loads(_mig_badsrc.new_text)["source_url"]
+          == "https://learning.example/vera-head"
+          and _mig_badsrc2.action == mig.ACTION_MIGRATE
+          and "source_url" not in json.loads(_mig_badsrc2.new_text)
+          and any("omitted" in n for n in _mig_badsrc2.notes))
+
+    # the §4 bound is on the emitted value's length, not its stripped form
+    (_mig_head_dir / "lesson.json").write_text(json.dumps({
+        "schema_version": 1, "entry": "index.html",
+        "title": " " + "x" * 240 + " ",
+    }) + "\n", encoding="utf-8")
+    _mig_longtitle = mig.plan_bundle(
+        _mig_head_dir, dict(_mig_head_db, current_entry=None))
+    check("over-long title copy falls back to the DB row, never emitted (§4)",
+          _mig_longtitle.action == mig.ACTION_MIGRATE
+          and json.loads(_mig_longtitle.new_text)["title"] == "Vera Example Head")
+    (_mig_head_dir / "lesson.json").write_text(json.dumps({
+        "schema_version": 1,
+        "entry": "index.html",
+        "updated_by_agent_at": "soon-ish",
+    }) + "\n", encoding="utf-8")
+    _mig_soon = mig.plan_bundle(_mig_head_dir, dict(_mig_head_db, current_entry=None))
+    check("malformed updated_by_agent_at is preserved verbatim (§10)",
+          _mig_soon.action == mig.ACTION_MIGRATE
+          and json.loads(_mig_soon.new_text)["updated_by_agent_at"] == "soon-ish")
+
+    # §10 positive path: unknown members of an object-form related item are
+    # copied verbatim onto the generated page object, in canonical key order
+    (_mig_head_dir / "lesson.json").write_text(json.dumps({
+        "schema_version": 1,
+        "entry": "index.html",
+        "related": [{"path": "related/01-extra.html",
+                     "x_meta": "Vera Example extra member"}],
+    }) + "\n", encoding="utf-8")
+    _mig_extras = mig.plan_bundle(_mig_head_dir, dict(_mig_head_db, current_entry=None))
+    _mig_extras_page = json.loads(_mig_extras.new_text)["pages"][1]
+    check("object-form item extras ride the generated page object (§10)",
+          _mig_extras.action == mig.ACTION_MIGRATE
+          and list(_mig_extras_page) == ["id", "path", "x_meta"]
+          and _mig_extras_page["x_meta"] == "Vera Example extra member"
+          and _mig_extras_page["id"]
+          == mig.deterministic_page_id(_mig_head_db["uid"], "related/01-extra.html"))
+
+    # a manifest edited between plan and apply is refused, never overwritten
+    _mig_race = mig.plan_bundle(_mig_head_dir, dict(_mig_head_db, current_entry=None))
+    _mig_race_edit = json.dumps({
+        "schema_version": 1, "entry": "index.html",
+        "x_note": "Vera Example concurrent edit",
+    }) + "\n"
+    (_mig_head_dir / "lesson.json").write_text(_mig_race_edit, encoding="utf-8")
+    _mig_race_errors = mig.apply_plan(_mig_head_dir, _mig_race, _mig_head_db, _mig_rb1)
+    check("apply refuses a manifest edited since planning",
+          _mig_race.action == mig.ACTION_MIGRATE
+          and any("changed since planning" in e for e in _mig_race_errors)
+          and (_mig_head_dir / "lesson.json").read_text(encoding="utf-8")
+          == _mig_race_edit)
+
+    # §10 stop-before-write conditions leave the manifest untouched
+    def _mig_stop_case(label: str, manifest: dict, needle: str) -> None:
+        _stop_dir = Path(lessons_svc.LESSONS_DIR) / "vera-example-stop"
+        _stop_dir.mkdir(exist_ok=True)
+        _stop_text = json.dumps(manifest) + "\n"
+        (_stop_dir / "lesson.json").write_text(_stop_text, encoding="utf-8")
+        _stop_plan = mig.plan_bundle(
+            _stop_dir, {"uid": "3d9a1e1a-6c7f-4b2c-9e3f-4c0d9f5a3b26",
+                        "slug": "vera-example-stop"})
+        check(f"stop-before-write: {label}",
+              _stop_plan.action == mig.ACTION_STOP
+              and any(needle in r for r in _stop_plan.reasons)
+              and (_stop_dir / "lesson.json").read_text(encoding="utf-8") == _stop_text,
+              f"action={_stop_plan.action} reasons={_stop_plan.reasons}")
+
+    _mig_stop_case(
+        "unknown v1 key colliding with a v2-owned key",
+        {"schema_version": 1, "entry": "index.html",
+         "runtime": {"x": "Vera Example collision"}},
+        "collides with a v2-owned key")
+    _mig_stop_case(
+        "object-form related item carrying a v2 page-object member",
+        {"schema_version": 1, "entry": "index.html",
+         "related": [{"path": "related/01-x.html", "id": "boom"}]},
+        "colliding with the v2 page object")
+    _mig_stop_case(
+        "colliding member on a DROPPED (duplicate) item still stops",
+        {"schema_version": 1, "entry": "index.html",
+         "related": ["related/01-x.html",
+                     {"path": "related/01-x.html", "id": "legacy"}]},
+        "colliding with the v2 page object")
+    _mig_stop_case(
+        "normalized page path violating the v2 grammar",
+        {"schema_version": 1, "entry": "index.html",
+         "related": ["related/" + "n" * 250 + ".html"]},
+        "violates the v2 grammar")
+    (_mig_dir / "lesson.json").write_text(_mig_v1_text, encoding="utf-8")
+    check("the tool never mints identity: no DB uid stops the migration",
+          mig.plan_bundle(_mig_dir, {"slug": "vera-example-tides"}).action
+          == mig.ACTION_STOP)
+
+    # containment: a traversal DB slug stops before any filesystem join
+    _esc_conn = get_conn()
+    try:
+        with _esc_conn:
+            _esc_conn.execute(
+                "INSERT INTO lessons (uid, title, slug, status, created_at) "
+                "VALUES ('4e0b2f2b-7d8a-4c3d-af4e-5d1e0a6b4c37', "
+                "'Vera Example Escape', '../../vera-escape', 'backlog', ?)",
+                (db_mod.now_iso(),))
+    finally:
+        _esc_conn.close()
+    with _contextlib.redirect_stdout(_io.StringIO()) as _esc_out:
+        _esc_code = mig.run(dry_run=False, slugs=["../../vera-escape"])
+    check("traversal DB slug stops before any filesystem join",
+          _esc_code == 1 and "violates the slug grammar" in _esc_out.getvalue())
+    _esc_conn = get_conn()
+    try:
+        with _esc_conn:
+            _esc_conn.execute("DELETE FROM lessons WHERE slug='../../vera-escape'")
+    finally:
+        _esc_conn.close()
+
+    # rollback trusts nothing: a symlinked bundle dir and a symlinked
+    # rollback copy both refuse before any read or write through the link
+    _rbh = mig.MIGRATIONS_DIR / "v1v2-test-hardening"
+    _rbh.mkdir(parents=True)
+    (_rbh / "rollback.json").write_text(json.dumps({"created_at": "test", "entries": [
+        {"slug": "vera-example-rbsym", "file": "vera-example-rbsym.lesson.json",
+         "old_sha256": hashlib.sha256(b"Vera Example old").hexdigest(),
+         "new_sha256": hashlib.sha256(b"Vera Example new").hexdigest()}]}) + "\n",
+        encoding="utf-8")
+    _rbh_target = Path(lessons_svc.LESSONS_DIR) / "vera-rbsym-target"
+    _rbh_target.mkdir(exist_ok=True)
+    _os.symlink(_rbh_target, Path(lessons_svc.LESSONS_DIR) / "vera-example-rbsym")
+    with _contextlib.redirect_stdout(_io.StringIO()) as _rbh_out:
+        _rbh_code = mig.rollback(_rbh)
+    check("rollback refuses a symlinked bundle dir",
+          _rbh_code == 1 and "not a real directory" in _rbh_out.getvalue())
+    (Path(lessons_svc.LESSONS_DIR) / "vera-example-rbsym").unlink()
+    _rbh_dir = Path(lessons_svc.LESSONS_DIR) / "vera-example-rbsym"
+    _rbh_dir.mkdir(exist_ok=True)
+    (_rbh_dir / "lesson.json").write_bytes(b"Vera Example new")
+    _os.symlink(_rbh / "rollback.json", _rbh / "vera-example-rbsym.lesson.json")
+    with _contextlib.redirect_stdout(_io.StringIO()) as _rbh_out2:
+        _rbh_code2 = mig.rollback(_rbh)
+    check("rollback refuses a symlinked rollback copy",
+          _rbh_code2 == 1 and "rollback copy is" in _rbh_out2.getvalue()
+          and (_rbh_dir / "lesson.json").read_bytes() == b"Vera Example new")
+
+    # a declared page that is a FIFO is noted, never opened blocking
+    (_mig_head_dir / "related").mkdir(exist_ok=True)
+    (_mig_head_dir / "lesson.json").write_text(json.dumps({
+        "schema_version": 1, "entry": "index.html",
+        "related": ["related/02-fifo.html"]}) + "\n", encoding="utf-8")
+    _os.mkfifo(_mig_head_dir / "related" / "02-fifo.html")
+    _mig_fifo = mig.plan_bundle(_mig_head_dir, dict(_mig_head_db, current_entry=None))
+    check("declared FIFO page is noted and skipped, not opened blocking",
+          _mig_fifo.action == mig.ACTION_MIGRATE
+          and "related/02-fifo.html" not in _mig_fifo.page_hashes
+          and any("not a regular file" in n for n in _mig_fifo.notes))
+
+    # end-to-end run over the DB enumeration: dry-run writes nothing, the run
+    # migrates, a rerun reports the no-op
+    _mig_run_before = (_v1_dir / "lesson.json").read_text(encoding="utf-8")
+    with _contextlib.redirect_stdout(_io.StringIO()) as _mig_dry_out:
+        _mig_dry_code = mig.run(dry_run=True, slugs=[_v1["slug"]])
+    check("dry-run plans the migration and writes nothing",
+          _mig_dry_code == 0
+          and "[migrate]" in _mig_dry_out.getvalue()
+          and (_v1_dir / "lesson.json").read_text(encoding="utf-8") == _mig_run_before)
+    with _contextlib.redirect_stdout(_io.StringIO()):
+        _mig_run_code = mig.run(dry_run=False, slugs=[_v1["slug"]])
+    _mig_run_read = bschema.read_manifest_text(
+        (_v1_dir / "lesson.json").read_text(encoding="utf-8"))
+    check("run migrates the enumerated bundle to clean v2",
+          _mig_run_code == 0
+          and _mig_run_read.version == 2
+          and _mig_run_read.outcome == "ok"
+          and _mig_run_read.lesson_uid == _v1["uid"])
+    with _contextlib.redirect_stdout(_io.StringIO()) as _mig_rerun_out:
+        _mig_rerun_code = mig.run(dry_run=True, slugs=[_v1["slug"]])
+    check("rerun dry-run reports already-v2, no changes",
+          _mig_rerun_code == 0 and "already-v2=1" in _mig_rerun_out.getvalue())
+
     tday = c.get("/today").text
     check("Today title carries the Ephemeris identity", "· Ephemeris" in tday)
     check("base metas rebranded to Ephemeris",
