@@ -71,7 +71,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   own fallback — `bundle_info` exposes `stale_selection`, `GET /learn`
   skips persisting the fallback, and the preview-meta poll URL carries
   the stale candidate so each poll re-derives the invalid-entry finding
-  — verify 477, verify_restore 28)
+  — verify 477, verify_restore 28; LANDED 2026-07-19 via merge commit
+  63a037d at approved head add17ec — the landed tree is the reviewed
+  branch head's tree)
 
 - [x] 2026-07-16 — 5ae5017, eeb71f1, ecee1f2, ff9a3f0, 4b04757, ba2bc3c,
   2851f69, 89adcbc, 38dd11b, 9dc0fc6, e7a2068, 250cd66 —
