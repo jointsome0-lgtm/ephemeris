@@ -59,7 +59,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   against it; this entry stays current with the branch: any further C3
   commit touching these paths — and the merge commit itself once the PR
   lands (this repository merges via merge commits, so the landed tree is
-  the reviewed branch head's tree) — is appended here before any restart)
+  the reviewed branch head's tree) — is appended here before any restart;
+  c7a315e merges main back into the branch: retro_entries (#49) keeps
+  schema v10 as landed on main, the `lessons.uid` step is renumbered to
+  v11 with its content unchanged, `verify.py` keeps main's
+  SCHEMA_VERSION-relative version check, both branches' Done entries
+  kept — verify 473, verify_restore 28)
 
 - [x] 2026-07-16 — 5ae5017, eeb71f1, ecee1f2, ff9a3f0, 4b04757, ba2bc3c,
   2851f69, 89adcbc, 38dd11b, 9dc0fc6, e7a2068, 250cd66 —
