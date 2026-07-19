@@ -151,6 +151,21 @@ that is the forward-compatibility room minor additions use.
   on disk — which is what the attempt backend records against (§6.3).
   Post-load self-navigation IS detected and re-asserted.
 
+  The same blind window recurs AFTER the expected page settles and is
+  armed: a self-navigation's successor runs scripts before its own `load`
+  event fires, and until that load the parent's armed identity is still
+  standing while `event.source` still matches the navigation-stable
+  `WindowProxy`. A live `ready` posted in that window is therefore answered
+  with the expected page's identity and a fresh port. The port dies at the
+  successor's `load` (teardown + re-assert); a successor that stalls its
+  own load keeps the port — and the visible frame — until the parent next
+  navigates (version/identity change). The trust argument above applies
+  unchanged: the successor was chosen by the armed lesson document itself,
+  which could equally have kept the identical grant and rendered the same
+  content. Like the two residuals flanking this one, it is why capability-
+  bearing extensions (D4+) MUST re-validate identity server-side per
+  operation instead of trusting port possession.
+
   Related delivery residual: the iframe's `WindowProxy` survives
   navigation, so a `welcome` (or port message) already in flight when the
   frame self-navigates can be delivered to the successor document — the
