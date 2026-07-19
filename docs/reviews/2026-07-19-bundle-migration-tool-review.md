@@ -321,3 +321,29 @@ closing the sole remaining L4 gap.
 C4 migration blocker. Run the dry-run first and perform the migration with the
 service and lesson agents stopped, under the documented private/local posture.
 This does not change the wider-deployment verdict: v0 remains unauthenticated.
+
+## Second closing note — exact-`fbd315b` / exact-`f487b30` re-probe
+
+- **`fbd315b` — no new finding.** Exact-commit probes changed `uid` and
+  `current_entry` separately after planning: both applies refused, preserved
+  the live manifests, and created neither rollback copies nor ledger entries.
+  A restore trace also confirmed the bundle-directory fsync after the atomic
+  manifest replacement.
+- **`f487b30` — two new Low findings.** The intended cases passed: missing or
+  invalid v1 `slug`/`title` copies were filled from usable DB values, and no
+  usable title on either side stopped the plan. However, DB fallback makes
+  `title` plan input while the `fbd315b` pre-apply re-read still compares only
+  `uid` and `current_entry`. An exact-head probe changed only the DB title after
+  planning; the run returned 0 and wrote the planned old title, which read as
+  `stale-metadata` against the fresh row. Separately, the new title predicate
+  bounds `len(value.strip())` but emits `value` unchanged: an invented
+  242-character title containing 240 non-whitespace characters was accepted
+  and written instead of falling back or stopping, contrary to §4's 240-character
+  emitted-field limit.
+
+**Final private-instance verdict at `f487b30`: NO, not yet.** The earlier
+findings remain closed and `fbd315b` does not regress them, but the YES verdict
+at `41c5134` does not carry to head. Cover every DB value used by the plan in
+the immediate pre-apply comparison (including a DB-sourced title), validate
+the emitted title's actual length, and re-probe both cases. Wider deployment
+remains NO because v0 is unauthenticated.
