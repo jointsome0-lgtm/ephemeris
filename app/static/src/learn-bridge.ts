@@ -81,6 +81,12 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
    * navigation (PR-55 round 2). */
   let navPending = !(Number(frame.dataset["loaded"]) > 0);
   let reasserts = 0;
+  /* Terminal for the current frame content (PR-55 round 5): set when a
+   * document exhausts the re-assert budget by fighting the forced return
+   * to the expected page. From then on nothing arms — the off-manifest
+   * successor must never be granted the expected page's identity — until
+   * a parent-owned navigation (version/identity change) starts fresh. */
+  let quarantined = false;
 
   /* Per-document handshake state (cleared on every load/teardown). */
   let armed: BridgePage | null = null;
@@ -133,6 +139,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     url.searchParams.set("_v", String(Date.now()));
     expectedSrc = url.toString();
     reasserts = 0;
+    quarantined = false; // parent-owned navigation: fresh start
     navPending = true;
     frame.src = expectedSrc;
   };
@@ -157,10 +164,11 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
   const armFromMeta = (meta: PreviewMeta): void => {
     /* Single choke point (PR-55 round 3): never arm while a navigation is
      * pending — the outgoing document can still announce into the gap and
-     * would be granted the INCOMING page's identity. Consequence: grants
-     * only ever go to settled documents (a pre-load announce is answered
-     * via the child's retries right after its load-driven bind). */
-    if (navPending || armed !== null || granted) return;
+     * would be granted the INCOMING page's identity — nor while the frame
+     * is quarantined after exhausting the self-navigation re-assert budget
+     * (round 5). Consequence: grants only ever go to settled documents the
+     * parent itself navigated to. */
+    if (quarantined || navPending || armed !== null || granted) return;
     if (meta.bridge === true && isBridgePage(meta.bridge_page)) {
       armed = {
         lesson_uid: meta.bridge_page.lesson_uid,
@@ -195,13 +203,17 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     if (!navPending) {
       /* Self-navigation: the lesson document went somewhere on its own. The
        * new document is NOT the page any identity was derived from — never
-       * bind it; put the expected page back while the budget lasts. */
+       * bind it; put the expected page back while the budget lasts, then
+       * quarantine (a successor that fought the re-assert must stay
+       * unbridged, not drift back into the poll's arming path). */
       if (reasserts < MAX_REASSERTS) {
         reasserts += 1;
         const url = new URL(expectedSrc);
         url.searchParams.set("_v", String(Date.now()));
         navPending = true;
         frame.src = url.toString();
+      } else {
+        quarantined = true;
       }
       return;
     }
