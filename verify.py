@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -681,6 +682,23 @@ with TestClient(app) as c:
     check("uid backfill stamps exactly the NULL-uid rows",
           _healed == 1 and _stale_uid and bschema.UUID_RE.match(_stale_uid) is not None)
 
+    # v10→v11 renumbering hazard: a DB that ran the uid step while it was
+    # numbered v10 sits at user_version=10 WITHOUT retro_entries, and the
+    # landed v10 step is skipped on its way to 11 — _migrate_to_11 must
+    # converge that shape itself
+    _ren = sqlite3.connect(":memory:")
+    _ren.row_factory = sqlite3.Row
+    _ren.execute("CREATE TABLE lessons (id INTEGER PRIMARY KEY, title TEXT, uid TEXT)")
+    _ren.execute("INSERT INTO lessons (title) VALUES ('Renumber Demo')")
+    db_mod._migrate_to_11(_ren)
+    _ren_tabs = {r["name"] for r in _ren.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    _ren_uid = _ren.execute("SELECT uid FROM lessons").fetchone()["uid"]
+    _ren.close()
+    check("v11 on a branch-v10 DB creates retro_entries and backfills uids",
+          "retro_entries" in _ren_tabs and _ren_uid
+          and bschema.UUID_RE.match(_ren_uid) is not None)
+
     # v2 read path: declared pages only (§4.2), unknown fields preserved (§9.3)
     _v2_conn = get_conn()
     try:
@@ -735,6 +753,36 @@ with TestClient(app) as c:
     check("lesson_entry_changed event echoes lesson_uid",
           _v2_entry_event.get("lesson_uid") == _v2["uid"]
           and _v2_entry_event.get("to_entry") == "related/01-stage.html")
+
+    # a page removed from the manifest AFTER being selected leaves a stale
+    # stored selection: the render falls back visibly, the fallback is NOT
+    # persisted over the evidence, and the metadata poll URL carries the
+    # stale candidate so every poll re-surfaces the finding (§4.2)
+    _v2_cut = json.loads((_v2_dir / "lesson.json").read_text(encoding="utf-8"))
+    _v2_cut["pages"] = [p for p in _v2_cut["pages"] if p["path"] != "related/01-stage.html"]
+    bschema.write_manifest(_v2_dir / "lesson.json", _v2_cut)
+    _v2_conn = get_conn()
+    try:
+        _v2_stale = lessons_svc.bundle_info(lessons_svc.get_lesson(_v2_conn, _v2_id))
+        _learn_html = c.get(f"/learn?lesson={_v2_id}").text
+        _v2_kept = lessons_svc.get_lesson(_v2_conn, _v2_id)["current_entry"]
+    finally:
+        _v2_conn.close()
+    check("stale stored selection is exposed and never silently persisted",
+          _v2_stale["stale_selection"] == "related/01-stage.html"
+          and _v2_stale["entry"] == "index.html"
+          and _v2_kept == "related/01-stage.html")
+    check("preview-meta poll URL keeps the stale candidate, not the fallback",
+          "preview-meta?entry=related%2F01-stage.html" in _learn_html)
+    _v2_stale_meta = c.get(
+        f"/learn/lessons/{_v2_id}/preview-meta",
+        params={"entry": "related/01-stage.html"}).json()
+    check("polling the stale candidate re-surfaces invalid-entry each time",
+          _v2_stale_meta["outcome"] == "degraded"
+          and any(f["code"] == "invalid-entry" for f in _v2_stale_meta["findings"])
+          and _v2_stale_meta["exists"] is True)
+    # restore the two-page manifest — later sections rely on it
+    bschema.write_manifest(_v2_dir / "lesson.json", _v2_raw)
 
     # corrupt / unsupported manifests reject visibly (§9.1) and stay untouched
     _rej_conn = get_conn()

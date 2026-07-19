@@ -410,13 +410,26 @@ def bundle_info(lesson: dict, entry: str | None = None) -> dict:
             "outcome": read.outcome,
             "findings": _finding_views(read),
             "entry": None,
+            "stale_selection": None,
             "file": _file_info(lesson, read, None),
             "pages": [],
         }
+    candidate = entry or lesson.get("current_entry")
     try:
         current = _resolve_entry(lesson, read, entry)
     except LessonError:
         current = read.entry
+    # §4.2: a v2 selection that fell back is reported, not silently repaired.
+    # `stale_selection` carries the rejected candidate so callers can keep it
+    # observable (metadata polls, skipped persistence) instead of letting the
+    # fallback overwrite the evidence. For non-rejected v2 the manifest entry
+    # is always declared, so `current != candidate` holds exactly when
+    # `_resolve_entry` fell back with an invalid-entry finding.
+    stale_selection = (
+        candidate
+        if read.version == bundle_schema.SCHEMA_V2 and candidate and candidate != current
+        else None
+    )
     # The top-level outcome/findings snapshot is the CURRENT file's — a
     # superset of the manifest read's, taken after selection resolution and
     # the entry's own §2/§9.2 checks. Both a stale selection's invalid-entry
@@ -434,6 +447,7 @@ def bundle_info(lesson: dict, entry: str | None = None) -> dict:
     return {
         **info,
         "entry": current,
+        "stale_selection": stale_selection,
         "file": file,
         "pages": [
             {**_file_info(lesson, read, page), "current": page == current}

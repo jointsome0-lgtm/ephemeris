@@ -474,6 +474,11 @@ def backfill_lesson_uids(conn: sqlite3.Connection) -> int:
 
 
 def _migrate_to_11(conn: sqlite3.Connection) -> None:
+    # Renumbering hazard: a DB that ran the uid step while it was numbered
+    # v10 sits at user_version=10 WITHOUT retro_entries, so the landed v10
+    # step above is skipped on its way here. The retro DDL is IF NOT EXISTS
+    # throughout — re-running it converges that shape (fresh DBs no-op).
+    conn.executescript(_SCHEMA_V10)
     have = {r["name"] for r in conn.execute("PRAGMA table_info(lessons)")}
     if "uid" not in have:
         conn.execute("ALTER TABLE lessons ADD COLUMN uid TEXT")
