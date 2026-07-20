@@ -19,20 +19,37 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-20 — 6e7b7b5 — `app/services/lessons.py`, `verify.py` —
+(none)
+
+## Done
+
+- [x] 2026-07-20 — 6e7b7b5, 8c82f1b, 841c37c — `app/services/lessons.py`,
+  `verify.py` —
   issue #35 stage 2 (session D3): the generated lesson `AGENTS.md` brief
   (`_AGENTS_TEMPLATE`) gains a "Bridge conventions" section telling study
   agents how to wire interactive pages: Check actions via bridge port
   operations only, the ready/welcome handshake per
-  `docs/lesson-bridge-abi.md` (retry cadence, ~2 s silence budget),
-  parent-owned identity, `question_id` taken from the manifest's declared
-  `questions[]` ids, `request_id` reuse on retried submissions, and
-  read-only degradation when no bridge or no `attempts` capability is
-  present; the section states that the ABI v1 granted capability set is
-  empty today. Template text only — `_write_brief`, the `CLAUDE.md` shim,
-  and all runtime code paths unchanged; one verify anchor added (535).
-
-## Done
+  `docs/lesson-bridge-abi.md` (retry cadence, ~2 s silence budget,
+  handshake skipped on an opaque file-opened origin), parent-owned
+  identity, `question_id` taken from the manifest's declared `questions[]`
+  ids, and read-only degradation when no bridge or no `attempts`
+  capability is present; states that the ABI v1 granted capability set is
+  empty today and that pages scaffold to the conventions without inventing
+  a write operation. Template text only — `_write_brief`, the `CLAUDE.md`
+  shim, and all runtime code paths unchanged; verify anchors added (535).
+  Drained → `2026-07-20-lesson-brief-bridge-conventions-review.md`:
+  initial review at 6e7b7b5 (two Low: B1 inbound-handshake
+  authentication, B2 lesson-wide `request_id` uniqueness — both fixed in
+  8c82f1b); closing addendum (B2 + recording-contract limitation
+  resolved, B1 residual `event.origin` rule + non-security N1
+  reject-envelope scoping — both fixed in 841c37c); second closing note
+  (B1/N1 fully resolved, no new findings). Final verdict: SAFE TO MAKE
+  LIVE under the direct-loopback ABI-v1 posture; D4/D5 capability work
+  remains gated on the bridge-runtime report's L1/L2 conditions; wider
+  deployment NO (unauthenticated). The entry stays current with the
+  branch: any further commit touching the brief — and the merge commit
+  once the PR lands (this repository merges via merge commits) — is
+  appended here before any restart.
 
 - [x] 2026-07-20 — e57d6bd, 7630977 —
   `app/static/src/learn-bridge.ts` + emitted `app/static/learn-bridge.js`
