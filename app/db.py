@@ -124,7 +124,7 @@ def get_conn() -> sqlite3.Connection:
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -486,6 +486,43 @@ def _migrate_to_11(conn: sqlite3.Connection) -> None:
     backfill_lesson_uids(conn)
 
 
+# v12 — lesson_attempts (learn-bundle-spec.md §6, session D4): the authority
+# for recorded learner attempts. Each row is written in ONE transaction with
+# its `lesson_attempt` ledger event (the row stores the event's uuid so the
+# attempts.jsonl projection can echo it, §6.2). `attempt_id` is the durable
+# public identity (§3); the idempotency key is unique per lesson (§6.3) so a
+# replayed submission maps back to the original row instead of duplicating.
+# `created_at` is UTC ISO-8601 (§6.2 record shape — projection and authority
+# carry the same string). Rows are immutable once written and never deleted:
+# attempts are learning history (§6.4 — late data is flagged, not dropped).
+_SCHEMA_V12 = """
+CREATE TABLE IF NOT EXISTS lesson_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt_id TEXT NOT NULL UNIQUE,
+  event_uuid TEXT NOT NULL,
+  lesson_id INTEGER NOT NULL REFERENCES lessons(id),
+  lesson_uid TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  page_id TEXT NOT NULL,
+  question_id TEXT NOT NULL,
+  page_rev TEXT NOT NULL,
+  answer TEXT NOT NULL,
+  stale INTEGER NOT NULL CHECK(stale IN (0,1)),
+  created_at TEXT NOT NULL,
+  UNIQUE(lesson_id, idempotency_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_attempts_lesson_created
+  ON lesson_attempts(lesson_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_attempts_lesson_question
+  ON lesson_attempts(lesson_id, question_id);
+"""
+
+
+def _migrate_to_12(conn: sqlite3.Connection) -> None:
+    conn.executescript(_SCHEMA_V12)
+
+
 # Ordered, idempotent steps. A schema change must NEVER require deleting the
 # ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
 _MIGRATIONS = [
@@ -500,6 +537,7 @@ _MIGRATIONS = [
     (9, _migrate_to_9),
     (10, _migrate_to_10),
     (11, _migrate_to_11),
+    (12, _migrate_to_12),
 ]
 
 

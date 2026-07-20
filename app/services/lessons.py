@@ -447,6 +447,27 @@ def _file_info(
     }
 
 
+def read_bundle(lesson: dict) -> bundle_schema.ManifestRead:
+    """Public record-time bundle read for the attempt backend (D4): the same
+    dual-read every other consumer uses — standard dirs ensured, skeleton
+    created only when the manifest is genuinely missing, visible rejects."""
+    return _ensure_bundle_manifest(lesson)
+
+
+def hash_bundle_page(lesson: dict, ref: str) -> str | None:
+    """sha256 hex of a bundle page's current raw bytes, or None when the path
+    is missing, symlinked (§2), or not a regular file. Used by the attempt
+    backend to derive `stale` server-side at record time (§6.3/§6.4)."""
+    try:
+        ref = _clean_bundle_ref(ref)
+        if bundle_schema.path_has_symlink(_lesson_dir(lesson["slug"]), ref):
+            return None
+        hashed = _hash_regular_no_follow(_bundle_path(lesson["slug"], ref))
+    except LessonError:
+        return None
+    return hashed[0] if hashed else None
+
+
 def lesson_file_info(lesson: dict, entry: str | None = None) -> dict:
     """Runtime HTML artifact metadata for one bundle entry, including the
     bridge page identity when the page qualifies (the preview-meta read is
