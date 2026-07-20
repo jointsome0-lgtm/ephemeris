@@ -1632,6 +1632,29 @@ with TestClient(app) as c:
           and _at_race429["attempt_id"] == _at_row1["attempt_id"]
           and _at_roc_calls["n"] == 2)
 
+    # a duplicate resolved only at the LOCKED re-check refunds its window
+    # slot (PR-57 round 12): retries racing a slow original are not new
+    # writes and never starve the next real attempt of budget
+    _at_roc_calls["n"] = 0
+    attempts_svc._reset_rate_limit()
+    _at_rate_saved = attempts_svc.RATE_MAX_PER_WINDOW
+    attempts_svc.RATE_MAX_PER_WINDOW = 3
+    _at_conn = get_conn()
+    try:
+        with _mock.patch.object(attempts_svc, "_replay_or_conflict",
+                                _at_roc_once):
+            _at_refund = attempts_svc.record_attempt(_at_conn, _at,
+                                                     dict(_at_body))
+        _at_window_after = len(attempts_svc._rate.get(_at["id"], ()))
+    finally:
+        _at_conn.close()
+        attempts_svc.RATE_MAX_PER_WINDOW = _at_rate_saved
+        attempts_svc._reset_rate_limit()
+    check("late-resolved duplicate refunds its rate-limit slot",
+          _at_refund["result"] == "duplicate"
+          and _at_roc_calls["n"] == 2
+          and _at_window_after == 0)
+
     # rate limit: sliding per-lesson window, distinct code + Retry-After;
     # fresh keys spend budget, replays never do (PR-57 round 9) — a retry of
     # the window-exhausting attempt learns its attempt_id, not a 429

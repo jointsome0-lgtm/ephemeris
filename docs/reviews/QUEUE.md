@@ -20,8 +20,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 ## Pending
 
 - [ ] 2026-07-20 — c2bf554, 4e7997f, 142ea74, 6be555e, 9da7758, 89b4bc2,
-  ac08a7c, 9a34e33, e0e9697, 69af6fe, 906322d + the PR-bot round-11
-  commit (which carries this entry update) — `app/db.py`, `app/services/attempts.py` (new),
+  ac08a7c, 9a34e33, e0e9697, 69af6fe, 906322d, 780c028 + the PR-bot
+  round-12 commit (which carries this entry update) — `app/db.py`, `app/services/attempts.py` (new),
   `app/services/bundle_schema.py` (round 8 only),
   `app/services/lessons.py`, `app/main.py`, `docs/lesson-attempts-api.md`
   (new), `verify.py` —
@@ -76,7 +76,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   leak the append into its other name; the rebuild replaces the name
   only), and the rate limit moved inside the refusal re-check block —
   a retry whose original committed after the early replay check gets
-  its duplicate instead of a 429; verify 578.
+  its duplicate instead of a 429; verify 578. Round 12: rate-limit
+  slots are charged per call but refunded on every replay/conflict
+  outcome (they are not new writes; refusals of new writes stay
+  charged), so retries racing a slow original cannot starve real
+  attempts; the locked write section split into _record_locked;
+  verify 579.
 
 ## Done
 

@@ -92,7 +92,9 @@ def _reset_rate_limit() -> None:
         _rate.clear()
 
 
-def _check_rate(lesson_id: int) -> None:
+def _check_rate(lesson_id: int) -> float:
+    """Charge one window slot; returns the charged stamp so outcomes that
+    turn out not to be new writes can refund it (PR-57 round 12)."""
     now = _monotonic()
     with _rate_lock:
         window = _rate.setdefault(lesson_id, deque())
@@ -104,6 +106,23 @@ def _check_rate(lesson_id: int) -> None:
                 "rate-limited", 429, f"retry after ~{retry}s"
             )
         window.append(now)
+        return now
+
+
+def _refund_rate(lesson_id: int, stamp: float | None) -> None:
+    """PR-57 round 12: a request that resolves as a replay or a key
+    conflict was not a new write — its slot is returned, so retries racing
+    a slow original cannot starve the next real attempt. Refusals of NEW
+    writes stay charged (the budget guards the manifest/hash path)."""
+    if stamp is None:
+        return
+    with _rate_lock:
+        window = _rate.get(lesson_id)
+        if window is not None:
+            try:
+                window.remove(stamp)
+            except ValueError:
+                pass  # already expired out of the sliding window
 
 
 def _utc_now_iso() -> str:
@@ -460,8 +479,9 @@ def record_attempt(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dic
     if replay is not None:
         return replay
 
+    rate_stamp: float | None = None
     try:
-        _check_rate(lesson["id"])
+        rate_stamp = _check_rate(lesson["id"])
         read = lessons.read_bundle(lesson)
         _require_eligible(read)
         if not lesson.get("uid"):  # unreachable post-v11 backfill; fail closed
@@ -485,99 +505,122 @@ def record_attempt(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dic
         # re-check before refusing. (A 429 that survives this re-check is
         # fine: it is transient by contract, and the next retry after
         # Retry-After finds the committed duplicate.)
-        with _bundle_lock(lesson["slug"]):
-            replay = _replay_or_conflict(conn, lesson, submission)
+        try:
+            with _bundle_lock(lesson["slug"]):
+                replay = _replay_or_conflict(conn, lesson, submission)
+        except AttemptError:
+            _refund_rate(lesson["id"], rate_stamp)  # conflict: not a new write
+            raise
         if replay is not None:
+            _refund_rate(lesson["id"], rate_stamp)
             return replay
         raise
     stale = _derive_stale(
         lesson, read, question, submission["page_id"], submission["page_rev"]
     )
 
-    with _bundle_lock(lesson["slug"]):
-        # Re-check under the lock: another in-process writer may have landed
-        # the same key between the early replay check and here.
-        replay = _replay_or_conflict(conn, lesson, submission)
-        if replay is None:
-            attempt_id = str(uuid4())
-            created_at = _utc_now_iso()
-            row = {
-                "attempt_id": attempt_id,
-                "lesson_uid": lesson["uid"],
-                "page_id": submission["page_id"],
-                "question_id": submission["question_id"],
-                "page_rev": submission["page_rev"],
-                "answer": submission["answer"],
-                "created_at": created_at,
-                "stale": stale,
-            }
-            # §6.2 whole-line bound is a writer duty: an answer that fits the
-            # 32 KiB budget can still escape past 64 KiB (newlines, quotes).
-            # The event uuid is minted in the transaction below but has a
-            # fixed serialized width, so this placeholder length is exact.
-            probe = _projection_line({**row, "event_uuid": "0" * 36})
-            if len(probe.encode("utf-8")) > MAX_LINE_BYTES:
-                raise AttemptError(
-                    "answer-too-large", 400,
-                    f"projection record exceeds {MAX_LINE_BYTES} bytes",
-                )
-            try:
-                with conn:
-                    # ONE transaction (§6.1): the event and the row commit or
-                    # roll back together; the row stores the event's uuid so
-                    # the projection can echo it (§6.2).
-                    event_uuid = append_event(conn, "lesson_attempt", {
-                        # §8 echo policy: identity and the record itself —
-                        # never title/path/step/concepts/pages.
-                        "lesson_uid": lesson["uid"],
-                        "lesson_id": lesson["id"],
-                        "slug": lesson["slug"],
-                        "attempt_id": attempt_id,
-                        "page_id": submission["page_id"],
-                        "question_id": submission["question_id"],
-                        "page_rev": submission["page_rev"],
-                        "answer": submission["answer"],
-                        "stale": stale,
-                    })
-                    conn.execute(
-                        "INSERT INTO lesson_attempts "
-                        "(attempt_id, event_uuid, lesson_id, lesson_uid, "
-                        " idempotency_key, page_id, question_id, page_rev, "
-                        " answer, stale, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (
-                            attempt_id, event_uuid, lesson["id"], lesson["uid"],
-                            submission["idempotency_key"],
-                            submission["page_id"], submission["question_id"],
-                            submission["page_rev"], submission["answer"],
-                            int(stale), created_at,
-                        ),
-                    )
-                    # attempt_number is the 1-based number of THIS attempt:
-                    # counted inside the write transaction, while SQLite
-                    # still excludes competing processes — after commit a
-                    # sibling process could inflate the count (PR-57 r7).
-                    attempt_number = conn.execute(
-                        "SELECT COUNT(*) FROM lesson_attempts "
-                        "WHERE lesson_id = ? AND question_id = ?",
-                        (lesson["id"], submission["question_id"]),
-                    ).fetchone()[0]
-            except sqlite3.IntegrityError:
-                # Same idempotency key landed from another PROCESS (a stale
-                # second server; in-process writers serialize on the bundle
-                # lock) — answer with its outcome instead of a 500.
-                replay = _replay_or_conflict(conn, lesson, submission)
-                if replay is None:
-                    raise
-            else:
-                projected = _project_attempt(
-                    conn, lesson, {**row, "event_uuid": event_uuid}
-                )
-                return {
-                    "result": "recorded",
+    try:
+        with _bundle_lock(lesson["slug"]):
+            return _record_locked(conn, lesson, submission, stale, rate_stamp)
+    except AttemptError as exc:
+        if exc.code == "idempotency-conflict":  # not a new write (round 12)
+            _refund_rate(lesson["id"], rate_stamp)
+        raise
+
+
+def _record_locked(
+    conn: sqlite3.Connection,
+    lesson: dict,
+    submission: dict,
+    stale: bool,
+    rate_stamp: float | None,
+) -> dict:
+    """The bundle-locked write section of `record_attempt`. Every replay
+    outcome refunds the window slot — it was not a new write (round 12)."""
+    # Re-check under the lock: another in-process writer may have landed
+    # the same key between the early replay check and here.
+    replay = _replay_or_conflict(conn, lesson, submission)
+    if replay is None:
+        attempt_id = str(uuid4())
+        created_at = _utc_now_iso()
+        row = {
+            "attempt_id": attempt_id,
+            "lesson_uid": lesson["uid"],
+            "page_id": submission["page_id"],
+            "question_id": submission["question_id"],
+            "page_rev": submission["page_rev"],
+            "answer": submission["answer"],
+            "created_at": created_at,
+            "stale": stale,
+        }
+        # §6.2 whole-line bound is a writer duty: an answer that fits the
+        # 32 KiB budget can still escape past 64 KiB (newlines, quotes).
+        # The event uuid is minted in the transaction below but has a
+        # fixed serialized width, so this placeholder length is exact.
+        probe = _projection_line({**row, "event_uuid": "0" * 36})
+        if len(probe.encode("utf-8")) > MAX_LINE_BYTES:
+            raise AttemptError(
+                "answer-too-large", 400,
+                f"projection record exceeds {MAX_LINE_BYTES} bytes",
+            )
+        try:
+            with conn:
+                # ONE transaction (§6.1): the event and the row commit or
+                # roll back together; the row stores the event's uuid so
+                # the projection can echo it (§6.2).
+                event_uuid = append_event(conn, "lesson_attempt", {
+                    # §8 echo policy: identity and the record itself —
+                    # never title/path/step/concepts/pages.
+                    "lesson_uid": lesson["uid"],
+                    "lesson_id": lesson["id"],
+                    "slug": lesson["slug"],
                     "attempt_id": attempt_id,
+                    "page_id": submission["page_id"],
+                    "question_id": submission["question_id"],
+                    "page_rev": submission["page_rev"],
+                    "answer": submission["answer"],
                     "stale": stale,
-                    "attempt_number": attempt_number,
-                    "projection": "projected" if projected else "pending",
-                }
-        return replay
+                })
+                conn.execute(
+                    "INSERT INTO lesson_attempts "
+                    "(attempt_id, event_uuid, lesson_id, lesson_uid, "
+                    " idempotency_key, page_id, question_id, page_rev, "
+                    " answer, stale, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        attempt_id, event_uuid, lesson["id"], lesson["uid"],
+                        submission["idempotency_key"],
+                        submission["page_id"], submission["question_id"],
+                        submission["page_rev"], submission["answer"],
+                        int(stale), created_at,
+                    ),
+                )
+                # attempt_number is the 1-based number of THIS attempt:
+                # counted inside the write transaction, while SQLite
+                # still excludes competing processes — after commit a
+                # sibling process could inflate the count (PR-57 r7).
+                attempt_number = conn.execute(
+                    "SELECT COUNT(*) FROM lesson_attempts "
+                    "WHERE lesson_id = ? AND question_id = ?",
+                    (lesson["id"], submission["question_id"]),
+                ).fetchone()[0]
+        except sqlite3.IntegrityError:
+            # Same idempotency key landed from another PROCESS (a stale
+            # second server; in-process writers serialize on the bundle
+            # lock) — answer with its outcome instead of a 500.
+            replay = _replay_or_conflict(conn, lesson, submission)
+            if replay is None:
+                raise
+        else:
+            projected = _project_attempt(
+                conn, lesson, {**row, "event_uuid": event_uuid}
+            )
+            return {
+                "result": "recorded",
+                "attempt_id": attempt_id,
+                "stale": stale,
+                "attempt_number": attempt_number,
+                "projection": "projected" if projected else "pending",
+            }
+    _refund_rate(lesson["id"], rate_stamp)
+    return replay
