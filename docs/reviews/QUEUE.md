@@ -19,7 +19,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-20 — c2bf554, 4e7997f — `app/db.py`, `app/services/attempts.py` (new),
+- [ ] 2026-07-20 — c2bf554, 4e7997f, 142ea74 — `app/db.py`, `app/services/attempts.py` (new),
   `app/services/lessons.py`, `app/main.py`, `docs/lesson-attempts-api.md`
   (new), `verify.py` —
   issue #36 session D4: new write endpoint `POST
@@ -38,7 +38,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   describes request/response codes. verify.py adds a D4 section (565).
   4e7997f (PR-bot round 1): the idempotency replay lookup moved ahead of
   the record-time refusals, and the projection append loops on short
-  write(2) counts; verify 567.
+  write(2) counts; verify 567. 142ea74 (PR-bot round 2): refusals raised
+  between the early replay check and the locked insert re-check the
+  idempotency key under the bundle lock and return a committed duplicate;
+  `created_at` carries microseconds and the projection fast path appends
+  only when the file's tail sorts strictly before the new row by
+  (created_at, attempt_id), otherwise rebuilding; verify 569.
 
 ## Done
 
