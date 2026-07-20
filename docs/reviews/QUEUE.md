@@ -20,8 +20,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 ## Pending
 
 - [ ] 2026-07-20 — c2bf554, 4e7997f, 142ea74, 6be555e, 9da7758, 89b4bc2,
-  ac08a7c + the PR-bot round-7 commit (which carries this entry update) —
-  `app/db.py`, `app/services/attempts.py` (new),
+  ac08a7c, 9a34e33 + the PR-bot round-8 commit (which carries this entry
+  update) — `app/db.py`, `app/services/attempts.py` (new),
+  `app/services/bundle_schema.py` (round 8 only),
   `app/services/lessons.py`, `app/main.py`, `docs/lesson-attempts-api.md`
   (new), `verify.py` —
   issue #36 session D4: new write endpoint `POST
@@ -56,7 +57,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   equal the §6.1 rebuild of every earlier authority row exactly (the
   appended line renders from the authority row). Round 7: attempt_number
   is counted inside the write transaction (a sibling process could
-  inflate it post-commit); verify 572.
+  inflate it post-commit); verify 572. Round 8: all nine identity/value
+  grammar regexes in bundle_schema.py and attempts.py are \Z-anchored —
+  Python's $ under .match() accepted a trailing newline, letting
+  "pg_x\n"-style page/rev identities into the row and projection (and
+  into manifest id validation); verify 573.
 
 ## Done
 

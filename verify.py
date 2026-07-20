@@ -1338,6 +1338,20 @@ with TestClient(app) as c:
           and _at_badrev.json()["error"] == "invalid-page-rev"
           and _at_badkey.status_code == 400
           and _at_badkey.json()["error"] == "invalid-idempotency-key")
+    # $-anchored .match accepts a trailing newline (PR-57 round 8): the id
+    # grammars are \Z-anchored, so "pg_x\n"-style identities never reach the
+    # row or the projection
+    check("trailing newline in identity fields is rejected by the grammar",
+          c.post(_at_url, json=dict(_at_body, page_id=_at_pg + "\n",
+                                    idempotency_key="vera-nl-1")
+                 ).json().get("error") == "invalid-page-id"
+          and c.post(_at_url, json=dict(_at_body, page_rev=_at_rev + "\n",
+                                        idempotency_key="vera-nl-2")
+                     ).json().get("error") == "invalid-page-rev"
+          and c.post(_at_url, json=dict(_at_body,
+                                        question_id="q_atpredict1\n",
+                                        idempotency_key="vera-nl-3")
+                     ).json().get("error") == "invalid-question-id")
     check("answer over 32 KiB UTF-8 is answer-too-large",
           c.post(_at_url, json=dict(
               _at_body, answer="x" * (attempts_svc.MAX_ANSWER_BYTES + 1),

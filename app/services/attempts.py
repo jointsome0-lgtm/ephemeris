@@ -46,7 +46,7 @@ MAX_ANSWER_BYTES = 32 * 1024   # §6.2: answer ≤ 32 KiB UTF-8
 MAX_LINE_BYTES = 64 * 1024     # §6.2: whole projection line ≤ 64 KiB
 MAX_KEY_LEN = 128              # §6.3: opaque client token ≤ 128 chars
 
-PAGE_REV_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+PAGE_REV_RE = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 
 # Rate limit (D4 endpoint semantics): attempts are human-scale Check presses.
 # Sliding window per lesson; every recording call consumes budget, valid or
@@ -109,9 +109,9 @@ def _check_rate(lesson_id: int) -> None:
 def _utc_now_iso() -> str:
     """§6.2: `created_at` is UTC ISO-8601 — the same string is stored in the
     row and echoed by the projection, so authority and file never disagree.
-    Microsecond precision so same-second attempts still sort by time and the
-    projection fast path (append at EOF) almost always matches the §6.1
-    rebuild order; `_tail_precedes` guards the residual collisions."""
+    Microsecond precision so same-second attempts still sort by time and
+    the new row lands last in the §6.1 order — the content-verified fast
+    path in `_project_attempt` then almost never falls back to a rebuild."""
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
