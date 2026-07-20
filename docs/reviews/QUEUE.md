@@ -19,7 +19,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-20 — c2bf554, 4e7997f, 142ea74, 6be555e, 9da7758, 89b4bc2,
+(none)
+
+## Done
+
+- [x] 2026-07-20 — c2bf554, 4e7997f, 142ea74, 6be555e, 9da7758, 89b4bc2,
   ac08a7c, 9a34e33, e0e9697, 69af6fe, 906322d, 780c028, 89b4cd2, 0edef9e —
   the entry stays current with the branch: any further branch commit, and
   the merge commit itself once the PR lands (this repository merges via
@@ -89,9 +93,23 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   (one worker; brief 2x during rolling-restart overlap; abuse damper,
   not a security boundary); no code change. Round 14 (docs-only): the
   commit list drops the self-referential round-commit placeholder for
-  the standing append-before-drain/restart rule.
-
-## Done
+  the standing append-before-drain/restart rule. Drained 2026-07-20 →
+  `2026-07-20-attempt-backend-review.md` (Codex, standing brief by
+  file reference, at head 83cc652): no Critical/High/Medium; two Low
+  availability findings — A1 body cap enforced only after Starlette
+  buffers the whole body (parser-framing dependent; issue pending),
+  A2 projection append linear in lifetime history under the
+  database-wide writer lock (issue #58) — both accepted as follow-ups,
+  not blockers. Independent Opus second pass: no findings, concurs.
+  Converged verdict: YES for the documented direct-loopback
+  single-worker deployment; D5 capability-bearing bridge NO until the
+  D2 report's L1 document-generation and L2 served-byte conditions are
+  resolved (D4's per-operation server-side validation is retained and
+  is the server half of that requirement); wider deployment NO
+  (unauthenticated). PR #57: rounds 1–13 fixed on their threads;
+  rounds 14–16 (phantom test-merge hashes) rebutted, review loop
+  closed without a bot verdict. The merge commit is appended here at
+  merge time, before any restart, per the standing rule above.
 
 - [x] 2026-07-20 — 6e7b7b5, 8c82f1b, 841c37c — `app/services/lessons.py`,
   `verify.py` —
