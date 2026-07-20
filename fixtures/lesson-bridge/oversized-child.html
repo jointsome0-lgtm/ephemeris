@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<!-- Vera Example — lesson-bridge e2e child: completes a valid handshake,
+     then abuses the port with an oversized message and an unknown op, and
+     finally proves the port is still alive with a valid ping (the error
+     budget tolerates isolated protocol errors). -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Vera Example oversized child</title></head>
+<body>
+<h1>Vera Example — oversized-message bridge child</h1>
+<div id="state" data-bridge="init"></div>
+<script>
+(() => {
+  const state = document.getElementById("state");
+  const set = (key, value) => { state.dataset[key] = String(value); };
+  if (window.parent === window) { set("bridge", "absent"); return; }
+  const appOrigin = new URL(location.href).origin;
+  let answered = false;
+  const announce = () => window.parent.postMessage(
+    { ephemeris: "lesson-bridge", type: "ready", abi: [1] }, appOrigin);
+  const retry = setInterval(() => { if (!answered) announce(); }, 250);
+  const silent = setTimeout(() => {
+    clearInterval(retry);
+    if (!answered) set("bridge", "silent");
+  }, 2000);
+  window.addEventListener("message", (ev) => {
+    const d = ev.data;
+    if (!d || d.ephemeris !== "lesson-bridge" || d.type !== "welcome") return;
+    answered = true;
+    clearInterval(retry);
+    clearTimeout(silent);
+    set("bridge", "welcome");
+    const port = ev.ports[0];
+    const replies = [];
+    port.onmessage = (pe) => {
+      replies.push(pe.data);
+      set("replies", JSON.stringify(replies));
+      if (replies.length === 1) {
+        port.postMessage({ op: "no-such-op", request_id: "r2" });
+      } else if (replies.length === 2) {
+        port.postMessage({ op: "ping", request_id: "r3" });
+      }
+    };
+    port.postMessage({ op: "ping", request_id: "r0", pad: "x".repeat(70000) });
+  });
+  announce();
+})();
+</script>
+</body>
+</html>

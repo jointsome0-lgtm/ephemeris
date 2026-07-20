@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<!-- Vera Example — lesson-bridge e2e child announcing only an ABI version
+     the parent does not speak: expects a reject with the supported list,
+     and never a welcome or a port. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Vera Example bad-abi child</title></head>
+<body>
+<h1>Vera Example — bad-abi bridge child</h1>
+<div id="state" data-bridge="init"></div>
+<script>
+(() => {
+  const state = document.getElementById("state");
+  const set = (key, value) => { state.dataset[key] = String(value); };
+  if (window.parent === window) { set("bridge", "absent"); return; }
+  const appOrigin = new URL(location.href).origin;
+  let answered = false;
+  const announce = () => window.parent.postMessage(
+    { ephemeris: "lesson-bridge", type: "ready", abi: [99] }, appOrigin);
+  const retry = setInterval(() => { if (!answered) announce(); }, 250);
+  const silent = setTimeout(() => {
+    clearInterval(retry);
+    if (!answered) set("bridge", "silent");
+  }, 2000);
+  window.addEventListener("message", (ev) => {
+    const d = ev.data;
+    if (!d || d.ephemeris !== "lesson-bridge") return;
+    answered = true;
+    clearInterval(retry);
+    clearTimeout(silent);
+    if (d.type === "reject") {
+      set("bridge", "reject:" + d.reason);
+      set("supported", JSON.stringify(d.supported));
+    } else {
+      set("bridge", "unexpected:" + d.type);
+    }
+  });
+  announce();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,34 @@
+{
+  // Issue #42: strict per-file compilation, no bundler. Each app/static/src/*.ts
+  // emits a sibling-named app/static/*.js which is COMMITTED — the reviewed
+  // artifact is the served artifact (zero-build deploy; the live unit serves
+  // the working tree). Comments are preserved so the generated-file banner in
+  // each source survives into the emitted file.
+  "compilerOptions": {
+    "strict": true,
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "rootDir": "app/static/src",
+    "outDir": "app/static",
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "useUnknownInCatchVariables": true,
+    "noEmitOnError": true,
+    "removeComments": false,
+    "sourceMap": false,
+    "declaration": false,
+    "newLine": "lf"
+  },
+  "include": ["app/static/src/**/*.ts"],
+  // tsc's default exclude covers outDir, and outDir is the PARENT of the
+  // source dir here — override it so the sources stay visible.
+  "exclude": ["node_modules"]
+}

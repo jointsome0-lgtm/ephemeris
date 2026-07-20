@@ -102,38 +102,8 @@
     }
   });
 
-  // --- Learn HTML preview: poll the runtime file mtime and reload the sandboxed iframe.
-  (() => {
-    const frame = document.getElementById("lesson-preview-frame");
-    if (!frame) return;
-    const metaUrl = frame.dataset.metaUrl;
-    const fallbackSrc = frame.getAttribute("src");
-    if (!metaUrl || !fallbackSrc) return;
-    let version = frame.dataset.version || "";
-    let inFlight = false;
-    async function tick() {
-      if (document.hidden || inFlight) return;
-      inFlight = true;
-      try {
-        const r = await fetch(metaUrl, { cache: "no-store" });
-        const data = await r.json();
-        const next = String(data.version || "0");
-        if (next !== version) {
-          version = next;
-          const src = data.preview_url || (data.exists ? frame.dataset.src : fallbackSrc);
-          const url = new URL(src, window.location.href);
-          url.searchParams.set("_v", Date.now());
-          frame.src = url.toString();
-        }
-      } catch (_) {
-        // Preview is best-effort; the next tick will try again.
-      } finally {
-        inFlight = false;
-      }
-    }
-    setInterval(tick, 1200);
-    document.addEventListener("visibilitychange", tick);
-  })();
+  // (The Learn preview poll moved to learn-bridge.ts (D2): the bridge grant
+  // is bound to the loaded revision, so one runtime owns poll and handshake.)
 
   // --- Learn workspace: draggable list/preview split + collapsible list -------
   // The list width is the --lesson-w grid track on .learn-workspace; both the

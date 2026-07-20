@@ -66,3 +66,6 @@ venv/
 .DS_Store
 *.swp
 .worktrees/
+
+# --- Node (dev-only TypeScript toolchain, issue #42) ---
+node_modules/
