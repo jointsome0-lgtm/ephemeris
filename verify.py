@@ -334,7 +334,9 @@ with TestClient(app) as c:
           and "granted capability set is empty" in agents_text
           and "Authenticate what you receive" in agents_text
           and "event.source === window.parent" in agents_text
-          and "never an upgrade to write access" in agents_text
+          and "`event.origin` equals" in agents_text
+          and "it has no selected `abi`" in agents_text
+          and "upgrade to write access" in agents_text
           and "stay read-only" in agents_text
           and "unique across the whole lesson" in agents_text
           and "never invent a write" in agents_text)

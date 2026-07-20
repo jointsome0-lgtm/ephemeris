@@ -802,13 +802,17 @@ transferred MessagePort. Pages that record answers follow these rules:
   `"null"` (the page was opened from disk, not served by the app) —
   there is no app origin to talk to; stay read-only.
 - Authenticate what you receive. Accept a `welcome` or `reject` only
-  when `event.source === window.parent`, the message carries
-  `"ephemeris": "lesson-bridge"` and the expected `type`, the selected
-  `abi` is one you announced, and — for a `welcome` — exactly one
-  MessagePort was transferred. Accept at most one handshake result per
-  page load and ignore every later or non-matching message: a message
-  from any other window, or a "welcome" claiming capabilities without a
-  port from the parent, is noise, never an upgrade to write access.
+  when `event.source === window.parent` AND `event.origin` equals
+  `new URL(location.href).origin` (the exact app origin the page was
+  served from), and the message carries `"ephemeris": "lesson-bridge"`
+  with the expected `type`. A `welcome` must additionally select an
+  `abi` you announced and transfer exactly one MessagePort; a `reject`
+  carries only `reason` and `supported` — it has no selected `abi` and
+  no port, so do not demand them of it. Accept at most one handshake
+  result per page load and ignore every later or non-matching message:
+  a message from any other window or origin, or a "welcome" claiming
+  capabilities without a port from the parent, is noise, never an
+  upgrade to write access.
 - Identity is the parent's. The `welcome` carries the lesson identity
   (`lesson_uid`, `page_id`, `page_rev`) and the granted capability set;
   the page never sends its own lesson/page identity — it has no say.
