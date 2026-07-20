@@ -797,7 +797,18 @@ transferred MessagePort. Pages that record answers follow these rules:
   "want": ["attempts"]}` to `window.parent` with targetOrigin
   `new URL(location.href).origin`; re-announce every 250–500 ms until a
   `welcome` or `reject` arrives, and give up after ~2 s of silence. The
-  `welcome` transfers the port everything else flows over.
+  `welcome` transfers the port everything else flows over. Skip the
+  handshake entirely when `new URL(location.href).origin` is the string
+  `"null"` (the page was opened from disk, not served by the app) —
+  there is no app origin to talk to; stay read-only.
+- Authenticate what you receive. Accept a `welcome` or `reject` only
+  when `event.source === window.parent`, the message carries
+  `"ephemeris": "lesson-bridge"` and the expected `type`, the selected
+  `abi` is one you announced, and — for a `welcome` — exactly one
+  MessagePort was transferred. Accept at most one handshake result per
+  page load and ignore every later or non-matching message: a message
+  from any other window, or a "welcome" claiming capabilities without a
+  port from the parent, is noise, never an upgrade to write access.
 - Identity is the parent's. The `welcome` carries the lesson identity
   (`lesson_uid`, `page_id`, `page_rev`) and the granted capability set;
   the page never sends its own lesson/page identity — it has no say.
@@ -806,8 +817,12 @@ transferred MessagePort. Pages that record answers follow these rules:
   at runtime, never one derived from the question text. If the question
   is not declared in the manifest, declare it first: to the app an
   undeclared question does not exist, so its attempts cannot land.
-- Port requests carry a page-chosen `request_id` (1–128 chars); reuse
-  the same `request_id` when retrying one submission so it records once.
+- Port requests carry a page-chosen `request_id` (1–128 chars). Mint a
+  fresh opaque id, unique across the whole lesson, for every new logical
+  submission; reuse the same `request_id` only when retrying that exact
+  submission so it records once. A changed or re-entered answer is a new
+  submission and gets a new id — never a constant or question-derived
+  key, which would silently swallow later answers.
 - Degrade gracefully, always. Handshake silence, a `reject`, or a
   granted capability set without `attempts` all mean "no persistence
   here": the page stays fully usable read-only — predictions, reveals,
@@ -816,8 +831,11 @@ transferred MessagePort. Pages that record answers follow these rules:
   content. The same page must hold up opened directly from disk, under
   the legacy profile, or in any context without the bridge.
 - Today the granted capability set is empty (the attempts operation is
-  the app's next step). Build pages to these conventions anyway: they
-  pick up recording with no edits once the capability arrives.
+  the app's next step, and its message shape is not frozen yet). Build
+  the scaffolding to these conventions anyway — handshake, capability
+  detection, declared ids, degradation — and never invent a write
+  operation: implement the recording call only against the app's frozen
+  attempt operation once the `attempts` capability is actually granted.
 """
 
 

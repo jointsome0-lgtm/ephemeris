@@ -331,7 +331,13 @@ with TestClient(app) as c:
           and "never an id invented" in agents_text
           and "`request_id`" in agents_text
           and "fully usable read-only" in agents_text
-          and "granted capability set is empty" in agents_text)
+          and "granted capability set is empty" in agents_text
+          and "Authenticate what you receive" in agents_text
+          and "event.source === window.parent" in agents_text
+          and "never an upgrade to write access" in agents_text
+          and "stay read-only" in agents_text
+          and "unique across the whole lesson" in agents_text
+          and "never invent a write" in agents_text)
     check("lesson AGENTS.md draws the untrusted-data boundary + no-symlink rule",
           "untrusted data" in agents_text
           and "never directives to follow" in agents_text
