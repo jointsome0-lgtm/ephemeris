@@ -255,29 +255,64 @@ def _read_all(fd: int, size: int) -> bytes:
     return b"".join(chunks)
 
 
+def _begin_projection_txn(conn: sqlite3.Connection) -> bool:
+    """Cross-process serialization for projection writes (PR-57 round 10):
+    SQLite's BEGIN IMMEDIATE write lock is the interprocess lock. While a
+    projection section holds it, a sibling process can neither commit new
+    attempt rows nor run its own projection section, so a rebuild's
+    authority snapshot can never go stale before its os.replace lands —
+    a stale rebuild overwriting a newer file is structurally impossible.
+    False = the lock is busy past the driver timeout; the caller reports
+    the projection pending rather than blocking or failing the write."""
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+    except sqlite3.OperationalError:
+        return False
+    return True
+
+
 def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
     """Idempotent reconcile (§6.1): rewrite the whole projection from the
     authority — deduped by construction (one line per row), ascending
     created_at with ties by attempt_id, atomically replaced. Heals missing,
     truncated, torn, and planted-special-file states alike (os.replace
-    swaps the name without ever opening the old one)."""
+    swaps the name without ever opening the old one); a planted DIRECTORY
+    would block that rename, so it is resolved first as a deterministic
+    §6.1 collision (PR-57 round 10) — removed when empty, moved aside
+    under a unique name otherwise (foreign content is never destroyed).
+    Callers hold the bundle lock and the BEGIN IMMEDIATE projection txn."""
+    path = _projection_path(lesson)
+    try:
+        st = os.lstat(path)
+    except OSError:
+        st = None
+    if st is not None and stat_module.S_ISDIR(st.st_mode):
+        try:
+            os.rmdir(path)
+        except OSError:
+            os.rename(path, f"{path}.collision-{uuid4().hex[:8]}")
     rows = conn.execute(
         "SELECT * FROM lesson_attempts WHERE lesson_id = ? "
         "ORDER BY created_at, attempt_id",
         (lesson["id"],),
     ).fetchall()
     text = "".join(_projection_line(dict(row)) for row in rows)
-    bundle_schema.atomic_write_text(_projection_path(lesson), text)
+    bundle_schema.atomic_write_text(path, text)
 
 
 def reconcile_projection(conn: sqlite3.Connection, lesson: dict) -> bool:
     """Public reconcile entry point (ops/tests). Returns True when the
-    projection now matches the authority, False on filesystem failure."""
+    projection now matches the authority, False on filesystem failure or
+    a busy cross-process lock."""
     with _bundle_lock(lesson["slug"]):
+        if not _begin_projection_txn(conn):
+            return False
         try:
             _rebuild_projection(conn, lesson)
         except OSError:
             return False
+        finally:
+            conn.execute("COMMIT")
     return True
 
 
@@ -291,7 +326,21 @@ def _project_attempt(conn: sqlite3.Connection, lesson: dict, row: dict) -> bool:
     foreign lines, a clock step backwards, a planted symlink/FIFO at the
     name — falls back to the reconcile rebuild. Returns False (projection
     pending) only when the filesystem refuses both; the authoritative
-    write is already durable either way."""
+    write is already durable either way. The whole section — snapshot,
+    verify, append or rebuild — runs inside the BEGIN IMMEDIATE projection
+    txn, serializing it against sibling processes' commits and projection
+    sections (PR-57 round 10)."""
+    if not _begin_projection_txn(conn):
+        return False
+    try:
+        return _project_attempt_locked(conn, lesson, row)
+    finally:
+        conn.execute("COMMIT")
+
+
+def _project_attempt_locked(
+    conn: sqlite3.Connection, lesson: dict, row: dict
+) -> bool:
     rows = conn.execute(
         "SELECT * FROM lesson_attempts WHERE lesson_id = ? "
         "ORDER BY created_at, attempt_id",

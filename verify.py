@@ -1487,6 +1487,31 @@ with TestClient(app) as c:
           and all(json.loads(l)["created_at"] != "2000-01-01T00:00:00+00:00"
                   for l in _at_lines4))
 
+    # a planted DIRECTORY at the projection name is a deterministic §6.1
+    # collision (PR-57 round 10): empty dirs are removed, non-empty moved
+    # aside under a unique name — the projection heals, never stuck pending
+    _at_proj.unlink()
+    _at_proj.mkdir()
+    _at_dircol1 = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-dir-1"))
+    check("empty directory at attempts.jsonl is removed and rebuilt over",
+          _at_dircol1.json().get("projection") == "projected"
+          and _at_proj.is_file()
+          and len(_at_proj.read_text(encoding="utf-8").splitlines())
+          == len(_at_rows()))
+    _at_proj.unlink()
+    _at_proj.mkdir()
+    (_at_proj / "junk.txt").write_text("agent artifact", encoding="utf-8")
+    _at_dircol2 = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-dir-2"))
+    _at_aside = list(_at_dir.glob("attempts.jsonl.collision-*"))
+    check("non-empty directory collision is moved aside, content preserved",
+          _at_dircol2.json().get("projection") == "projected"
+          and _at_proj.is_file()
+          and len(_at_aside) == 1
+          and (_at_aside[0] / "junk.txt").read_text(encoding="utf-8")
+          == "agent artifact")
+    import shutil as _at_shutil
+    _at_shutil.rmtree(_at_aside[0])
+
     # content-verified fast path (PR-57 round 6): the right line COUNT with
     # wrong earlier content is never blind-appended over — the byte-exact
     # prefix comparison fails and the rebuild restores the authority bytes
