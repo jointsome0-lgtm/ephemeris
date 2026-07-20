@@ -19,7 +19,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-20 — c2bf554, 4e7997f, 142ea74 — `app/db.py`, `app/services/attempts.py` (new),
+- [ ] 2026-07-20 — c2bf554, 4e7997f, 142ea74, 6be555e, 9da7758, 89b4bc2,
+  ac08a7c + the PR-bot round-7 commit (which carries this entry update) —
+  `app/db.py`, `app/services/attempts.py` (new),
   `app/services/lessons.py`, `app/main.py`, `docs/lesson-attempts-api.md`
   (new), `verify.py` —
   issue #36 session D4: new write endpoint `POST
@@ -43,7 +45,18 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   idempotency key under the bundle lock and return a committed duplicate;
   `created_at` carries microseconds and the projection fast path appends
   only when the file's tail sorts strictly before the new row by
-  (created_at, attempt_id), otherwise rebuilding; verify 569.
+  (created_at, attempt_id), otherwise rebuilding; verify 569. 6be555e
+  (round 3): the projection fd's close(2) is guarded — a delayed write
+  error counts as not-appended instead of raising past the durable
+  write. 9da7758 (round 4): RecursionError from json.loads on a deeply
+  nested body maps to the documented invalid-json 400. 89b4bc2 (round
+  5, verify-only): the projection-outage check injects EIO by file name
+  instead of chmod. ac08a7c (round 6): the projection fast path drops
+  the count/tail heuristics and appends only when the file's bytes
+  equal the §6.1 rebuild of every earlier authority row exactly (the
+  appended line renders from the authority row). Round 7: attempt_number
+  is counted inside the write transaction (a sibling process could
+  inflate it post-commit); verify 572.
 
 ## Done
 

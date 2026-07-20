@@ -491,6 +491,15 @@ def record_attempt(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dic
                             int(stale), created_at,
                         ),
                     )
+                    # attempt_number is the 1-based number of THIS attempt:
+                    # counted inside the write transaction, while SQLite
+                    # still excludes competing processes — after commit a
+                    # sibling process could inflate the count (PR-57 r7).
+                    attempt_number = conn.execute(
+                        "SELECT COUNT(*) FROM lesson_attempts "
+                        "WHERE lesson_id = ? AND question_id = ?",
+                        (lesson["id"], submission["question_id"]),
+                    ).fetchone()[0]
             except sqlite3.IntegrityError:
                 # Same idempotency key landed from another PROCESS (a stale
                 # second server; in-process writers serialize on the bundle
@@ -499,11 +508,6 @@ def record_attempt(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dic
                 if replay is None:
                     raise
             else:
-                attempt_number = conn.execute(
-                    "SELECT COUNT(*) FROM lesson_attempts "
-                    "WHERE lesson_id = ? AND question_id = ?",
-                    (lesson["id"], submission["question_id"]),
-                ).fetchone()[0]
                 projected = _project_attempt(
                     conn, lesson, {**row, "event_uuid": event_uuid}
                 )
