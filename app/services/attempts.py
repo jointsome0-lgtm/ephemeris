@@ -356,7 +356,14 @@ def _project_attempt(conn: sqlite3.Connection, lesson: dict, row: dict) -> bool:
         except OSError:
             appended = False
         finally:
-            os.close(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                # close(2) can surface a delayed write error (NFS/FUSE
+                # ENOSPC/EIO). The fsync'd append may be moot then — count
+                # it as not appended and let the rebuild path decide; a
+                # projection problem must never fail the durable write.
+                appended = False
     if appended:
         return True
     try:

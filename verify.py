@@ -1450,6 +1450,35 @@ with TestClient(app) as c:
           and all(json.loads(l)["created_at"] != "2000-01-01T00:00:00+00:00"
                   for l in _at_lines4))
 
+    # close(2) surfacing a delayed write error (PR-57 round 3): the append
+    # fd's close raises after a successful fsync — the projection falls back
+    # to the rebuild instead of failing the already-durable attempt
+    _at_conn = get_conn()
+    try:
+        _at_last3 = _at_rows()[-1]
+        attempts_svc.reconcile_projection(_at_conn, _at)
+        _at_keep3 = _at_proj.read_text(
+            encoding="utf-8").splitlines(keepends=True)[:-1]
+        _at_proj.write_text("".join(_at_keep3), encoding="utf-8")
+        _at_real_close = _os.close
+        _at_close_state = {"raised": False}
+
+        def _at_bad_close(fd):
+            _at_real_close(fd)
+            if not _at_close_state["raised"]:
+                _at_close_state["raised"] = True
+                raise OSError(28, "No space left on device")
+
+        with _mock.patch("os.close", side_effect=_at_bad_close):
+            _at_close_ok = attempts_svc._project_attempt(_at_conn, _at, _at_last3)
+    finally:
+        _at_conn.close()
+    _at_lines5 = _at_proj.read_text(encoding="utf-8").splitlines()
+    check("close(2) failure never fails the attempt: rebuild covers the append",
+          _at_close_ok and _at_close_state["raised"]
+          and len(_at_lines5) == len(_at_rows())
+          and json.loads(_at_lines5[-1])["attempt_id"] == _at_last3["attempt_id"])
+
     # §6.3 replay wins over refusals even mid-race (PR-57 round 2): a retry
     # whose original is still in flight sees the key uncommitted at the early
     # check, then hits unknown-question after the question was retired — the
