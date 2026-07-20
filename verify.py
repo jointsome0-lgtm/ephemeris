@@ -1473,6 +1473,26 @@ with TestClient(app) as c:
           and all(json.loads(l)["created_at"] != "2000-01-01T00:00:00+00:00"
                   for l in _at_lines4))
 
+    # content-verified fast path (PR-57 round 6): the right line COUNT with
+    # wrong earlier content is never blind-appended over — the byte-exact
+    # prefix comparison fails and the rebuild restores the authority bytes
+    _at_conn = get_conn()
+    try:
+        attempts_svc.reconcile_projection(_at_conn, _at)
+        _at_good = _at_proj.read_text(encoding="utf-8").splitlines(keepends=True)
+        _at_forged = json.dumps(
+            dict(json.loads(_at_good[0]), answer="FORGED"),
+            ensure_ascii=False) + "\n"
+        _at_proj.write_text(_at_forged + "".join(_at_good[1:-1]),
+                            encoding="utf-8")
+        _at_content_ok = attempts_svc._project_attempt(
+            _at_conn, _at, _at_rows()[-1])
+    finally:
+        _at_conn.close()
+    check("forged earlier line with matching count forces the rebuild",
+          _at_content_ok
+          and _at_proj.read_text(encoding="utf-8") == "".join(_at_good))
+
     # close(2) surfacing a delayed write error (PR-57 round 3): the append
     # fd's close raises after a successful fsync — the projection falls back
     # to the rebuild instead of failing the already-durable attempt

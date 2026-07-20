@@ -240,44 +240,19 @@ def _projection_path(lesson: dict) -> Path:
     return lessons.LESSONS_DIR / lesson["slug"] / PROJECTION_NAME
 
 
-def _count_lines(fd: int, size: int) -> tuple[int, bool, bytes]:
-    """(newline count, ends-with-newline, last complete line) via positional
-    reads — the append offset is untouched. A file with bytes past the last
-    newline has a torn tail (a crashed partial append) and is reported
-    un-terminated. The kept tail is capped at the §6.2 line bound; a foreign
-    over-long last line comes back truncated, fails to parse, and forces the
-    rebuild path — never a blind append."""
-    lines = 0
+def _read_all(fd: int, size: int) -> bytes:
+    """Whole-file positional read — the append offset is untouched. Bounded
+    by the attempt volume itself: per-lesson, human-scale, §6.2-capped
+    lines."""
+    chunks = []
     offset = 0
-    tail = b""
     while offset < size:
         chunk = os.pread(fd, 1 << 16, offset)
         if not chunk:
             break
-        lines += chunk.count(b"\n")
+        chunks.append(chunk)
         offset += len(chunk)
-        tail = (tail + chunk)[-(MAX_LINE_BYTES + 1):]
-    terminated = tail.endswith(b"\n")
-    last = tail[:-1].rpartition(b"\n")[2] if terminated else b""
-    return lines, terminated, last
-
-
-def _tail_precedes(last_line: bytes, row: dict) -> bool:
-    """§6.1 order guard (PR-57 round 2): the fast path may append only when
-    the projection's current tail sorts strictly before the new row by
-    (created_at, attempt_id) — a same-timestamp attempt whose uuid sorts
-    earlier, or a clock step backwards, would otherwise leave the file
-    disagreeing with the rebuild order while reporting `projected`."""
-    if not last_line:
-        return True
-    try:
-        prev = json.loads(last_line)
-        prev_key = (prev["created_at"], prev["attempt_id"])
-    except (ValueError, KeyError, TypeError):
-        return False
-    if not all(isinstance(part, str) for part in prev_key):
-        return False
-    return prev_key < (row["created_at"], row["attempt_id"])
+    return b"".join(chunks)
 
 
 def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
@@ -308,38 +283,44 @@ def reconcile_projection(conn: sqlite3.Connection, lesson: dict) -> bool:
 
 def _project_attempt(conn: sqlite3.Connection, lesson: dict, row: dict) -> bool:
     """Synchronous projection append, called under the bundle lock after the
-    transaction committed. Fast path: O_APPEND + fsync of one line onto a
-    consistent file (line count == rows - 1, newline-terminated, tail sorts
-    before the new row). Anything else — torn tail, missing lines from an
-    earlier failure or crash, an out-of-order tail, a planted symlink/FIFO
-    at the name — falls back to the reconcile rebuild. Returns False
-    (projection pending) only when the filesystem refuses both; the
-    authoritative write is already durable either way."""
-    line = _projection_line(row)
-    expected = conn.execute(
-        "SELECT COUNT(*) FROM lesson_attempts WHERE lesson_id = ?",
+    transaction committed. Fast path (PR-57 round 6: content-verified, not
+    count-heuristic): the new row must sort last in the §6.1 authority
+    order and the file's bytes must equal the rebuild of every earlier row
+    exactly — then one O_APPEND + fsync line lands the same content the
+    rebuild would produce. Anything else — torn tail, missing/misordered/
+    foreign lines, a clock step backwards, a planted symlink/FIFO at the
+    name — falls back to the reconcile rebuild. Returns False (projection
+    pending) only when the filesystem refuses both; the authoritative
+    write is already durable either way."""
+    rows = conn.execute(
+        "SELECT * FROM lesson_attempts WHERE lesson_id = ? "
+        "ORDER BY created_at, attempt_id",
         (lesson["id"],),
-    ).fetchone()[0]
-    path = _projection_path(lesson)
-    try:
-        fd = os.open(
-            path,
-            os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK
-            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
-            0o600,
-        )
-    except OSError:
-        fd = -1
+    ).fetchall()
     appended = False
-    if fd >= 0:
+    if rows and rows[-1]["attempt_id"] == row["attempt_id"]:
+        # The appended bytes come from the authority row, so a verified
+        # prefix + this line is byte-identical to a full rebuild.
+        line = _projection_line(dict(rows[-1]))
+        prefix = "".join(
+            _projection_line(dict(r)) for r in rows[:-1]
+        ).encode("utf-8")
         try:
-            st = os.fstat(fd)
-            if stat_module.S_ISREG(st.st_mode):
-                lines, terminated, last = _count_lines(fd, st.st_size)
+            fd = os.open(
+                _projection_path(lesson),
+                os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK
+                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+        except OSError:
+            fd = -1
+        if fd >= 0:
+            try:
+                st = os.fstat(fd)
                 if (
-                    (st.st_size == 0 or terminated)
-                    and lines == expected - 1
-                    and _tail_precedes(last, row)
+                    stat_module.S_ISREG(st.st_mode)
+                    and st.st_size == len(prefix)
+                    and _read_all(fd, st.st_size) == prefix
                 ):
                     # write(2) may land short (ENOSPC, rlimits): loop until
                     # the whole line is down — a partial append must never
@@ -353,17 +334,18 @@ def _project_attempt(conn: sqlite3.Connection, lesson: dict, row: dict) -> bool:
                         data = data[n:]
                     os.fsync(fd)
                     appended = True
-        except OSError:
-            appended = False
-        finally:
-            try:
-                os.close(fd)
             except OSError:
-                # close(2) can surface a delayed write error (NFS/FUSE
-                # ENOSPC/EIO). The fsync'd append may be moot then — count
-                # it as not appended and let the rebuild path decide; a
-                # projection problem must never fail the durable write.
                 appended = False
+            finally:
+                try:
+                    os.close(fd)
+                except OSError:
+                    # close(2) can surface a delayed write error (NFS/FUSE
+                    # ENOSPC/EIO). The fsync'd append may be moot then —
+                    # count it as not appended and let the rebuild path
+                    # decide; a projection problem must never fail the
+                    # durable write.
+                    appended = False
     if appended:
         return True
     try:
