@@ -19,7 +19,18 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-(none)
+- [ ] 2026-07-20 — 6e7b7b5 — `app/services/lessons.py`, `verify.py` —
+  issue #35 stage 2 (session D3): the generated lesson `AGENTS.md` brief
+  (`_AGENTS_TEMPLATE`) gains a "Bridge conventions" section telling study
+  agents how to wire interactive pages: Check actions via bridge port
+  operations only, the ready/welcome handshake per
+  `docs/lesson-bridge-abi.md` (retry cadence, ~2 s silence budget),
+  parent-owned identity, `question_id` taken from the manifest's declared
+  `questions[]` ids, `request_id` reuse on retried submissions, and
+  read-only degradation when no bridge or no `attempts` capability is
+  present; the section states that the ABI v1 granted capability set is
+  empty today. Template text only — `_write_brief`, the `CLAUDE.md` shim,
+  and all runtime code paths unchanged; one verify anchor added (535).
 
 ## Done
 
