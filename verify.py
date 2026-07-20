@@ -1322,6 +1322,13 @@ with TestClient(app) as c:
     check("oversized body is 413 before any parsing",
           c.post(_at_url, content=b"{" + b" " * (300 * 1024),
                  headers={"content-type": "application/json"}).status_code == 413)
+    # deep nesting under the byte cap raises RecursionError inside json.loads
+    # (PR-57 round 4) — still the documented invalid-json 400, never a 500
+    _at_deep = c.post(_at_url, content=b"[" * 20000 + b"]" * 20000,
+                      headers={"content-type": "application/json"})
+    check("deeply nested JSON body is invalid-json, not a crash",
+          _at_deep.status_code == 400
+          and _at_deep.json()["error"] == "invalid-json")
     _at_badrev = c.post(_at_url, json=dict(
         _at_body, page_rev="sha256:nothex", idempotency_key="vera-bad-1"))
     _at_badkey = c.post(_at_url, json=dict(

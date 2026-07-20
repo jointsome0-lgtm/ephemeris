@@ -1344,7 +1344,10 @@ async def _record_attempt_request(
         return _attempt_refusal("payload-too-large", 413, "request body too large")
     try:
         payload = json.loads(body)
-    except ValueError:
+    except (ValueError, RecursionError):
+        # RecursionError: json.loads on deeply nested input (well under the
+        # byte cap) — still just a malformed body, never a 500. The parser
+        # unwinds fully before this handler runs.
         return _attempt_refusal("invalid-json", 400, "body is not valid JSON")
     if not isinstance(payload, dict):
         return _attempt_refusal("invalid-json", 400, "body must be a JSON object")
