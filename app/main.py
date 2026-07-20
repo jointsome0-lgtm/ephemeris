@@ -11,6 +11,7 @@ only, our own styling/assets (sec7.3).
 """
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import date as _date, timedelta
@@ -21,10 +22,11 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 
 from .db import get_conn, init_db, is_not_future, is_valid_date, now_iso, today_str
 from .security import install_security
-from .services import bundle_schema, calendar_events, checkins, export, focus, items, lessons, lists, quickadd, retro, stats, tasks
+from .services import attempts, bundle_schema, calendar_events, checkins, export, focus, items, lessons, lists, quickadd, retro, stats, tasks
 from .terminal import client_is_local, setup_terminal, shutdown_terminal
 
 log = logging.getLogger("activity_ledger")
@@ -1292,6 +1294,95 @@ def get_lesson_preview_meta(lesson_id: int, entry: str | None = None):
         "preview_url": _lesson_preview_url(lesson_id, info["entry"], exists=info["exists"]),
         "file_url": _lesson_preview_url(lesson_id, info["entry"]),
     })
+
+
+# --- lesson attempts (D4, learn-bundle-spec.md §6 + docs/lesson-attempts-api.md)
+
+# The submission envelope is small by contract (§6.2: answer ≤ 32 KiB, whole
+# projection line ≤ 64 KiB); the body cap only has to admit the worst-case
+# JSON escaping of a valid answer plus the fixed fields.
+_ATTEMPT_MAX_BODY = 256 * 1024
+
+
+def _attempt_refusal(code: str, status: int, detail: str = "") -> JSONResponse:
+    headers = {"Cache-Control": "no-store"}
+    if status == 429:
+        headers["Retry-After"] = str(int(attempts.RATE_WINDOW_SECONDS))
+    return JSONResponse(
+        {"ok": False, "error": code, "detail": detail},
+        status_code=status,
+        headers=headers,
+    )
+
+
+async def _record_attempt_request(
+    request: Request, *, lesson_id: int | None = None, slug: str | None = None
+) -> JSONResponse:
+    """Shared handler for the id and slug-alias attempt routes. The async
+    layer owns body admission (bounded, JSON only); the blocking service
+    work runs in the threadpool like every sync route. The B2 perimeter
+    middleware already applied its unsafe-method origin policy before this
+    runs — same-origin fetch (the D5 bridge parent) and origin-less
+    non-browser clients pass; the sandboxed iframe's own `Origin: null`
+    can never reach here."""
+    length = request.headers.get("content-length")
+    if length is None:
+        return _attempt_refusal("length-required", 411, "Content-Length is required")
+    try:
+        expected_len = int(length)
+    except ValueError:
+        return _attempt_refusal("invalid-request", 400, "bad Content-Length")
+    if expected_len > _ATTEMPT_MAX_BODY:
+        return _attempt_refusal("payload-too-large", 413, "request body too large")
+    content_type = request.headers.get("content-type", "")
+    if content_type.split(";", 1)[0].strip().lower() != "application/json":
+        return _attempt_refusal(
+            "unsupported-media-type", 415, "submissions are application/json"
+        )
+    body = await request.body()
+    if len(body) > _ATTEMPT_MAX_BODY:  # header lied (chunked/mismatch): same cap
+        return _attempt_refusal("payload-too-large", 413, "request body too large")
+    try:
+        payload = json.loads(body)
+    except (ValueError, RecursionError):
+        # RecursionError: json.loads on deeply nested input (well under the
+        # byte cap) — still just a malformed body, never a 500. The parser
+        # unwinds fully before this handler runs.
+        return _attempt_refusal("invalid-json", 400, "body is not valid JSON")
+    if not isinstance(payload, dict):
+        return _attempt_refusal("invalid-json", 400, "body must be a JSON object")
+
+    def work() -> dict:
+        conn = get_conn()
+        try:
+            if slug is not None:
+                lesson = lessons.get_lesson_by_slug(conn, slug)
+            else:
+                lesson = lessons.get_lesson(conn, lesson_id)
+            if lesson is None:
+                raise attempts.AttemptError("unknown-lesson", 404, "unknown lesson")
+            return attempts.record_attempt(conn, lesson, payload)
+        finally:
+            conn.close()
+
+    try:
+        result = await run_in_threadpool(work)
+    except attempts.AttemptError as exc:
+        return _attempt_refusal(exc.code, exc.status, exc.detail)
+    return JSONResponse(
+        {"ok": True, **result}, headers={"Cache-Control": "no-store"}
+    )
+
+
+# Registered before the {lesson_id} route so "by-slug" is never parsed as an id.
+@app.post("/learn/lessons/by-slug/{slug}/attempts")
+async def post_lesson_attempt_by_slug(request: Request, slug: str):
+    return await _record_attempt_request(request, slug=slug)
+
+
+@app.post("/learn/lessons/{lesson_id}/attempts")
+async def post_lesson_attempt(request: Request, lesson_id: int):
+    return await _record_attempt_request(request, lesson_id=lesson_id)
 
 
 @app.post("/learn/lessons")

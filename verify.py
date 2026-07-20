@@ -1113,6 +1113,573 @@ with TestClient(app) as c:
     else:
         print("[info] tsc not installed; emit-freshness check skipped (npm ci to enable)")
 
+    # ---- D4: lesson attempts — authority, projection, endpoint semantics ----
+    # (learn-bundle-spec.md §6 / §8, docs/lesson-attempts-api.md)
+    from uuid import uuid4 as _uuid4
+    from app.services import attempts as attempts_svc
+    _at_conn = get_conn()
+    try:
+        _at_id = lessons_svc.create_lesson(_at_conn, "Attempt Backend Demo")
+        _at = lessons_svc.get_lesson(_at_conn, _at_id)
+    finally:
+        _at_conn.close()
+    _at_dir = Path(lessons_svc.LESSONS_DIR) / _at["slug"]
+    _at_raw = json.loads((_at_dir / "lesson.json").read_text(encoding="utf-8"))
+    _at_pg = _at_raw["pages"][0]["id"]
+    _at_raw["pages"].append({"id": "pg_atsecond01", "path": "related/01-next.html"})
+    _at_raw["questions"] = [
+        {"id": "q_atpredict1", "page": _at_pg, "kind": "prediction"},
+        {"id": "q_atmoved001", "page": "pg_atsecond01"},
+    ]
+    bschema.write_manifest(_at_dir / "lesson.json", _at_raw)
+    (_at_dir / "index.html").write_text(
+        "<html>Vera Example attempt page</html>", encoding="utf-8")
+    (_at_dir / "related" / "01-next.html").write_text(
+        "<html>Vera Example next stage</html>", encoding="utf-8")
+    _at_rev = "sha256:" + hashlib.sha256((_at_dir / "index.html").read_bytes()).hexdigest()
+    _at_rev2 = "sha256:" + hashlib.sha256(
+        (_at_dir / "related" / "01-next.html").read_bytes()).hexdigest()
+    _at_url = f"/learn/lessons/{_at_id}/attempts"
+    _at_proj = _at_dir / "attempts.jsonl"
+    _at_body = {"question_id": "q_atpredict1", "page_id": _at_pg, "page_rev": _at_rev,
+                "answer": "Vera Example: I predict it prints hello.",
+                "idempotency_key": "vera-req-1"}
+    attempts_svc._reset_rate_limit()
+
+    def _at_rows():
+        _c = get_conn()
+        try:
+            return [dict(r) for r in _c.execute(
+                "SELECT * FROM lesson_attempts WHERE lesson_id = ? "
+                "ORDER BY created_at, attempt_id", (_at_id,)).fetchall()]
+        finally:
+            _c.close()
+
+    # recorded: row + ledger event in ONE committed transaction (§6.1),
+    # projection appended synchronously
+    _at_r1 = c.post(_at_url, json=_at_body)
+    _at_j1 = _at_r1.json()
+    check("attempt recorded: durable + projected, fresh revision is not stale",
+          _at_r1.status_code == 200 and _at_j1["result"] == "recorded"
+          and _at_j1["stale"] is False and _at_j1["projection"] == "projected"
+          and _at_j1["attempt_number"] == 1)
+    def _at_events():
+        _c = get_conn()
+        try:
+            return _c.execute(
+                "SELECT uuid, payload_json FROM events "
+                "WHERE type = 'lesson_attempt' ORDER BY id").fetchall()
+        finally:
+            _c.close()
+
+    _at_row1 = _at_rows()[0]
+    _at_ev = _at_events()
+    _at_ev1 = json.loads(_at_ev[-1]["payload_json"])
+    check("attempt row and lesson_attempt event share one txn + event uuid (B4)",
+          len(_at_ev) == 1 and _at_ev[-1]["uuid"] == _at_row1["event_uuid"]
+          and _at_row1["attempt_id"] == _at_j1["attempt_id"])
+    check("lesson_attempt event payload follows the §8 echo policy",
+          _at_ev1["lesson_uid"] == _at["uid"] and _at_ev1["lesson_id"] == _at_id
+          and _at_ev1["slug"] == _at["slug"]
+          and _at_ev1["attempt_id"] == _at_j1["attempt_id"]
+          and _at_ev1["page_id"] == _at_pg and _at_ev1["question_id"] == "q_atpredict1"
+          and _at_ev1["page_rev"] == _at_rev and _at_ev1["stale"] is False
+          and "title" not in _at_ev1 and "pages" not in _at_ev1)
+    _at_line1 = json.loads(_at_proj.read_text(encoding="utf-8").splitlines()[0])
+    check("projection record carries the §6.2 shape in exact field order",
+          list(_at_line1.keys()) == ["kind", "v", "attempt_id", "event_uuid",
+                                     "lesson_uid", "page_id", "question_id",
+                                     "page_rev", "answer", "created_at", "stale"]
+          and _at_line1["kind"] == "attempt" and _at_line1["v"] == 1
+          and _at_line1["attempt_id"] == _at_row1["attempt_id"]
+          and _at_line1["event_uuid"] == _at_row1["event_uuid"]
+          and _at_line1["created_at"] == _at_row1["created_at"]
+          and _at_line1["created_at"].endswith("+00:00"))
+
+    # idempotency (§6.3): replay returns the original, writes nothing
+    _at_r1b = c.post(_at_url, json=_at_body)
+    _at_j1b = _at_r1b.json()
+    check("idempotent replay: duplicate, original attempt_id, nothing written",
+          _at_r1b.status_code == 200 and _at_j1b["result"] == "duplicate"
+          and _at_j1b["attempt_id"] == _at_j1["attempt_id"]
+          and "projection" not in _at_j1b and "attempt_number" not in _at_j1b
+          and len(_at_rows()) == 1 and len(_at_events()) == 1
+          and len(_at_proj.read_text(encoding="utf-8").splitlines()) == 1)
+    # same key, different question/page: distinct conflict, never coalesced
+    _at_conf = c.post(_at_url, json=dict(
+        _at_body, question_id="q_atmoved001", page_id="pg_atsecond01",
+        page_rev=_at_rev2))
+    check("idempotency-conflict is distinct and writes nothing",
+          _at_conf.status_code == 409
+          and _at_conf.json()["error"] == "idempotency-conflict"
+          and len(_at_rows()) == 1)
+    # §6.3 replay precedes record-time refusals (PR-57 round 1): after the
+    # question is retired from the manifest, retrying the SAME submission
+    # still returns the original durable attempt — only a NEW key sees the
+    # unknown-question reject
+    bschema.write_manifest(_at_dir / "lesson.json", dict(_at_raw, questions=[]))
+    _at_rp = c.post(_at_url, json=_at_body)
+    _at_rp_new = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-ret-1"))
+    bschema.write_manifest(_at_dir / "lesson.json", _at_raw)  # restore
+    check("replay survives question retirement; a fresh key rejects",
+          _at_rp.status_code == 200 and _at_rp.json()["result"] == "duplicate"
+          and _at_rp.json()["attempt_id"] == _at_j1["attempt_id"]
+          and _at_rp_new.status_code == 422
+          and _at_rp_new.json()["error"] == "unknown-question")
+
+    # slug alias records against the same lesson; uid comes from the DB row
+    _at_r2 = c.post(f"/learn/lessons/by-slug/{_at['slug']}/attempts",
+                    json=dict(_at_body, idempotency_key="vera-req-2",
+                              answer="Vera Example: second thought."))
+    check("slug-alias route records; attempt_number counts per question",
+          _at_r2.status_code == 200 and _at_r2.json()["result"] == "recorded"
+          and _at_r2.json()["attempt_number"] == 2
+          and _at_rows()[-1]["lesson_uid"] == _at["uid"])
+
+    # §6.4 staleness matrix, server-derived at record time
+    (_at_dir / "index.html").write_text(
+        "<html>Vera Example attempt page EDITED</html>", encoding="utf-8")
+    _at_r3 = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-req-3"))
+    check("edited page bytes: recorded with stale=true, never dropped",
+          _at_r3.status_code == 200 and _at_r3.json()["result"] == "recorded"
+          and _at_r3.json()["stale"] is True)
+    _at_r4 = c.post(_at_url, json={
+        "question_id": "q_atmoved001", "page_id": "pg_atsecond01",
+        "page_rev": _at_rev2, "answer": "Vera Example: bound page, current bytes.",
+        "idempotency_key": "vera-req-4"})
+    check("current binding + current bytes on a non-entry page: stale=false",
+          _at_r4.status_code == 200 and _at_r4.json()["stale"] is False)
+    _at_r5 = c.post(_at_url, json={
+        "question_id": "q_atmoved001", "page_id": _at_pg, "page_rev": _at_rev,
+        "answer": "Vera Example: I saw this question on the entry page.",
+        "idempotency_key": "vera-req-5"})
+    _at_row5 = next(r for r in _at_rows()
+                    if r["attempt_id"] == _at_r5.json()["attempt_id"])
+    check("question rebound elsewhere: recorded under the SUBMITTED page, stale",
+          _at_r5.status_code == 200 and _at_r5.json()["stale"] is True
+          and _at_row5["page_id"] == _at_pg and _at_row5["page_rev"] == _at_rev)
+    (_at_dir / "related" / "01-next.html").unlink()
+    _at_r6 = c.post(_at_url, json={
+        "question_id": "q_atmoved001", "page_id": "pg_atsecond01",
+        "page_rev": _at_rev2, "answer": "Vera Example: file gone now.",
+        "idempotency_key": "vera-req-6"})
+    check("bound page file missing: current revision unknowable -> stale=true",
+          _at_r6.status_code == 200 and _at_r6.json()["stale"] is True)
+
+    # identity that does not exist rejects with the mandated distinct response
+    _at_unk = c.post(_at_url, json=dict(
+        _at_body, question_id="q_neverwas99", idempotency_key="vera-unk-1"))
+    check("undeclared question: distinct unknown-question reject, nothing written",
+          _at_unk.status_code == 422 and _at_unk.json()["error"] == "unknown-question"
+          and all(r["question_id"] != "q_neverwas99" for r in _at_rows()))
+    check("unknown lesson id and slug both 404",
+          c.post("/learn/lessons/999999/attempts", json=_at_body).status_code == 404
+          and c.post("/learn/lessons/by-slug/no-such-lesson/attempts",
+                     json=_at_body).status_code == 404)
+
+    # eligibility fails closed (§5/§9.2): rejected manifest, v1, legacy
+    # profile, identity mismatch — each with its own code, nothing written
+    _at_rej = c.post(f"/learn/lessons/{_rej_id}/attempts",
+                     json=dict(_at_body, idempotency_key="vera-rej-1"))
+    _at_v1 = c.post(f"/learn/lessons/{_v1_id}/attempts",
+                    json=dict(_at_body, idempotency_key="vera-v1-1"))
+    check("rejected manifest refuses attempt writes (manifest-rejected)",
+          _at_rej.status_code == 409
+          and _at_rej.json()["error"] == "manifest-rejected")
+    check("v1 bundle carries no attempt affordance (attempts-unavailable)",
+          _at_v1.status_code == 409
+          and _at_v1.json()["error"] == "attempts-unavailable")
+    bschema.write_manifest(_at_dir / "lesson.json",
+                           dict(_at_raw, runtime={"profile": "legacy-display"}))
+    _at_leg = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-leg-1"))
+    check("legacy-display v2 refuses attempts (attempts-unavailable)",
+          _at_leg.status_code == 409
+          and _at_leg.json()["error"] == "attempts-unavailable")
+    bschema.write_manifest(_at_dir / "lesson.json",
+                           dict(_at_raw, lesson_uid=str(_uuid4())))
+    _at_mid = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-mid-1"))
+    check("manifest uid != DB uid refuses attempts (identity-mismatch)",
+          _at_mid.status_code == 409
+          and _at_mid.json()["error"] == "identity-mismatch")
+    bschema.write_manifest(_at_dir / "lesson.json", _at_raw)  # restore
+
+    # body admission + grammar limits (docs/lesson-attempts-api.md)
+    check("attempt route sits behind the B2 write guard (Origin null / cross)",
+          c.post(_at_url, json=_at_body,
+                 headers={"Origin": "null"}).status_code == 403
+          and c.post(_at_url, json=_at_body,
+                     headers={"Origin": "http://evil.example"}).status_code == 403
+          and c.post(_at_url, json=dict(_at_body, idempotency_key="vera-req-1"),
+                     headers={"Origin": "http://testserver"}).status_code == 200)
+    check("non-JSON content type is 415; malformed JSON body is 400",
+          c.post(_at_url, content=b"question_id=x",
+                 headers={"content-type": "application/x-www-form-urlencoded"}
+                 ).status_code == 415
+          and c.post(_at_url, content=b"not json {",
+                     headers={"content-type": "application/json"}
+                     ).status_code == 400
+          and c.post(_at_url, json=[1, 2, 3]).status_code == 400)
+    check("oversized body is 413 before any parsing",
+          c.post(_at_url, content=b"{" + b" " * (300 * 1024),
+                 headers={"content-type": "application/json"}).status_code == 413)
+    # deep nesting under the byte cap raises RecursionError inside json.loads
+    # (PR-57 round 4) — still the documented invalid-json 400, never a 500
+    _at_deep = c.post(_at_url, content=b"[" * 20000 + b"]" * 20000,
+                      headers={"content-type": "application/json"})
+    check("deeply nested JSON body is invalid-json, not a crash",
+          _at_deep.status_code == 400
+          and _at_deep.json()["error"] == "invalid-json")
+    _at_badrev = c.post(_at_url, json=dict(
+        _at_body, page_rev="sha256:nothex", idempotency_key="vera-bad-1"))
+    _at_badkey = c.post(_at_url, json=dict(
+        _at_body, idempotency_key="ctrl\x01char"))
+    check("grammar violations get their own codes",
+          _at_badrev.status_code == 400
+          and _at_badrev.json()["error"] == "invalid-page-rev"
+          and _at_badkey.status_code == 400
+          and _at_badkey.json()["error"] == "invalid-idempotency-key")
+    # $-anchored .match accepts a trailing newline (PR-57 round 8): the id
+    # grammars are \Z-anchored, so "pg_x\n"-style identities never reach the
+    # row or the projection
+    check("trailing newline in identity fields is rejected by the grammar",
+          c.post(_at_url, json=dict(_at_body, page_id=_at_pg + "\n",
+                                    idempotency_key="vera-nl-1")
+                 ).json().get("error") == "invalid-page-id"
+          and c.post(_at_url, json=dict(_at_body, page_rev=_at_rev + "\n",
+                                        idempotency_key="vera-nl-2")
+                     ).json().get("error") == "invalid-page-rev"
+          and c.post(_at_url, json=dict(_at_body,
+                                        question_id="q_atpredict1\n",
+                                        idempotency_key="vera-nl-3")
+                     ).json().get("error") == "invalid-question-id")
+    check("answer over 32 KiB UTF-8 is answer-too-large",
+          c.post(_at_url, json=dict(
+              _at_body, answer="x" * (attempts_svc.MAX_ANSWER_BYTES + 1),
+              idempotency_key="vera-big-1")).json().get("error") == "answer-too-large")
+    # §6.2 whole-line bound: a within-budget answer whose JSON escaping blows
+    # the 64 KiB projection line is refused, not recorded-then-unprojectable
+    check("answer that escapes past the 64 KiB line bound is refused",
+          c.post(_at_url, json=dict(
+              _at_body, answer="\n" * 32700,
+              idempotency_key="vera-line-1")).json().get("error") == "answer-too-large")
+    # a lone surrogate survives json.loads but can never be written as UTF-8
+    _at_sur = json.dumps(dict(_at_body, answer="SURROGATE",
+                              idempotency_key="vera-sur-1")).replace(
+        '"SURROGATE"', '"\\ud800"')
+    check("lone-surrogate answer is invalid-answer, not a crash",
+          c.post(_at_url, content=_at_sur.encode("utf-8"),
+                 headers={"content-type": "application/json"}
+                 ).json().get("error") == "invalid-answer")
+
+    # crash boundaries: the authority write survives a dead projection, the
+    # response says so, and the next write reconciles the file from SQLite.
+    # Deterministic fault injection (PR-57 round 5): failing the projection
+    # path by NAME kills both the O_APPEND fast path (os.open) and the
+    # atomic rebuild (os.replace onto the projection) — POSIX modes would
+    # not stop uid 0 when the suite runs in a root test container.
+    from unittest import mock as _mock
+    _at_real_open2 = _os.open
+    _at_real_replace = _os.replace
+
+    def _at_proj_open_down(path, *args, **kw):
+        if str(path).endswith(attempts_svc.PROJECTION_NAME):
+            raise OSError(5, "Input/output error")
+        return _at_real_open2(path, *args, **kw)
+
+    def _at_proj_replace_down(src, dst, *args, **kw):
+        if str(dst).endswith(attempts_svc.PROJECTION_NAME):
+            raise OSError(5, "Input/output error")
+        return _at_real_replace(src, dst, *args, **kw)
+
+    with _mock.patch("os.open", side_effect=_at_proj_open_down), \
+            _mock.patch("os.replace", side_effect=_at_proj_replace_down):
+        _at_pend = c.post(_at_url, json=dict(
+            _at_body, idempotency_key="vera-pend-1",
+            answer="Vera Example: projection is down."))
+    check("projection failure: attempt durable, response says pending",
+          _at_pend.status_code == 200 and _at_pend.json()["result"] == "recorded"
+          and _at_pend.json()["projection"] == "pending"
+          and any(r["attempt_id"] == _at_pend.json()["attempt_id"]
+                  for r in _at_rows()))
+    _at_heal = c.post(_at_url, json=dict(
+        _at_body, idempotency_key="vera-heal-1",
+        answer="Vera Example: back online."))
+    _at_lines = _at_proj.read_text(encoding="utf-8").splitlines()
+    check("next write reconciles: projection again equals the authority",
+          _at_heal.json()["projection"] == "projected"
+          and len(_at_lines) == len(_at_rows())
+          and [json.loads(l)["attempt_id"] for l in _at_lines]
+          == [r["attempt_id"] for r in _at_rows()])
+    # crash between commit and append (file vanished) and a torn tail
+    # (truncated mid-line) both trigger the rebuild instead of a blind append
+    _at_proj.unlink()
+    c.post(_at_url, json=dict(_at_body, idempotency_key="vera-gone-1"))
+    check("missing projection file is rebuilt in full",
+          len(_at_proj.read_text(encoding="utf-8").splitlines()) == len(_at_rows()))
+    _at_whole = _at_proj.read_bytes()
+    _at_proj.write_bytes(_at_whole[: len(_at_whole) // 2])  # torn mid-line
+    c.post(_at_url, json=dict(_at_body, idempotency_key="vera-torn-1"))
+    _at_lines2 = _at_proj.read_text(encoding="utf-8").splitlines()
+    check("truncated projection is rebuilt: every line parses, counts match",
+          len(_at_lines2) == len(_at_rows())
+          and all(json.loads(l)["kind"] == "attempt" for l in _at_lines2))
+    # the public reconcile entry point rebuilds from scratch, idempotently
+    _at_proj.write_text("junk that is not jsonl\n", encoding="utf-8")
+    _at_conn = get_conn()
+    try:
+        _at_rec_ok = attempts_svc.reconcile_projection(_at_conn, _at)
+        _at_rec_text = _at_proj.read_text(encoding="utf-8")
+        _at_rec_ok2 = attempts_svc.reconcile_projection(_at_conn, _at)
+    finally:
+        _at_conn.close()
+    check("reconcile_projection rebuilds from the authority and is idempotent",
+          _at_rec_ok and _at_rec_ok2
+          and _at_rec_text == _at_proj.read_text(encoding="utf-8")
+          and len(_at_rec_text.splitlines()) == len(_at_rows()))
+
+    # a short write(2) must complete the line, never report `projected` over
+    # a torn tail (PR-57 round 1): force the first os.write to land half
+    from unittest import mock as _mock
+    _at_conn = get_conn()
+    try:
+        _at_last = _at_rows()[-1]
+        attempts_svc.reconcile_projection(_at_conn, _at)  # consistent baseline
+        _at_keep = _at_proj.read_text(encoding="utf-8").splitlines(keepends=True)[:-1]
+        _at_proj.write_text("".join(_at_keep), encoding="utf-8")  # expect 1 append
+        _at_real_write = _os.write
+        _at_split = {"done": False}
+
+        def _at_short_write(fd, data):
+            if not _at_split["done"]:
+                _at_split["done"] = True
+                return _at_real_write(fd, bytes(data)[: max(1, len(bytes(data)) // 2)])
+            return _at_real_write(fd, data)
+
+        with _mock.patch("os.write", side_effect=_at_short_write):
+            _at_short_ok = attempts_svc._project_attempt(_at_conn, _at, _at_last)
+    finally:
+        _at_conn.close()
+    _at_lines3 = _at_proj.read_text(encoding="utf-8").splitlines()
+    check("short write(2) is completed by the append loop, file stays whole",
+          _at_short_ok and _at_split["done"]
+          and len(_at_lines3) == len(_at_rows())
+          and json.loads(_at_lines3[-1])["attempt_id"] == _at_last["attempt_id"])
+
+    # §6.1 order guard (PR-57 round 2): a row that does not sort strictly
+    # after the projection tail is never blind-appended — the fast path
+    # detects the disorder and rebuilds in authority order instead
+    _at_conn = get_conn()
+    try:
+        attempts_svc.reconcile_projection(_at_conn, _at)
+        _at_keep2 = _at_proj.read_text(
+            encoding="utf-8").splitlines(keepends=True)[:-1]
+        _at_proj.write_text("".join(_at_keep2), encoding="utf-8")
+        _at_backdated = dict(_at_rows()[-1],
+                             created_at="2000-01-01T00:00:00+00:00")
+        _at_guard_ok = attempts_svc._project_attempt(_at_conn, _at, _at_backdated)
+    finally:
+        _at_conn.close()
+    _at_lines4 = _at_proj.read_text(encoding="utf-8").splitlines()
+    check("out-of-order append is caught: projection rebuilt in §6.1 order",
+          _at_guard_ok
+          and [json.loads(l)["attempt_id"] for l in _at_lines4]
+          == [r["attempt_id"] for r in _at_rows()]
+          and all(json.loads(l)["created_at"] != "2000-01-01T00:00:00+00:00"
+                  for l in _at_lines4))
+
+    # a planted DIRECTORY at the projection name is a deterministic §6.1
+    # collision (PR-57 round 10): empty dirs are removed, non-empty moved
+    # aside under a unique name — the projection heals, never stuck pending
+    _at_proj.unlink()
+    _at_proj.mkdir()
+    _at_dircol1 = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-dir-1"))
+    check("empty directory at attempts.jsonl is removed and rebuilt over",
+          _at_dircol1.json().get("projection") == "projected"
+          and _at_proj.is_file()
+          and len(_at_proj.read_text(encoding="utf-8").splitlines())
+          == len(_at_rows()))
+    _at_proj.unlink()
+    _at_proj.mkdir()
+    (_at_proj / "junk.txt").write_text("agent artifact", encoding="utf-8")
+    _at_dircol2 = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-dir-2"))
+    _at_aside = list(_at_dir.glob("attempts.jsonl.collision-*"))
+    check("non-empty directory collision is moved aside, content preserved",
+          _at_dircol2.json().get("projection") == "projected"
+          and _at_proj.is_file()
+          and len(_at_aside) == 1
+          and (_at_aside[0] / "junk.txt").read_text(encoding="utf-8")
+          == "agent artifact")
+    import shutil as _at_shutil
+    _at_shutil.rmtree(_at_aside[0])
+
+    # a hard link planted at the projection name passes O_NOFOLLOW+S_ISREG
+    # but must never take the fast path (PR-57 round 11): the rebuild
+    # replaces the NAME, so nothing leaks through the link's other name
+    _at_conn = get_conn()
+    try:
+        attempts_svc.reconcile_projection(_at_conn, _at)
+    finally:
+        _at_conn.close()
+    _at_linked = _at_proj.read_bytes()
+    _at_link_other = _at_dir / "outside-copy.txt"
+    _os.link(_at_proj, _at_link_other)  # projection inode now has 2 names
+    _at_hl = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-hl-1"))
+    check("hard-linked projection is replaced, append never leaks through",
+          _at_hl.json().get("projection") == "projected"
+          and _at_link_other.read_bytes() == _at_linked
+          and _os.stat(_at_proj).st_nlink == 1
+          and len(_at_proj.read_text(encoding="utf-8").splitlines())
+          == len(_at_rows()))
+    _at_link_other.unlink()
+
+    # content-verified fast path (PR-57 round 6): the right line COUNT with
+    # wrong earlier content is never blind-appended over — the byte-exact
+    # prefix comparison fails and the rebuild restores the authority bytes
+    _at_conn = get_conn()
+    try:
+        attempts_svc.reconcile_projection(_at_conn, _at)
+        _at_good = _at_proj.read_text(encoding="utf-8").splitlines(keepends=True)
+        _at_forged = json.dumps(
+            dict(json.loads(_at_good[0]), answer="FORGED"),
+            ensure_ascii=False) + "\n"
+        _at_proj.write_text(_at_forged + "".join(_at_good[1:-1]),
+                            encoding="utf-8")
+        _at_content_ok = attempts_svc._project_attempt(
+            _at_conn, _at, _at_rows()[-1])
+    finally:
+        _at_conn.close()
+    check("forged earlier line with matching count forces the rebuild",
+          _at_content_ok
+          and _at_proj.read_text(encoding="utf-8") == "".join(_at_good))
+
+    # close(2) surfacing a delayed write error (PR-57 round 3): the append
+    # fd's close raises after a successful fsync — the projection falls back
+    # to the rebuild instead of failing the already-durable attempt
+    _at_conn = get_conn()
+    try:
+        _at_last3 = _at_rows()[-1]
+        attempts_svc.reconcile_projection(_at_conn, _at)
+        _at_keep3 = _at_proj.read_text(
+            encoding="utf-8").splitlines(keepends=True)[:-1]
+        _at_proj.write_text("".join(_at_keep3), encoding="utf-8")
+        _at_real_close = _os.close
+        _at_close_state = {"raised": False}
+
+        def _at_bad_close(fd):
+            _at_real_close(fd)
+            if not _at_close_state["raised"]:
+                _at_close_state["raised"] = True
+                raise OSError(28, "No space left on device")
+
+        with _mock.patch("os.close", side_effect=_at_bad_close):
+            _at_close_ok = attempts_svc._project_attempt(_at_conn, _at, _at_last3)
+    finally:
+        _at_conn.close()
+    _at_lines5 = _at_proj.read_text(encoding="utf-8").splitlines()
+    check("close(2) failure never fails the attempt: rebuild covers the append",
+          _at_close_ok and _at_close_state["raised"]
+          and len(_at_lines5) == len(_at_rows())
+          and json.loads(_at_lines5[-1])["attempt_id"] == _at_last3["attempt_id"])
+
+    # §6.3 replay wins over refusals even mid-race (PR-57 round 2): a retry
+    # whose original is still in flight sees the key uncommitted at the early
+    # check, then hits unknown-question after the question was retired — the
+    # refusal path re-checks and returns the committed duplicate
+    _at_real_roc = attempts_svc._replay_or_conflict
+    _at_roc_calls = {"n": 0}
+
+    def _at_roc_once(conn_, lesson_, sub_):
+        _at_roc_calls["n"] += 1
+        if _at_roc_calls["n"] == 1:
+            return None  # simulate: the original write has not committed yet
+        return _at_real_roc(conn_, lesson_, sub_)
+
+    bschema.write_manifest(_at_dir / "lesson.json", dict(_at_raw, questions=[]))
+    _at_conn = get_conn()
+    try:
+        with _mock.patch.object(attempts_svc, "_replay_or_conflict",
+                                _at_roc_once):
+            _at_race = attempts_svc.record_attempt(_at_conn, _at, dict(_at_body))
+    finally:
+        _at_conn.close()
+        bschema.write_manifest(_at_dir / "lesson.json", _at_raw)  # restore
+    check("racing retry beats a manifest refusal: committed duplicate wins",
+          _at_race["result"] == "duplicate"
+          and _at_race["attempt_id"] == _at_row1["attempt_id"]
+          and _at_roc_calls["n"] == 2)
+
+    # the same re-check covers the rate limit (PR-57 round 11): an original
+    # that committed after the early check wins over an exhausted window
+    _at_roc_calls["n"] = 0
+    attempts_svc._reset_rate_limit()
+    _at_rate_saved = attempts_svc.RATE_MAX_PER_WINDOW
+    attempts_svc.RATE_MAX_PER_WINDOW = 1
+    with attempts_svc._rate_lock:  # window pre-exhausted by the "original"
+        attempts_svc._rate[_at["id"]] = attempts_svc.deque(
+            [attempts_svc._monotonic()])
+    _at_conn = get_conn()
+    try:
+        with _mock.patch.object(attempts_svc, "_replay_or_conflict",
+                                _at_roc_once):
+            _at_race429 = attempts_svc.record_attempt(_at_conn, _at,
+                                                      dict(_at_body))
+    finally:
+        _at_conn.close()
+        attempts_svc.RATE_MAX_PER_WINDOW = _at_rate_saved
+        attempts_svc._reset_rate_limit()
+    check("racing retry beats an exhausted window: committed duplicate wins",
+          _at_race429["result"] == "duplicate"
+          and _at_race429["attempt_id"] == _at_row1["attempt_id"]
+          and _at_roc_calls["n"] == 2)
+
+    # a duplicate resolved only at the LOCKED re-check refunds its window
+    # slot (PR-57 round 12): retries racing a slow original are not new
+    # writes and never starve the next real attempt of budget
+    _at_roc_calls["n"] = 0
+    attempts_svc._reset_rate_limit()
+    _at_rate_saved = attempts_svc.RATE_MAX_PER_WINDOW
+    attempts_svc.RATE_MAX_PER_WINDOW = 3
+    _at_conn = get_conn()
+    try:
+        with _mock.patch.object(attempts_svc, "_replay_or_conflict",
+                                _at_roc_once):
+            _at_refund = attempts_svc.record_attempt(_at_conn, _at,
+                                                     dict(_at_body))
+        _at_window_after = len(attempts_svc._rate.get(_at["id"], ()))
+    finally:
+        _at_conn.close()
+        attempts_svc.RATE_MAX_PER_WINDOW = _at_rate_saved
+        attempts_svc._reset_rate_limit()
+    check("late-resolved duplicate refunds its rate-limit slot",
+          _at_refund["result"] == "duplicate"
+          and _at_roc_calls["n"] == 2
+          and _at_window_after == 0)
+
+    # rate limit: sliding per-lesson window, distinct code + Retry-After;
+    # fresh keys spend budget, replays never do (PR-57 round 9) — a retry of
+    # the window-exhausting attempt learns its attempt_id, not a 429
+    attempts_svc._reset_rate_limit()
+    _at_rate_saved = attempts_svc.RATE_MAX_PER_WINDOW
+    attempts_svc.RATE_MAX_PER_WINDOW = 3
+    try:
+        for _rl_i in range(3):
+            _at_rl_ok = c.post(_at_url, json=dict(
+                _at_body, idempotency_key=f"vera-rl-{_rl_i}"))
+        _at_rl_hit = c.post(_at_url, json=dict(
+            _at_body, idempotency_key="vera-rl-fresh"))
+        _at_rl_replay = c.post(_at_url, json=dict(
+            _at_body, idempotency_key="vera-rl-2"))
+    finally:
+        attempts_svc.RATE_MAX_PER_WINDOW = _at_rate_saved
+        attempts_svc._reset_rate_limit()
+    check("rate limit: 429 rate-limited with Retry-After past the window",
+          _at_rl_ok.status_code == 200 and _at_rl_hit.status_code == 429
+          and _at_rl_hit.json()["error"] == "rate-limited"
+          and _at_rl_hit.headers.get("retry-after") is not None)
+    check("replay bypasses an exhausted window: duplicate, not 429",
+          _at_rl_replay.status_code == 200
+          and _at_rl_replay.json()["result"] == "duplicate")
+
     # §2 symlink policy: a page that resolves through a symlink is missing
     _symp_conn = get_conn()
     try:

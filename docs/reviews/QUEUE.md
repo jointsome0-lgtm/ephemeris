@@ -23,6 +23,94 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Done
 
+- [x] 2026-07-20 — c2bf554, 4e7997f, 142ea74, 6be555e, 9da7758, 89b4bc2,
+  ac08a7c, 9a34e33, e0e9697, 69af6fe, 906322d, 780c028, 89b4cd2, 0edef9e —
+  the entry stays current with the branch: any further branch commit, and
+  the merge commit itself once the PR lands (this repository merges via
+  merge commits, so the landed tree is the reviewed branch head's tree),
+  is appended here before any drain or restart — `app/db.py`, `app/services/attempts.py` (new),
+  `app/services/bundle_schema.py` (round 8 only),
+  `app/services/lessons.py`, `app/main.py`, `docs/lesson-attempts-api.md`
+  (new), `verify.py` —
+  issue #36 session D4: new write endpoint `POST
+  /learn/lessons/{id}/attempts` (+ `by-slug` alias) recording learner
+  attempts. Schema v12 adds the `lesson_attempts` table; each row is
+  written in one transaction with a `lesson_attempt` ledger event. The
+  handler validates submissions against the record-time bundle manifest
+  (declared questions only; eligibility from the manifest read; staleness
+  derived server-side from the current page binding and bytes), applies
+  idempotency keys unique per lesson, per-lesson rate limiting, and body
+  size caps, and synchronously appends a projection line to the bundle's
+  `attempts.jsonl` (per-bundle lock; falls back to a full rebuild from
+  SQLite). lessons.py gains two public read helpers (`read_bundle`,
+  `hash_bundle_page`); no bridge/client code changed. The endpoint is
+  behind the existing app-wide unsafe-method middleware. New contract doc
+  describes request/response codes. verify.py adds a D4 section (565).
+  4e7997f (PR-bot round 1): the idempotency replay lookup moved ahead of
+  the record-time refusals, and the projection append loops on short
+  write(2) counts; verify 567. 142ea74 (PR-bot round 2): refusals raised
+  between the early replay check and the locked insert re-check the
+  idempotency key under the bundle lock and return a committed duplicate;
+  `created_at` carries microseconds and the projection fast path appends
+  only when the file's tail sorts strictly before the new row by
+  (created_at, attempt_id), otherwise rebuilding; verify 569. 6be555e
+  (round 3): the projection fd's close(2) is guarded — a delayed write
+  error counts as not-appended instead of raising past the durable
+  write. 9da7758 (round 4): RecursionError from json.loads on a deeply
+  nested body maps to the documented invalid-json 400. 89b4bc2 (round
+  5, verify-only): the projection-outage check injects EIO by file name
+  instead of chmod. ac08a7c (round 6): the projection fast path drops
+  the count/tail heuristics and appends only when the file's bytes
+  equal the §6.1 rebuild of every earlier authority row exactly (the
+  appended line renders from the authority row). Round 7: attempt_number
+  is counted inside the write transaction (a sibling process could
+  inflate it post-commit); verify 572. Round 8: all nine identity/value
+  grammar regexes in bundle_schema.py and attempts.py are \Z-anchored —
+  Python's $ under .match() accepted a trailing newline, letting
+  "pg_x\n"-style page/rev identities into the row and projection (and
+  into manifest id validation); verify 573. Round 9: the idempotency
+  replay lookup also precedes the rate limit — a retry of the
+  window-exhausting attempt returns its duplicate, not a 429; replays
+  and key conflicts consume no window budget; verify 574. Round 10:
+  every projection section (snapshot, verify, append or rebuild) runs
+  inside a BEGIN IMMEDIATE SQLite txn, serializing it cross-process
+  against sibling commits and projection writes (a stale rebuild
+  snapshot could otherwise overwrite a newer file); a directory
+  planted at attempts.jsonl resolves as a deterministic collision
+  (removed when empty, moved aside otherwise) instead of a permanent
+  projection-pending state; verify 576. Round 11: the projection fast
+  path additionally requires st_nlink == 1 (a planted hard link would
+  leak the append into its other name; the rebuild replaces the name
+  only), and the rate limit moved inside the refusal re-check block —
+  a retry whose original committed after the early replay check gets
+  its duplicate instead of a 429; verify 578. Round 12: rate-limit
+  slots are charged per call but refunded on every replay/conflict
+  outcome (they are not new writes; refusals of new writes stay
+  charged), so retries racing a slow original cannot starve real
+  attempts; the locked write section split into _record_locked;
+  verify 579. Round 13 (docs/comment only): the per-process in-memory
+  scope of the rate window is documented as the deployment contract
+  (one worker; brief 2x during rolling-restart overlap; abuse damper,
+  not a security boundary); no code change. Round 14 (docs-only): the
+  commit list drops the self-referential round-commit placeholder for
+  the standing append-before-drain/restart rule. Drained 2026-07-20 →
+  `2026-07-20-attempt-backend-review.md` (Codex, standing brief by
+  file reference, at head 83cc652): no Critical/High/Medium; two Low
+  availability findings — A1 body cap enforced only after Starlette
+  buffers the whole body (parser-framing dependent; issue pending),
+  A2 projection append linear in lifetime history under the
+  database-wide writer lock (issue #58) — both accepted as follow-ups,
+  not blockers. Independent Opus second pass: no findings, concurs.
+  Converged verdict: YES for the documented direct-loopback
+  single-worker deployment; D5 capability-bearing bridge NO until the
+  D2 report's L1 document-generation and L2 served-byte conditions are
+  resolved (D4's per-operation server-side validation is retained and
+  is the server half of that requirement); wider deployment NO
+  (unauthenticated). PR #57: rounds 1–13 fixed on their threads;
+  rounds 14–16 (phantom test-merge hashes) rebutted, review loop
+  closed without a bot verdict. The merge commit is appended here at
+  merge time, before any restart, per the standing rule above.
+
 - [x] 2026-07-20 — 6e7b7b5, 8c82f1b, 841c37c — `app/services/lessons.py`,
   `verify.py` —
   issue #35 stage 2 (session D3): the generated lesson `AGENTS.md` brief

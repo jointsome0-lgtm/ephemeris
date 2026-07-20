@@ -58,14 +58,14 @@ PROFILES = (PROFILE_LEGACY, PROFILE_INTERACTIVE)
 # declared runner degrades to `unknown-runner` (Run disabled, editor kept).
 RUNNER_REGISTRY: frozenset[str] = frozenset()
 
-UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-PAGE_ID_RE = re.compile(r"^pg_[a-z0-9]{4,32}$")
-QUESTION_ID_RE = re.compile(r"^q_[a-z0-9]{4,32}$")
-BLOCK_ID_RE = re.compile(r"^blk_[a-z0-9]{4,32}$")
-KIND_RE = re.compile(r"^[a-z0-9_-]{1,40}$")
-LANGUAGE_RE = re.compile(r"^[a-z0-9+.-]{1,40}$")
-RUNNER_ID_RE = re.compile(r"^[a-z0-9-]{1,64}$")
-SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
+PAGE_ID_RE = re.compile(r"^pg_[a-z0-9]{4,32}\Z")
+QUESTION_ID_RE = re.compile(r"^q_[a-z0-9]{4,32}\Z")
+BLOCK_ID_RE = re.compile(r"^blk_[a-z0-9]{4,32}\Z")
+KIND_RE = re.compile(r"^[a-z0-9_-]{1,40}\Z")
+LANGUAGE_RE = re.compile(r"^[a-z0-9+.-]{1,40}\Z")
+RUNNER_ID_RE = re.compile(r"^[a-z0-9-]{1,64}\Z")
+SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
 QUESTION_KINDS = ("prediction", "free_text", "self_check")
 DEFAULT_QUESTION_KIND = "free_text"
