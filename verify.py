@@ -1512,6 +1512,26 @@ with TestClient(app) as c:
     import shutil as _at_shutil
     _at_shutil.rmtree(_at_aside[0])
 
+    # a hard link planted at the projection name passes O_NOFOLLOW+S_ISREG
+    # but must never take the fast path (PR-57 round 11): the rebuild
+    # replaces the NAME, so nothing leaks through the link's other name
+    _at_conn = get_conn()
+    try:
+        attempts_svc.reconcile_projection(_at_conn, _at)
+    finally:
+        _at_conn.close()
+    _at_linked = _at_proj.read_bytes()
+    _at_link_other = _at_dir / "outside-copy.txt"
+    _os.link(_at_proj, _at_link_other)  # projection inode now has 2 names
+    _at_hl = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-hl-1"))
+    check("hard-linked projection is replaced, append never leaks through",
+          _at_hl.json().get("projection") == "projected"
+          and _at_link_other.read_bytes() == _at_linked
+          and _os.stat(_at_proj).st_nlink == 1
+          and len(_at_proj.read_text(encoding="utf-8").splitlines())
+          == len(_at_rows()))
+    _at_link_other.unlink()
+
     # content-verified fast path (PR-57 round 6): the right line COUNT with
     # wrong earlier content is never blind-appended over — the byte-exact
     # prefix comparison fails and the rebuild restores the authority bytes
@@ -1586,6 +1606,30 @@ with TestClient(app) as c:
     check("racing retry beats a manifest refusal: committed duplicate wins",
           _at_race["result"] == "duplicate"
           and _at_race["attempt_id"] == _at_row1["attempt_id"]
+          and _at_roc_calls["n"] == 2)
+
+    # the same re-check covers the rate limit (PR-57 round 11): an original
+    # that committed after the early check wins over an exhausted window
+    _at_roc_calls["n"] = 0
+    attempts_svc._reset_rate_limit()
+    _at_rate_saved = attempts_svc.RATE_MAX_PER_WINDOW
+    attempts_svc.RATE_MAX_PER_WINDOW = 1
+    with attempts_svc._rate_lock:  # window pre-exhausted by the "original"
+        attempts_svc._rate[_at["id"]] = attempts_svc.deque(
+            [attempts_svc._monotonic()])
+    _at_conn = get_conn()
+    try:
+        with _mock.patch.object(attempts_svc, "_replay_or_conflict",
+                                _at_roc_once):
+            _at_race429 = attempts_svc.record_attempt(_at_conn, _at,
+                                                      dict(_at_body))
+    finally:
+        _at_conn.close()
+        attempts_svc.RATE_MAX_PER_WINDOW = _at_rate_saved
+        attempts_svc._reset_rate_limit()
+    check("racing retry beats an exhausted window: committed duplicate wins",
+          _at_race429["result"] == "duplicate"
+          and _at_race429["attempt_id"] == _at_row1["attempt_id"]
           and _at_roc_calls["n"] == 2)
 
     # rate limit: sliding per-lesson window, distinct code + Retry-After;

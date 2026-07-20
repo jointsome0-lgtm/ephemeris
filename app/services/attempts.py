@@ -368,6 +368,12 @@ def _project_attempt_locked(
                 st = os.fstat(fd)
                 if (
                     stat_module.S_ISREG(st.st_mode)
+                    # A planted hard link passes O_NOFOLLOW + S_ISREG but
+                    # would leak the append into its other name's file
+                    # (PR-57 round 11) — only a singly-linked private file
+                    # takes the fast path; the rebuild below replaces the
+                    # NAME, leaving the link's target untouched.
+                    and st.st_nlink == 1
                     and st.st_size == len(prefix)
                     and _read_all(fd, st.st_size) == prefix
                 ):
@@ -454,9 +460,8 @@ def record_attempt(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dic
     if replay is not None:
         return replay
 
-    _check_rate(lesson["id"])
-
     try:
+        _check_rate(lesson["id"])
         read = lessons.read_bundle(lesson)
         _require_eligible(read)
         if not lesson.get("uid"):  # unreachable post-v11 backfill; fail closed
@@ -473,10 +478,13 @@ def record_attempt(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dic
                 "question_id is not declared in the lesson manifest",
             )
     except AttemptError:
-        # PR-57 round 2: a retry racing its own original request (timeout
-        # resend) can see the key uncommitted at the early check above, then
-        # hit a refusal here after the original committed. The durable
-        # outcome still wins (§6.3) — re-check before refusing.
+        # PR-57 rounds 2 & 11: a retry racing its own original request
+        # (timeout resend) can see the key uncommitted at the early check
+        # above, then hit a refusal here — the rate limit included — after
+        # the original committed. The durable outcome still wins (§6.3) —
+        # re-check before refusing. (A 429 that survives this re-check is
+        # fine: it is transient by contract, and the next retry after
+        # Retry-After finds the committed duplicate.)
         with _bundle_lock(lesson["slug"]):
             replay = _replay_or_conflict(conn, lesson, submission)
         if replay is not None:
