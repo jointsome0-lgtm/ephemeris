@@ -49,7 +49,11 @@ is refused with 403 before the handler runs. Requests must be
 - `idempotency_key`: opaque, unique **per lesson** (§6.3). The D5 parent
   maps the bridge `request_id` onto it. Replaying a key whose stored
   (`question_id`, `page_id`) match returns the original attempt; the same
-  key with a different question/page is a distinct conflict.
+  key with a different question/page is a distinct conflict. The replay
+  check precedes every record-time refusal: a retry of an already-durable
+  write returns its `attempt_id` even when the manifest has since been
+  rejected or the question retired — the refusal table below governs only
+  new writes.
 - Unknown fields are ignored (forward compatibility).
 
 ## Success responses (HTTP 200)

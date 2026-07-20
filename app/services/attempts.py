@@ -309,7 +309,16 @@ def _project_attempt(conn: sqlite3.Connection, lesson: dict, line: str) -> bool:
             if stat_module.S_ISREG(st.st_mode):
                 lines, terminated = _count_lines(fd, st.st_size)
                 if (st.st_size == 0 or terminated) and lines == expected - 1:
-                    os.write(fd, line.encode("utf-8"))
+                    # write(2) may land short (ENOSPC, rlimits): loop until
+                    # the whole line is down — a partial append must never
+                    # report `projected` (the rebuild below replaces the
+                    # torn tail it leaves behind).
+                    data = memoryview(line.encode("utf-8"))
+                    while data:
+                        n = os.write(fd, data)
+                        if n <= 0:
+                            raise OSError("short write on attempts.jsonl")
+                        data = data[n:]
                     os.fsync(fd)
                     appended = True
         except OSError:
@@ -325,6 +334,33 @@ def _project_attempt(conn: sqlite3.Connection, lesson: dict, line: str) -> bool:
     return True
 
 
+def _replay_or_conflict(
+    conn: sqlite3.Connection, lesson: dict, submission: dict
+) -> dict | None:
+    """Known-key handling (§6.3): a replay of the same submission returns the
+    original attempt untouched; the same key with a different question/page
+    is a client bug — distinct conflict, never coalesced. None = fresh key."""
+    existing = conn.execute(
+        "SELECT * FROM lesson_attempts WHERE lesson_id = ? AND idempotency_key = ?",
+        (lesson["id"], submission["idempotency_key"]),
+    ).fetchone()
+    if existing is None:
+        return None
+    if (
+        existing["question_id"] == submission["question_id"]
+        and existing["page_id"] == submission["page_id"]
+    ):
+        return {
+            "result": "duplicate",
+            "attempt_id": existing["attempt_id"],
+            "stale": bool(existing["stale"]),
+        }
+    raise AttemptError(
+        "idempotency-conflict", 409,
+        "idempotency_key was already used for a different question/page",
+    )
+
+
 def record_attempt(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dict:
     """Record one attempt for `lesson` (a lessons service view dict).
 
@@ -335,6 +371,15 @@ def record_attempt(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dic
     docs/lesson-attempts-api.md."""
     submission = _clean_submission(payload)
     _check_rate(lesson["id"])
+
+    # §6.3 replay precedes every record-time refusal (PR-57 round 1): the
+    # original write is already durable, so a client retry must learn its
+    # attempt_id even when the manifest has since rejected the bundle or
+    # retired the question — validation below governs only NEW writes.
+    with _bundle_lock(lesson["slug"]):
+        replay = _replay_or_conflict(conn, lesson, submission)
+    if replay is not None:
+        return replay
 
     read = lessons.read_bundle(lesson)
     _require_eligible(read)
@@ -356,11 +401,10 @@ def record_attempt(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dic
     )
 
     with _bundle_lock(lesson["slug"]):
-        existing = conn.execute(
-            "SELECT * FROM lesson_attempts WHERE lesson_id = ? AND idempotency_key = ?",
-            (lesson["id"], submission["idempotency_key"]),
-        ).fetchone()
-        if existing is None:
+        # Re-check under the lock: another in-process writer may have landed
+        # the same key between the early replay check and here.
+        replay = _replay_or_conflict(conn, lesson, submission)
+        if replay is None:
             attempt_id = str(uuid4())
             created_at = _utc_now_iso()
             row = {
@@ -416,14 +460,11 @@ def record_attempt(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dic
                         ),
                     )
             except sqlite3.IntegrityError:
-                # Same idempotency key landed from another writer (a second
-                # process; in-process writers serialize on the bundle lock).
-                existing = conn.execute(
-                    "SELECT * FROM lesson_attempts "
-                    "WHERE lesson_id = ? AND idempotency_key = ?",
-                    (lesson["id"], submission["idempotency_key"]),
-                ).fetchone()
-                if existing is None:
+                # Same idempotency key landed from another PROCESS (a stale
+                # second server; in-process writers serialize on the bundle
+                # lock) — answer with its outcome instead of a 500.
+                replay = _replay_or_conflict(conn, lesson, submission)
+                if replay is None:
                     raise
             else:
                 attempt_number = conn.execute(
@@ -441,20 +482,4 @@ def record_attempt(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dic
                     "attempt_number": attempt_number,
                     "projection": "projected" if projected else "pending",
                 }
-
-        # Known key (§6.3): a replay of the same submission returns the
-        # original attempt untouched; the same key with a different
-        # question/page is a client bug — distinct conflict, never coalesced.
-        if (
-            existing["question_id"] == submission["question_id"]
-            and existing["page_id"] == submission["page_id"]
-        ):
-            return {
-                "result": "duplicate",
-                "attempt_id": existing["attempt_id"],
-                "stale": bool(existing["stale"]),
-            }
-        raise AttemptError(
-            "idempotency-conflict", 409,
-            "idempotency_key was already used for a different question/page",
-        )
+        return replay

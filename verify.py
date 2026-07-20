@@ -1213,6 +1213,19 @@ with TestClient(app) as c:
           _at_conf.status_code == 409
           and _at_conf.json()["error"] == "idempotency-conflict"
           and len(_at_rows()) == 1)
+    # §6.3 replay precedes record-time refusals (PR-57 round 1): after the
+    # question is retired from the manifest, retrying the SAME submission
+    # still returns the original durable attempt — only a NEW key sees the
+    # unknown-question reject
+    bschema.write_manifest(_at_dir / "lesson.json", dict(_at_raw, questions=[]))
+    _at_rp = c.post(_at_url, json=_at_body)
+    _at_rp_new = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-ret-1"))
+    bschema.write_manifest(_at_dir / "lesson.json", _at_raw)  # restore
+    check("replay survives question retirement; a fresh key rejects",
+          _at_rp.status_code == 200 and _at_rp.json()["result"] == "duplicate"
+          and _at_rp.json()["attempt_id"] == _at_j1["attempt_id"]
+          and _at_rp_new.status_code == 422
+          and _at_rp_new.json()["error"] == "unknown-question")
 
     # slug alias records against the same lesson; uid comes from the DB row
     _at_r2 = c.post(f"/learn/lessons/by-slug/{_at['slug']}/attempts",
@@ -1386,6 +1399,35 @@ with TestClient(app) as c:
           _at_rec_ok and _at_rec_ok2
           and _at_rec_text == _at_proj.read_text(encoding="utf-8")
           and len(_at_rec_text.splitlines()) == len(_at_rows()))
+
+    # a short write(2) must complete the line, never report `projected` over
+    # a torn tail (PR-57 round 1): force the first os.write to land half
+    from unittest import mock as _mock
+    _at_conn = get_conn()
+    try:
+        _at_last = _at_rows()[-1]
+        attempts_svc.reconcile_projection(_at_conn, _at)  # consistent baseline
+        _at_keep = _at_proj.read_text(encoding="utf-8").splitlines(keepends=True)[:-1]
+        _at_proj.write_text("".join(_at_keep), encoding="utf-8")  # expect 1 append
+        _at_real_write = _os.write
+        _at_split = {"done": False}
+
+        def _at_short_write(fd, data):
+            if not _at_split["done"]:
+                _at_split["done"] = True
+                return _at_real_write(fd, bytes(data)[: max(1, len(bytes(data)) // 2)])
+            return _at_real_write(fd, data)
+
+        with _mock.patch("os.write", side_effect=_at_short_write):
+            _at_short_ok = attempts_svc._project_attempt(
+                _at_conn, _at, attempts_svc._projection_line(_at_last))
+    finally:
+        _at_conn.close()
+    _at_lines3 = _at_proj.read_text(encoding="utf-8").splitlines()
+    check("short write(2) is completed by the append loop, file stays whole",
+          _at_short_ok and _at_split["done"]
+          and len(_at_lines3) == len(_at_rows())
+          and json.loads(_at_lines3[-1])["attempt_id"] == _at_last["attempt_id"])
 
     # rate limit: sliding per-lesson window, distinct code + Retry-After
     attempts_svc._reset_rate_limit()
