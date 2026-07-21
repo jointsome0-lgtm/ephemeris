@@ -318,6 +318,31 @@ def _learner_private_mask_spellings(
     )
 
 
+def _learner_workspace_contains_db(
+    workspace_dir: str,
+    db_path: Path | None = None,
+) -> bool:
+    """Whether the learner's final writable bind would re-expose the DB.
+
+    Parent masks cannot protect a database stored inside the selected bundle:
+    bubblewrap must bind that bundle back last to make learner work writable.
+    Compare both lexical and resolved spellings so symlinked configuration does
+    not turn the documented ``ACTIVITY_DB`` override into a boundary bypass.
+    """
+    database = DB_PATH if db_path is None else db_path
+    workspaces = tuple(
+        Path(spelling) for spelling in _private_mask_spellings(Path(workspace_dir))
+    )
+    databases = tuple(
+        Path(spelling) for spelling in _private_mask_spellings(database)
+    )
+    return any(
+        db == workspace or db.is_relative_to(workspace)
+        for db in databases
+        for workspace in workspaces
+    )
+
+
 def _redact_userinfo(url: str) -> str:
     """Strip any user:password@ from a URL's authority for display: an inherited
     proxy URL may carry credentials that must not land in the banner/scrollback."""
@@ -595,13 +620,15 @@ async def _create_session(
     optional ``role`` WS query value. Agent sessions regenerate their briefs;
     learner sessions validate and reuse the bundle without writing them.
     Serialized via _CREATE_LOCK so the capacity check is atomic."""
+    # Reject malformed selectors before the capacity path: an invalid request
+    # must not force-evict a detached live shell and only then be refused.
+    role = _select_create_role(lesson, role_selector)
     async with _CREATE_LOCK:
         if len(_SESSIONS) >= _MAX_SESSIONS:
             _reap_idle(force_oldest=True)
             if len(_SESSIONS) >= _MAX_SESSIONS:
                 return None
 
-        role = _select_create_role(lesson, role_selector)
         workspace = None
         if role == "lesson-agent":
             workspace = await asyncio.to_thread(prepare_terminal_workspace, lesson)
@@ -613,6 +640,11 @@ async def _create_session(
 
         workspace_dir = workspace["dir"] if workspace is not None else str(_REPO_ROOT)
         sandbox_profile: SandboxProfile | None = None if role == "plain" else role
+        if role == "lesson-learner" and _learner_workspace_contains_db(workspace_dir):
+            # The final rw bundle bind is intentional and necessarily wins over
+            # parent masks. Refuse a conflicting DB layout rather than exposing
+            # the ledger and its sidecars inside the learner boundary.
+            raise _LessonSandboxError(lesson)
 
         shell = (
             "/bin/bash" if role == "lesson-learner"

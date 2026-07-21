@@ -4155,6 +4155,20 @@ with TestClient(app) as c:
           and _sid_role_create.call_count == 0
           and _sid_role_ws.accepted and _sid_role_ws.closed
           and b"invalid session request" in b"".join(_sid_role_ws.sent_bytes))
+
+    async def _e3_invalid_selector_at_capacity():
+        with _sandbox_mock.patch.object(_terminal, "_MAX_SESSIONS", 0), \
+                _sandbox_mock.patch.object(_terminal, "_reap_idle") as reap:
+            try:
+                await _terminal._create_session(_lt["slug"], "unknown")
+            except _terminal._SessionRequestError:
+                refused = True
+            else:
+                refused = False
+        return refused and reap.call_count == 0
+
+    check("E3 invalid selector cannot evict a detached session at capacity",
+          _asyncio.run(_e3_invalid_selector_at_capacity()))
     with _sandbox_mock.patch.dict(os.environ, {
         "SSH_AUTH_SOCK": "/run/user/1000/agent.sock",
         "XDG_RUNTIME_DIR": "/run/user/1000",
@@ -4213,6 +4227,34 @@ with TestClient(app) as c:
           and str(_lesson_store_target) in _db_mask_spellings
           and str(_db_link_dir) in _db_mask_spellings
           and str(_db_target_dir) in _db_mask_spellings)
+
+    async def _e3_db_in_bundle_refusal():
+        workspace = {"dir": ws_info["dir"], "slug": _lt["slug"], "title": "demo"}
+        bundle_db = Path(workspace["dir"]) / "invented-private.sqlite"
+        outside_db = Path(workspace["dir"]).parent / "invented-private.sqlite"
+        with _sandbox_mock.patch.object(
+                _terminal, "resolve_terminal_workspace", return_value=workspace), \
+                _sandbox_mock.patch.object(_terminal, "DB_PATH", bundle_db), \
+                _sandbox_mock.patch.object(_terminal.pty, "openpty") as openpty, \
+                _sandbox_mock.patch.object(
+                    _terminal, "spawn_sandboxed",
+                    new=_sandbox_mock.AsyncMock()) as spawn:
+            try:
+                await _terminal._create_session(_lt["slug"], "lesson-learner")
+            except _terminal._LessonSandboxError:
+                refused = True
+            else:
+                refused = False
+        return (
+            refused and openpty.call_count == 0 and spawn.call_count == 0
+            and _terminal._learner_workspace_contains_db(
+                workspace["dir"], bundle_db)
+            and not _terminal._learner_workspace_contains_db(
+                workspace["dir"], outside_db)
+        )
+
+    check("E3 learner refuses a DB override inside the writable bundle",
+          _asyncio.run(_e3_db_in_bundle_refusal()))
     _external_private = "/srv/invented-ephemeris-private"
     _external_lessons = f"{_external_private}/lessons"
     _external_bundle = f"{_external_lessons}/invented-bundle"
