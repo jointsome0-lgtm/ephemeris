@@ -21,7 +21,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 - [ ] 2026-07-21 — 3931339, 4a019be, 165481c, 1467750, ef533d9, 43c4b1d, c357bc5 — the entry stays current with the branch: any
   further branch commit, and the merge commit itself once the PR lands, is
-  appended here before any drain or restart —
+  appended here before any drain or restart (this repository merges via
+  merge commits, never squash, so the landed tree is the reviewed branch
+  head's tree and the listed branch commits are ancestors of the landed
+  merge; ephemeral GitHub test-merge/squash preview hashes are not
+  repository commits and are never tracked here) —
   `app/static/src/learn-bridge.ts` (+ emitted `app/static/learn-bridge.js`),
   `app/services/lessons.py`, `app/main.py`, `app/templates/learn.html`,
   `docs/lesson-bridge-abi.md`, `docs/lesson-attempts-api.md`, `verify.py` —
