@@ -18,7 +18,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from app.sandbox import build_sandbox_argv, require_sandbox_runtime  # noqa: E402
+from app.sandbox import (  # noqa: E402
+    RUNNER_WORKDIR,
+    build_sandbox_argv,
+    require_sandbox_runtime,
+)
 
 
 PROXY_HTTP = "http://127.0.0.1:10809"
@@ -106,7 +110,7 @@ def run_profile(profile: str, bundle: Path) -> dict[str, object]:
     payload = json.loads(result.stdout)
     expected_access = "ro" if profile == "lesson-runner" else "rw"
     expected_network = "host" if profile == "lesson-agent" else "none"
-    expected_cwd = str(bundle) if profile != "lesson-runner" else "/run/ephemeris-runner"
+    expected_cwd = str(bundle) if profile != "lesson-runner" else RUNNER_WORKDIR
     if not (
         payload["repo_absent"]
         and payload["home_blanked"]

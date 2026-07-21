@@ -19,8 +19,7 @@ SandboxProfile = Literal["lesson-agent", "lesson-learner", "lesson-runner"]
 
 BWRAP = "/home/aina/.local/bin/bwrap"
 USER_HOME = "/home/aina"
-RUNNER_WORKDIR = "/run/ephemeris-runner"
-RUNNER_TMPFS = "/run"
+RUNNER_WORKDIR = "/tmp/ephemeris-runner"
 
 
 class SandboxError(RuntimeError):
@@ -135,7 +134,6 @@ def build_sandbox_argv(
     if profile == "lesson-runner":
         argv.extend([
             "--ro-bind", bundle, bundle,
-            "--tmpfs", RUNNER_TMPFS,
             "--dir", RUNNER_WORKDIR,
             "--chdir", RUNNER_WORKDIR,
         ])

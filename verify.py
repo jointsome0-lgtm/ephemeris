@@ -3790,8 +3790,7 @@ with TestClient(app) as c:
               (_sb_bundle, _sb_bundle),
           }
           and not _sb_mounts(_sb_runner, "--bind")
-          and _sb_runner[-6:] == ["--tmpfs", _sandbox.RUNNER_TMPFS,
-                                  "--dir", _sandbox.RUNNER_WORKDIR,
+          and _sb_runner[-4:] == ["--dir", _sandbox.RUNNER_WORKDIR,
                                   "--chdir", _sandbox.RUNNER_WORKDIR])
     try:
         _sandbox.build_sandbox_argv("plain", _sb_bundle)
