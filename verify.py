@@ -3750,8 +3750,7 @@ with TestClient(app) as c:
           and "--share-net" not in _sb_learner
           and "--share-net" not in _sb_runner)
 
-    _sb_common_ro = {("/home/aina/.local/bin", "/home/aina/.local/bin")}
-    _sb_agent_ro = _sb_common_ro | {
+    _sb_agent_try_ro = {
         ("/home/aina/.nvm/versions", "/home/aina/.nvm/versions"),
         ("/home/aina/.local/share/claude/versions", "/home/aina/.local/share/claude/versions"),
         ("/home/aina/.codex/auth.json", "/home/aina/.codex/auth.json"),
@@ -3761,18 +3760,24 @@ with TestClient(app) as c:
         ("/home/aina/.claude.json", "/home/aina/.claude.json"),
     }
     check("E1 argv: lesson-agent exact home binds and ephemeral CLI state",
-          set(_sb_mounts(_sb_agent, "--ro-bind")) == _sb_agent_ro | {("/", "/")}
-          and set(_sb_mounts(_sb_agent, "--bind")) == {
+          set(_sb_mounts(_sb_agent, "--ro-bind")) == {
+              ("/", "/"),
+              ("/home/aina/.local/bin", "/home/aina/.local/bin"),
+          }
+          and set(_sb_mounts(_sb_agent, "--ro-bind-try")) == _sb_agent_try_ro
+          and set(_sb_mounts(_sb_agent, "--bind-try")) == {
               ("/home/aina/go", "/home/aina/go"),
               ("/home/aina/.cache/go-build", "/home/aina/.cache/go-build"),
-              (_sb_bundle, _sb_bundle),
           }
+          and _sb_mounts(_sb_agent, "--bind") == [(_sb_bundle, _sb_bundle)]
           and {"/home/aina/.codex", "/home/aina/.claude"}.issubset(
               {_sb_agent[i + 1] for i, x in enumerate(_sb_agent) if x == "--tmpfs"}))
     check("E1 argv: lesson-learner exact ro caches + rw bundle",
           set(_sb_mounts(_sb_learner, "--ro-bind")) == {
               ("/", "/"),
               ("/home/aina/.local/bin", "/home/aina/.local/bin"),
+          }
+          and set(_sb_mounts(_sb_learner, "--ro-bind-try")) == {
               ("/home/aina/go", "/home/aina/go"),
               ("/home/aina/.cache/go-build", "/home/aina/.cache/go-build"),
           }
@@ -3822,7 +3827,7 @@ with TestClient(app) as c:
             for _ in range(2):
                 try:
                     await _sandbox.spawn_sandboxed(
-                        "lesson-agent", _sb_bundle, ["/bin/bash", "-i"])
+                        "lesson-agent", _sb_bundle, ["/bin/bash", "-i"], env={})
                 except _sandbox.SandboxUnavailableError as exc:
                     results["probe_visible"] = "userns denied" in str(exc)
             results["probe_cached"] = _sandbox.subprocess.run.call_count == 1
@@ -3836,7 +3841,7 @@ with TestClient(app) as c:
                     side_effect=OSError("exec refused")) as spawn:
             try:
                 await _sandbox.spawn_sandboxed(
-                    "lesson-agent", _sb_bundle, ["/bin/bash", "-i"])
+                    "lesson-agent", _sb_bundle, ["/bin/bash", "-i"], env={})
             except _sandbox.SandboxSpawnError as exc:
                 results["spawn_visible"] = "exec refused" in str(exc)
             results["only_bwrap_attempted"] = (
@@ -3851,12 +3856,18 @@ with TestClient(app) as c:
           and _sb_fail.get("probe_never_spawned"))
     check("E1 no-fallback: bwrap spawn failure is visible, never a bare command retry",
           _sb_fail.get("spawn_visible") and _sb_fail.get("only_bwrap_attempted"))
-    check("E1 rlimits: generous PTY caps are hooked; runner strict caps remain deferred",
+    try:
+        _sandbox.spawn_sandboxed("lesson-agent", _sb_bundle, ["/bin/true"])
+        _sb_env_required = False
+    except TypeError:
+        _sb_env_required = True
+    check("E1 rlimits and env: PTY caps hooked, explicit child env required",
           set(_sandbox._GENEROUS_LIMITS) == {
               _sandbox.resource.RLIMIT_NOFILE, _sandbox.resource.RLIMIT_NPROC,
           }
           and _sandbox.profile_preexec_fn("lesson-agent") is not None
-          and _sandbox.profile_preexec_fn("lesson-runner") is not None)
+          and _sandbox.profile_preexec_fn("lesson-runner") is not None
+          and _sb_env_required)
 
     # --- Retro capture (docs/retro-spec.md, issue #49) ----------------------
     # The period grammar mirrors exp2res services/time_input.py; the journaled

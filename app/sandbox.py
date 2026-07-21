@@ -55,34 +55,34 @@ _COMMON_HOME_MOUNTS = (
 )
 
 _AGENT_HOME_MOUNTS = (
-    _HomeMount("--ro-bind", f"{USER_HOME}/.nvm/versions",
+    _HomeMount("--ro-bind-try", f"{USER_HOME}/.nvm/versions",
                "the installed Codex Node runtime and package"),
-    _HomeMount("--ro-bind", f"{USER_HOME}/.local/share/claude/versions",
+    _HomeMount("--ro-bind-try", f"{USER_HOME}/.local/share/claude/versions",
                "the installed Claude native binary targeted by its shim"),
     _HomeMount("--tmpfs", f"{USER_HOME}/.codex",
                "ephemeral writable Codex session and app-server state"),
-    _HomeMount("--ro-bind", f"{USER_HOME}/.codex/auth.json",
+    _HomeMount("--ro-bind-try", f"{USER_HOME}/.codex/auth.json",
                "Codex login material, deliberately read-only"),
-    _HomeMount("--ro-bind", f"{USER_HOME}/.codex/config.toml",
+    _HomeMount("--ro-bind-try", f"{USER_HOME}/.codex/config.toml",
                "Codex configuration, deliberately read-only"),
     _HomeMount("--tmpfs", f"{USER_HOME}/.claude",
                "ephemeral writable Claude session and cache state"),
-    _HomeMount("--ro-bind", f"{USER_HOME}/.claude/.credentials.json",
+    _HomeMount("--ro-bind-try", f"{USER_HOME}/.claude/.credentials.json",
                "Claude login material, deliberately read-only"),
-    _HomeMount("--ro-bind", f"{USER_HOME}/.claude/settings.json",
+    _HomeMount("--ro-bind-try", f"{USER_HOME}/.claude/settings.json",
                "Claude configuration, deliberately read-only"),
-    _HomeMount("--ro-bind", f"{USER_HOME}/.claude.json",
+    _HomeMount("--ro-bind-try", f"{USER_HOME}/.claude.json",
                "Claude installation/account metadata, deliberately read-only"),
-    _HomeMount("--bind", f"{USER_HOME}/go",
+    _HomeMount("--bind-try", f"{USER_HOME}/go",
                "writable Go module cache for agent-driven dependency work"),
-    _HomeMount("--bind", f"{USER_HOME}/.cache/go-build",
+    _HomeMount("--bind-try", f"{USER_HOME}/.cache/go-build",
                "writable Go build cache for agent-driven builds"),
 )
 
 _LEARNER_HOME_MOUNTS = (
-    _HomeMount("--ro-bind", f"{USER_HOME}/go",
+    _HomeMount("--ro-bind-try", f"{USER_HOME}/go",
                "warm Go module cache for offline learner builds"),
-    _HomeMount("--ro-bind", f"{USER_HOME}/.cache/go-build",
+    _HomeMount("--ro-bind-try", f"{USER_HOME}/.cache/go-build",
                "warm Go build cache for offline learner builds"),
 )
 
@@ -226,10 +226,10 @@ async def spawn_sandboxed(
     stdin: int | None = None,
     stdout: int | None = None,
     stderr: int | None = None,
-    env: Mapping[str, str] | None = None,
+    env: Mapping[str, str],
     preexec_fn: Callable[[], None] | None = None,
 ) -> asyncio.subprocess.Process:
-    """Spawn ``command`` inside ``profile`` or raise; never run it unsandboxed."""
+    """Spawn inside ``profile`` or raise; ``env`` must be explicitly allowlisted."""
     if not command:
         raise ValueError("sandbox command must not be empty")
     require_sandbox_runtime()
@@ -240,7 +240,7 @@ async def spawn_sandboxed(
             stdin=stdin,
             stdout=stdout,
             stderr=stderr,
-            env=dict(env) if env is not None else None,
+            env=dict(env),
             preexec_fn=profile_preexec_fn(profile, preexec_fn),
         )
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
