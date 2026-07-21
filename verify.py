@@ -349,12 +349,21 @@ with TestClient(app) as c:
     check("lesson AGENTS.md makes the learner record the tutoring loop",
           "## The learner's record — read it first, teach from it" in agents_text
           and "First move of every session" in agents_text
-          and "what was answered wrong" in agents_text
+          and "newest 2 MiB of complete lines" in agents_text
+          and "Never load it unboundedly" in agents_text
+          and "what the projected answers show was misunderstood" in agents_text
           and "Do not restate the" in agents_text
           and "representation failed, not" in agents_text
           and "earns compression" in agents_text
-          and "quote the learner's actual words back" in agents_text
+          and "no projected answer is unknown" in agents_text
+          and "contains no page-visit record" in agents_text
           and "attempts must stay intelligible" in agents_text)
+    check("lesson AGENTS.md keeps learner quotations inert in HTML",
+          "quote only a short relevant excerpt as" in agents_text
+          and "HTML-escape learner text" in agents_text
+          and "insert it only as text content" in agents_text
+          and "never\n  splice it into markup, attributes, URLs, CSS, or script"
+          in agents_text)
     check("lesson AGENTS.md fences inactive editor and run blocks",
           "## Coming, not yet active: editor and run blocks" in agents_text
           and "bundle spec §4.4" in agents_text
