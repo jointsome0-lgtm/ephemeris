@@ -19,7 +19,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-21 — 3931339, 4a019be, 165481c, 1467750, ef533d9, 43c4b1d — the entry stays current with the branch: any
+- [ ] 2026-07-21 — 3931339, 4a019be, 165481c, 1467750, ef533d9, 43c4b1d, c357bc5 — the entry stays current with the branch: any
   further branch commit, and the merge commit itself once the PR lands, is
   appended here before any drain or restart —
   `app/static/src/learn-bridge.ts` (+ emitted `app/static/learn-bridge.js`),
@@ -65,6 +65,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   43c4b1d (PR-bot round 5): each attempt call cleans up its own
   document's in-flight set (teardown replaces it), and the vanish
   probe stages the real deleted-file race against os.lstat.
+  c357bc5 (PR-bot round 7): digest-cache eviction is race-
+  tolerant (pop with default + iteration guard) — concurrent cache
+  misses can no longer 500 a poll or page serve.
 
 ## Done
 
