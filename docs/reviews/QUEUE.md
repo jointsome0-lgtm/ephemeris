@@ -19,13 +19,25 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-21 — `40dfa69..HEAD` on `fix/16-e1-sandbox-launcher` —
+_None._
+
+## Done
+
+- [x] 2026-07-21 — 6aa80ca, 53b8481, 4161f76, f59e84a —
   `app/sandbox.py`, `scripts/probe_sandbox_profiles.py`, `verify.py` — phase E
   session E1 adds the bubblewrap runtime probe, pure three-profile argv builder,
   fail-closed sandbox spawn helper, agent/learner rlimit hook, on-host profile
-  probe, and verifier coverage; no live terminal spawn path changes.
-
-## Done
+  probe, and verifier coverage; no live terminal spawn path changes. f59e84a
+  (drain cycle 1) requires an explicit non-root bundle authority and confines
+  the mounted bundle to a strict lexical descendant, closing the arbitrary
+  late-bind mask replacement; verify 609, verify_restore 28. Drained 2026-07-21
+  → `2026-07-21-sandbox-launcher-review.md`: one Medium S1, resolved in cycle 1;
+  no Critical/High/Low/Info or open finding. Closing gates: terminal-opt-in T1
+  is mitigated by the E1 primitive but remains accepted for the live terminal
+  until E2 integration; deliberate agent network/login posture is unchanged;
+  earlier terminal and lesson protections remain resolved. Final verdict: SAFE
+  TO MAKE LIVE for the documented direct-loopback single-worker deployment;
+  wider deployment NO. Live restart is owner-only and was not performed.
 
 - [x] 2026-07-21 — 3931339, 4a019be, 165481c, 1467750, ef533d9, 43c4b1d,
   c357bc5, edd0cf7 — the entry stays current with the branch: any further
