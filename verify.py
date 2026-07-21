@@ -4158,6 +4158,13 @@ with TestClient(app) as c:
     with _sandbox_mock.patch.dict(os.environ, {
         "SSH_AUTH_SOCK": "/run/user/1000/agent.sock",
         "XDG_RUNTIME_DIR": "/run/user/1000",
+        "HOME": "/root",
+        "PATH": "/root/private-bin:/usr/bin",
+        "SHELL": "/root/private-shell",
+        "XDG_CONFIG_HOME": "/srv/private-config",
+        "XDG_DATA_HOME": "/srv/private-data",
+        "XDG_CACHE_HOME": "/srv/private-cache",
+        "XDG_STATE_HOME": "/srv/private-state",
     }):
         _agent_socket_env = _terminal._child_env("lesson-agent")
         _learner_socket_env = _terminal._child_env("lesson-learner")
@@ -4165,7 +4172,24 @@ with TestClient(app) as c:
           _agent_socket_env.get("SSH_AUTH_SOCK") == "/run/user/1000/agent.sock"
           and _agent_socket_env.get("XDG_RUNTIME_DIR") == "/run/user/1000"
           and "SSH_AUTH_SOCK" not in _learner_socket_env
-          and "XDG_RUNTIME_DIR" not in _learner_socket_env)
+          and "XDG_RUNTIME_DIR" not in _learner_socket_env
+          and _learner_socket_env.get("HOME") == _sandbox.USER_HOME
+          and _learner_socket_env.get("SHELL") == "/bin/bash"
+          and _learner_socket_env.get("PATH")
+              == "/home/aina/.local/bin:/usr/local/bin:/usr/bin:/bin"
+          and not any(name in _learner_socket_env for name in (
+              "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+              "XDG_STATE_HOME",
+          )))
+    with tempfile.TemporaryDirectory(prefix="ephemeris-e3-mask-") as _mask_tmp:
+        _mask_base = Path(_mask_tmp)
+        _mask_target = _mask_base / "resolved-private"
+        _mask_target.mkdir()
+        _mask_link = _mask_base / "private-link"
+        _mask_link.symlink_to(_mask_target, target_is_directory=True)
+        _mask_spellings = _terminal._private_mask_spellings(_mask_link)
+    check("E3 private masks include lexical symlinks and resolved targets",
+          _mask_spellings == (str(_mask_link), str(_mask_target)))
     _external_private = "/srv/invented-ephemeris-private"
     _external_lessons = f"{_external_private}/lessons"
     _external_bundle = f"{_external_lessons}/invented-bundle"
@@ -4190,20 +4214,22 @@ with TestClient(app) as c:
     _nested_lessons = f"{_nested_private}/lessons"
     _nested_bundle = f"{_nested_lessons}/invented-bundle"
     _db_override_root = "/opt/invented-ephemeris-db"
+    _checkout_root = "/workspace/invented-ephemeris-checkout"
     _nested_learner_argv = _sandbox.build_sandbox_argv(
         "lesson-learner", _nested_bundle,
         bundle_root=_nested_lessons,
         private_root=_nested_private,
-        private_masks=(_db_override_root,),
+        private_masks=(_db_override_root, _checkout_root),
     )
     _nested_tmpfs = [
         _nested_learner_argv[i + 1]
         for i, value in enumerate(_nested_learner_argv)
         if value == "--tmpfs"
     ]
-    check("E3 learner re-masks cache-nested data and an external DB override",
+    check("E3 learner masks cache-nested data, DB override, and external checkout",
           _nested_private in _nested_tmpfs
           and _db_override_root in _nested_tmpfs
+          and _checkout_root in _nested_tmpfs
           and _nested_learner_argv.index("/home/aina/go")
               < _nested_learner_argv.index(_nested_private)
           and _nested_learner_argv.index(_db_override_root)
@@ -4228,10 +4254,17 @@ with TestClient(app) as c:
         result = (
             resolve.call_count == 1 and prepare.call_count == 0
             and proxy.call_args.args == ("lesson-learner",)
-            and call.args[:2] == ("lesson-learner", workspace["dir"])
+            and call.args[:3] == (
+                "lesson-learner", workspace["dir"], ["/bin/bash", "-i"],
+            )
             and call.kwargs["private_root"] == str(lessons_svc.LESSONS_DIR.parent)
-            and call.kwargs["private_masks"]
-                == (str(_terminal.DB_PATH.absolute().parent),)
+            and set(call.kwargs["private_masks"]) == set(
+                _terminal._private_mask_spellings(
+                    lessons_svc.LESSONS_DIR.parent,
+                    _terminal.DB_PATH.absolute().parent,
+                    _terminal._REPO_ROOT,
+                )
+            )
             and not any(name in call.kwargs["env"] for name in (
                 *_terminal._PROXY_ENV_VARS, "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR",
             ))

@@ -41,7 +41,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 
 from .db import DB_PATH
-from .sandbox import SandboxError, SandboxProfile, spawn_sandboxed
+from .sandbox import SandboxError, SandboxProfile, USER_HOME, spawn_sandboxed
 from .services.lessons import (
     LESSONS_DIR,
     prepare_terminal_workspace,
@@ -271,16 +271,33 @@ def _child_env(role: TerminalRole = "plain") -> dict[str, str]:
         if k in _ENV_ALLOWLIST or k.startswith(_ENV_ALLOW_PREFIXES)
     }
     env["TERM"] = "xterm-256color"
-    # Help find user-installed agent CLIs even under a minimal service PATH.
-    home = os.path.expanduser("~")
-    env["PATH"] = f"{home}/.local/bin:/usr/local/bin:" + env.get("PATH", "/usr/bin:/bin")
     if role == "lesson-learner":
-        # Network namespaces don't isolate AF_UNIX. Do not hand untrusted learner
-        # commands the inherited discovery paths for the owner's runtime/SSH
-        # sockets; agent/plain shells deliberately retain their existing session.
-        env.pop("SSH_AUTH_SOCK", None)
-        env.pop("XDG_RUNTIME_DIR", None)
+        # Network namespaces don't isolate AF_UNIX, and the service may have
+        # external HOME/XDG/PATH values. Give learner commands only normalized
+        # paths that the profile intentionally exposes.
+        for name in (
+            "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "XDG_DATA_HOME",
+            "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+        ):
+            env.pop(name, None)
+        env["HOME"] = USER_HOME
+        env["SHELL"] = "/bin/bash"
+        env["PATH"] = f"{USER_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+    else:
+        # Help find user-installed agent CLIs even under a minimal service PATH.
+        home = os.path.expanduser("~")
+        env["PATH"] = f"{home}/.local/bin:/usr/local/bin:" + env.get(
+            "PATH", "/usr/bin:/bin")
     return env
+
+
+def _private_mask_spellings(*paths: Path) -> tuple[str, ...]:
+    """Return each private path's absolute spelling and resolved target."""
+    masks: list[str] = []
+    for path in paths:
+        absolute = path.absolute()
+        masks.extend((str(absolute), str(absolute.resolve(strict=False))))
+    return tuple(dict.fromkeys(masks))
 
 
 def _redact_userinfo(url: str) -> str:
@@ -579,8 +596,20 @@ async def _create_session(
         workspace_dir = workspace["dir"] if workspace is not None else str(_REPO_ROOT)
         sandbox_profile: SandboxProfile | None = None if role == "plain" else role
 
-        shell = os.environ.get("SHELL") or "/bin/bash"
+        shell = (
+            "/bin/bash" if role == "lesson-learner"
+            else (os.environ.get("SHELL") or "/bin/bash")
+        )
         env = _child_env(role)
+        private_masks = (
+            await asyncio.to_thread(
+                _private_mask_spellings,
+                LESSONS_DIR.parent,
+                DB_PATH.absolute().parent,
+                _REPO_ROOT,
+            )
+            if role == "lesson-learner" else ()
+        )
         # Route agent CLIs around country-level blocks via the user's local proxy (if
         # any); the allowlisted base env has no proxy vars, so what _detect_proxy_env
         # returns is the whole story and EPHEMERIS_TERM_PROXY=off truly means direct.
@@ -599,10 +628,7 @@ async def _create_session(
                     [shell, "-i"],
                     bundle_root=str(LESSONS_DIR),
                     private_root=str(LESSONS_DIR.parent),
-                    private_masks=(
-                        (str(DB_PATH.absolute().parent),)
-                        if role == "lesson-learner" else ()
-                    ),
+                    private_masks=private_masks,
                     stdin=slave_fd,
                     stdout=slave_fd,
                     stderr=slave_fd,
