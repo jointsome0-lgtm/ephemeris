@@ -1768,6 +1768,25 @@ with TestClient(app) as c:
           and _d5_leg_meta["version"].endswith(":legacy-display")
           and _d5_leg_file.status_code == 200)
     bschema.write_manifest(_at_dir / "lesson.json", _at_raw)  # restore
+    # round 3: a page "vanishing" between is_file() and the size pre-check
+    # (stat raising) must fall through to the descriptor-bound hash open —
+    # never a 500 out of the metadata poll
+    from unittest import mock as _d5_mock
+    _van_real_stat = Path.stat
+    _van_state = {"n": 0}
+
+    def _van_stat(self, **kw):
+        if str(self).endswith(f"{_at['slug']}/index.html"):
+            _van_state["n"] += 1
+            if _van_state["n"] == 2:  # the pre-check call, after is_file()
+                raise FileNotFoundError(2, "raced away")
+        return _van_real_stat(self, **kw)
+
+    with _d5_mock.patch.object(Path, "stat", _van_stat):
+        _van_info = lessons_svc.lesson_file_info(_at, "index.html")
+    check("stat race in the size pre-check falls through, never a 500",
+          _van_state["n"] >= 2 and _van_info["exists"] is True
+          and _van_info["bridge_page"] is not None)
     # the digest cache evicts one entry when full, never the whole set
     check("page digest cache evicts oldest, not clear-all",
           "_PAGE_DIGEST_CACHE.clear()" not in

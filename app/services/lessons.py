@@ -452,7 +452,14 @@ def _file_info(
     digest = None
     if exists and bridge_identity and read.bridge_eligible and lesson.get("uid"):
         page_id = next((p["id"] for p in read.pages if p["path"] == entry), None)
-        if page_id and path.stat().st_size > PAGE_IDENTITY_MAX_BYTES:
+        try:
+            # size pre-check only; a page vanishing between is_file() and
+            # here (PR-60 round 3) falls through to the hash path, whose
+            # descriptor-bound open reports it missing instead of a 500
+            pre_stat = path.stat() if page_id else None
+        except OSError:
+            pre_stat = None
+        if pre_stat is not None and pre_stat.st_size > PAGE_IDENTITY_MAX_BYTES:
             # Supported-size bound (D5): the page renders (streaming route)
             # but carries no bridge identity — no page_rev exists for it, so
             # no attempt can bind to it. Visible, never silent.
@@ -464,7 +471,7 @@ def _file_info(
             })
             if outcome == bundle_schema.OK:
                 outcome = bundle_schema.DEGRADED
-            stat = path.stat()
+            stat = pre_stat
         else:
             hashed = _hash_regular_no_follow(path) if page_id else None
             if hashed is None:
