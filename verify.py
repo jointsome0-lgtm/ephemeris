@@ -4126,6 +4126,32 @@ with TestClient(app) as c:
         _plain_lesson_refused = True
     check("E3 explicit plain cannot bypass the sandboxed lesson boundary",
           _plain_lesson_refused)
+    _selector_refusals = 0
+    for _lesson_arg, _role_arg in (
+        (None, "lesson-learner"),
+        (_lt["slug"], "unknown"),
+    ):
+        try:
+            _terminal._select_create_role(_lesson_arg, _role_arg)
+        except _terminal._SessionRequestError:
+            _selector_refusals += 1
+    _sid_role_ws = _E2Sock({
+        "sid": "invented-stale-sid",
+        "lesson": _lt["slug"],
+        "role": "lesson-learner",
+    })
+    with _sandbox_mock.patch.object(_terminal, "_ws_is_trusted", return_value=True), \
+            _sandbox_mock.patch.object(_terminal, "_reap_idle"), \
+            _sandbox_mock.patch.object(_terminal, "_ensure_reaper"), \
+            _sandbox_mock.patch.object(
+                _terminal, "_create_session",
+                new=_sandbox_mock.AsyncMock()) as _sid_role_create:
+        _asyncio.run(_terminal._serve_ws(_sid_role_ws))
+    check("E3 selector validation refuses no-lesson, unknown, and sid attach",
+          _selector_refusals == 2
+          and _sid_role_create.call_count == 0
+          and _sid_role_ws.accepted and _sid_role_ws.closed
+          and b"invalid session request" in b"".join(_sid_role_ws.sent_bytes))
     with _sandbox_mock.patch.dict(os.environ, {
         "SSH_AUTH_SOCK": "/run/user/1000/agent.sock",
         "XDG_RUNTIME_DIR": "/run/user/1000",
@@ -4138,38 +4164,49 @@ with TestClient(app) as c:
           and "SSH_AUTH_SOCK" not in _learner_socket_env
           and "XDG_RUNTIME_DIR" not in _learner_socket_env)
 
-    _e3_probe_run = subprocess.run(
-        [sys.executable, "scripts/verify_e3_sessions.py"],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-    )
     try:
-        _e3_probe = json.loads(_e3_probe_run.stdout)
-    except (TypeError, ValueError):
-        _e3_probe = {}
-    _e3_extra = _e3_probe_run.stderr.strip() or _e3_probe_run.stdout.strip()
-    check("E3 wire format is ?role= with all three required refusals",
-          _e3_probe_run.returncode == 0
-          and _e3_probe.get("wire_param") == "role"
-          and _e3_probe.get("selector_without_lesson_refused") is True
-          and _e3_probe.get("unknown_role_refused") is True
-          and _e3_probe.get("selector_with_sid_refused") is True,
-          _e3_extra)
-    check("E3 concurrent WS sessions echo agent and learner roles",
-          _e3_probe.get("agent_role_echoed") is True
-          and _e3_probe.get("learner_role_echoed") is True
-          and _e3_probe.get("both_shells_live") is True
-          and _e3_probe.get("stale_learner_sid_refused") is True,
-          _e3_extra)
-    check("E3 learner spawn leaves AGENTS.md and CLAUDE.md untouched",
-          _e3_probe.get("briefs_unchanged") is True, _e3_extra)
-    check("E3 profile integration gives agent network and learner no network/proxy",
-          _e3_probe.get("agent_network") is True
-          and _e3_probe.get("learner_no_network") is True
-          and _e3_probe.get("learner_no_proxy_env") is True
-          and _e3_probe.get("learner_no_socket_env") is True,
-          _e3_extra)
+        _sandbox.require_sandbox_runtime()
+        _e3_host_runtime = True
+        _e3_runtime_detail = ""
+    except _sandbox.SandboxError as exc:
+        _e3_host_runtime = False
+        _e3_runtime_detail = str(exc)
+    if _e3_host_runtime:
+        _e3_probe_run = subprocess.run(
+            [sys.executable, "scripts/verify_e3_sessions.py"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+        )
+        try:
+            _e3_probe = json.loads(_e3_probe_run.stdout)
+        except (TypeError, ValueError):
+            _e3_probe = {}
+        _e3_extra = _e3_probe_run.stderr.strip() or _e3_probe_run.stdout.strip()
+        check("E3 host probe: ?role= wire has all three required refusals",
+              _e3_probe_run.returncode == 0
+              and _e3_probe.get("wire_param") == "role"
+              and _e3_probe.get("selector_without_lesson_refused") is True
+              and _e3_probe.get("unknown_role_refused") is True
+              and _e3_probe.get("selector_with_sid_refused") is True,
+              _e3_extra)
+        check("E3 host probe: concurrent WS sessions echo both roles",
+              _e3_probe.get("agent_role_echoed") is True
+              and _e3_probe.get("learner_role_echoed") is True
+              and _e3_probe.get("both_shells_live") is True
+              and _e3_probe.get("stale_learner_sid_refused") is True,
+              _e3_extra)
+        check("E3 host probe: learner leaves both briefs untouched",
+              _e3_probe.get("briefs_unchanged") is True, _e3_extra)
+        check("E3 host probe: agent network; learner no network/proxy/socket env",
+              _e3_probe.get("agent_network") is True
+              and _e3_probe.get("learner_no_network") is True
+              and _e3_probe.get("learner_no_proxy_env") is True
+              and _e3_probe.get("learner_no_socket_env") is True,
+              _e3_extra)
+    else:
+        check("E3 host probe skipped when sandbox runtime is unavailable",
+              True, _e3_runtime_detail)
 
     # --- Retro capture (docs/retro-spec.md, issue #49) ----------------------
     # The period grammar mirrors exp2res services/time_input.py; the journaled

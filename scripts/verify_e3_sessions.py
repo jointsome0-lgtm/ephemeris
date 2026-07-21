@@ -105,8 +105,8 @@ async def _run_sessions(port: int, slug: str, bundle: Path) -> dict[str, bool | 
         await agent.send((
             ("/usr/bin/python3 -c \"import socket; s=socket.socket(); "
              "s.settimeout(2); r=s.connect_ex(('127.0.0.1', %d)); s.close(); "
-             "print('__E3_AGENT_NET_OK__' if r == 0 else '__E3_AGENT_NET_BLOCKED__')\"; "
-             "printf '__E3_AGENT_LIVE__\\n'\n") % port
+             "print('__E3_' + ('AGENT_NET_OK' if r == 0 else 'AGENT_NET_BLOCKED') + '__')\"; "
+             "printf '__E3_%%s__\\n' 'AGENT_LIVE'\n") % port
         ).encode())
         agent_output = await _output_until(agent, "__E3_AGENT_LIVE__")
 
@@ -128,17 +128,17 @@ async def _run_sessions(port: int, slug: str, bundle: Path) -> dict[str, bool | 
                 ("/usr/bin/python3 -c \"import os,socket; "
                  "p=%s; s=socket.socket(); s.settimeout(2); "
                  "r=s.connect_ex(('127.0.0.1', %d)); s.close(); "
-                 "print('__E3_LEARNER_NET_BLOCKED__' if r != 0 else '__E3_LEARNER_NET_OPEN__'); "
-                 "print('__E3_LEARNER_PROXY_NONE__' if not any(k in os.environ for k in p) "
-                 "else '__E3_LEARNER_PROXY_PRESENT__'); "
-                 "q=%s; print('__E3_LEARNER_SOCKET_ENV_NONE__' "
+                 "print('__E3_' + ('LEARNER_NET_BLOCKED' if r != 0 else 'LEARNER_NET_OPEN') + '__'); "
+                 "print('__E3_' + ('LEARNER_PROXY_NONE' if not any(k in os.environ for k in p) "
+                 "else 'LEARNER_PROXY_PRESENT') + '__'); "
+                 "q=%s; print('__E3_' + ('LEARNER_SOCKET_ENV_NONE' "
                  "if not any(k in os.environ for k in q) "
-                 "else '__E3_LEARNER_SOCKET_ENV_PRESENT__')\"; "
-                 "printf '__E3_LEARNER_LIVE__\\n'\n") % (proxy_expr, port, socket_expr)
+                 "else 'LEARNER_SOCKET_ENV_PRESENT') + '__')\"; "
+                 "printf '__E3_%%s__\\n' 'LEARNER_LIVE'\n") % (proxy_expr, port, socket_expr)
             ).encode())
             learner_output = await _output_until(learner, "__E3_LEARNER_LIVE__")
 
-            await agent.send(b"printf '__E3_AGENT_STILL_LIVE__\\n'\n")
+            await agent.send(b"printf '__E3_%s__\\n' 'AGENT_STILL_LIVE'\n")
             agent_after = await _output_until(agent, "__E3_AGENT_STILL_LIVE__")
 
             await learner.send(json.dumps({"type": "kill"}))
