@@ -71,7 +71,10 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   probe stages the real deleted-file race against os.lstat.
   c357bc5 (PR-bot round 7): digest-cache eviction is race-
   tolerant (pop with default + iteration guard) — concurrent cache
-  misses can no longer 500 a poll or page serve.
+  misses can no longer 500 a poll or page serve. PR #60 bot 👍 APPROVED
+  head 68b9686 2026-07-21T09:38:57Z; LANDED 2026-07-21 via merge commit
+  4a1d95f — the landed tree is byte-identical to the approved branch
+  head's tree (both trees 5cd5c80).
 
 ## Done
 
