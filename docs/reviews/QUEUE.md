@@ -19,13 +19,27 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-22 — commits after `be2e6e5` on
+_None._
+
+## Done
+
+- [x] 2026-07-22 — `d5f628f`, `0258dc3` on
   `fix/35-pedagogy-template-e` — `app/services/lessons.py`, `verify.py`,
   `docs/reviews/QUEUE.md` — issue #35 pedagogy template E replaces the
   generated lesson brief with the PEDAGOGY.md §4 draft and updates verifier
-  anchors for the new brief sections.
-
-## Done
+  anchors for the new brief sections. `7897148` (drain cycle 1) bounds each
+  tutor session's projection read to the newest 2 MiB of complete records,
+  treats absent projected rows and page visits as unknown, and requires short
+  learner quotations to remain HTML-escaped text; verify 642,
+  verify_restore 28. Drained 2026-07-22 →
+  `2026-07-22-pedagogy-template-e-review.md`: two Low findings and one Info
+  finding, all resolved in cycle 1; no Critical, High, Medium, Low, Info, or
+  open finding remains. Earlier brief/writer/bridge/terminal/workspace/sandbox/
+  bundle protections remain resolved; D5 L1 remains mitigated, D5 L2/L3 remain
+  resolved, and D4 A1/A2 remain accepted Low follow-ups; runner remains later
+  scope. Final verdict: SAFE TO MAKE LIVE for the documented direct-loopback
+  single-worker deployment; wider, proxy-adjacent, multi-user, or runner
+  deployment NO. Live restart is owner-only and was not performed.
 
 - [x] 2026-07-21 — `9c85795`, `f7d3b4c`, `862d3b3` on
   `fix/42-e4-terminal-surfaces`; LANDED via merge commit `d355af1`, whose tree
