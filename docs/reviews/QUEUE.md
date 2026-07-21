@@ -19,7 +19,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-21 — 3931339, 4a019be — the entry stays current with the branch: any
+- [ ] 2026-07-21 — 3931339, 4a019be, 165481c — the entry stays current with the branch: any
   further branch commit, and the merge commit itself once the PR lands, is
   appended here before any drain or restart —
   `app/static/src/learn-bridge.ts` (+ emitted `app/static/learn-bridge.js`),
@@ -51,6 +51,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   between validation and the HTTP call so a completing self-navigation
   tears down the port before the write leaves (stalled-load residual
   documented in ABI §3.1). verify 594.
+  165481c (PR-bot round 2): the file route computes the identical
+  mtime:profile[:digest16] token for every declared v2 page (legacy
+  profiles included) and enforces the `?v` comparison on that surface
+  even when no snapshot could be taken — the streaming fallback never
+  serves bytes the requested token does not describe. verify 596.
 
 ## Done
 
