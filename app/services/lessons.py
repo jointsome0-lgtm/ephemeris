@@ -877,8 +877,10 @@ a caveat.
 ## The learner's record — read it first, teach from it
 
 `attempts.jsonl` and the files under the artifact roots are the learner's
-actual trace, and recorded Check answers land there reliably. This is
-what turns you from a page generator into a tutor:
+actual trace. The file is a best-effort projection: it may lag behind or
+miss a recorded answer, so treat it as evidence when present, never as
+proof of absence. This is what turns you from a page generator into a
+tutor:
 
 - First move of every session: read `attempts.jsonl` in full and skim
   the learner's files under every artifact root. Compare against the
@@ -911,8 +913,9 @@ Read the page back as the learner. If it can be read top-to-bottom with
 nothing to predict, run, answer, or manipulate — redo it: that is a
 document, not a lesson. Then check: no pasted source blocks; every section
 carries its own visualization; reveals are collapsed; every link and fact
-is one you verified; every prediction a learner should commit to is
-declared in `questions[]` and wired to Check; every experiment ran
+is one you verified; on a v2 bundle, every prediction a learner should
+commit to is declared in `questions[]` and wired to Check (a v1 manifest
+never gains v2-only fields — keep its predictions inline); every experiment ran
 offline from this bundle before you shipped it.
 
 ## Lesson metadata and data boundary
