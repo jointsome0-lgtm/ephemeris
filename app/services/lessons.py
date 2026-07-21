@@ -1077,34 +1077,60 @@ def _write_brief(path: Path, text: str) -> None:
         raise
 
 
-def prepare_terminal_workspace(slug: str | None) -> dict | None:
-    """Resolve a Learn slug to its bundle dir for a lesson-scoped terminal
-    (app/terminal.py), (re)generating the agent-facing briefs there: AGENTS.md
-    plus a CLAUDE.md shim that just @-includes it (Claude Code reads CLAUDE.md,
-    Codex et al. read AGENTS.md).
-
-    Runs in a worker thread off the websocket accept path, so it opens its own
-    short-lived DB connection. Total by design — returns None (meaning "REFUSE
-    the lesson-scoped request"; the caller must not open a shell elsewhere
-    instead) for an unknown/invalid slug, a symlink-redirected bundle dir, and
-    any DB/filesystem error. A plain terminal never calls this function. Briefs
-    are written to same-directory temporary files and atomically replace their
-    destination entries, so a pre-planted link or special file at a brief path
-    is replaced, not opened."""
+def _resolve_terminal_lesson(
+    slug: str | None,
+) -> tuple[str, dict, Path] | None:
+    """Resolve the DB row and safety-checked bundle path shared by PTY roles."""
     slug = (slug or "").strip()
     if len(slug) > 80 or not _SLUG_RE.match(slug):
         return None
+    conn = get_conn()
     try:
-        conn = get_conn()
-        try:
-            lesson = get_lesson_by_slug(conn, slug)
-        finally:
-            conn.close()
-        if lesson is None:
+        lesson = get_lesson_by_slug(conn, slug)
+    finally:
+        conn.close()
+    if lesson is None:
+        return None
+    lesson_dir = _lesson_dir(slug)
+    if not _bundle_dir_is_safe(lesson_dir):
+        return None
+    return slug, lesson, lesson_dir
+
+
+def resolve_terminal_workspace(slug: str | None) -> dict | None:
+    """Resolve an existing lesson bundle for a no-regeneration PTY role.
+
+    This is the learner counterpart to :func:`prepare_terminal_workspace`.
+    It shares the same slug, database, and bundle-directory safety checks but
+    deliberately performs no manifest or brief writes. A missing bundle is a
+    refusal rather than a request to create files on the learner path.
+    """
+    try:
+        resolved = _resolve_terminal_lesson(slug)
+        if resolved is None:
             return None
-        lesson_dir = _lesson_dir(slug)
-        if not _bundle_dir_is_safe(lesson_dir):  # before any write into it
+        slug, lesson, lesson_dir = resolved
+        if not lesson_dir.exists():
             return None
+    except (OSError, sqlite3.Error, LessonError):
+        return None
+    return {"slug": slug, "title": lesson["title"], "dir": str(lesson_dir)}
+
+
+def prepare_terminal_workspace(slug: str | None) -> dict | None:
+    """Resolve a Learn slug and regenerate its agent-facing terminal briefs.
+
+    Runs in a worker thread off the websocket accept path. Total by design —
+    returns None (meaning "REFUSE") for an unknown/invalid slug, a
+    symlink-redirected bundle dir, or any DB/filesystem error. Resolution and
+    bundle safety are shared with the learner's no-regeneration entry point.
+    Briefs are atomically replaced without following destination links.
+    """
+    try:
+        resolved = _resolve_terminal_lesson(slug)
+        if resolved is None:
+            return None
+        slug, lesson, lesson_dir = resolved
         _ensure_bundle_manifest(lesson)
         _write_brief(lesson_dir / AGENTS_FILENAME, _AGENTS_TEMPLATE)
         _write_brief(lesson_dir / CLAUDE_FILENAME, _CLAUDE_TEMPLATE)

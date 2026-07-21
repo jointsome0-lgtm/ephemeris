@@ -19,7 +19,14 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
+- [ ] 2026-07-21 — `d6e3563..HEAD` on `fix/36-e3-learner-role` —
+  `app/terminal.py`, `app/services/lessons.py`,
+  `scripts/verify_e3_sessions.py`, `verify.py` — phase E session E3 adds the
+  closed server role enum and the optional `role` create selector, routes
+  `lesson-learner` sessions through the no-network learner sandbox in the
+  validated lesson bundle without regenerating briefs, refuses invalid
+  selector combinations, and verifies concurrent lesson-agent and learner
+  WebSocket sessions against a throwaway loopback server.
 
 ## Done
 

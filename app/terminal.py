@@ -41,7 +41,11 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 
 from .sandbox import SandboxError, SandboxProfile, spawn_sandboxed
-from .services.lessons import LESSONS_DIR, prepare_terminal_workspace
+from .services.lessons import (
+    LESSONS_DIR,
+    prepare_terminal_workspace,
+    resolve_terminal_workspace,
+)
 
 # Repo root: a sensible cwd so agents/commands run against the project by default.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -67,7 +71,14 @@ class _LessonSandboxError(Exception):
     """
 
 
+class _SessionRequestError(Exception):
+    """A create/attach query violates the server-owned role contract."""
+
+
 TerminalRole = Literal["plain", "lesson-agent", "lesson-learner"]
+_TERMINAL_ROLES: tuple[TerminalRole, ...] = (
+    "plain", "lesson-agent", "lesson-learner",
+)
 _HOST_NETWORK_ROLES = frozenset(("plain", "lesson-agent"))
 
 
@@ -304,7 +315,7 @@ class _TermSession:
         sandbox_profile: SandboxProfile | None,
     ) -> None:
         expected_profile = None if role == "plain" else role
-        if role not in ("plain", "lesson-agent", "lesson-learner"):
+        if role not in _TERMINAL_ROLES:
             raise ValueError(f"unknown terminal role: {role}")
         if sandbox_profile != expected_profile:
             raise ValueError("terminal role and sandbox profile disagree")
@@ -511,12 +522,35 @@ def _ensure_reaper() -> None:
         _REAPER_TASK = asyncio.create_task(_reaper_loop())
 
 
-async def _create_session(lesson: str | None = None) -> "_TermSession | None":
+def _select_create_role(
+    lesson: str | None,
+    role_selector: str | None,
+) -> TerminalRole:
+    """Apply the closed role enum without weakening E2's lesson boundary."""
+    if role_selector is None:
+        return "lesson-agent" if lesson is not None else "plain"
+    if lesson is None:
+        raise _SessionRequestError("a role selector requires a lesson")
+    if role_selector not in _TERMINAL_ROLES:
+        raise _SessionRequestError("unknown terminal role")
+    if role_selector == "plain":
+        # E2 forbids client-selected unsandboxed lesson shells. ``plain`` remains
+        # part of the closed session-role enum but is selected only by omitting
+        # both role and lesson, preserving the existing owner-shell request.
+        raise _SessionRequestError("plain cannot be lesson-scoped")
+    return role_selector
+
+
+async def _create_session(
+    lesson: str | None = None,
+    role_selector: str | None = None,
+) -> "_TermSession | None":
     """Spawn a fresh shell on a PTY and register it. Returns None at capacity or on a
     spawn failure. `lesson` is None for a plain shell; any provided value — even an
     empty or junk one — makes this a lesson-scoped request that must resolve to the
-    lesson's bundle dir (with a regenerated AGENTS.md brief) or raise
-    _LessonWorkspaceError: a lesson request never falls back to the repo root.
+    lesson's bundle dir or raise _LessonWorkspaceError. ``role_selector`` is the
+    optional ``role`` WS query value. Agent sessions regenerate their briefs;
+    learner sessions validate and reuse the bundle without writing them.
     Serialized via _CREATE_LOCK so the capacity check is atomic."""
     async with _CREATE_LOCK:
         if len(_SESSIONS) >= _MAX_SESSIONS:
@@ -524,21 +558,18 @@ async def _create_session(lesson: str | None = None) -> "_TermSession | None":
             if len(_SESSIONS) >= _MAX_SESSIONS:
                 return None
 
-        # Lesson-scoped shell (Learn tab): resolve the slug to its bundle dir and
-        # refresh the agent brief there, BEFORE any spawn work — a refusal must not
-        # cost a PTY. prepare_terminal_workspace is total (never raises; None means
-        # "could not prepare") and its DB + file I/O runs in a worker thread.
-        role: TerminalRole = "lesson-agent" if lesson is not None else "plain"
+        role = _select_create_role(lesson, role_selector)
         workspace = None
-        if lesson is not None:  # param present at all = lesson-scoped; "" must refuse too
+        if role == "lesson-agent":
             workspace = await asyncio.to_thread(prepare_terminal_workspace, lesson)
+        elif role == "lesson-learner":
+            workspace = await asyncio.to_thread(resolve_terminal_workspace, lesson)
+        if role != "plain":
             if workspace is None:
                 raise _LessonWorkspaceError(lesson)
 
         workspace_dir = workspace["dir"] if workspace is not None else str(_REPO_ROOT)
-        sandbox_profile: SandboxProfile | None = (
-            "lesson-agent" if role == "lesson-agent" else None
-        )
+        sandbox_profile: SandboxProfile | None = None if role == "plain" else role
 
         shell = os.environ.get("SHELL") or "/bin/bash"
         env = _child_env()
@@ -602,9 +633,13 @@ async def _create_session(lesson: str | None = None) -> "_TermSession | None":
             )
         if workspace is not None:  # informational banner, replayed with the scrollback
             where = "".join(c for c in workspace["dir"] if c.isprintable())  # defang control bytes
+            detail = (
+                "AGENTS.md refreshed" if role == "lesson-agent"
+                else "briefs left unchanged"
+            )
             sess.remember(
-                (f"\x1b[2m· lesson-agent sandbox — cwd {where}; "
-                 f"AGENTS.md refreshed.\x1b[0m\r\n").encode()
+                (f"\x1b[2m· {role} sandbox — cwd {where}; "
+                 f"{detail}.\x1b[0m\r\n").encode()
             )
         sess.start()
         return sess
@@ -700,6 +735,18 @@ async def _serve_ws(ws: WebSocket) -> None:
     _reap_idle()
     _ensure_reaper()
 
+    sid_present = "sid" in ws.query_params
+    role_present = "role" in ws.query_params
+    if sid_present and role_present:
+        try:
+            await ws.send_bytes(
+                b"\r\n\x1b[31m[terminal: invalid session request]\x1b[0m\r\n"
+            )
+        except (RuntimeError, WebSocketDisconnect):
+            pass
+        await ws.close()
+        return
+
     sid = ws.query_params.get("sid")
     sess = _SESSIONS.get(sid) if sid else None
     if sess is not None and sess.closed:
@@ -708,7 +755,18 @@ async def _serve_ws(ws: WebSocket) -> None:
         # Query parameters select role/workspace only while creating a session.
         # A live SID wins wholesale: attach cannot change its role, cwd, or profile.
         try:
-            sess = await _create_session(ws.query_params.get("lesson"))
+            lesson = ws.query_params.get("lesson")
+            role_selector = ws.query_params.get("role") if role_present else None
+            sess = await _create_session(lesson, role_selector)
+        except _SessionRequestError:
+            try:
+                await ws.send_bytes(
+                    b"\r\n\x1b[31m[terminal: invalid session request]\x1b[0m\r\n"
+                )
+            except (RuntimeError, WebSocketDisconnect):
+                pass
+            await ws.close()
+            return
         except _LessonWorkspaceError:
             # Fail closed with a visible reason — never a shell somewhere else.
             try:
@@ -721,8 +779,8 @@ async def _serve_ws(ws: WebSocket) -> None:
             await ws.close()
             return
         except _LessonSandboxError:
-            # The E1 launcher is mandatory for lesson-agent: never retry the shell
-            # directly when its runtime probe or bwrap spawn fails.
+            # The E1 launcher is mandatory for both sandboxed lesson roles: never
+            # retry the shell directly when its runtime probe or bwrap spawn fails.
             try:
                 await ws.send_bytes(
                     b"\r\n\x1b[31m[terminal: lesson sandbox unavailable - "

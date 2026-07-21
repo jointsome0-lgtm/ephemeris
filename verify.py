@@ -356,12 +356,20 @@ with TestClient(app) as c:
           lessons_svc.prepare_terminal_workspace("../evil") is None
           and lessons_svc.prepare_terminal_workspace("no-such-lesson-slug") is None
           and lessons_svc.prepare_terminal_workspace(None) is None)
+    _brief_paths = [Path(ws_info["dir"]) / name for name in ("AGENTS.md", "CLAUDE.md")]
+    _brief_before = [(path.stat().st_mtime_ns, path.read_bytes()) for path in _brief_paths]
+    _learner_ws = lessons_svc.resolve_terminal_workspace(_lt["slug"])
+    _brief_after = [(path.stat().st_mtime_ns, path.read_bytes()) for path in _brief_paths]
+    check("resolve_terminal_workspace validates the bundle without rewriting briefs",
+          _learner_ws == ws_info and _brief_before == _brief_after
+          and lessons_svc.resolve_terminal_workspace("../evil") is None
+          and lessons_svc.resolve_terminal_workspace("no-such-lesson-slug") is None)
     term_py = (ROOT / "app" / "terminal.py").read_text(encoding="utf-8")
     check("terminal.py routes lesson sessions through the lesson-agent sandbox",
           "prepare_terminal_workspace" in term_py
           and 'ws.query_params.get("lesson")' in term_py
           and 'await spawn_sandboxed(' in term_py
-          and '"lesson-agent" if lesson is not None else "plain"' in term_py)
+          and 'return "lesson-agent" if lesson is not None else "plain"' in term_py)
     check("terminal.js opens/reuses a lesson tab and passes the slug on create",
           "function openLessonTab" in terminal_js
           and "'lesson=' + encodeURIComponent(tab.lesson)" in terminal_js
@@ -4037,7 +4045,6 @@ with TestClient(app) as c:
         attach_ws = _E2Sock({
             "sid": attach_sess.sid,
             "lesson": "conflicting-lesson",
-            "role": "plain",
         })
         immutable = True
         for attr, value in (
@@ -4104,6 +4111,52 @@ with TestClient(app) as c:
           and _proxy_agent.get("HTTPS_PROXY") == "http://127.0.0.1:19091"
           and _proxy_learner == {}
           and _proxy_off == ({}, {}))
+
+    # --- E3: closed role selector + concurrent agent/learner integration -----
+    check("E3 role enum is closed and absent selector preserves E2 semantics",
+          _terminal._TERMINAL_ROLES == (
+              "plain", "lesson-agent", "lesson-learner",
+          )
+          and _terminal._select_create_role(None, None) == "plain"
+          and _terminal._select_create_role(_lt["slug"], None) == "lesson-agent")
+    _plain_lesson_refused = False
+    try:
+        _terminal._select_create_role(_lt["slug"], "plain")
+    except _terminal._SessionRequestError:
+        _plain_lesson_refused = True
+    check("E3 explicit plain cannot bypass the sandboxed lesson boundary",
+          _plain_lesson_refused)
+
+    _e3_probe_run = subprocess.run(
+        [sys.executable, "scripts/verify_e3_sessions.py"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+    try:
+        _e3_probe = json.loads(_e3_probe_run.stdout)
+    except (TypeError, ValueError):
+        _e3_probe = {}
+    _e3_extra = _e3_probe_run.stderr.strip() or _e3_probe_run.stdout.strip()
+    check("E3 wire format is ?role= with all three required refusals",
+          _e3_probe_run.returncode == 0
+          and _e3_probe.get("wire_param") == "role"
+          and _e3_probe.get("selector_without_lesson_refused") is True
+          and _e3_probe.get("unknown_role_refused") is True
+          and _e3_probe.get("selector_with_sid_refused") is True,
+          _e3_extra)
+    check("E3 concurrent WS sessions echo agent and learner roles",
+          _e3_probe.get("agent_role_echoed") is True
+          and _e3_probe.get("learner_role_echoed") is True
+          and _e3_probe.get("both_shells_live") is True,
+          _e3_extra)
+    check("E3 learner spawn leaves AGENTS.md and CLAUDE.md untouched",
+          _e3_probe.get("briefs_unchanged") is True, _e3_extra)
+    check("E3 profile integration gives agent network and learner no network/proxy",
+          _e3_probe.get("agent_network") is True
+          and _e3_probe.get("learner_no_network") is True
+          and _e3_probe.get("learner_no_proxy_env") is True,
+          _e3_extra)
 
     # --- Retro capture (docs/retro-spec.md, issue #49) ----------------------
     # The period grammar mirrors exp2res services/time_input.py; the journaled
