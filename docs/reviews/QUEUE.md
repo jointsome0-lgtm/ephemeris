@@ -19,6 +19,14 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
+- [ ] 2026-07-21 — `9c85795` through branch `HEAD` on
+  `fix/42-e4-terminal-surfaces` — the entry stays current with every E4 branch
+  commit until the final concrete head is recorded — `app/static/src/terminal.ts`, emitted
+  `app/static/terminal.js`, `.gitattributes` — phase E session E4 commit 1
+  mechanically converts the existing terminal client to strict TypeScript,
+  marks the committed emitted JavaScript as generated, and retains the
+  existing client behavior and served path.
+
 ## Done
 
 - [x] 2026-07-21 — `d6e3563..1a4f640` on `fix/36-e3-learner-role` —
