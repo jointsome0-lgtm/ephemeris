@@ -19,7 +19,30 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-(none)
+- [ ] 2026-07-21 — 3931339 — the entry stays current with the branch: any
+  further branch commit, and the merge commit itself once the PR lands, is
+  appended here before any drain or restart —
+  `app/static/src/learn-bridge.ts` (+ emitted `app/static/learn-bridge.js`),
+  `app/services/lessons.py`, `app/main.py`, `app/templates/learn.html`,
+  `docs/lesson-bridge-abi.md`, `docs/lesson-attempts-api.md`, `verify.py` —
+  issue #36 session D5: the bridge parent runtime now negotiates the
+  `attempts` capability and implements the port `attempt` operation
+  calling the D4 endpoint. The child supplies question_id/answer/
+  request_id; the parent derives page identity from its armed binding,
+  re-fetches preview metadata per operation and compares version, bridge
+  identity, and the per-page declared-question list before the HTTP call;
+  idempotency_key is the child's request_id; results and refusals are
+  answered on the port (refusals reuse endpoint codes and do not count
+  toward the protocol-error budget); a recorded attempt raises the app
+  toast. preview-meta's `bridge_page` gains a `questions` array. Declared
+  v2 pages are served from a one-descriptor snapshot (bytes, digest, and
+  stat from the same open) with a content-bound version header; a new
+  `PAGE_IDENTITY_MAX_BYTES` bound (4 MiB) excludes oversized pages from
+  bridge identity with a visible finding while display falls back to the
+  streaming response; the page digest cache evicts one entry when full
+  instead of clearing. learn.html passes `data-attempts-url` to the
+  runtime. The lesson-brief bridge bullet now states the frozen attempt
+  call. ABI doc gains §3.1. verify.py adds a D5 section (592).
 
 ## Done
 
