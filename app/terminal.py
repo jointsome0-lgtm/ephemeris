@@ -40,6 +40,7 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 
+from .db import DB_PATH
 from .sandbox import SandboxError, SandboxProfile, spawn_sandboxed
 from .services.lessons import (
     LESSONS_DIR,
@@ -598,6 +599,10 @@ async def _create_session(
                     [shell, "-i"],
                     bundle_root=str(LESSONS_DIR),
                     private_root=str(LESSONS_DIR.parent),
+                    private_masks=(
+                        (str(DB_PATH.absolute().parent),)
+                        if role == "lesson-learner" else ()
+                    ),
                     stdin=slave_fd,
                     stdout=slave_fd,
                     stderr=slave_fd,

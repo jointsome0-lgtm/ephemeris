@@ -178,6 +178,8 @@ def main() -> int:
         temp_path = Path(temp)
         data_dir = temp_path / "data"
         env = os.environ.copy()
+        env.pop("ACTIVITY_DB", None)
+        os.environ.pop("ACTIVITY_DB", None)
         env.update({
             "ACTIVITY_DATA_DIR": str(data_dir),
             "EPHEMERIS_ENABLE_TERMINAL": "1",

@@ -3961,6 +3961,7 @@ with TestClient(app) as c:
             and spawn_args.kwargs["bundle_root"] == str(lessons_svc.LESSONS_DIR)
             and spawn_args.kwargs["private_root"]
                 == str(lessons_svc.LESSONS_DIR.parent)
+            and spawn_args.kwargs["private_masks"] == ()
             and spawn_args.kwargs["preexec_fn"] is _terminal._child_setup
             and spawn_args.kwargs["env"]["HTTP_PROXY"]
                 == "http://127.0.0.1:10809"
@@ -4179,12 +4180,68 @@ with TestClient(app) as c:
         if value == "--tmpfs"
     ]
     check("E3 learner masks runtime sockets and external private instance root",
-          _sandbox.RUNTIME_USERS_DIR in _external_tmpfs
+          _sandbox.RUNTIME_DIR in _external_tmpfs
           and _external_private in _external_tmpfs
           and _external_learner_argv.index(_external_private)
               < _external_learner_argv.index("--bind")
           and _sb_mounts(_external_learner_argv, "--bind")
               == [(_external_bundle, _external_bundle)])
+    _nested_private = "/home/aina/go/invented-ephemeris-private"
+    _nested_lessons = f"{_nested_private}/lessons"
+    _nested_bundle = f"{_nested_lessons}/invented-bundle"
+    _db_override_root = "/opt/invented-ephemeris-db"
+    _nested_learner_argv = _sandbox.build_sandbox_argv(
+        "lesson-learner", _nested_bundle,
+        bundle_root=_nested_lessons,
+        private_root=_nested_private,
+        private_masks=(_db_override_root,),
+    )
+    _nested_tmpfs = [
+        _nested_learner_argv[i + 1]
+        for i, value in enumerate(_nested_learner_argv)
+        if value == "--tmpfs"
+    ]
+    check("E3 learner re-masks cache-nested data and an external DB override",
+          _nested_private in _nested_tmpfs
+          and _db_override_root in _nested_tmpfs
+          and _nested_learner_argv.index("/home/aina/go")
+              < _nested_learner_argv.index(_nested_private)
+          and _nested_learner_argv.index(_db_override_root)
+              < _nested_learner_argv.index("--bind"))
+
+    async def _e3_learner_plumbing():
+        workspace = {"dir": ws_info["dir"], "slug": _lt["slug"], "title": "demo"}
+        proc = _types.SimpleNamespace(returncode=0)
+        with _sandbox_mock.patch.object(
+                _terminal, "resolve_terminal_workspace", return_value=workspace) as resolve, \
+                _sandbox_mock.patch.object(
+                    _terminal, "prepare_terminal_workspace") as prepare, \
+                _sandbox_mock.patch.object(
+                    _terminal, "_detect_proxy_env", return_value={}) as proxy, \
+                _sandbox_mock.patch.object(
+                    _terminal, "spawn_sandboxed",
+                    new=_sandbox_mock.AsyncMock(return_value=proc)) as spawn, \
+                _sandbox_mock.patch.object(_terminal._TermSession, "start"):
+            session = await _terminal._create_session(
+                _lt["slug"], "lesson-learner")
+        call = spawn.call_args
+        result = (
+            resolve.call_count == 1 and prepare.call_count == 0
+            and proxy.call_args.args == ("lesson-learner",)
+            and call.args[:2] == ("lesson-learner", workspace["dir"])
+            and call.kwargs["private_root"] == str(lessons_svc.LESSONS_DIR.parent)
+            and call.kwargs["private_masks"]
+                == (str(_terminal.DB_PATH.absolute().parent),)
+            and not any(name in call.kwargs["env"] for name in (
+                *_terminal._PROXY_ENV_VARS, "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR",
+            ))
+        )
+        _terminal._SESSIONS.pop(session.sid, None)
+        os.close(session.master_fd)
+        return result
+
+    check("E3 learner spawn plumbs only its private masks and no socket/proxy env",
+          _asyncio.run(_e3_learner_plumbing()))
 
     try:
         _sandbox.require_sandbox_runtime()
@@ -4194,9 +4251,16 @@ with TestClient(app) as c:
         _e3_host_runtime = False
         _e3_runtime_detail = str(exc)
     if _e3_host_runtime:
+        _e3_override_sentinel = (
+            Path(os.environ["ACTIVITY_DATA_DIR"])
+            / "invented-e3-inherited-override.sqlite"
+        )
+        _e3_probe_env = os.environ.copy()
+        _e3_probe_env["ACTIVITY_DB"] = str(_e3_override_sentinel)
         _e3_probe_run = subprocess.run(
             [sys.executable, "scripts/verify_e3_sessions.py"],
             cwd=ROOT,
+            env=_e3_probe_env,
             text=True,
             capture_output=True,
         )
@@ -4210,7 +4274,8 @@ with TestClient(app) as c:
               and _e3_probe.get("wire_param") == "role"
               and _e3_probe.get("selector_without_lesson_refused") is True
               and _e3_probe.get("unknown_role_refused") is True
-              and _e3_probe.get("selector_with_sid_refused") is True,
+              and _e3_probe.get("selector_with_sid_refused") is True
+              and not _e3_override_sentinel.exists(),
               _e3_extra)
         check("E3 host probe: concurrent WS sessions echo both roles",
               _e3_probe.get("agent_role_echoed") is True
