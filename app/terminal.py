@@ -303,6 +303,7 @@ def _private_mask_spellings(*paths: Path) -> tuple[str, ...]:
 def _learner_private_mask_spellings(
     *,
     data_root: Path = LESSONS_DIR.parent,
+    lesson_root: Path = LESSONS_DIR,
     db_path: Path = DB_PATH,
     repo_root: Path = _REPO_ROOT,
 ) -> tuple[str, ...]:
@@ -310,6 +311,7 @@ def _learner_private_mask_spellings(
     db_absolute = db_path.absolute()
     return _private_mask_spellings(
         data_root,
+        lesson_root,
         db_absolute.parent,
         db_absolute.resolve(strict=False).parent,
         repo_root,

@@ -4188,6 +4188,11 @@ with TestClient(app) as c:
         _mask_link = _mask_base / "private-link"
         _mask_link.symlink_to(_mask_target, target_is_directory=True)
         _mask_spellings = _terminal._private_mask_spellings(_mask_link)
+        _lesson_store_target = _mask_base / "resolved-lesson-store"
+        _lesson_store_target.mkdir()
+        _lesson_store_link = _mask_base / "lessons-link"
+        _lesson_store_link.symlink_to(
+            _lesson_store_target, target_is_directory=True)
         _db_target_dir = _mask_base / "resolved-db"
         _db_target_dir.mkdir()
         _db_target = _db_target_dir / "activity.sqlite"
@@ -4198,11 +4203,14 @@ with TestClient(app) as c:
         _db_link.symlink_to(_db_target)
         _db_mask_spellings = _terminal._learner_private_mask_spellings(
             data_root=_mask_link,
+            lesson_root=_lesson_store_link,
             db_path=_db_link,
             repo_root=_terminal._REPO_ROOT,
         )
     check("E3 private masks include lexical symlinks and resolved targets",
           _mask_spellings == (str(_mask_link), str(_mask_target))
+          and str(_lesson_store_link) in _db_mask_spellings
+          and str(_lesson_store_target) in _db_mask_spellings
           and str(_db_link_dir) in _db_mask_spellings
           and str(_db_target_dir) in _db_mask_spellings)
     _external_private = "/srv/invented-ephemeris-private"
