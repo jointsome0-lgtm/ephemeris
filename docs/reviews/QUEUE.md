@@ -19,64 +19,70 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-21 — 3931339, 4a019be, 165481c, 1467750, ef533d9, 43c4b1d, c357bc5 — the entry stays current with the branch: any
-  further branch commit, and the merge commit itself once the PR lands, is
-  appended here before any drain or restart (this repository merges via
-  merge commits, never squash, so the landed tree is the reviewed branch
-  head's tree and the listed branch commits are ancestors of the landed
-  merge; ephemeral GitHub test-merge/squash preview hashes are not
-  repository commits and are never tracked here) —
-  `app/static/src/learn-bridge.ts` (+ emitted `app/static/learn-bridge.js`),
-  `app/services/lessons.py`, `app/main.py`, `app/templates/learn.html`,
-  `docs/lesson-bridge-abi.md`, `docs/lesson-attempts-api.md`, `verify.py` —
-  issue #36 session D5: the bridge parent runtime now negotiates the
-  `attempts` capability and implements the port `attempt` operation
-  calling the D4 endpoint. The child supplies question_id/answer/
-  request_id; the parent derives page identity from its armed binding,
-  re-fetches preview metadata per operation and compares version, bridge
-  identity, and the per-page declared-question list before the HTTP call;
-  idempotency_key is the child's request_id; results and refusals are
-  answered on the port (refusals reuse endpoint codes and do not count
-  toward the protocol-error budget); a recorded attempt raises the app
-  toast. preview-meta's `bridge_page` gains a `questions` array. Declared
-  v2 pages are served from a one-descriptor snapshot (bytes, digest, and
-  stat from the same open) with a content-bound version header; a new
-  `PAGE_IDENTITY_MAX_BYTES` bound (4 MiB) excludes oversized pages from
-  bridge identity with a visible finding while display falls back to the
-  streaming response; the page digest cache evicts one entry when full
-  instead of clearing. learn.html passes `data-attempts-url` to the
-  runtime. The lesson-brief bridge bullet now states the frozen attempt
-  call. ABI doc gains §3.1. verify.py adds a D5 section (592).
-  4a019be (PR-bot round 1): the parent navigates the frame with
-  `?v=<version token>` and the file route refuses snapshot bytes that no
-  longer hash to it (409 + self-reload), from the server-rendered first
-  navigation on; both one-descriptor readers enforce the size bound
-  inside the read loop; attempt operations wait a 250 ms settle delay
-  between validation and the HTTP call so a completing self-navigation
-  tears down the port before the write leaves (stalled-load residual
-  documented in ABI §3.1). verify 594.
-  165481c (PR-bot round 2): the file route computes the identical
-  mtime:profile[:digest16] token for every declared v2 page (legacy
-  profiles included) and enforces the `?v` comparison on that surface
-  even when no snapshot could be taken — the streaming fallback never
-  serves bytes the requested token does not describe. verify 596.
-  1467750 (PR-bot round 3): the size pre-check tolerates a page
-  vanishing between is_file() and stat() — OSError falls through to
-  the descriptor-bound hash open instead of a 500. verify 597.
-  ef533d9 (PR-bot round 4): the pre-check is no-follow (lstat +
-  S_ISREG) — a symlink raced in after the guard is never sized by
-  target and falls through to the O_NOFOLLOW open. verify 598.
-  43c4b1d (PR-bot round 5): each attempt call cleans up its own
-  document's in-flight set (teardown replaces it), and the vanish
-  probe stages the real deleted-file race against os.lstat.
-  c357bc5 (PR-bot round 7): digest-cache eviction is race-
-  tolerant (pop with default + iteration guard) — concurrent cache
-  misses can no longer 500 a poll or page serve. PR #60 bot 👍 APPROVED
-  head 68b9686 2026-07-21T09:38:57Z; LANDED 2026-07-21 via merge commit
-  4a1d95f — the landed tree is byte-identical to the approved branch
-  head's tree (both trees 5cd5c80).
+_None._
 
 ## Done
+
+- [x] 2026-07-21 — 3931339, 4a019be, 165481c, 1467750, ef533d9, 43c4b1d,
+  c357bc5, edd0cf7 — the entry stays current with the branch: any further
+  branch commit, and the merge commit itself once the PR lands, is appended
+  here before any drain or restart (this repository merges via merge commits,
+  never squash, so the landed tree is the reviewed branch head's tree and the
+  listed branch commits are ancestors of the landed merge; ephemeral GitHub
+  test-merge/squash preview hashes are not repository commits and are never
+  tracked here) — `app/static/src/learn-bridge.ts` (+ emitted
+  `app/static/learn-bridge.js`), `app/services/lessons.py`, `app/main.py`,
+  `app/templates/learn.html`, `docs/lesson-bridge-abi.md`,
+  `docs/lesson-attempts-api.md`, `verify.py` — issue #36 session D5: the bridge
+  parent runtime now negotiates the `attempts` capability and implements the
+  port `attempt` operation calling the D4 endpoint. The child supplies
+  question_id/answer/request_id; the parent derives page identity from its
+  armed binding, re-fetches preview metadata per operation and compares
+  version, bridge identity, and the per-page declared-question list before the
+  HTTP call; idempotency_key is the child's request_id; results and refusals
+  are answered on the port (refusals reuse endpoint codes and do not count
+  toward the protocol-error budget); a recorded attempt raises the app toast.
+  preview-meta's `bridge_page` gains a `questions` array. Declared v2 pages are
+  served from a one-descriptor snapshot (bytes, digest, and stat from the same
+  open) with a content-bound version header; a new `PAGE_IDENTITY_MAX_BYTES`
+  bound (4 MiB) excludes oversized pages from bridge identity with a visible
+  finding while display falls back to the streaming response; the page digest
+  cache evicts one entry when full instead of clearing. learn.html passes
+  `data-attempts-url` to the runtime. The lesson-brief bridge bullet now states
+  the frozen attempt call. ABI doc gains §3.1. verify.py adds a D5 section
+  (592). 4a019be (PR-bot round 1): the parent navigates the frame with
+  `?v=<version token>` and the file route refuses snapshot bytes that no
+  longer hash to it (409 + self-reload), from the server-rendered first
+  navigation on; both one-descriptor readers enforce the size bound inside the
+  read loop; attempt operations wait a 250 ms settle delay between validation
+  and the HTTP call so a completing self-navigation tears down the port before
+  the write leaves (stalled-load residual documented in ABI §3.1). verify 594.
+  165481c (PR-bot round 2): the file route computes the identical
+  mtime:profile[:digest16] token for every declared v2 page (legacy profiles
+  included) and enforces the `?v` comparison on that surface even when no
+  snapshot could be taken — the streaming fallback never serves bytes the
+  requested token does not describe. verify 596. 1467750 (PR-bot round 3): the
+  size pre-check tolerates a page vanishing between is_file() and stat() —
+  OSError falls through to the descriptor-bound hash open instead of a 500.
+  verify 597. ef533d9 (PR-bot round 4): the pre-check is no-follow (lstat +
+  S_ISREG) — a symlink raced in after the guard is never sized by target and
+  falls through to the O_NOFOLLOW open. verify 598. 43c4b1d (PR-bot round 5):
+  each attempt call cleans up its own document's in-flight set (teardown
+  replaces it), and the vanish probe stages the real deleted-file race against
+  os.lstat. c357bc5 (PR-bot round 7): digest-cache eviction is race-tolerant
+  (pop with default + iteration guard) — concurrent cache misses can no longer
+  500 a poll or page serve. PR #60 bot 👍 APPROVED head 68b9686
+  2026-07-21T09:38:57Z; LANDED 2026-07-21 via merge commit 4a1d95f — the landed
+  tree is byte-identical to the approved branch head's tree (both trees
+  5cd5c80). edd0cf7 (drain cycle 1): digest-cache lookup and admission/eviction
+  are serialized, the bound converges from an oversized state, and a
+  concurrent-cold-miss regression was added; verify 599, verify_restore 28.
+  Drained 2026-07-21 → `2026-07-21-check-activation-review.md`: one Low C1,
+  resolved in cycle 1; no Critical/High/Medium or open Low. Closing gates: L1
+  mitigated, L2 resolved, L3 resolved. Final verdict: SAFE TO MAKE LIVE for the
+  documented direct-loopback single-worker deployment; wider deployment NO
+  (unauthenticated; L1 residual; accepted A1/A2 follow-ups). Live restart is
+  owner-only and was not performed.
 
 - [x] 2026-07-20 — c2bf554, 4e7997f, 142ea74, 6be555e, 9da7758, 89b4bc2,
   ac08a7c, 9a34e33, e0e9697, 69af6fe, 906322d, 780c028, 89b4cd2, 0edef9e —
