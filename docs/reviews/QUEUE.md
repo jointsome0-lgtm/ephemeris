@@ -19,7 +19,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-21 — 3931339, 4a019be, 165481c — the entry stays current with the branch: any
+- [ ] 2026-07-21 — 3931339, 4a019be, 165481c, 1467750 — the entry stays current with the branch: any
   further branch commit, and the merge commit itself once the PR lands, is
   appended here before any drain or restart —
   `app/static/src/learn-bridge.ts` (+ emitted `app/static/learn-bridge.js`),
@@ -56,6 +56,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   profiles included) and enforces the `?v` comparison on that surface
   even when no snapshot could be taken — the streaming fallback never
   serves bytes the requested token does not describe. verify 596.
+  1467750 (PR-bot round 3): the size pre-check tolerates a page
+  vanishing between is_file() and stat() — OSError falls through to
+  the descriptor-bound hash open instead of a 500. verify 597.
 
 ## Done
 
