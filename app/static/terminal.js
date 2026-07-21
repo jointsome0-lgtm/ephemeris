@@ -52,6 +52,7 @@
         var MIN_KEY = keyStem + 'min';
         var COPY_SELECT_KEY = keyStem + 'copyselect';
         var MAX_TABS = 8;
+        var MAX_STORED_TABS = 64;
         var statusEl = document.getElementById(config.idPrefix + '-status');
         var dotEl = document.getElementById(config.idPrefix + '-dot');
         var screenHost = document.getElementById(config.idPrefix + '-screens');
@@ -109,7 +110,14 @@
                 if (legacy)
                     raw = [{ id: newId(), sid: legacy, title: 'Terminal 1' }];
             }
-            allTabs = (Array.isArray(raw) ? raw : []).slice(0, config.kind === 'agent' ? MAX_TABS : 64).map(function (t, i) {
+            var storedTabs = Array.isArray(raw) ? raw : [];
+            // Agent tabs retain their historical first-eight bound. Learner tabs are
+            // ordered least-to-most recently selected by persistTabs(), so keep the
+            // newest global window: the current lesson is appended last and must not
+            // be discarded before current-lesson filtering on the next page load.
+            storedTabs = config.kind === 'agent'
+                ? storedTabs.slice(0, MAX_TABS) : storedTabs.slice(-MAX_STORED_TABS);
+            allTabs = storedTabs.map(function (t, i) {
                 return {
                     id: cleanTitle(t.id, newId()),
                     sid: t.sid ? String(t.sid) : null,
@@ -158,6 +166,9 @@
         function persistTabs() {
             if (config.kind === 'learner') {
                 allTabs = allTabs.filter(function (t) { return t.lesson !== config.currentLesson; }).concat(tabs);
+                if (allTabs.length > MAX_STORED_TABS) {
+                    allTabs = allTabs.slice(-MAX_STORED_TABS);
+                }
             }
             else {
                 allTabs = tabs;

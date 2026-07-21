@@ -281,6 +281,12 @@ with TestClient(app) as c:
           and "tab.role = role" in terminal_ts
           and "roleFitsSurface" in terminal_ts
           and "role: config.kind" not in terminal_ts)
+    check("learner storage cap retains the current lesson's tabs",
+          "MAX_STORED_TABS = 64" in terminal_ts
+          and "storedTabs.slice(-MAX_STORED_TABS)" in terminal_ts
+          and "allTabs = allTabs.slice(-MAX_STORED_TABS)" in terminal_ts
+          and "storedTabs.slice(-MAX_STORED_TABS)" in terminal_js
+          and "allTabs = allTabs.slice(-MAX_STORED_TABS)" in terminal_js)
     check("shared --term-h inset accounts for both terminal surfaces",
           "function syncTerminalInsets" in terminal_ts
           and "bottomHeight" in terminal_ts
@@ -1158,9 +1164,16 @@ with TestClient(app) as c:
           in (ROOT / ".gitattributes").read_text(encoding="utf-8")
           and "app/static/terminal.js linguist-generated=true"
           in (ROOT / ".gitattributes").read_text(encoding="utf-8"))
+    _ci_workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8")
+    _ci_npm = _ci_workflow.find("run: npm ci")
+    _ci_verify = _ci_workflow.find("run: uv run python verify.py")
+    check("CI installs the pinned TypeScript toolchain before verification",
+          0 <= _ci_npm < _ci_verify)
     # committed emit freshness: recompile to a scratch dir and byte-compare.
-    # Runs only where the dev toolchain is installed (node_modules is not
-    # part of a fresh checkout; the dev machine and PR review are the gate).
+    # Clean CI installs the lockfile before this point. A local Python-only run
+    # may still omit the dev toolchain, but CI must never silently skip the
+    # source-to-served-artifact integrity gate.
     _d2_tsc = ROOT / "node_modules" / ".bin" / "tsc"
     if _d2_tsc.exists():
         _d2_out = Path(tempfile.mkdtemp(prefix="al-verify-tsc-"))
@@ -1177,7 +1190,11 @@ with TestClient(app) as c:
               == terminal_js.encode("utf-8"),
               extra=_d2_cp.stdout + _d2_cp.stderr)
     else:
-        print("[info] tsc not installed; emit-freshness check skipped (npm ci to enable)")
+        if os.environ.get("CI"):
+            check("CI has the repo-local TypeScript compiler for emit freshness",
+                  False, extra="node_modules/.bin/tsc missing; run npm ci before verify.py")
+        else:
+            print("[info] tsc not installed; emit-freshness check skipped (npm ci to enable)")
 
     # ---- D4: lesson attempts — authority, projection, endpoint semantics ----
     # (learn-bundle-spec.md §6 / §8, docs/lesson-attempts-api.md)
