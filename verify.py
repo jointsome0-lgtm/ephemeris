@@ -1814,6 +1814,66 @@ with TestClient(app) as c:
     check("page digest cache evicts oldest, not clear-all",
           "_PAGE_DIGEST_CACHE.clear()" not in
           (ROOT / "app" / "services" / "lessons.py").read_text(encoding="utf-8"))
+    # Drain C1: cache admission must stay at its configured bound when many
+    # distinct cold misses arrive together. The custom len() makes the old
+    # unsynchronized implementation deterministically observe the same
+    # pre-insert size in every worker; the locked implementation times out
+    # the first rendezvous and serializes all later checks.
+    import threading as _d5_threading
+
+    class _D5ConcurrentLenDict(dict):
+        def __init__(self, initial, parties):
+            super().__init__(initial)
+            self._len_barrier = _d5_threading.Barrier(parties)
+
+        def __len__(self):
+            observed = dict.__len__(self)
+            try:
+                self._len_barrier.wait(timeout=0.25)
+            except _d5_threading.BrokenBarrierError:
+                pass
+            return observed
+
+    _d5_cache_workers = 12
+    _d5_cache_max = 64
+    _d5_cache_probe = _D5ConcurrentLenDict({
+        f"/invented/preloaded-{i}.html": ((i,), f"{i:064x}")
+        for i in range(_d5_cache_max - 1)
+    }, _d5_cache_workers)
+    _d5_cache_start = _d5_threading.Barrier(_d5_cache_workers + 1)
+    _d5_cache_errors = []
+
+    def _d5_cache_miss(i):
+        try:
+            _d5_cache_start.wait()
+            lessons_svc._cache_page_digest(
+                Path(f"/invented/cold-{i}.html"), (i,), f"{i + 1000:064x}")
+        except BaseException as exc:  # keep worker failures visible to check()
+            _d5_cache_errors.append(exc)
+
+    _d5_saved_cache = lessons_svc._PAGE_DIGEST_CACHE
+    _d5_saved_cache_max = lessons_svc._PAGE_DIGEST_CACHE_MAX
+    try:
+        lessons_svc._PAGE_DIGEST_CACHE = _d5_cache_probe
+        lessons_svc._PAGE_DIGEST_CACHE_MAX = _d5_cache_max
+        _d5_cache_threads = [
+            _d5_threading.Thread(target=_d5_cache_miss, args=(i,))
+            for i in range(_d5_cache_workers)
+        ]
+        for _d5_cache_thread in _d5_cache_threads:
+            _d5_cache_thread.start()
+        _d5_cache_start.wait()
+        for _d5_cache_thread in _d5_cache_threads:
+            _d5_cache_thread.join(timeout=2)
+        _d5_cache_alive = any(t.is_alive() for t in _d5_cache_threads)
+        _d5_cache_actual = dict.__len__(_d5_cache_probe)
+    finally:
+        lessons_svc._PAGE_DIGEST_CACHE = _d5_saved_cache
+        lessons_svc._PAGE_DIGEST_CACHE_MAX = _d5_saved_cache_max
+    check("page digest cache stays bounded under concurrent cold misses",
+          not _d5_cache_alive and not _d5_cache_errors
+          and _d5_cache_actual == _d5_cache_max,
+          f"entries={_d5_cache_actual}, errors={_d5_cache_errors!r}")
     # the Learn page hands the parent runtime the attempt endpoint
     check("learn.html carries data-attempts-url for the parent runtime",
           f'data-attempts-url="/learn/lessons/{_at_id}/attempts"'

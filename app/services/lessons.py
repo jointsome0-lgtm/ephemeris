@@ -15,6 +15,7 @@ import stat as stat_module
 import tempfile
 from html import escape
 from pathlib import Path, PurePosixPath
+from threading import Lock
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -202,6 +203,7 @@ def _read_regular_no_follow(path: Path) -> str | None:
 # (L2) misses this cache and gets re-hashed.
 _PAGE_DIGEST_CACHE: dict[str, tuple[tuple, str]] = {}
 _PAGE_DIGEST_CACHE_MAX = 64
+_PAGE_DIGEST_CACHE_LOCK = Lock()
 
 # Supported page-size bound (D2 drain L3, D5): a page larger than this carries
 # no bridge identity — it is never hashed for `page_rev`, never snapshotted
@@ -213,18 +215,28 @@ PAGE_IDENTITY_MAX_BYTES = 4 * 1024 * 1024
 
 
 def _cache_page_digest(path: Path, key: tuple, digest: str) -> None:
-    if len(_PAGE_DIGEST_CACHE) >= _PAGE_DIGEST_CACHE_MAX:
-        # evict the oldest entry (insertion order) — a full working set no
-        # longer dumps the whole cache back into cold re-hashing (drain L3).
-        # Tolerant of concurrent callers (PR-60 round 7): two threads racing
-        # this section may pick the same victim (pop default) or step on
-        # each other's iteration (guard) — eviction is best-effort, never a
-        # request failure.
-        try:
-            _PAGE_DIGEST_CACHE.pop(next(iter(_PAGE_DIGEST_CACHE)), None)
-        except (StopIteration, RuntimeError):
-            pass
-    _PAGE_DIGEST_CACHE[str(path)] = (key, digest)
+    cache_key = str(path)
+    with _PAGE_DIGEST_CACHE_LOCK:
+        if _PAGE_DIGEST_CACHE_MAX <= 0:
+            return
+        if cache_key not in _PAGE_DIGEST_CACHE:
+            # Keep admission and eviction in one critical section. The loop
+            # also converges a cache already above the limit rather than
+            # preserving its excess with one pop followed by one insert.
+            while len(_PAGE_DIGEST_CACHE) >= _PAGE_DIGEST_CACHE_MAX:
+                try:
+                    _PAGE_DIGEST_CACHE.pop(next(iter(_PAGE_DIGEST_CACHE)), None)
+                except StopIteration:
+                    break
+        _PAGE_DIGEST_CACHE[cache_key] = (key, digest)
+
+
+def _cached_page_digest(path: Path, key: tuple) -> str | None:
+    with _PAGE_DIGEST_CACHE_LOCK:
+        cached = _PAGE_DIGEST_CACHE.get(str(path))
+        if cached is not None and cached[0] == key:
+            return cached[1]
+    return None
 
 
 def _digest_key(st: os.stat_result) -> tuple:
@@ -249,9 +261,9 @@ def _hash_regular_no_follow(path: Path) -> tuple[str, os.stat_result] | None:
         st = os.fstat(fd)
         if not stat_module.S_ISREG(st.st_mode) or st.st_size > PAGE_IDENTITY_MAX_BYTES:
             return None
-        cached = _PAGE_DIGEST_CACHE.get(str(path))
-        if cached is not None and cached[0] == _digest_key(st):
-            return cached[1], st
+        cached = _cached_page_digest(path, _digest_key(st))
+        if cached is not None:
+            return cached, st
         digest = hashlib.sha256()
         total = 0
         with os.fdopen(fd, "rb") as fh:
