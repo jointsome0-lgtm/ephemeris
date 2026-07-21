@@ -203,6 +203,22 @@ def _read_regular_no_follow(path: Path) -> str | None:
 _PAGE_DIGEST_CACHE: dict[str, tuple[tuple, str]] = {}
 _PAGE_DIGEST_CACHE_MAX = 64
 
+# Supported page-size bound (D2 drain L3, D5): a page larger than this carries
+# no bridge identity — it is never hashed for `page_rev`, never snapshotted
+# into memory by the serving route, and record-time re-hashes of it report the
+# revision unknowable (attempts record `stale`). Display still works via the
+# streaming file response. Real lesson pages are tens of KiB; the bound is a
+# hard stop on unbounded hash/read work, not a target.
+PAGE_IDENTITY_MAX_BYTES = 4 * 1024 * 1024
+
+
+def _cache_page_digest(path: Path, key: tuple, digest: str) -> None:
+    if len(_PAGE_DIGEST_CACHE) >= _PAGE_DIGEST_CACHE_MAX:
+        # evict the oldest entry (insertion order) — a full working set no
+        # longer dumps the whole cache back into cold re-hashing (drain L3)
+        _PAGE_DIGEST_CACHE.pop(next(iter(_PAGE_DIGEST_CACHE)))
+    _PAGE_DIGEST_CACHE[str(path)] = (key, digest)
+
 
 def _digest_key(st: os.stat_result) -> tuple:
     return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size, st.st_ctime_ns)
@@ -224,10 +240,9 @@ def _hash_regular_no_follow(path: Path) -> tuple[str, os.stat_result] | None:
         return None
     try:
         st = os.fstat(fd)
-        if not stat_module.S_ISREG(st.st_mode):
+        if not stat_module.S_ISREG(st.st_mode) or st.st_size > PAGE_IDENTITY_MAX_BYTES:
             return None
-        cache_key = str(path)
-        cached = _PAGE_DIGEST_CACHE.get(cache_key)
+        cached = _PAGE_DIGEST_CACHE.get(str(path))
         if cached is not None and cached[0] == _digest_key(st):
             return cached[1], st
         digest = hashlib.sha256()
@@ -237,10 +252,43 @@ def _hash_regular_no_follow(path: Path) -> tuple[str, os.stat_result] | None:
                 digest.update(chunk)
             st_after = os.fstat(fh.fileno())
         if _digest_key(st_after) == _digest_key(st):
-            if len(_PAGE_DIGEST_CACHE) >= _PAGE_DIGEST_CACHE_MAX:
-                _PAGE_DIGEST_CACHE.clear()
-            _PAGE_DIGEST_CACHE[cache_key] = (_digest_key(st_after), digest.hexdigest())
+            _cache_page_digest(path, _digest_key(st_after), digest.hexdigest())
         return digest.hexdigest(), st_after
+    except OSError:
+        return None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _read_page_snapshot(path: Path) -> tuple[bytes, str, os.stat_result] | None:
+    """One-descriptor page snapshot for the serving route (drain D2 L2): the
+    bytes, their sha256, and the closing stat all come from the SAME open, so
+    the response body can never diverge from the digest the identity/version
+    metadata advertises for those bytes. None when the name is not a regular
+    non-symlink file within the supported size bound — the caller falls back
+    to the plain streaming response and grants no identity."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat_module.S_ISREG(st.st_mode) or st.st_size > PAGE_IDENTITY_MAX_BYTES:
+            return None
+        chunks = []
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1
+            for chunk in iter(lambda: fh.read(1 << 16), b""):
+                chunks.append(chunk)
+            st_after = os.fstat(fh.fileno())
+        data = b"".join(chunks)
+        if len(data) > PAGE_IDENTITY_MAX_BYTES:  # grew past the bound mid-read
+            return None
+        digest = hashlib.sha256(data).hexdigest()
+        if _digest_key(st_after) == _digest_key(st):
+            _cache_page_digest(path, _digest_key(st_after), digest)
+        return data, digest, st_after
     except OSError:
         return None
     finally:
@@ -392,19 +440,42 @@ def _file_info(
     digest = None
     if exists and bridge_identity and read.bridge_eligible and lesson.get("uid"):
         page_id = next((p["id"] for p in read.pages if p["path"] == entry), None)
-        hashed = _hash_regular_no_follow(path) if page_id else None
-        if hashed is None:
-            # Not a regular file after all (or undeclared): no identity, and
-            # nothing renderable to hash — report the page as missing rather
-            # than serving bytes the token/hash pair does not describe.
-            exists = False
+        if page_id and path.stat().st_size > PAGE_IDENTITY_MAX_BYTES:
+            # Supported-size bound (D5): the page renders (streaming route)
+            # but carries no bridge identity — no page_rev exists for it, so
+            # no attempt can bind to it. Visible, never silent.
+            findings.append({
+                "code": "page-too-large",
+                "severity": bundle_schema.DEGRADED,
+                "detail": f"{entry} exceeds {PAGE_IDENTITY_MAX_BYTES} bytes; "
+                          "no bridge identity",
+            })
+            if outcome == bundle_schema.OK:
+                outcome = bundle_schema.DEGRADED
+            stat = path.stat()
         else:
-            digest, stat = hashed
-            bridge_page = {
-                "lesson_uid": lesson["uid"],
-                "page_id": page_id,
-                "page_rev": f"sha256:{digest}",
-            }
+            hashed = _hash_regular_no_follow(path) if page_id else None
+            if hashed is None:
+                # Not a regular file after all (or undeclared): no identity,
+                # and nothing renderable to hash — report the page as missing
+                # rather than serving bytes the token/hash pair does not
+                # describe. (An oversized file racing past the pre-check above
+                # lands here too: the hash bound is authoritative.)
+                exists = False
+            else:
+                digest, stat = hashed
+                bridge_page = {
+                    "lesson_uid": lesson["uid"],
+                    "page_id": page_id,
+                    "page_rev": f"sha256:{digest}",
+                    # D5: the questions declared for THIS page — the parent
+                    # runtime refuses attempt operations naming any other id
+                    # before spending a server round-trip (the server's
+                    # record-time §4.3 check stays authoritative).
+                    "questions": [
+                        q["id"] for q in read.questions if q["page"] == page_id
+                    ],
+                }
     elif exists:
         stat = path.stat()
     titles = {p["path"]: p["title"] for p in read.pages}
@@ -524,11 +595,29 @@ def bundle_resource_info(lesson: dict, ref: str) -> dict:
     suffix = path.suffix.lower()
     html = media_type in ("text/html", "application/xhtml+xml") or suffix in (".html", ".htm")
     active = html or media_type == "image/svg+xml" or suffix == ".svg"
+    # Single served-content snapshot (drain D2 L2): a declared v2 page is
+    # served from bytes read on ONE descriptor, and when the page qualifies
+    # for bridge identity the version token carries the digest of exactly
+    # those bytes — what the learner receives and what `page_rev` describes
+    # can no longer be split by a replacement between two opens. Oversized or
+    # vanished-under-us pages fall back to the streaming response (and never
+    # carry identity — same bound as `_hash_regular_no_follow`).
+    content = None
+    version = str(stat.st_mtime_ns) if stat else "0"
+    if exists and active and read.version == bundle_schema.SCHEMA_V2 and declared_page:
+        snapshot = _read_page_snapshot(path)
+        if snapshot is not None:
+            content, snap_digest, stat = snapshot
+            version = str(stat.st_mtime_ns)
+            if read.bridge_eligible and lesson.get("uid"):
+                version = (
+                    f"{stat.st_mtime_ns}:{read.effective_profile}:{snap_digest[:16]}"
+                )
     return {
         "entry": ref,
         "path": str(path),
         "exists": exists,
-        "version": str(stat.st_mtime_ns) if stat else "0",
+        "version": version,
         "size": stat.st_size if stat else 0,
         "media_type": media_type,
         "html": html,
@@ -536,6 +625,9 @@ def bundle_resource_info(lesson: dict, ref: str) -> dict:
         # CSP selector for the serving route (§5, D1) — v1 and every
         # fail-closed read report legacy-display.
         "profile": read.effective_profile,
+        # Snapshot bytes when this response must be byte-bound (None = the
+        # route streams the file as before).
+        "content": content,
     }
 
 
@@ -855,12 +947,17 @@ transferred MessagePort. Pages that record answers follow these rules:
   "not connected to the Learn app" state instead of erroring or hiding
   content. The same page must hold up opened directly from disk, under
   the legacy profile, or in any context without the bridge.
-- Today the granted capability set is empty (the attempts operation is
-  the app's next step, and its message shape is not frozen yet). Build
-  the scaffolding to these conventions anyway — handshake, capability
-  detection, declared ids, degradation — and never invent a write
-  operation: implement the recording call only against the app's frozen
-  attempt operation once the `attempts` capability is actually granted.
+- Recording an answer, once the `welcome` granted `attempts`: post
+  `{"op": "attempt", "v": 1, "request_id": "…", "question_id": "q_…",
+  "answer": "…"}` on the port. Send ONLY those fields — the app derives
+  the page identity and idempotency itself; a page-supplied identity has
+  no channel. The reply echoes `request_id`: either
+  `{"op": "attempt", "result": "recorded"|"duplicate", …}` (saved — the
+  app shows its own confirmation toast; show a quiet inline "saved", not
+  a modal) or `{"op": "error", "code": "…"}` (e.g. `unknown-question`,
+  `stale-page`, `rate-limited`, `busy` — degrade to the read-only state
+  and keep the learner's text). Never resend a changed answer under an
+  old `request_id`; retry an unanswered submission with the SAME id.
 """
 
 

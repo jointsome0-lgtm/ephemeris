@@ -1234,6 +1234,13 @@ def get_lesson_bundle_file(lesson_id: int, resource: str):
     if info["active"]:
         headers["Content-Security-Policy"] = _preview_csp(info["profile"])
         headers["X-Lesson-Preview-Version"] = info["version"]
+    if info["content"] is not None:
+        # Declared v2 page: byte-bound snapshot (drain D2 L2) — the body IS
+        # the bytes the version token's digest describes; FileResponse would
+        # re-open the path and could serve a racing replacement instead.
+        return Response(
+            content=info["content"], media_type=info["media_type"], headers=headers
+        )
     return FileResponse(info["path"], media_type=info["media_type"], headers=headers)
 
 

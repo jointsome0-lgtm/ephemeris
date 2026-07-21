@@ -21,8 +21,16 @@
  * by whoever received it, not by whoever can read a broadcast. Messages FROM
  * the child are accepted only when `event.source === frame.contentWindow`.
  *
- * ABI v1 grants NO write capability: negotiation always lands on the empty
- * set, and the only port operation is ping/pong (D4/D5 add attempts). */
+ * D5 adds the one write capability, `attempts`: the child asks (`want`),
+ * and when this runtime can reach the attempt endpoint the welcome grants
+ * it. The child supplies ONLY {v, op, request_id, question_id, answer}; the
+ * parent derives page identity from its own armed binding, re-validates it
+ * against fresh preview metadata per operation (D2 review gate: possession
+ * of the port is never authority — and neither is having been armed once),
+ * refuses questions the manifest does not declare for the armed page, and
+ * owns idempotency by mapping the child's request_id onto the endpoint's
+ * idempotency_key. Confirmation is an app toast; the lesson document only
+ * gets the structured result. */
 export {};
 
 const ABI_VERSION = 1;
@@ -41,6 +49,13 @@ const MAX_REJECTS = 3;
  * a page that fights the re-assert just stays unbridged. */
 const MAX_REASSERTS = 3;
 const POLL_MS = 1200;
+/** Attempt operations in flight at once per document; beyond it the op is
+ * answered `busy` (a Check press is human-scale — this only stops a loop). */
+const MAX_ATTEMPTS_INFLIGHT = 4;
+/** The op-envelope version the attempt operation speaks (independent of the
+ * handshake ABI so the submission shape can evolve additively). */
+const ATTEMPT_OP_VERSION = 1;
+const QUESTION_ID_RE = /^q_[a-z0-9]{4,32}$/;
 
 interface BridgePage {
   lesson_uid: string;
@@ -62,6 +77,9 @@ const frame = document.getElementById("lesson-preview-frame") as HTMLIFrameEleme
 if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
   const metaUrl = frame.dataset["metaUrl"]!;
   const fallbackSrc = frame.getAttribute("src")!;
+  /* Attempt endpoint (D4). Absent on a stale template render: the attempts
+   * capability is then simply never granted (fail closed, no error). */
+  const attemptsUrl = frame.dataset["attemptsUrl"] || null;
 
   /* The version token the displayed document was served under (server-
    * rendered for the initial navigation, then meta-derived); the binding
@@ -108,6 +126,13 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
   let port: MessagePort | null = null;
   let protocolErrors = 0;
   let rejects = 0;
+  /* D5 per-document write state: the capability set the welcome granted and
+   * the request_ids with an attempt HTTP call still pending. Navigation ends
+   * both — a successor document never inherits a grant or an in-flight slot
+   * (the durable outcome is still reachable: the child retries the same
+   * request_id after reload and the server replays it). */
+  let capabilities: string[] = [];
+  let attemptsInflight = new Set<string>();
 
   const teardown = (): void => {
     if (port) port.close();
@@ -116,6 +141,8 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     granted = false;
     protocolErrors = 0;
     rejects = 0;
+    capabilities = [];
+    attemptsInflight = new Set();
   };
 
   const fetchMeta = async (): Promise<PreviewMeta | null> => {
@@ -278,6 +305,120 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     }
   };
 
+  const toast = (msg: string): void => {
+    const ui = (window as unknown as { alUI?: { toast?: (m: string) => void } }).alUI;
+    if (ui && typeof ui.toast === "function") ui.toast(msg);
+  };
+
+  /* Attempt refusals are ANSWERS, not protocol violations: they reuse the
+   * endpoint's error codes verbatim (docs/lesson-attempts-api.md) and never
+   * count toward the port-closing budget — a page retrying a retired
+   * question must not lose its whole bridge. */
+  const answerError = (to: MessagePort, code: string, requestId: string): void => {
+    to.postMessage({ op: "error", code, request_id: requestId });
+  };
+
+  /* Declared question ids for the armed page, taken from FRESH metadata at
+   * operation time (never the arm-time copy: a manifest-only edit can
+   * declare or retire questions without moving the page's version token).
+   * null = absent or malformed — e.g. a pre-D5 backend — and fails closed. */
+  const metaQuestions = (meta: PreviewMeta): string[] | null => {
+    if (typeof meta.bridge_page !== "object" || meta.bridge_page === null) return null;
+    const list = (meta.bridge_page as Record<string, unknown>)["questions"];
+    if (!Array.isArray(list) || list.length > 512) return null;
+    return list.every((q) => typeof q === "string" && QUESTION_ID_RE.test(q))
+      ? (list as string[])
+      : null;
+  };
+
+  const postAttempt = async (
+    boundPort: MessagePort,
+    gen: number,
+    requestId: string,
+    questionId: string,
+    answer: string,
+  ): Promise<void> => {
+    attemptsInflight.add(requestId);
+    try {
+      /* Per-operation server-side re-validation (the D2 review gate): the
+       * write is allowed only while fresh metadata still advertises exactly
+       * the identity this document was armed with — port possession, or
+       * having been armed once, is never authority. The server then
+       * re-validates the manifest and derives `stale` again at record time;
+       * this check just refuses the obvious cases without spending a write. */
+      const meta = await fetchMeta();
+      if (gen !== generation || port !== boundPort || armed === null) return;
+      if (meta === null) return answerError(boundPort, "unavailable", requestId);
+      if (
+        navPending || quarantined
+        || String(meta.version ?? "0") !== expectedVersion
+        || meta.bridge !== true || !identityMatches(meta)
+      ) {
+        return answerError(boundPort, "stale-page", requestId);
+      }
+      const declared = metaQuestions(meta);
+      if (declared === null) return answerError(boundPort, "unavailable", requestId);
+      if (!declared.includes(questionId)) {
+        return answerError(boundPort, "unknown-question", requestId);
+      }
+      let body: unknown;
+      try {
+        const res = await fetch(attemptsUrl!, {
+          method: "POST",
+          cache: "no-store",
+          headers: { "Content-Type": "application/json" },
+          /* The child supplied question_id and answer; everything else is
+           * parent-derived: page identity from the armed binding, the
+           * idempotency key from the child's request_id (stable across a
+           * reload, so a retry of a response lost to navigation replays the
+           * durable original instead of double-recording). */
+          body: JSON.stringify({
+            question_id: questionId,
+            page_id: armed.page_id,
+            page_rev: armed.page_rev,
+            answer,
+            idempotency_key: requestId,
+          }),
+        });
+        body = await res.json();
+      } catch {
+        if (gen === generation && port === boundPort) {
+          answerError(boundPort, "unavailable", requestId);
+        }
+        return;
+      }
+      if (gen !== generation || port !== boundPort) return; // navigated away; the write (if any) is durable
+      const rec = typeof body === "object" && body !== null
+        ? (body as Record<string, unknown>)
+        : {};
+      if (rec["ok"] !== true) {
+        const code = typeof rec["error"] === "string" && rec["error"].length <= 64
+          ? rec["error"] : "unavailable";
+        return answerError(boundPort, code, requestId);
+      }
+      const result = rec["result"] === "duplicate" ? "duplicate" : "recorded";
+      const reply: Record<string, unknown> = {
+        op: "attempt",
+        request_id: requestId,
+        result,
+        attempt_id: rec["attempt_id"],
+        stale: rec["stale"] === true,
+      };
+      if (result === "recorded") {
+        reply["attempt_number"] = rec["attempt_number"];
+        reply["projection"] = rec["projection"];
+        const n = rec["attempt_number"];
+        /* Check v1 confirmation: an M5 toast, deliberately no modal. */
+        toast(typeof n === "number" ? `attempt #${n} recorded` : "attempt recorded");
+      } else {
+        toast("attempt already recorded");
+      }
+      boundPort.postMessage(reply);
+    } finally {
+      attemptsInflight.delete(requestId);
+    }
+  };
+
   const onPortMessage = (ev: MessageEvent): void => {
     if (!port) return;
     const size = jsonLength(ev.data);
@@ -295,7 +436,32 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
       port.postMessage({ op: "pong", request_id: requestId, abi: ABI_VERSION });
       return;
     }
-    /* ABI v1 has no other operations (writes arrive with D4/D5). */
+    if (msg["op"] === "attempt") {
+      if (requestId === null) return protocolError("malformed", null);
+      if (attemptsUrl === null || !capabilities.includes("attempts")) {
+        return answerError(port, "capability-not-granted", requestId);
+      }
+      if (msg["v"] !== ATTEMPT_OP_VERSION) {
+        return answerError(port, "unsupported-version", requestId);
+      }
+      const questionId = msg["question_id"];
+      if (typeof questionId !== "string" || !QUESTION_ID_RE.test(questionId)) {
+        return answerError(port, "invalid-question-id", requestId);
+      }
+      const answer = msg["answer"];
+      if (typeof answer !== "string") {
+        return answerError(port, "invalid-answer", requestId);
+      }
+      /* One outcome per in-flight request_id: a duplicate while the original
+       * is pending is dropped (the pending call will answer), and total
+       * concurrency is capped — a Check press is human-scale. */
+      if (attemptsInflight.has(requestId)) return;
+      if (attemptsInflight.size >= MAX_ATTEMPTS_INFLIGHT) {
+        return answerError(port, "busy", requestId);
+      }
+      void postAttempt(port, generation, requestId, questionId, answer);
+      return;
+    }
     return protocolError("unknown-op", requestId);
   };
 
@@ -321,15 +487,21 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     port = channel.port1;
     port.onmessage = onPortMessage;
     granted = true; // one welcome per loaded document
+    /* Capability negotiation (D5): the one defined capability is `attempts`,
+     * granted only when the child asked for it and this runtime has the
+     * endpoint to carry it. The grant is a routing fact, not authority —
+     * every operation still re-validates per-op, parent- and server-side. */
+    const want = Array.isArray(data.want) ? data.want : [];
+    capabilities = attemptsUrl !== null && want.includes("attempts")
+      ? ["attempts"]
+      : [];
     child.postMessage(
       {
         ephemeris: "lesson-bridge",
         type: "welcome",
         abi: ABI_VERSION,
         lesson: armed,
-        /* Capability negotiation, v1: whatever the child `want`ed, the
-         * granted set is empty — the ABI ships before any capability. */
-        capabilities: [],
+        capabilities,
       },
       "*",
       [channel.port2],

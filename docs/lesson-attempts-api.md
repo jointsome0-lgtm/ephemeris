@@ -6,8 +6,11 @@ curl surface for the study agent / owner. The data model it implements
 (authority table, projection, idempotency, staleness) is
 [learn-bundle-spec.md §6](learn-bundle-spec.md); the wire membrane that will
 carry it from a lesson page is [lesson-bridge-abi.md](lesson-bridge-abi.md).
-D4 adds no bridge operation: ABI v1 still grants no capability, and nothing
-here wakes an agent (Check v1 is save-only).
+D5 wired the bridge side: the `attempts` capability and the port `attempt`
+operation ([lesson-bridge-abi.md §3.1](lesson-bridge-abi.md)) call this
+endpoint from the parent runtime with parent-derived identity and
+`idempotency_key = request_id`. Nothing here wakes an agent (Check v1 is
+save-only).
 
 Trust model, restated from the D2 review gate: possession of a bridge port
 is never authority. This endpoint re-validates every submission against the
