@@ -27,6 +27,7 @@ PROXY_NAMES = (
     "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
     "FTP_PROXY", "ftp_proxy",
 )
+SOCKET_ENV_NAMES = ("SSH_AUTH_SOCK", "XDG_RUNTIME_DIR")
 
 
 def _free_loopback_port() -> int:
@@ -86,6 +87,7 @@ async def _refusal(uri: str, expected: bytes) -> bool:
 
 async def _run_sessions(port: int, slug: str, bundle: Path) -> dict[str, bool | str]:
     from websockets import connect
+    from websockets.exceptions import ConnectionClosed
 
     base = f"ws://127.0.0.1:{port}/terminal/ws"
     lesson = urllib.parse.quote(slug, safe="")
@@ -121,14 +123,18 @@ async def _run_sessions(port: int, slug: str, bundle: Path) -> dict[str, bool | 
                 for path in briefs
             }
             proxy_expr = repr(PROXY_NAMES)
+            socket_expr = repr(SOCKET_ENV_NAMES)
             await learner.send((
                 ("/usr/bin/python3 -c \"import os,socket; "
                  "p=%s; s=socket.socket(); s.settimeout(2); "
                  "r=s.connect_ex(('127.0.0.1', %d)); s.close(); "
                  "print('__E3_LEARNER_NET_BLOCKED__' if r != 0 else '__E3_LEARNER_NET_OPEN__'); "
                  "print('__E3_LEARNER_PROXY_NONE__' if not any(k in os.environ for k in p) "
-                 "else '__E3_LEARNER_PROXY_PRESENT__')\"; "
-                 "printf '__E3_LEARNER_LIVE__\\n'\n") % (proxy_expr, port)
+                 "else '__E3_LEARNER_PROXY_PRESENT__'); "
+                 "q=%s; print('__E3_LEARNER_SOCKET_ENV_NONE__' "
+                 "if not any(k in os.environ for k in q) "
+                 "else '__E3_LEARNER_SOCKET_ENV_PRESENT__')\"; "
+                 "printf '__E3_LEARNER_LIVE__\\n'\n") % (proxy_expr, port, socket_expr)
             ).encode())
             learner_output = await _output_until(learner, "__E3_LEARNER_LIVE__")
 
@@ -136,6 +142,15 @@ async def _run_sessions(port: int, slug: str, bundle: Path) -> dict[str, bool | 
             agent_after = await _output_until(agent, "__E3_AGENT_STILL_LIVE__")
 
             await learner.send(json.dumps({"type": "kill"}))
+            try:
+                await asyncio.wait_for(learner.recv(), timeout=2)
+            except (asyncio.TimeoutError, ConnectionClosed):
+                pass
+        stale_learner_refused = await _refusal(
+            f"{base}?sid={urllib.parse.quote(learner_handshake['sid'], safe='')}"
+            f"&lesson={lesson}",
+            b"stale learner session",
+        )
         await agent.send(json.dumps({"type": "kill"}))
 
     return {
@@ -149,6 +164,8 @@ async def _run_sessions(port: int, slug: str, bundle: Path) -> dict[str, bool | 
         "agent_network": "__E3_AGENT_NET_OK__" in agent_output,
         "learner_no_network": "__E3_LEARNER_NET_BLOCKED__" in learner_output,
         "learner_no_proxy_env": "__E3_LEARNER_PROXY_NONE__" in learner_output,
+        "learner_no_socket_env": "__E3_LEARNER_SOCKET_ENV_NONE__" in learner_output,
+        "stale_learner_sid_refused": stale_learner_refused,
         "both_shells_live": (
             "__E3_AGENT_STILL_LIVE__" in agent_after
             and "__E3_LEARNER_LIVE__" in learner_output

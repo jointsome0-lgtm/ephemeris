@@ -79,6 +79,7 @@ TerminalRole = Literal["plain", "lesson-agent", "lesson-learner"]
 _TERMINAL_ROLES: tuple[TerminalRole, ...] = (
     "plain", "lesson-agent", "lesson-learner",
 )
+_LEARNER_SID_PREFIX = "learner."
 _HOST_NETWORK_ROLES = frozenset(("plain", "lesson-agent"))
 
 
@@ -261,7 +262,7 @@ _ENV_ALLOWLIST = frozenset({
 _ENV_ALLOW_PREFIXES = ("LC_",)
 
 
-def _child_env() -> dict[str, str]:
+def _child_env(role: TerminalRole = "plain") -> dict[str, str]:
     """Allowlisted base environment for the child shell (proxy vars are layered
     on top by the caller from _detect_proxy_env)."""
     env = {
@@ -272,6 +273,12 @@ def _child_env() -> dict[str, str]:
     # Help find user-installed agent CLIs even under a minimal service PATH.
     home = os.path.expanduser("~")
     env["PATH"] = f"{home}/.local/bin:/usr/local/bin:" + env.get("PATH", "/usr/bin:/bin")
+    if role == "lesson-learner":
+        # Network namespaces don't isolate AF_UNIX. Do not hand untrusted learner
+        # commands the inherited discovery paths for the owner's runtime/SSH
+        # sockets; agent/plain shells deliberately retain their existing session.
+        env.pop("SSH_AUTH_SOCK", None)
+        env.pop("XDG_RUNTIME_DIR", None)
     return env
 
 
@@ -572,7 +579,7 @@ async def _create_session(
         sandbox_profile: SandboxProfile | None = None if role == "plain" else role
 
         shell = os.environ.get("SHELL") or "/bin/bash"
-        env = _child_env()
+        env = _child_env(role)
         # Route agent CLIs around country-level blocks via the user's local proxy (if
         # any); the allowlisted base env has no proxy vars, so what _detect_proxy_env
         # returns is the whole story and EPHEMERIS_TERM_PROXY=off truly means direct.
@@ -616,7 +623,8 @@ async def _create_session(
         os.close(slave_fd)  # success: parent keeps only the master end
 
         sess = _TermSession(
-            token_urlsafe(18),
+            ((_LEARNER_SID_PREFIX if role == "lesson-learner" else "")
+             + token_urlsafe(18)),
             proc,
             master_fd,
             role=role,
@@ -751,6 +759,18 @@ async def _serve_ws(ws: WebSocket) -> None:
     sess = _SESSIONS.get(sid) if sid else None
     if sess is not None and sess.closed:
         sess = None
+    if sess is None and sid and sid.startswith(_LEARNER_SID_PREFIX):
+        # Learner SIDs are server-minted with a one-way marker. If the process
+        # no longer owns that session, never reinterpret its selector-less stale
+        # attach as E2's default lesson-agent creation (a privilege expansion).
+        try:
+            await ws.send_bytes(
+                b"\r\n\x1b[31m[terminal: stale learner session]\x1b[0m\r\n"
+            )
+        except (RuntimeError, WebSocketDisconnect):
+            pass
+        await ws.close()
+        return
     if sess is None:
         # Query parameters select role/workspace only while creating a session.
         # A live SID wins wholesale: attach cannot change its role, cwd, or profile.

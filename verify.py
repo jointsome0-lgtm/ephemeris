@@ -4126,6 +4126,17 @@ with TestClient(app) as c:
         _plain_lesson_refused = True
     check("E3 explicit plain cannot bypass the sandboxed lesson boundary",
           _plain_lesson_refused)
+    with _sandbox_mock.patch.dict(os.environ, {
+        "SSH_AUTH_SOCK": "/run/user/1000/agent.sock",
+        "XDG_RUNTIME_DIR": "/run/user/1000",
+    }):
+        _agent_socket_env = _terminal._child_env("lesson-agent")
+        _learner_socket_env = _terminal._child_env("lesson-learner")
+    check("E3 learner child env strips inherited host-socket discovery paths",
+          _agent_socket_env.get("SSH_AUTH_SOCK") == "/run/user/1000/agent.sock"
+          and _agent_socket_env.get("XDG_RUNTIME_DIR") == "/run/user/1000"
+          and "SSH_AUTH_SOCK" not in _learner_socket_env
+          and "XDG_RUNTIME_DIR" not in _learner_socket_env)
 
     _e3_probe_run = subprocess.run(
         [sys.executable, "scripts/verify_e3_sessions.py"],
@@ -4148,14 +4159,16 @@ with TestClient(app) as c:
     check("E3 concurrent WS sessions echo agent and learner roles",
           _e3_probe.get("agent_role_echoed") is True
           and _e3_probe.get("learner_role_echoed") is True
-          and _e3_probe.get("both_shells_live") is True,
+          and _e3_probe.get("both_shells_live") is True
+          and _e3_probe.get("stale_learner_sid_refused") is True,
           _e3_extra)
     check("E3 learner spawn leaves AGENTS.md and CLAUDE.md untouched",
           _e3_probe.get("briefs_unchanged") is True, _e3_extra)
     check("E3 profile integration gives agent network and learner no network/proxy",
           _e3_probe.get("agent_network") is True
           and _e3_probe.get("learner_no_network") is True
-          and _e3_probe.get("learner_no_proxy_env") is True,
+          and _e3_probe.get("learner_no_proxy_env") is True
+          and _e3_probe.get("learner_no_socket_env") is True,
           _e3_extra)
 
     # --- Retro capture (docs/retro-spec.md, issue #49) ----------------------
