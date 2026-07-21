@@ -3721,6 +3721,153 @@ with TestClient(app) as c:
     check("terminal: reaper skips a session mid-attach (F4)", tb["reaper_skips_mid_attach"])
     check("terminal: reaper reaps it once the attach lock is free", tb["reaper_reaps_after_attach"])
 
+    # --- E1: pure sandbox profiles + cached probe + no-fallback spawn seam ----
+    from app import sandbox as _sandbox
+    from unittest import mock as _sandbox_mock
+
+    _sb_bundle = "/tmp/ephemeris-e1-verify/invented-bundle"
+    _sb_agent = _sandbox.build_sandbox_argv("lesson-agent", _sb_bundle)
+    _sb_learner = _sandbox.build_sandbox_argv("lesson-learner", _sb_bundle)
+    _sb_runner = _sandbox.build_sandbox_argv("lesson-runner", _sb_bundle)
+
+    def _sb_mounts(argv, flag):
+        return [(argv[i + 1], argv[i + 2]) for i, arg in enumerate(argv)
+                if arg == flag]
+
+    check("E1 argv: every profile has the namespace/base-fs/die-with-parent contract",
+          all(argv[0] == _sandbox.BWRAP
+              and "--unshare-all" in argv
+              and "--die-with-parent" in argv
+              and ("/", "/") in _sb_mounts(argv, "--ro-bind")
+              and ["--proc", "/proc"] == argv[argv.index("--proc"):argv.index("--proc") + 2]
+              and ["--dev", "/dev"] == argv[argv.index("--dev"):argv.index("--dev") + 2]
+              and argv.count("--tmpfs") >= 2
+              and "/tmp" in [argv[i + 1] for i, x in enumerate(argv) if x == "--tmpfs"]
+              and "/home/aina" in [argv[i + 1] for i, x in enumerate(argv) if x == "--tmpfs"]
+              for argv in (_sb_agent, _sb_learner, _sb_runner)))
+    check("E1 argv: host network is shared only by lesson-agent",
+          "--share-net" in _sb_agent
+          and "--share-net" not in _sb_learner
+          and "--share-net" not in _sb_runner)
+
+    _sb_agent_try_ro = {
+        ("/home/aina/.nvm/versions", "/home/aina/.nvm/versions"),
+        ("/home/aina/.local/share/claude/versions", "/home/aina/.local/share/claude/versions"),
+        ("/home/aina/.codex/auth.json", "/home/aina/.codex/auth.json"),
+        ("/home/aina/.codex/config.toml", "/home/aina/.codex/config.toml"),
+        ("/home/aina/.claude/.credentials.json", "/home/aina/.claude/.credentials.json"),
+        ("/home/aina/.claude/settings.json", "/home/aina/.claude/settings.json"),
+        ("/home/aina/.claude.json", "/home/aina/.claude.json"),
+    }
+    check("E1 argv: lesson-agent exact home binds and ephemeral CLI state",
+          set(_sb_mounts(_sb_agent, "--ro-bind")) == {
+              ("/", "/"),
+              ("/home/aina/.local/bin", "/home/aina/.local/bin"),
+          }
+          and set(_sb_mounts(_sb_agent, "--ro-bind-try")) == _sb_agent_try_ro
+          and set(_sb_mounts(_sb_agent, "--bind-try")) == {
+              ("/home/aina/go", "/home/aina/go"),
+              ("/home/aina/.cache/go-build", "/home/aina/.cache/go-build"),
+          }
+          and _sb_mounts(_sb_agent, "--bind") == [(_sb_bundle, _sb_bundle)]
+          and {"/home/aina/.codex", "/home/aina/.claude"}.issubset(
+              {_sb_agent[i + 1] for i, x in enumerate(_sb_agent) if x == "--tmpfs"}))
+    check("E1 argv: lesson-learner exact ro caches + rw bundle",
+          set(_sb_mounts(_sb_learner, "--ro-bind")) == {
+              ("/", "/"),
+              ("/home/aina/.local/bin", "/home/aina/.local/bin"),
+          }
+          and set(_sb_mounts(_sb_learner, "--ro-bind-try")) == {
+              ("/home/aina/go", "/home/aina/go"),
+              ("/home/aina/.cache/go-build", "/home/aina/.cache/go-build"),
+          }
+          and _sb_mounts(_sb_learner, "--bind") == [(_sb_bundle, _sb_bundle)]
+          and _sb_learner[-2:] == ["--chdir", _sb_bundle])
+    check("E1 argv: lesson-runner ro bundle + isolated tmpfs cwd",
+          set(_sb_mounts(_sb_runner, "--ro-bind")) == {
+              ("/", "/"),
+              ("/home/aina/.local/bin", "/home/aina/.local/bin"),
+              (_sb_bundle, _sb_bundle),
+          }
+          and not _sb_mounts(_sb_runner, "--bind")
+          and _sb_runner[-4:] == ["--dir", _sandbox.RUNNER_WORKDIR,
+                                  "--chdir", _sandbox.RUNNER_WORKDIR])
+    try:
+        _sandbox.build_sandbox_argv("plain", _sb_bundle)
+        _sb_bad_profile = False
+    except ValueError:
+        _sb_bad_profile = True
+    try:
+        _sandbox.build_sandbox_argv("lesson-agent", "relative/bundle")
+        _sb_bad_path = False
+    except ValueError:
+        _sb_bad_path = True
+    check("E1 argv builder rejects unknown profiles and non-absolute bundles",
+          _sb_bad_profile and _sb_bad_path)
+
+    _sandbox._cached_runtime_probe.cache_clear()
+    _sb_probe_ok = _types.SimpleNamespace(returncode=0, stderr="")
+    with _sandbox_mock.patch.object(_sandbox.subprocess, "run", return_value=_sb_probe_ok) as _run:
+        _sandbox.require_sandbox_runtime()
+        _sandbox.require_sandbox_runtime()
+    check("E1 runtime probe: exact command succeeds once and is process-cached",
+          _run.call_count == 1
+          and _run.call_args.args[0] == [
+              _sandbox.BWRAP, "--unshare-user", "--die-with-parent",
+              "--ro-bind", "/", "/", "true",
+          ])
+
+    async def _sb_no_fallback_contract():
+        results = {}
+        _sandbox._cached_runtime_probe.cache_clear()
+        failed = _types.SimpleNamespace(returncode=1, stderr="userns denied")
+        with _sandbox_mock.patch.object(_sandbox.subprocess, "run", return_value=failed), \
+                _sandbox_mock.patch.object(_sandbox.asyncio, "create_subprocess_exec") as spawn:
+            for _ in range(2):
+                try:
+                    await _sandbox.spawn_sandboxed(
+                        "lesson-agent", _sb_bundle, ["/bin/bash", "-i"], env={})
+                except _sandbox.SandboxUnavailableError as exc:
+                    results["probe_visible"] = "userns denied" in str(exc)
+            results["probe_cached"] = _sandbox.subprocess.run.call_count == 1
+            results["probe_never_spawned"] = spawn.call_count == 0
+
+        _sandbox._cached_runtime_probe.cache_clear()
+        with _sandbox_mock.patch.object(
+                _sandbox.subprocess, "run", return_value=_sb_probe_ok), \
+                _sandbox_mock.patch.object(
+                    _sandbox.asyncio, "create_subprocess_exec",
+                    side_effect=OSError("exec refused")) as spawn:
+            try:
+                await _sandbox.spawn_sandboxed(
+                    "lesson-agent", _sb_bundle, ["/bin/bash", "-i"], env={})
+            except _sandbox.SandboxSpawnError as exc:
+                results["spawn_visible"] = "exec refused" in str(exc)
+            results["only_bwrap_attempted"] = (
+                spawn.call_count == 1 and spawn.call_args.args[0] == _sandbox.BWRAP
+            )
+        _sandbox._cached_runtime_probe.cache_clear()
+        return results
+
+    _sb_fail = _asyncio.run(_sb_no_fallback_contract())
+    check("E1 no-fallback: failed cached probe visibly refuses before spawn",
+          _sb_fail.get("probe_visible") and _sb_fail.get("probe_cached")
+          and _sb_fail.get("probe_never_spawned"))
+    check("E1 no-fallback: bwrap spawn failure is visible, never a bare command retry",
+          _sb_fail.get("spawn_visible") and _sb_fail.get("only_bwrap_attempted"))
+    try:
+        _sandbox.spawn_sandboxed("lesson-agent", _sb_bundle, ["/bin/true"])
+        _sb_env_required = False
+    except TypeError:
+        _sb_env_required = True
+    check("E1 rlimits and env: PTY caps hooked, explicit child env required",
+          set(_sandbox._GENEROUS_LIMITS) == {
+              _sandbox.resource.RLIMIT_NOFILE, _sandbox.resource.RLIMIT_NPROC,
+          }
+          and _sandbox.profile_preexec_fn("lesson-agent") is not None
+          and _sandbox.profile_preexec_fn("lesson-runner") is not None
+          and _sb_env_required)
+
     # --- Retro capture (docs/retro-spec.md, issue #49) ----------------------
     # The period grammar mirrors exp2res services/time_input.py; the journaled
     # full-snapshot payload (incl. retro_uuid) is the future adapter's wire format.

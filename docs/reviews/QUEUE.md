@@ -19,7 +19,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
+- [ ] 2026-07-21 — `40dfa69..HEAD` on `fix/16-e1-sandbox-launcher` —
+  `app/sandbox.py`, `scripts/probe_sandbox_profiles.py`, `verify.py` — phase E
+  session E1 adds the bubblewrap runtime probe, pure three-profile argv builder,
+  fail-closed sandbox spawn helper, agent/learner rlimit hook, on-host profile
+  probe, and verifier coverage; no live terminal spawn path changes.
 
 ## Done
 
