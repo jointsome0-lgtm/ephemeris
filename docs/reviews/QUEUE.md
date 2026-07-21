@@ -19,16 +19,27 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-21 — `530556f..HEAD` on
-  `fix/16-e2-lesson-agent-sandbox` — `app/terminal.py`, `app/sandbox.py`,
+_None._
+
+## Done
+
+- [x] 2026-07-21 — de51c00, def1b111 — `app/terminal.py`, `app/sandbox.py`,
   `verify.py` — phase E session E2 classifies every session-create request with
   a `lesson` parameter as `lesson-agent`, spawns it through the E1 sandbox
   launcher with visible fail-closed refusal, records immutable creation-time
   role/workspace/profile on the session, reports role in the WS handshake, and
   limits proxy injection to host-network roles; plain sessions retain the
-  direct repository shell path.
-
-## Done
+  direct repository shell path. LANDED via merge commit def1b111; its tree is
+  byte-identical to reviewed branch head de51c00. Drained 2026-07-21 →
+  `2026-07-21-lesson-agent-sandbox-review.md`: no Critical, High, Medium, Low,
+  or Info finding; zero fix cycles. Closing gates: E1 S1 remains resolved;
+  terminal-opt-in T1 is resolved for lesson-agent and remains accepted for the
+  deliberately plain owner shell; intentional agent network/credential posture
+  is unchanged; terminal-tab L1 and earlier terminal/workspace/writer
+  protections remain resolved. Final verdict: SAFE TO MAKE LIVE for the
+  documented direct-loopback single-worker deployment; wider/proxy-adjacent,
+  multi-user, learner, or runner deployment NO. Live restart is owner-only and
+  was not performed.
 
 - [x] 2026-07-21 — 6aa80ca, 53b8481, 4161f76, f59e84a —
   `app/sandbox.py`, `scripts/probe_sandbox_profiles.py`, `verify.py` — phase E
