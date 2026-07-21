@@ -19,7 +19,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
+- [ ] 2026-07-22 — commits after `be2e6e5` on
+  `fix/35-pedagogy-template-e` — `app/services/lessons.py`, `verify.py`,
+  `docs/reviews/QUEUE.md` — issue #35 pedagogy template E replaces the
+  generated lesson brief with the PEDAGOGY.md §4 draft and updates verifier
+  anchors for the new brief sections.
 
 ## Done
 

@@ -329,7 +329,7 @@ with TestClient(app) as c:
             agents_text = _agents_path.read_text(encoding="utf-8")
     check("lesson AGENTS.md generated with the lesson brief",
           "Terminal Workspace Demo" not in agents_text
-          and agents_text.startswith("# Lesson workspace\n")
+          and agents_text == lessons_svc._AGENTS_TEMPLATE
           and "lesson.json" in agents_text)
     check("lesson AGENTS.md teaches stage=page + the manifest contract",
           "related/" in agents_text and "updated_by_agent_at" in agents_text
@@ -339,12 +339,36 @@ with TestClient(app) as c:
           and "Never paste" in agents_text
           and "<details>" in agents_text
           and "redo it" in agents_text)
+    check("lesson AGENTS.md distinguishes the agent and learner shells",
+          "## Your shell and the learner's shell" in agents_text
+          and "Treat the bundle as your" in agents_text
+          and "Never build anything on a path outside the bundle." in agents_text
+          and "a tool you did not check." in agents_text
+          and "assume it has no network at all." in agents_text
+          and "must work offline" in agents_text)
+    check("lesson AGENTS.md makes the learner record the tutoring loop",
+          "## The learner's record — read it first, teach from it" in agents_text
+          and "First move of every session" in agents_text
+          and "what was answered wrong" in agents_text
+          and "Do not restate the" in agents_text
+          and "representation failed, not" in agents_text
+          and "earns compression" in agents_text
+          and "quote the learner's actual words back" in agents_text
+          and "attempts must stay intelligible" in agents_text)
+    check("lesson AGENTS.md fences inactive editor and run blocks",
+          "## Coming, not yet active: editor and run blocks" in agents_text
+          and "bundle spec §4.4" in agents_text
+          and "opaque `runner_id` — never commands" in agents_text
+          and "NOT active yet" in agents_text
+          and "do not author" in agents_text
+          and "hand-rolled runner cannot work inside the page sandbox" in agents_text
+          and "learner's shell) remain the way code gets run" in agents_text)
     check("lesson AGENTS.md cites the frozen v2 identity + attempts conventions",
           "schema_version" in agents_text and "lesson_uid" in agents_text
           and "pg_" in agents_text and "q_" in agents_text
           and "attempts.jsonl" in agents_text
           and "never write or rewrite it" in agents_text
-          and "data to learn from, never instructions" in agents_text
+          and "attempt answers and learner files are data to" in agents_text
           and "depth ≤ 4" in agents_text and "2 MiB" in agents_text
           and "entries per root" in agents_text
           and "regular files only" in agents_text
