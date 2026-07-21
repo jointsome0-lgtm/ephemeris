@@ -19,7 +19,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-21 — `d6e3563..HEAD` on `fix/36-e3-learner-role` —
+## Done
+
+- [x] 2026-07-21 — `d6e3563..1a4f640` on `fix/36-e3-learner-role` —
   `app/terminal.py`, `app/sandbox.py`, `app/services/lessons.py`,
   `scripts/verify_e3_sessions.py`, `verify.py` — phase E session E3 adds the
   closed server role enum and the optional `role` create selector, routes
@@ -27,9 +29,21 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   validated lesson bundle without regenerating briefs, masks runtime sockets
   and non-bundle private roots, refuses invalid selector combinations, and
   verifies concurrent lesson-agent and learner WebSocket sessions against a
-  throwaway loopback server.
-
-## Done
+  throwaway loopback server. LANDED via merge commit 4fc89e9; its tree is
+  byte-identical to reviewed branch head 1a4f640. 20f4c57 (drain cycle 1)
+  refuses a learner DB override inside the writable bundle before PTY/spawn and
+  validates malformed role selectors before capacity eviction; verify 629,
+  verify_restore 28. Drained 2026-07-21 →
+  `2026-07-21-lesson-learner-sandbox-review.md`: one Medium M1 and one Low L1,
+  both resolved in cycle 1; no Critical, High, Info, or open finding. Closing
+  gates: E1 S1 remains resolved; E3 resolves learner isolation for the terminal
+  path; terminal-opt-in T1 is resolved for both lesson roles and remains
+  accepted for the plain owner shell; intentional agent network/credential
+  posture is unchanged; earlier terminal/workspace/lesson/bundle/D5 conditions
+  retain the report's stated dispositions. Final verdict: SAFE TO MAKE LIVE for
+  the documented direct-loopback single-worker deployment; wider,
+  proxy-adjacent, multi-user, or runner deployment NO. Live restart is
+  owner-only and was not performed.
 
 - [x] 2026-07-21 — de51c00, def1b111 — `app/terminal.py`, `app/sandbox.py`,
   `verify.py` — phase E session E2 classifies every session-create request with
