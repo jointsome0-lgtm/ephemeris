@@ -215,8 +215,15 @@ PAGE_IDENTITY_MAX_BYTES = 4 * 1024 * 1024
 def _cache_page_digest(path: Path, key: tuple, digest: str) -> None:
     if len(_PAGE_DIGEST_CACHE) >= _PAGE_DIGEST_CACHE_MAX:
         # evict the oldest entry (insertion order) — a full working set no
-        # longer dumps the whole cache back into cold re-hashing (drain L3)
-        _PAGE_DIGEST_CACHE.pop(next(iter(_PAGE_DIGEST_CACHE)))
+        # longer dumps the whole cache back into cold re-hashing (drain L3).
+        # Tolerant of concurrent callers (PR-60 round 7): two threads racing
+        # this section may pick the same victim (pop default) or step on
+        # each other's iteration (guard) — eviction is best-effort, never a
+        # request failure.
+        try:
+            _PAGE_DIGEST_CACHE.pop(next(iter(_PAGE_DIGEST_CACHE)), None)
+        except (StopIteration, RuntimeError):
+            pass
     _PAGE_DIGEST_CACHE[str(path)] = (key, digest)
 
 
