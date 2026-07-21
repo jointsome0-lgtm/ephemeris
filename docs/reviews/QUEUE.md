@@ -19,19 +19,37 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-21 — `9c85795` through branch `HEAD` on
-  `fix/42-e4-terminal-surfaces` — the entry stays current with every E4 branch
-  commit until the final concrete head is recorded — `app/static/src/terminal.ts`, emitted
-  `app/static/terminal.js`, `app/templates/base.html`,
-  `app/templates/learn.html`, `app/static/style.css`, `.gitattributes`,
-  `verify.py` — phase E session E4 converts the existing terminal client to
-  strict TypeScript and adds a lesson-only bottom learner drawer beside the
-  existing agent surface. The learner drawer opens and connects only on a
-  deliberate click, requests the server's `lesson-learner` role on creation,
-  accepts role from the server session message, scopes stored tabs to the
-  current lesson, and uses storage keys distinct from the retained agent keys.
+_None._
 
 ## Done
+
+- [x] 2026-07-21 — `9c85795`, `f7d3b4c`, `862d3b3` on
+  `fix/42-e4-terminal-surfaces`; LANDED via merge commit `d355af1`, whose tree
+  is byte-identical to reviewed branch head `862d3b3` —
+  `app/static/src/terminal.ts`, emitted
+  `app/static/terminal.js`, `app/templates/base.html`,
+  `app/templates/learn.html`, `app/static/style.css`, `.gitattributes`,
+  `verify.py`; drain fix also touches `.github/workflows/ci.yml` — phase E
+  session E4 converts the existing terminal client to strict TypeScript and
+  adds a lesson-only bottom learner drawer beside the existing agent surface.
+  The learner drawer opens and connects only on a deliberate click, requests
+  the server's `lesson-learner` role on creation, accepts role from the server
+  session message, scopes stored tabs to the current lesson, and uses storage
+  keys distinct from the retained agent keys. `6af3af1` (drain cycle 1) makes
+  clean CI install the pinned TypeScript toolchain and fail closed if it cannot
+  check source/emitted-runtime parity, and retains the newest/current learner
+  lesson inside the bounded persisted tab set; verify 638, verify_restore 28.
+  Drained 2026-07-22 → `2026-07-22-terminal-surfaces-review.md`: one Medium M1
+  and one Low L1, both resolved in cycle 1; no Critical, High, Info, or open
+  finding. Closing gates: E3's two-surface client condition is resolved while
+  runner remains later scope; terminal-tab L1 remains resolved;
+  terminal-opt-in T1 is resolved for both lesson roles and accepted for the
+  plain owner shell; agent network/credential posture is unchanged; earlier
+  terminal, workspace, sandbox, bundle, D5, and D4 conditions retain the
+  report's explicit dispositions. Final verdict: SAFE TO MAKE LIVE for the
+  documented direct-loopback single-worker deployment; wider, proxy-adjacent,
+  multi-user, or runner deployment NO. Live restart is owner-only and was not
+  performed.
 
 - [x] 2026-07-21 — `d6e3563..1a4f640` on `fix/36-e3-learner-role` —
   `app/terminal.py`, `app/sandbox.py`, `app/services/lessons.py`,
