@@ -1787,6 +1787,28 @@ with TestClient(app) as c:
     check("stat race in the size pre-check falls through, never a 500",
           _van_state["n"] >= 2 and _van_info["exists"] is True
           and _van_info["bridge_page"] is not None)
+    # round 4: a symlink raced in AFTER the path_has_symlink() check (mocked
+    # away here) must not have its target sized by the pre-check — lstat +
+    # S_ISREG routes it to the O_NOFOLLOW open, which fails closed (§2)
+    _r4_target = _at_dir / "oversized-decoy.html"
+    _r4_target.write_bytes(b"z" * (lessons_svc.PAGE_IDENTITY_MAX_BYTES + 1))
+    _r4_orig = (_at_dir / "index.html").read_bytes()
+    (_at_dir / "index.html").unlink()
+    _os.symlink(_r4_target, _at_dir / "index.html")
+    # freeze the raced state: the guard and the resolve() ran on the clean
+    # pre-swap path (mocked), the swapped-in symlink is what lstat/open see
+    with _d5_mock.patch.object(lessons_svc.bundle_schema, "path_has_symlink",
+                               return_value=False), \
+            _d5_mock.patch.object(lessons_svc, "_entry_path",
+                                  lambda slug, entry: _at_dir / entry):
+        _r4_info = lessons_svc.lesson_file_info(_at, "index.html")
+    (_at_dir / "index.html").unlink()
+    (_at_dir / "index.html").write_bytes(_r4_orig)  # restore
+    _r4_target.unlink()
+    check("raced-in symlink to an oversized target fails closed, no identity",
+          _r4_info["exists"] is False and _r4_info["bridge_page"] is None
+          and not any(f["code"] == "page-too-large"
+                      for f in _r4_info["findings"]))
     # the digest cache evicts one entry when full, never the whole set
     check("page digest cache evicts oldest, not clear-all",
           "_PAGE_DIGEST_CACHE.clear()" not in

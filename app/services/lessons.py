@@ -453,13 +453,21 @@ def _file_info(
     if exists and bridge_identity and read.bridge_eligible and lesson.get("uid"):
         page_id = next((p["id"] for p in read.pages if p["path"] == entry), None)
         try:
-            # size pre-check only; a page vanishing between is_file() and
-            # here (PR-60 round 3) falls through to the hash path, whose
-            # descriptor-bound open reports it missing instead of a 500
-            pre_stat = path.stat() if page_id else None
+            # size pre-check only, and no-follow (PR-60 rounds 3-4): a page
+            # vanishing here falls through to the hash path, whose
+            # descriptor-bound open reports it missing instead of a 500 —
+            # and a symlink raced in after the path_has_symlink() check
+            # must not have its TARGET sized (§2): lstat + S_ISREG sends
+            # anything non-regular to the same O_NOFOLLOW open, which
+            # fails closed.
+            pre_stat = os.lstat(path) if page_id else None
         except OSError:
             pre_stat = None
-        if pre_stat is not None and pre_stat.st_size > PAGE_IDENTITY_MAX_BYTES:
+        if (
+            pre_stat is not None
+            and stat_module.S_ISREG(pre_stat.st_mode)
+            and pre_stat.st_size > PAGE_IDENTITY_MAX_BYTES
+        ):
             # Supported-size bound (D5): the page renders (streaming route)
             # but carries no bridge identity — no page_rev exists for it, so
             # no attempt can bind to it. Visible, never silent.
