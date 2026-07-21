@@ -92,13 +92,19 @@ def clean_env(*, proxy: bool) -> dict[str, str]:
     return env
 
 
-def run_profile(profile: str, bundle: Path) -> dict[str, object]:
+def run_profile(
+    profile: str,
+    bundle: Path,
+    bundle_root: Path,
+) -> dict[str, object]:
     command = [
         "/usr/bin/python3", "-c", _INSIDE_PROBE,
         profile, str(bundle), str(ROOT),
     ]
     result = subprocess.run(
-        build_sandbox_argv(profile, bundle) + ["--", *command],
+        build_sandbox_argv(
+            profile, bundle, bundle_root=bundle_root
+        ) + ["--", *command],
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
@@ -122,7 +128,7 @@ def run_profile(profile: str, bundle: Path) -> dict[str, object]:
     return payload
 
 
-def run_agent_api(bundle: Path) -> None:
+def run_agent_api(bundle: Path, bundle_root: Path) -> None:
     command = [
         "codex", "exec", "--ephemeral", "--skip-git-repo-check",
         "--dangerously-bypass-approvals-and-sandbox", "--color", "never",
@@ -130,7 +136,9 @@ def run_agent_api(bundle: Path) -> None:
         f"Reply with exactly {SENTINEL} and nothing else.",
     ]
     result = subprocess.run(
-        build_sandbox_argv("lesson-agent", bundle) + ["--", *command],
+        build_sandbox_argv(
+            "lesson-agent", bundle, bundle_root=bundle_root
+        ) + ["--", *command],
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
@@ -151,12 +159,14 @@ def main() -> int:
 
     require_sandbox_runtime()
     with tempfile.TemporaryDirectory(prefix="ephemeris-e1-probe-", dir="/tmp") as raw:
-        bundle = Path(raw) / "invented-demo-bundle"
+        bundle_root = Path(raw)
+        bundle = bundle_root / "invented-demo-bundle"
         bundle.mkdir()
         for profile in ("lesson-agent", "lesson-learner", "lesson-runner"):
-            print(json.dumps(run_profile(profile, bundle), sort_keys=True))
+            payload = run_profile(profile, bundle, bundle_root)
+            print(json.dumps(payload, sort_keys=True))
         if not args.skip_agent_api:
-            run_agent_api(bundle)
+            run_agent_api(bundle, bundle_root)
     print("E1 sandbox profile probe: PASS")
     return 0
 

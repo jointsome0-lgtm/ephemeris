@@ -3725,10 +3725,14 @@ with TestClient(app) as c:
     from app import sandbox as _sandbox
     from unittest import mock as _sandbox_mock
 
-    _sb_bundle = "/tmp/ephemeris-e1-verify/invented-bundle"
-    _sb_agent = _sandbox.build_sandbox_argv("lesson-agent", _sb_bundle)
-    _sb_learner = _sandbox.build_sandbox_argv("lesson-learner", _sb_bundle)
-    _sb_runner = _sandbox.build_sandbox_argv("lesson-runner", _sb_bundle)
+    _sb_root = "/tmp/ephemeris-e1-verify"
+    _sb_bundle = f"{_sb_root}/invented-bundle"
+    _sb_agent = _sandbox.build_sandbox_argv(
+        "lesson-agent", _sb_bundle, bundle_root=_sb_root)
+    _sb_learner = _sandbox.build_sandbox_argv(
+        "lesson-learner", _sb_bundle, bundle_root=_sb_root)
+    _sb_runner = _sandbox.build_sandbox_argv(
+        "lesson-runner", _sb_bundle, bundle_root=_sb_root)
 
     def _sb_mounts(argv, flag):
         return [(argv[i + 1], argv[i + 2]) for i, arg in enumerate(argv)
@@ -3793,17 +3797,31 @@ with TestClient(app) as c:
           and _sb_runner[-4:] == ["--dir", _sandbox.RUNNER_WORKDIR,
                                   "--chdir", _sandbox.RUNNER_WORKDIR])
     try:
-        _sandbox.build_sandbox_argv("plain", _sb_bundle)
+        _sandbox.build_sandbox_argv("plain", _sb_bundle, bundle_root=_sb_root)
         _sb_bad_profile = False
     except ValueError:
         _sb_bad_profile = True
     try:
-        _sandbox.build_sandbox_argv("lesson-agent", "relative/bundle")
+        _sandbox.build_sandbox_argv(
+            "lesson-agent", "relative/bundle", bundle_root=_sb_root)
         _sb_bad_path = False
     except ValueError:
         _sb_bad_path = True
-    check("E1 argv builder rejects unknown profiles and non-absolute bundles",
-          _sb_bad_profile and _sb_bad_path)
+    _sb_boundary_rejections = []
+    for _bad_bundle, _bad_root in (
+        ("/", _sb_root),
+        (_sb_root, _sb_root),
+        ("/tmp/invented-outside", _sb_root),
+        (_sb_bundle, "/"),
+    ):
+        try:
+            _sandbox.build_sandbox_argv(
+                "lesson-agent", _bad_bundle, bundle_root=_bad_root)
+            _sb_boundary_rejections.append(False)
+        except ValueError:
+            _sb_boundary_rejections.append(True)
+    check("E1 argv builder rejects unknown profiles and unsafe bundle authorities",
+          _sb_bad_profile and _sb_bad_path and all(_sb_boundary_rejections))
 
     _sandbox._cached_runtime_probe.cache_clear()
     _sb_probe_ok = _types.SimpleNamespace(returncode=0, stderr="")
@@ -3826,7 +3844,8 @@ with TestClient(app) as c:
             for _ in range(2):
                 try:
                     await _sandbox.spawn_sandboxed(
-                        "lesson-agent", _sb_bundle, ["/bin/bash", "-i"], env={})
+                        "lesson-agent", _sb_bundle, ["/bin/bash", "-i"],
+                        bundle_root=_sb_root, env={})
                 except _sandbox.SandboxUnavailableError as exc:
                     results["probe_visible"] = "userns denied" in str(exc)
             results["probe_cached"] = _sandbox.subprocess.run.call_count == 1
@@ -3840,7 +3859,8 @@ with TestClient(app) as c:
                     side_effect=OSError("exec refused")) as spawn:
             try:
                 await _sandbox.spawn_sandboxed(
-                    "lesson-agent", _sb_bundle, ["/bin/bash", "-i"], env={})
+                    "lesson-agent", _sb_bundle, ["/bin/bash", "-i"],
+                    bundle_root=_sb_root, env={})
             except _sandbox.SandboxSpawnError as exc:
                 results["spawn_visible"] = "exec refused" in str(exc)
             results["only_bwrap_attempted"] = (
@@ -3856,7 +3876,8 @@ with TestClient(app) as c:
     check("E1 no-fallback: bwrap spawn failure is visible, never a bare command retry",
           _sb_fail.get("spawn_visible") and _sb_fail.get("only_bwrap_attempted"))
     try:
-        _sandbox.spawn_sandboxed("lesson-agent", _sb_bundle, ["/bin/true"])
+        _sandbox.spawn_sandboxed(
+            "lesson-agent", _sb_bundle, ["/bin/true"], bundle_root=_sb_root)
         _sb_env_required = False
     except TypeError:
         _sb_env_required = True

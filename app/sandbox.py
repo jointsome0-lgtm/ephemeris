@@ -90,26 +90,48 @@ _PROFILES: tuple[SandboxProfile, ...] = (
 )
 
 
-def _pure_bundle_path(bundle_dir: str | os.PathLike[str]) -> str:
-    """Validate the mount target lexically; never inspect the filesystem."""
+def _pure_bundle_path(
+    bundle_dir: str | os.PathLike[str],
+    bundle_root: str | os.PathLike[str],
+) -> str:
+    """Validate a strict descendant of a trusted root without filesystem I/O."""
     path = Path(bundle_dir)
-    if not path.is_absolute() or ".." in path.parts:
-        raise ValueError("bundle_dir must be an absolute path without '..'")
+    root = Path(bundle_root)
+    if (
+        not path.is_absolute()
+        or not root.is_absolute()
+        or ".." in path.parts
+        or ".." in root.parts
+    ):
+        raise ValueError("bundle_dir and bundle_root must be absolute without '..'")
+    if root == Path(root.anchor):
+        raise ValueError("bundle_root must not be the filesystem root")
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("bundle_dir must be inside bundle_root") from exc
+    if relative == Path("."):
+        raise ValueError("bundle_dir must be a strict descendant of bundle_root")
     return str(path)
 
 
 def build_sandbox_argv(
     profile: SandboxProfile,
     bundle_dir: str | os.PathLike[str],
+    *,
+    bundle_root: str | os.PathLike[str],
 ) -> list[str]:
     """Purely build the bubblewrap prefix for ``profile`` and ``bundle_dir``.
 
     The returned argv ends at the profile's ``--chdir``.  The caller appends
     ``--`` and the command to execute.  No path is resolved or probed here.
+    ``bundle_root`` is the caller's trusted bundle authority.  Requiring the
+    mounted directory to be below it prevents a late bundle bind from replacing
+    the root, home, or temporary-filesystem masks.
     """
     if profile not in _PROFILES:
         raise ValueError(f"unknown sandbox profile: {profile}")
-    bundle = _pure_bundle_path(bundle_dir)
+    bundle = _pure_bundle_path(bundle_dir, bundle_root)
 
     argv = [BWRAP, "--unshare-all"]
     if profile == "lesson-agent":
@@ -221,6 +243,7 @@ async def spawn_sandboxed(
     bundle_dir: str | os.PathLike[str],
     command: Sequence[str],
     *,
+    bundle_root: str | os.PathLike[str],
     stdin: int | None = None,
     stdout: int | None = None,
     stderr: int | None = None,
@@ -231,7 +254,9 @@ async def spawn_sandboxed(
     if not command:
         raise ValueError("sandbox command must not be empty")
     require_sandbox_runtime()
-    argv = build_sandbox_argv(profile, bundle_dir) + ["--", *command]
+    argv = build_sandbox_argv(
+        profile, bundle_dir, bundle_root=bundle_root
+    ) + ["--", *command]
     try:
         return await asyncio.create_subprocess_exec(
             *argv,
