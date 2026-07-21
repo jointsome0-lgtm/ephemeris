@@ -19,7 +19,14 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
+- [ ] 2026-07-21 — `530556f..HEAD` on
+  `fix/16-e2-lesson-agent-sandbox` — `app/terminal.py`, `app/sandbox.py`,
+  `verify.py` — phase E session E2 classifies every session-create request with
+  a `lesson` parameter as `lesson-agent`, spawns it through the E1 sandbox
+  launcher with visible fail-closed refusal, records immutable creation-time
+  role/workspace/profile on the session, reports role in the WS handshake, and
+  limits proxy injection to host-network roles; plain sessions retain the
+  direct repository shell path.
 
 ## Done
 

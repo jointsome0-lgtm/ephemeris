@@ -357,10 +357,11 @@ with TestClient(app) as c:
           and lessons_svc.prepare_terminal_workspace("no-such-lesson-slug") is None
           and lessons_svc.prepare_terminal_workspace(None) is None)
     term_py = (ROOT / "app" / "terminal.py").read_text(encoding="utf-8")
-    check("terminal.py spawns lesson sessions in the lesson workspace",
+    check("terminal.py routes lesson sessions through the lesson-agent sandbox",
           "prepare_terminal_workspace" in term_py
           and 'ws.query_params.get("lesson")' in term_py
-          and 'workspace["dir"] if workspace else str(_REPO_ROOT)' in term_py)
+          and 'await spawn_sandboxed(' in term_py
+          and '"lesson-agent" if lesson is not None else "plain"' in term_py)
     check("terminal.js opens/reuses a lesson tab and passes the slug on create",
           "function openLessonTab" in terminal_js
           and "'lesson=' + encodeURIComponent(tab.lesson)" in terminal_js
@@ -3610,7 +3611,8 @@ with TestClient(app) as c:
         master, slave = _pty.openpty()
         os.set_blocking(master, False)
         sess = _terminal._TermSession(
-            "verify-term-sid", _types.SimpleNamespace(returncode=0), master)
+            "verify-term-sid", _types.SimpleNamespace(returncode=0), master,
+            role="plain", workspace=str(ROOT), sandbox_profile=None)
         _terminal._SESSIONS[sess.sid] = sess
         owner, stale = _FakeSock(), _FakeSock()
         sess.attach(owner)
@@ -3650,7 +3652,8 @@ with TestClient(app) as c:
         attrs[3] &= ~(_termios.ICANON | _termios.ECHO)  # raw-ish: a plain byte queue
         _termios.tcsetattr(slave3, _termios.TCSANOW, attrs)
         sess3 = _terminal._TermSession(
-            "verify-term-sid3", _types.SimpleNamespace(returncode=0), master3)
+            "verify-term-sid3", _types.SimpleNamespace(returncode=0), master3,
+            role="plain", workspace=str(ROOT), sandbox_profile=None)
         _terminal._SESSIONS[sess3.sid] = sess3
         old_sock, new_sock = _FakeSock(), _FakeSock()
         sess3.attach(old_sock)
@@ -3691,7 +3694,8 @@ with TestClient(app) as c:
         master2, slave2 = _pty.openpty()
         os.set_blocking(master2, False)
         sess2 = _terminal._TermSession(
-            "verify-term-sid2", _types.SimpleNamespace(returncode=0), master2)
+            "verify-term-sid2", _types.SimpleNamespace(returncode=0), master2,
+            role="plain", workspace=str(ROOT), sandbox_profile=None)
         _terminal._SESSIONS[sess2.sid] = sess2
         sess2.detached_at = _time.monotonic() - 2 * _terminal._SESSION_TTL
         await sess2._attach_lock.acquire()
@@ -3888,6 +3892,218 @@ with TestClient(app) as c:
           and _sandbox.profile_preexec_fn("lesson-agent") is not None
           and _sandbox.profile_preexec_fn("lesson-runner") is not None
           and _sb_env_required)
+
+    # --- E2: lesson-agent is server-owned, sandboxed, immutable, fail-closed ---
+    class _E2Sock:
+        def __init__(self, query):
+            self.query_params = query
+            self.sent_text = []
+            self.sent_bytes = []
+            self.accepted = False
+            self.closed = False
+
+        async def accept(self):
+            self.accepted = True
+
+        async def close(self, code=None):
+            self.closed = True
+
+        async def send_text(self, data):
+            self.sent_text.append(data)
+
+        async def send_bytes(self, data):
+            self.sent_bytes.append(data)
+
+        async def receive(self):
+            return {"type": "websocket.disconnect"}
+
+    async def _e2_contract():
+        results = {}
+        workspace = {"dir": ws_info["dir"], "slug": _lt["slug"], "title": "demo"}
+        proc = _types.SimpleNamespace(returncode=0)
+
+        # A lesson parameter is classified server-side and reaches only E1's
+        # lesson-agent launcher with the lesson root as the bind authority.
+        with _sandbox_mock.patch.object(
+                _terminal, "prepare_terminal_workspace", return_value=workspace), \
+                _sandbox_mock.patch.object(
+                    _terminal, "_detect_proxy_env", return_value={
+                        "HTTP_PROXY": "http://127.0.0.1:10809",
+                    }) as proxy_detect, \
+                _sandbox_mock.patch.object(
+                    _terminal, "spawn_sandboxed",
+                    new=_sandbox_mock.AsyncMock(return_value=proc)) as sandbox_spawn, \
+                _sandbox_mock.patch.object(
+                    _terminal.asyncio, "create_subprocess_exec",
+                    new=_sandbox_mock.AsyncMock()) as bare_spawn, \
+                _sandbox_mock.patch.object(_terminal._TermSession, "start"):
+            lesson_sess = await _terminal._create_session(_lt["slug"])
+        spawn_args = sandbox_spawn.call_args
+        results["lesson_launcher"] = (
+            lesson_sess is not None
+            and lesson_sess.role == "lesson-agent"
+            and lesson_sess.workspace == workspace["dir"]
+            and lesson_sess.sandbox_profile == "lesson-agent"
+            and proxy_detect.call_args.args == ("lesson-agent",)
+            and bare_spawn.call_count == 0
+            and spawn_args.args[:3] == (
+                "lesson-agent", workspace["dir"],
+                [os.environ.get("SHELL") or "/bin/bash", "-i"],
+            )
+            and spawn_args.kwargs["bundle_root"] == str(lessons_svc.LESSONS_DIR)
+            and spawn_args.kwargs["preexec_fn"] is _terminal._child_setup
+            and spawn_args.kwargs["env"]["HTTP_PROXY"]
+                == "http://127.0.0.1:10809"
+        )
+        _terminal._SESSIONS.pop(lesson_sess.sid, None)
+        os.close(lesson_sess.master_fd)
+
+        # Both E1 failure classes become the terminal's visible lesson refusal,
+        # and the direct subprocess path is never attempted as fallback.
+        refusal_kinds = []
+        fallback_calls = 0
+        for failure in (
+            _sandbox.SandboxUnavailableError("probe denied"),
+            _sandbox.SandboxSpawnError("bwrap exec denied"),
+        ):
+            with _sandbox_mock.patch.object(
+                    _terminal, "prepare_terminal_workspace", return_value=workspace), \
+                    _sandbox_mock.patch.object(
+                        _terminal, "_detect_proxy_env", return_value={}), \
+                    _sandbox_mock.patch.object(
+                        _terminal, "spawn_sandboxed",
+                        new=_sandbox_mock.AsyncMock(side_effect=failure)), \
+                    _sandbox_mock.patch.object(
+                        _terminal.asyncio, "create_subprocess_exec",
+                        new=_sandbox_mock.AsyncMock()) as direct:
+                try:
+                    await _terminal._create_session(_lt["slug"])
+                except _terminal._LessonSandboxError:
+                    refusal_kinds.append(type(failure))
+                fallback_calls += direct.call_count
+        refusal_ws = _E2Sock({"lesson": _lt["slug"]})
+        with _sandbox_mock.patch.object(_terminal, "_ws_is_trusted", return_value=True), \
+                _sandbox_mock.patch.object(_terminal, "_reap_idle"), \
+                _sandbox_mock.patch.object(_terminal, "_ensure_reaper"), \
+                _sandbox_mock.patch.object(
+                    _terminal, "_create_session",
+                    new=_sandbox_mock.AsyncMock(
+                        side_effect=_terminal._LessonSandboxError(_lt["slug"]))):
+            await _terminal._serve_ws(refusal_ws)
+        results["sandbox_refusal"] = (
+            refusal_kinds == [
+                _sandbox.SandboxUnavailableError, _sandbox.SandboxSpawnError,
+            ]
+            and fallback_calls == 0
+            and refusal_ws.accepted and refusal_ws.closed
+            and b"refusing to open an unsandboxed shell" in b"".join(
+                refusal_ws.sent_bytes)
+        )
+
+        # No lesson parameter keeps the owner's existing bare repo shell.
+        with _sandbox_mock.patch.object(
+                _terminal, "_detect_proxy_env", return_value={}) as proxy_detect, \
+                _sandbox_mock.patch.object(
+                    _terminal, "spawn_sandboxed",
+                    new=_sandbox_mock.AsyncMock()) as sandbox_spawn, \
+                _sandbox_mock.patch.object(
+                    _terminal.asyncio, "create_subprocess_exec",
+                    new=_sandbox_mock.AsyncMock(return_value=proc)) as bare_spawn, \
+                _sandbox_mock.patch.object(_terminal._TermSession, "start"):
+            plain_sess = await _terminal._create_session()
+        plain_call = bare_spawn.call_args
+        results["plain_unchanged"] = (
+            plain_sess is not None
+            and plain_sess.role == "plain"
+            and plain_sess.workspace == str(_terminal._REPO_ROOT)
+            and plain_sess.sandbox_profile is None
+            and proxy_detect.call_args.args == ("plain",)
+            and sandbox_spawn.call_count == 0
+            and plain_call.args == (os.environ.get("SHELL") or "/bin/bash", "-i")
+            and plain_call.kwargs["cwd"] == str(_terminal._REPO_ROOT)
+            and plain_call.kwargs["preexec_fn"] is _terminal._child_setup
+        )
+        _terminal._SESSIONS.pop(plain_sess.sid, None)
+        os.close(plain_sess.master_fd)
+
+        # Attach with conflicting query data uses the live SID wholesale and
+        # reports its stored role; the creation-time properties have no setters.
+        attach_master, attach_slave = _pty.openpty()
+        attach_sess = _terminal._TermSession(
+            "verify-e2-attach", proc, attach_master,
+            role="lesson-agent", workspace=workspace["dir"],
+            sandbox_profile="lesson-agent")
+        _terminal._SESSIONS[attach_sess.sid] = attach_sess
+        attach_ws = _E2Sock({
+            "sid": attach_sess.sid,
+            "lesson": "conflicting-lesson",
+            "role": "plain",
+        })
+        immutable = True
+        for attr, value in (
+            ("role", "plain"), ("workspace", str(ROOT)),
+            ("sandbox_profile", None),
+        ):
+            try:
+                setattr(attach_sess, attr, value)
+                immutable = False
+            except AttributeError:
+                pass
+        before = (
+            attach_sess.role, attach_sess.workspace, attach_sess.sandbox_profile,
+        )
+        with _sandbox_mock.patch.object(_terminal, "_ws_is_trusted", return_value=True), \
+                _sandbox_mock.patch.object(_terminal, "_reap_idle"), \
+                _sandbox_mock.patch.object(_terminal, "_ensure_reaper"), \
+                _sandbox_mock.patch.object(_terminal, "_set_winsize"), \
+                _sandbox_mock.patch.object(
+                    _terminal, "_create_session",
+                    new=_sandbox_mock.AsyncMock()) as create_again:
+            await _terminal._serve_ws(attach_ws)
+        handshake = json.loads(attach_ws.sent_text[0])
+        results["attach_immutable"] = (
+            immutable and create_again.call_count == 0
+            and before == (
+                attach_sess.role, attach_sess.workspace,
+                attach_sess.sandbox_profile,
+            )
+            and handshake == {
+                "type": "session", "sid": attach_sess.sid,
+                "role": "lesson-agent",
+            }
+        )
+        _terminal._SESSIONS.pop(attach_sess.sid, None)
+        os.close(attach_master)
+        os.close(attach_slave)
+        return results
+
+    _e2 = _asyncio.run(_e2_contract())
+    check("E2 lesson create uses only the lesson-agent sandbox launcher",
+          _e2.get("lesson_launcher"))
+    check("E2 probe/bwrap failures visibly refuse with no bare-shell fallback",
+          _e2.get("sandbox_refusal"))
+    check("E2 plain create stays unsandboxed in the repository",
+          _e2.get("plain_unchanged"))
+    check("E2 attach preserves immutable role/workspace/profile and reports role",
+          _e2.get("attach_immutable"))
+
+    with _sandbox_mock.patch.dict(
+            os.environ,
+            {"EPHEMERIS_TERM_PROXY": "http://127.0.0.1:19091"}):
+        _proxy_plain = _terminal._detect_proxy_env("plain")
+        _proxy_agent = _terminal._detect_proxy_env("lesson-agent")
+        _proxy_learner = _terminal._detect_proxy_env("lesson-learner")
+    with _sandbox_mock.patch.dict(
+            os.environ, {"EPHEMERIS_TERM_PROXY": "off"}):
+        _proxy_off = (
+            _terminal._detect_proxy_env("plain"),
+            _terminal._detect_proxy_env("lesson-agent"),
+        )
+    check("E2 proxy env is limited to host-network roles and honors override-off",
+          _proxy_plain.get("HTTP_PROXY") == "http://127.0.0.1:19091"
+          and _proxy_agent.get("HTTPS_PROXY") == "http://127.0.0.1:19091"
+          and _proxy_learner == {}
+          and _proxy_off == ({}, {}))
 
     # --- Retro capture (docs/retro-spec.md, issue #49) ----------------------
     # The period grammar mirrors exp2res services/time_input.py; the journaled

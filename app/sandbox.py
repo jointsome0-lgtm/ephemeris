@@ -1,7 +1,7 @@
 """Bubblewrap launcher primitives for isolated lesson roles.
 
-E1 defines the profiles and fail-closed spawn seam only.  Live terminal
-sessions are intentionally not routed through this module until E2.
+E1 defines the profiles and fail-closed spawn seam. E2 routes lesson-agent
+terminal sessions through that seam; later phases reuse it for other roles.
 """
 from __future__ import annotations
 

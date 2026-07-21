@@ -35,11 +35,13 @@ import time
 from collections import deque
 from pathlib import Path
 from secrets import token_urlsafe
+from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 
-from .services.lessons import prepare_terminal_workspace
+from .sandbox import SandboxError, SandboxProfile, spawn_sandboxed
+from .services.lessons import LESSONS_DIR, prepare_terminal_workspace
 
 # Repo root: a sensible cwd so agents/commands run against the project by default.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -56,6 +58,17 @@ class _LessonWorkspaceError(Exception):
     """A lesson slug was given but its workspace could not be prepared. The shell
     must NOT open somewhere else instead (e.g. the repo root): the caller asked
     for a lesson-scoped shell and gets a visible refusal, not a silent rescope."""
+
+
+class _LessonSandboxError(Exception):
+    """A lesson workspace resolved, but its required sandbox could not spawn.
+
+    The caller must refuse visibly rather than retry the shell without isolation.
+    """
+
+
+TerminalRole = Literal["plain", "lesson-agent", "lesson-learner"]
+_HOST_NETWORK_ROLES = frozenset(("plain", "lesson-agent"))
 
 
 def is_local_host(host: str | None) -> bool:
@@ -167,7 +180,7 @@ def _socks5h(url: str) -> str:
     return "socks5h://" + url[len("socks5://"):] if url.startswith("socks5://") else url
 
 
-def _detect_proxy_env() -> dict[str, str]:
+def _detect_proxy_env(role: TerminalRole) -> dict[str, str]:
     """Pick an egress so agent CLIs (codex, claude) work from a geo-blocked network.
 
     The systemd service runs with NO proxy, so by default the agents dial
@@ -183,8 +196,12 @@ def _detect_proxy_env() -> dict[str, str]:
     Contract: the return value is the COMPLETE set of proxy vars the child shell
     should have. The child env is built from _child_env(), whose allowlist admits
     no proxy vars, then this is applied on top — so an empty dict reliably means
-    "connect directly".
+    "connect directly". Roles without host networking receive no proxy variables:
+    advertising an unreachable host-loopback proxy would only mislead their tools.
     """
+    if role not in _HOST_NETWORK_ROLES:
+        return {}
+
     override = os.environ.get("EPHEMERIS_TERM_PROXY", "").strip()
     if override.lower() in {"off", "none", "0", "false"}:
         return {}
@@ -276,10 +293,31 @@ class _TermSession:
     """A shell on a PTY, plus a ring buffer of recent output. At most one WebSocket
     is 'attached' at a time; a background pump drains the PTY regardless."""
 
-    def __init__(self, sid: str, proc, master_fd: int) -> None:
+    def __init__(
+        self,
+        sid: str,
+        proc,
+        master_fd: int,
+        *,
+        role: TerminalRole,
+        workspace: str,
+        sandbox_profile: SandboxProfile | None,
+    ) -> None:
+        expected_profile = None if role == "plain" else role
+        if role not in ("plain", "lesson-agent", "lesson-learner"):
+            raise ValueError(f"unknown terminal role: {role}")
+        if sandbox_profile != expected_profile:
+            raise ValueError("terminal role and sandbox profile disagree")
+        if not Path(workspace).is_absolute():
+            raise ValueError("terminal workspace must be absolute")
         self.sid = sid
         self.proc = proc
         self.master_fd = master_fd
+        # Creation-time identity: attach-by-SID has no code path that can replace
+        # these values, and the public properties intentionally have no setters.
+        self._role = role
+        self._workspace = workspace
+        self._sandbox_profile = sandbox_profile
         self.ws: WebSocket | None = None
         self.rows = 24
         self.cols = 80
@@ -293,6 +331,18 @@ class _TermSession:
         self._writer_waiter: asyncio.Future | None = None
         self._send_lock = asyncio.Lock()  # serialize replay vs pump sends on one socket
         self._attach_lock = asyncio.Lock()  # serialize boot-old + attach so one PTY has one reader
+
+    @property
+    def role(self) -> TerminalRole:
+        return self._role
+
+    @property
+    def workspace(self) -> str:
+        return self._workspace
+
+    @property
+    def sandbox_profile(self) -> SandboxProfile | None:
+        return self._sandbox_profile
 
     def remember(self, data: bytes) -> None:
         self._chunks.append(data)
@@ -478,11 +528,17 @@ async def _create_session(lesson: str | None = None) -> "_TermSession | None":
         # refresh the agent brief there, BEFORE any spawn work — a refusal must not
         # cost a PTY. prepare_terminal_workspace is total (never raises; None means
         # "could not prepare") and its DB + file I/O runs in a worker thread.
+        role: TerminalRole = "lesson-agent" if lesson is not None else "plain"
         workspace = None
         if lesson is not None:  # param present at all = lesson-scoped; "" must refuse too
             workspace = await asyncio.to_thread(prepare_terminal_workspace, lesson)
             if workspace is None:
                 raise _LessonWorkspaceError(lesson)
+
+        workspace_dir = workspace["dir"] if workspace is not None else str(_REPO_ROOT)
+        sandbox_profile: SandboxProfile | None = (
+            "lesson-agent" if role == "lesson-agent" else None
+        )
 
         shell = os.environ.get("SHELL") or "/bin/bash"
         env = _child_env()
@@ -491,26 +547,51 @@ async def _create_session(lesson: str | None = None) -> "_TermSession | None":
         # returns is the whole story and EPHEMERIS_TERM_PROXY=off truly means direct.
         # Detection runs in a worker thread: its socket probes block (up to ~0.15s/port),
         # which must not stall the event loop (and every other PTY pump) mid-detect.
-        proxy = await asyncio.to_thread(_detect_proxy_env)
+        proxy = await asyncio.to_thread(_detect_proxy_env, role)
         env.update(proxy)
 
         master_fd, slave_fd = pty.openpty()
         os.set_blocking(master_fd, False)  # pump + input writes are add_reader/add_writer-driven
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                shell, "-i",
-                stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-                preexec_fn=_child_setup,
-                cwd=workspace["dir"] if workspace else str(_REPO_ROOT),
-                env=env,
-            )
-        except (OSError, ValueError):
-            os.close(master_fd)  # no proc took ownership of the master end — don't leak it
-            os.close(slave_fd)
-            return None
+        if sandbox_profile is not None:
+            try:
+                proc = await spawn_sandboxed(
+                    sandbox_profile,
+                    workspace_dir,
+                    [shell, "-i"],
+                    bundle_root=str(LESSONS_DIR),
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    preexec_fn=_child_setup,
+                    env=env,
+                )
+            except (SandboxError, ValueError) as exc:
+                os.close(master_fd)
+                os.close(slave_fd)
+                raise _LessonSandboxError(lesson) from exc
+        else:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    shell, "-i",
+                    stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+                    preexec_fn=_child_setup,
+                    cwd=workspace_dir,
+                    env=env,
+                )
+            except (OSError, ValueError):
+                os.close(master_fd)  # no proc took ownership of the master end — don't leak it
+                os.close(slave_fd)
+                return None
         os.close(slave_fd)  # success: parent keeps only the master end
 
-        sess = _TermSession(token_urlsafe(18), proc, master_fd)
+        sess = _TermSession(
+            token_urlsafe(18),
+            proc,
+            master_fd,
+            role=role,
+            workspace=workspace_dir,
+            sandbox_profile=sandbox_profile,
+        )
         _SESSIONS[sess.sid] = sess
         if proxy.get("HTTP_PROXY"):  # informational banner, replayed with the scrollback
             # Redact credentials, then defang control bytes.
@@ -519,10 +600,11 @@ async def _create_session(lesson: str | None = None) -> "_TermSession | None":
                 (f"\x1b[2m· terminal egress via proxy {shown} — agents bypass geo-blocks; "
                  f"localhost direct (EPHEMERIS_TERM_PROXY=off to disable).\x1b[0m\r\n").encode()
             )
-        if workspace:  # informational banner, replayed with the scrollback
+        if workspace is not None:  # informational banner, replayed with the scrollback
             where = "".join(c for c in workspace["dir"] if c.isprintable())  # defang control bytes
             sess.remember(
-                (f"\x1b[2m· lesson shell — cwd {where} (AGENTS.md refreshed).\x1b[0m\r\n").encode()
+                (f"\x1b[2m· lesson-agent sandbox — cwd {where}; "
+                 f"AGENTS.md refreshed.\x1b[0m\r\n").encode()
             )
         sess.start()
         return sess
@@ -623,8 +705,8 @@ async def _serve_ws(ws: WebSocket) -> None:
     if sess is not None and sess.closed:
         sess = None
     if sess is None:
-        # `lesson` only scopes a NEW session's cwd (attach-by-sid ignores it), so a
-        # reaped lesson session heals into a fresh shell in the same lesson dir.
+        # Query parameters select role/workspace only while creating a session.
+        # A live SID wins wholesale: attach cannot change its role, cwd, or profile.
         try:
             sess = await _create_session(ws.query_params.get("lesson"))
         except _LessonWorkspaceError:
@@ -633,6 +715,18 @@ async def _serve_ws(ws: WebSocket) -> None:
                 await ws.send_bytes(
                     b"\r\n\x1b[31m[terminal: lesson workspace unavailable - "
                     b"refusing to open a shell outside it]\x1b[0m\r\n"
+                )
+            except (RuntimeError, WebSocketDisconnect):
+                pass
+            await ws.close()
+            return
+        except _LessonSandboxError:
+            # The E1 launcher is mandatory for lesson-agent: never retry the shell
+            # directly when its runtime probe or bwrap spawn fails.
+            try:
+                await ws.send_bytes(
+                    b"\r\n\x1b[31m[terminal: lesson sandbox unavailable - "
+                    b"refusing to open an unsandboxed shell]\x1b[0m\r\n"
                 )
             except (RuntimeError, WebSocketDisconnect):
                 pass
@@ -663,7 +757,9 @@ async def _serve_ws(ws: WebSocket) -> None:
                     await old.close()
                 except RuntimeError:
                     pass
-            await ws.send_text(json.dumps({"type": "session", "sid": sess.sid}))
+            await ws.send_text(json.dumps({
+                "type": "session", "sid": sess.sid, "role": sess.role,
+            }))
             async with sess._send_lock:
                 snap = sess.snapshot()
                 sess.attach(ws)
