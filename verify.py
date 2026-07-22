@@ -1961,6 +1961,38 @@ with TestClient(app) as c:
           and _f1_linked.json()["error"] == "unsafe-file")
     _f1_other.unlink()
 
+    # A same-inode direct writer can otherwise change the file between read
+    # chunks while leaving the reader with a made-up mixed snapshot and hash.
+    # The opening/closing descriptor identity must agree before any content is
+    # returned or used as the save comparison authority.
+    _f1_stable_dir = _f1_dir / "attempts" / "blk_safe0001"
+    _f1_stable_dir.mkdir(exist_ok=True)
+    _f1_stable_file = _f1_stable_dir / "main.py"
+    _f1_stable_file.write_bytes(b"A" * artifacts_svc.MAX_FILE_BYTES)
+    _f1_real_read = artifacts_svc.os.read
+    _f1_mid_read_changed = [False]
+
+    def _f1_mutate_during_read(fd, amount):
+        chunk = _f1_real_read(fd, amount)
+        if chunk and not _f1_mid_read_changed[0]:
+            _f1_mid_read_changed[0] = True
+            # Change size as well as bytes so the regression is deterministic
+            # even on a filesystem with coarse timestamp resolution.
+            _f1_stable_file.write_bytes(
+                b"Z" * (artifacts_svc.MAX_FILE_BYTES - 1)
+            )
+        return chunk
+
+    with _mock.patch.object(
+            artifacts_svc.os, "read", _f1_mutate_during_read):
+        try:
+            artifacts_svc.get_artifact(_f1, "blk_safe0001")
+            _f1_mid_read_code = None
+        except artifacts_svc.ArtifactError as exc:
+            _f1_mid_read_code = exc.code
+    check("F1 descriptor read refuses a same-inode mid-read mutation",
+          _f1_mid_read_changed[0] and _f1_mid_read_code == "unsafe-file")
+
     _f1_outside = _f1_dir.parent / "invented-artifact-outside"
     _f1_outside.mkdir()
     _f1_link_parent = _f1_dir / "attempts" / "blk_link0001"

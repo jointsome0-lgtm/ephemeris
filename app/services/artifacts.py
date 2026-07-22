@@ -270,6 +270,7 @@ def _open_artifact(parent_fd: int, name: str) -> _OpenArtifact | None:
             not stat_module.S_ISREG(final.st_mode)
             or final.st_nlink != 1
             or final.st_size > MAX_FILE_BYTES
+            or _stat_identity(final) != _stat_identity(first)
         ):
             raise ArtifactError(
                 "unsafe-file", 409,
