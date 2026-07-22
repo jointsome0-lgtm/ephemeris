@@ -24,7 +24,7 @@ network_absent = os.stat("/proc/self/ns/net").st_ino != HOST_NETNS
 
 scratch = Path.cwd()
 home = Path.home()
-module_cache = home / "go"
+module_cache = Path(os.environ["GOMODCACHE"])
 gocache = Path(os.environ["GOCACHE"])
 gocache.mkdir(parents=True, exist_ok=True)
 

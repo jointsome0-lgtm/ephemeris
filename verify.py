@@ -3909,7 +3909,7 @@ with TestClient(app) as c:
           set(_sb_mounts(_sb_runner, "--ro-bind")) == {
               ("/", "/"),
               ("/home/aina/.local/bin", "/home/aina/.local/bin"),
-              ("/home/aina/go", "/home/aina/go"),
+              ("/home/aina/go/pkg/mod", "/home/aina/go/pkg/mod"),
               (_sb_bundle, _sb_bundle),
           }
           and not _sb_mounts(_sb_runner, "--bind")
@@ -4597,7 +4597,7 @@ with TestClient(app) as c:
           ["--perms", "0444", "--ro-bind-data", "7",
            f"{_sandbox.RUNNER_WORKDIR}/main.py"]
               in [_f3_runner_argv[i:i + 5] for i in range(len(_f3_runner_argv) - 4)]
-          and ("/home/aina/go", "/home/aina/go")
+          and ("/home/aina/go/pkg/mod", "/home/aina/go/pkg/mod")
               in _sb_mounts(_f3_runner_argv, "--ro-bind")
           and "/home/aina/.cache/go-build" not in _f3_runner_argv
           and _sb_mounts(_f3_runner_argv, "--ro-bind")[-1]

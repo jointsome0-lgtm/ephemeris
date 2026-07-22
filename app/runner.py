@@ -57,7 +57,7 @@ RUNNER_ENV: Mapping[str, str] = MappingProxyType({
     "LANG": "C.UTF-8",
     "LC_ALL": "C.UTF-8",
     "GOCACHE": f"{sandbox.USER_HOME}/.cache/go-build",
-    "GOMODCACHE": f"{sandbox.GO_MODULE_CACHE_ROOT}/pkg/mod",
+    "GOMODCACHE": sandbox.GO_MODULE_CACHE_ROOT,
     "GOFLAGS": "-mod=readonly",
 })
 
