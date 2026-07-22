@@ -1195,7 +1195,9 @@ with TestClient(app) as c:
               and "ABI_VERSION = 1" in _d2_text
               and 'msg["ephemeris"] !== "lesson-bridge"' in _d2_text
               and 'want.includes("attempts")' in _d2_text
-              and "MAX_PORT_CHARS = 64 * 1024" in _d2_text)
+              and "MAX_PORT_BYTES = 512 * 1024" in _d2_text
+              and "serializedByteLength" in _d2_text
+              and "new TextEncoder()" in _d2_text)
     check(".gitattributes marks both emitted runtimes as generated",
           "app/static/learn-bridge.js linguist-generated=true"
           in (ROOT / ".gitattributes").read_text(encoding="utf-8")
@@ -2365,6 +2367,77 @@ with TestClient(app) as c:
     check("parent runtime re-validates per operation against fresh metadata",
           "metaQuestions" in _d2_ts
           and "await fetchMeta()" in _d2_ts.split("postAttempt")[1])
+
+    # ---- phase F2 frontend: editor capability and artifact membrane ----
+    # Source and emitted runtime must carry the same block-specific, fresh-meta
+    # guards. This is deliberately the editor-only first commit; run anchors
+    # arrive in the next commit so the review history preserves D-FE-1.
+    for _fe_name, _fe_text in (("learn-bridge.ts", _d2_ts), ("learn-bridge.js", _d2_js)):
+        check(f"{_fe_name}: editor membrane anchors",
+              'frame.dataset["artifactsUrl"]' in _fe_text
+              and 'want.includes("editor")' in _fe_text
+              and 'capabilities.push("editor")' in _fe_text
+              and 'msg["op"] === "artifact.get"' in _fe_text
+              and 'msg["op"] === "artifact.save"' in _fe_text
+              and "freshBlock" in _fe_text
+              and "metaBlocks" in _fe_text
+              and "EDITOR_SETTLE_MS" in _fe_text
+              and "MAX_EDITOR_INFLIGHT" in _fe_text
+              and "contentByteLength(content) > MAX_CONTENT_BYTES" in _fe_text
+              and 'body: JSON.stringify({ content, base_rev: baseRev })' in _fe_text)
+    _fe_template = (ROOT / "app" / "templates" / "learn.html").read_text(encoding="utf-8")
+    check("Learn template feature-detects the artifact endpoint",
+          "selected.artifacts_url is defined" in _fe_template
+          and 'data-artifacts-url="{{ selected.artifacts_url }}"' in _fe_template)
+    check("editor operations revalidate the fresh page block before HTTP",
+          "const freshBlock = async" in _d2_ts
+          and "const meta = await fetchMeta()" in _d2_ts.split("const freshBlock = async", 1)[1]
+          and "blocks.find((candidate) => candidate.id === blockId)" in _d2_ts
+          and _d2_ts.index("await freshBlock", _d2_ts.index("const saveArtifact"))
+          < _d2_ts.index("method: \"POST\"", _d2_ts.index("const saveArtifact")))
+
+    # Byte accounting probes the two expansion classes behind the derived
+    # 512 KiB membrane cap: ASCII controls that become six-byte JSON escapes,
+    # and multibyte Unicode at the raw 64 KiB semantic limit.
+    _fe_hostile = "\x00" * (64 * 1024)
+    _fe_multibyte = "🪐" * ((64 * 1024) // len("🪐".encode("utf-8")))
+    _fe_hostile_wire = json.dumps(
+        {"op": "artifact.save", "content": _fe_hostile},
+        ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    _fe_multibyte_wire = json.dumps(
+        {"op": "artifact.save", "content": _fe_multibyte},
+        ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    check("editor byte bounds admit hostile escaping inside the derived cap",
+          len(_fe_hostile.encode("utf-8")) == 64 * 1024
+          and 384 * 1024 <= len(_fe_hostile_wire) < 512 * 1024)
+    check("editor byte bounds measure multibyte raw and serialized UTF-8",
+          len(_fe_multibyte.encode("utf-8")) == 64 * 1024
+          and len(_fe_multibyte_wire) < 512 * 1024
+          and "UTF8.encode(text).byteLength" in _d2_ts)
+
+    _fe_fixture = (ROOT / "fixtures" / "lesson-bridge"
+                   / "editor-run-conventions.html").read_text(encoding="utf-8")
+    check("editor conventions fixture exercises get/save as text-only data",
+          'want: ["editor"]' in _fe_fixture
+          and 'op: "artifact.get"' in _fe_fixture
+          and 'op: "artifact.save"' in _fe_fixture
+          and "status.textContent = text" in _fe_fixture
+          and "innerHTML" not in _fe_fixture)
+    check("editor degradation: no bridge stays useful and read-only",
+          "Read-only preview. Connecting" in _fe_fixture
+          and "bridge unavailable" in _fe_fixture
+          and '<textarea id="source"' in _fe_fixture
+          and " readonly>" in _fe_fixture)
+    check("editor degradation: welcome without grant stays read-only",
+          'message.capabilities.includes("editor")' in _fe_fixture
+          and 'readOnly("editor capability not granted")' in _fe_fixture)
+    check("editor degradation: old backend attrs grant no capability",
+          "selected.artifacts_url is defined" in _fe_template
+          and 'const artifactsUrl = frame.dataset["artifactsUrl"] || null' in _d2_ts
+          and 'artifactsUrl !== null && armedBlocks.length > 0' in _d2_ts)
+    check("editor degradation: direct-open fixture stays read-only",
+          "window.parent === window" in _fe_fixture
+          and 'readOnly("direct open: no parent bridge")' in _fe_fixture)
     # frozen docs: the ABI carries the attempt op; the lesson brief teaches
     # the child side of it (child sends ONLY v/op/request_id/question_id/answer)
     _d5_abi = (ROOT / "docs" / "lesson-bridge-abi.md").read_text(encoding="utf-8")
@@ -2372,6 +2445,13 @@ with TestClient(app) as c:
           "### 3.1" in _d5_abi
           and '"op": "attempt", "v": 1' in _d5_abi
           and "capability-not-granted" in _d5_abi)
+    check("ABI §3.2 freezes editor ops and derived byte accounting",
+          "### 3.2" in _d5_abi
+          and '"op": "artifact.get", "v": 1' in _d5_abi
+          and '"op": "artifact.save", "v": 1' in _d5_abi
+          and "512 KiB" in _d5_abi
+          and "6 bytes per input byte" in _d5_abi
+          and "64 KiB raw UTF-8 bytes" in _d5_abi)
     check("lesson brief teaches the frozen attempt call",
           '{"op": "attempt", "v": 1' in lessons_svc._AGENTS_TEMPLATE
           and "retry an unanswered submission with the SAME id"

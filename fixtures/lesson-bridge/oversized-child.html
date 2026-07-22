@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!-- Vera Example — lesson-bridge e2e child: completes a valid handshake,
-     then abuses the port with an oversized message and an unknown op, and
+     then abuses the 512 KiB port with an oversized message and an unknown op, and
      finally proves the port is still alive with a valid ping (the error
      budget tolerates isolated protocol errors). -->
 <html lang="en">
@@ -40,7 +40,7 @@
         port.postMessage({ op: "ping", request_id: "r3" });
       }
     };
-    port.postMessage({ op: "ping", request_id: "r0", pad: "x".repeat(70000) });
+    port.postMessage({ op: "ping", request_id: "r0", pad: "x".repeat(530000) });
   });
   announce();
 })();

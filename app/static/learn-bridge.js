@@ -20,24 +20,19 @@
  * by whoever received it, not by whoever can read a broadcast. Messages FROM
  * the child are accepted only when `event.source === frame.contentWindow`.
  *
- * D5 adds the one write capability, `attempts`: the child asks (`want`),
- * and when this runtime can reach the attempt endpoint the welcome grants
- * it. The child supplies ONLY {v, op, request_id, question_id, answer}; the
- * parent derives page identity from its own armed binding, re-validates it
- * against fresh preview metadata per operation (D2 review gate: possession
- * of the port is never authority — and neither is having been armed once),
- * refuses questions the manifest does not declare for the armed page, and
- * owns idempotency by mapping the child's request_id onto the endpoint's
- * idempotency_key. Confirmation is an app toast; the lesson document only
- * gets the structured result. */
+ * D5 adds the `attempts` capability and phase F adds the editor membrane.
+ * Both are child-requested routing facts, never authority: every operation
+ * re-fetches preview metadata, re-validates the armed identity and the
+ * operation's question/block membership, and lets the server independently
+ * enforce the record-time manifest. */
 export {};
 const ABI_VERSION = 1;
-/** Hard cap on a child "ready" announcement (JSON text length). */
-const MAX_READY_CHARS = 4096;
-/** Hard cap on any port message (JSON text length); mirrors the spec §6.2
- * 64 KiB line bound so a message that could never persist is refused at the
- * membrane instead of deeper in. */
-const MAX_PORT_CHARS = 64 * 1024;
+/** Hard cap on a child "ready" announcement (serialized UTF-8 bytes). */
+const MAX_READY_BYTES = 4096;
+/** Hard cap on any port message in serialized UTF-8 bytes. 512 KiB is
+ * derived from a 64 KiB artifact at worst-case JSON escaping (6×) plus a
+ * bounded envelope; semantic per-operation bounds stay narrower. */
+const MAX_PORT_BYTES = 512 * 1024;
 /** Port protocol errors tolerated per document before the port is closed. */
 const MAX_PROTOCOL_ERRORS = 8;
 /** Handshake rejections answered per document (then silence — no help for
@@ -50,6 +45,8 @@ const POLL_MS = 1200;
 /** Attempt operations in flight at once per document; beyond it the op is
  * answered `busy` (a Check press is human-scale — this only stops a loop). */
 const MAX_ATTEMPTS_INFLIGHT = 4;
+/** Editor operations in flight at once per document. */
+const MAX_EDITOR_INFLIGHT = 4;
 /** Settle delay before the attempt HTTP call (PR-60 round 1, D2 L1): a
  * self-navigation whose successor completes its load within this window
  * tears the port and generation down BEFORE the write is sent, so the
@@ -57,10 +54,18 @@ const MAX_ATTEMPTS_INFLIGHT = 4;
  * its own load — same-trust content chosen by the granted document itself
  * (ABI §3.1). Human-scale Check presses don't notice a quarter second. */
 const ATTEMPT_SETTLE_MS = 250;
+/** The same navigation-settle membrane applies before artifact saves. */
+const EDITOR_SETTLE_MS = 250;
 /** The op-envelope version the attempt operation speaks (independent of the
  * handshake ABI so the submission shape can evolve additively). */
 const ATTEMPT_OP_VERSION = 1;
+const EDITOR_OP_VERSION = 1;
+const MAX_CONTENT_BYTES = 64 * 1024;
 const QUESTION_ID_RE = /^q_[a-z0-9]{4,32}$/;
+const BLOCK_ID_RE = /^blk_[a-z0-9]{4,32}$/;
+const FILE_REV_RE = /^sha256:[a-f0-9]{64}$/;
+const BASE_REV_RE = /^(?:absent|sha256:[a-f0-9]{64})$/;
+const UTF8 = new TextEncoder();
 const frame = document.getElementById("lesson-preview-frame");
 if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     const metaUrl = frame.dataset["metaUrl"];
@@ -68,6 +73,9 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     /* Attempt endpoint (D4). Absent on a stale template render: the attempts
      * capability is then simply never granted (fail closed, no error). */
     const attemptsUrl = frame.dataset["attemptsUrl"] || null;
+    /* Phase-F artifact endpoint prefix. An older live backend renders no data
+     * attribute, so `editor` is never granted while the static is ahead. */
+    const artifactsUrl = frame.dataset["artifactsUrl"] || null;
     /* The version token the displayed document was served under (server-
      * rendered for the initial navigation, then meta-derived); the binding
      * rule is: identity is armed only while the fresh meta token equals it. */
@@ -118,6 +126,8 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
      * request_id after reload and the server replays it). */
     let capabilities = [];
     let attemptsInflight = new Set();
+    let editorInflight = new Set();
+    let armedBlocks = [];
     const teardown = () => {
         if (port)
             port.close();
@@ -128,6 +138,8 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         rejects = 0;
         capabilities = [];
         attemptsInflight = new Set();
+        editorInflight = new Set();
+        armedBlocks = [];
     };
     const fetchMeta = async () => {
         try {
@@ -189,6 +201,28 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             return typeof field === "string" && field.length > 0 && field.length <= 256;
         });
     };
+    /* Block routing metadata for the armed page. `null` means a malformed or
+     * pre-F backend response; the attempts membrane remains independently
+     * usable, while editor capability fails closed. */
+    const metaBlocks = (meta) => {
+        if (typeof meta.bridge_page !== "object" || meta.bridge_page === null)
+            return null;
+        const list = meta.bridge_page["blocks"];
+        if (!Array.isArray(list) || list.length > 64)
+            return null;
+        const blocks = [];
+        for (const value of list) {
+            if (typeof value !== "object" || value === null)
+                return null;
+            const block = value;
+            if (typeof block["id"] !== "string" || !BLOCK_ID_RE.test(block["id"]))
+                return null;
+            if (typeof block["run"] !== "boolean")
+                return null;
+            blocks.push({ id: block["id"], run: block["run"] });
+        }
+        return blocks;
+    };
     const armFromMeta = (meta) => {
         /* Single choke point (PR-55 round 3): never arm while a navigation is
          * pending — the outgoing document can still announce into the gap and
@@ -204,6 +238,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
                 page_id: meta.bridge_page.page_id,
                 page_rev: meta.bridge_page.page_rev,
             };
+            armedBlocks = metaBlocks(meta) ?? [];
             /* Deliberately NO buffered-announcement flush here (PR-55 round 4):
              * an announcement held across this async bind could be answered into
              * a successor document after a same-frame navigation. Announcements
@@ -251,10 +286,10 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     });
     /* ---- handshake membrane (the only global listener; everything after the
      * welcome flows over the transferred MessagePort) ---- */
-    const jsonLength = (value) => {
+    const serializedByteLength = (value) => {
         try {
             const text = JSON.stringify(value);
-            return typeof text === "string" ? text.length : null;
+            return typeof text === "string" ? UTF8.encode(text).byteLength : null;
         }
         catch {
             return null; // cyclic or otherwise non-JSON structured-clone payload
@@ -302,8 +337,8 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
      * endpoint's error codes verbatim (docs/lesson-attempts-api.md) and never
      * count toward the port-closing budget — a page retrying a retired
      * question must not lose its whole bridge. */
-    const answerError = (to, code, requestId) => {
-        to.postMessage({ op: "error", code, request_id: requestId });
+    const answerError = (to, code, requestId, fields = {}) => {
+        to.postMessage({ op: "error", code, request_id: requestId, ...fields });
     };
     /* Declared question ids for the armed page, taken from FRESH metadata at
      * operation time (never the arm-time copy: a manifest-only edit can
@@ -318,6 +353,131 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         return list.every((q) => typeof q === "string" && QUESTION_ID_RE.test(q))
             ? list
             : null;
+    };
+    const contentByteLength = (content) => UTF8.encode(content).byteLength;
+    const endpointError = (to, requestId, record) => {
+        const code = typeof record["error"] === "string" && record["error"].length <= 64
+            ? record["error"] : "unavailable";
+        if (code === "file-conflict") {
+            const rev = record["file_rev"];
+            if (rev === null || (typeof rev === "string" && FILE_REV_RE.test(rev))) {
+                answerError(to, code, requestId, { file_rev: rev });
+            }
+            else {
+                answerError(to, "unavailable", requestId);
+            }
+            return;
+        }
+        answerError(to, code, requestId);
+    };
+    const freshBlock = async (boundPort, gen, requestId, blockId) => {
+        const meta = await fetchMeta();
+        if (gen !== generation || port !== boundPort || armed === null)
+            return null;
+        if (meta === null) {
+            answerError(boundPort, "unavailable", requestId);
+            return null;
+        }
+        if (navPending || quarantined
+            || String(meta.version ?? "0") !== expectedVersion
+            || meta.bridge !== true || !identityMatches(meta)) {
+            answerError(boundPort, "stale-page", requestId);
+            return null;
+        }
+        const blocks = metaBlocks(meta);
+        if (blocks === null) {
+            answerError(boundPort, "unavailable", requestId);
+            return null;
+        }
+        const block = blocks.find((candidate) => candidate.id === blockId);
+        if (!block) {
+            answerError(boundPort, "unknown-block", requestId);
+            return null;
+        }
+        return block;
+    };
+    const artifactEndpoint = (blockId) => `${artifactsUrl}/${encodeURIComponent(blockId)}/file`;
+    const readEndpointJson = async (url, init) => {
+        try {
+            const response = await fetch(url, { cache: "no-store", ...init });
+            const body = await response.json();
+            return typeof body === "object" && body !== null
+                ? body : null;
+        }
+        catch {
+            return null;
+        }
+    };
+    const getArtifact = async (boundPort, gen, requestId, blockId) => {
+        const inflight = editorInflight;
+        inflight.add(requestId);
+        try {
+            if (await freshBlock(boundPort, gen, requestId, blockId) === null)
+                return;
+            const rec = await readEndpointJson(artifactEndpoint(blockId));
+            if (gen !== generation || port !== boundPort)
+                return;
+            if (rec === null)
+                return answerError(boundPort, "unavailable", requestId);
+            if (rec["ok"] !== true)
+                return endpointError(boundPort, requestId, rec);
+            const exists = rec["exists"];
+            const content = rec["content"];
+            const size = rec["size"];
+            const rev = rec["file_rev"];
+            if (typeof exists !== "boolean"
+                || typeof content !== "string"
+                || !Number.isInteger(size) || size < 0 || size > MAX_CONTENT_BYTES
+                || contentByteLength(content) > MAX_CONTENT_BYTES
+                || (exists && (typeof rev !== "string" || !FILE_REV_RE.test(rev)))
+                || (!exists && rev !== undefined)) {
+                return answerError(boundPort, "unavailable", requestId);
+            }
+            const reply = {
+                op: "artifact.get", request_id: requestId, exists, content, size,
+            };
+            if (exists)
+                reply["file_rev"] = rev;
+            boundPort.postMessage(reply);
+        }
+        finally {
+            inflight.delete(requestId);
+        }
+    };
+    const saveArtifact = async (boundPort, gen, requestId, blockId, content, baseRev) => {
+        const inflight = editorInflight;
+        inflight.add(requestId);
+        try {
+            if (await freshBlock(boundPort, gen, requestId, blockId) === null)
+                return;
+            await new Promise((resolve) => setTimeout(resolve, EDITOR_SETTLE_MS));
+            if (gen !== generation || port !== boundPort || navPending || quarantined) {
+                return answerError(boundPort, "stale-page", requestId);
+            }
+            const rec = await readEndpointJson(artifactEndpoint(blockId), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ content, base_rev: baseRev }),
+            });
+            if (gen !== generation || port !== boundPort)
+                return;
+            if (rec === null)
+                return answerError(boundPort, "unavailable", requestId);
+            if (rec["ok"] !== true)
+                return endpointError(boundPort, requestId, rec);
+            const result = rec["result"];
+            const rev = rec["file_rev"];
+            if ((result !== "saved" && result !== "unchanged")
+                || typeof rev !== "string" || !FILE_REV_RE.test(rev)) {
+                return answerError(boundPort, "unavailable", requestId);
+            }
+            boundPort.postMessage({
+                op: "artifact.save", request_id: requestId, result, file_rev: rev,
+            });
+        }
+        finally {
+            inflight.delete(requestId);
+        }
     };
     const postAttempt = async (boundPort, gen, requestId, questionId, answer) => {
         /* Capture THIS document's in-flight set (PR-60 round 5): teardown
@@ -421,10 +581,10 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     const onPortMessage = (ev) => {
         if (!port)
             return;
-        const size = jsonLength(ev.data);
+        const size = serializedByteLength(ev.data);
         if (size === null)
             return protocolError("malformed", null);
-        if (size > MAX_PORT_CHARS)
+        if (size > MAX_PORT_BYTES)
             return protocolError("oversized", null);
         const msg = ev.data;
         if (typeof msg !== "object" || msg === null || typeof msg["op"] !== "string") {
@@ -467,6 +627,42 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             void postAttempt(port, generation, requestId, questionId, answer);
             return;
         }
+        if (msg["op"] === "artifact.get" || msg["op"] === "artifact.save") {
+            if (requestId === null)
+                return protocolError("malformed", null);
+            if (artifactsUrl === null || !capabilities.includes("editor")) {
+                return answerError(port, "capability-not-granted", requestId);
+            }
+            if (msg["v"] !== EDITOR_OP_VERSION) {
+                return answerError(port, "unsupported-version", requestId);
+            }
+            const blockId = msg["block_id"];
+            if (typeof blockId !== "string" || !BLOCK_ID_RE.test(blockId)) {
+                return answerError(port, "invalid-block-id", requestId);
+            }
+            if (editorInflight.has(requestId))
+                return;
+            if (editorInflight.size >= MAX_EDITOR_INFLIGHT) {
+                return answerError(port, "busy", requestId);
+            }
+            if (msg["op"] === "artifact.get") {
+                void getArtifact(port, generation, requestId, blockId);
+                return;
+            }
+            const content = msg["content"];
+            const baseRev = msg["base_rev"];
+            if (typeof content !== "string") {
+                return answerError(port, "invalid-content", requestId);
+            }
+            if (contentByteLength(content) > MAX_CONTENT_BYTES) {
+                return answerError(port, "file-too-large", requestId);
+            }
+            if (typeof baseRev !== "string" || !BASE_REV_RE.test(baseRev)) {
+                return answerError(port, "invalid-base-rev", requestId);
+            }
+            void saveArtifact(port, generation, requestId, blockId, content, baseRev);
+            return;
+        }
         return protocolError("unknown-op", requestId);
     };
     const handleReady = (data) => {
@@ -489,14 +685,16 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         port = channel.port1;
         port.onmessage = onPortMessage;
         granted = true; // one welcome per loaded document
-        /* Capability negotiation (D5): the one defined capability is `attempts`,
-         * granted only when the child asked for it and this runtime has the
-         * endpoint to carry it. The grant is a routing fact, not authority —
-         * every operation still re-validates per-op, parent- and server-side. */
+        /* Capability negotiation is routing, not authority. `editor` additionally
+         * requires at least one declared block on the armed page; an old backend
+         * omits both blocks metadata and data-artifacts-url, so it stays absent. */
         const want = Array.isArray(data.want) ? data.want : [];
-        capabilities = attemptsUrl !== null && want.includes("attempts")
-            ? ["attempts"]
-            : [];
+        capabilities = [];
+        if (attemptsUrl !== null && want.includes("attempts"))
+            capabilities.push("attempts");
+        if (artifactsUrl !== null && armedBlocks.length > 0 && want.includes("editor")) {
+            capabilities.push("editor");
+        }
         child.postMessage({
             ephemeris: "lesson-bridge",
             type: "welcome",
@@ -517,8 +715,8 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         const child = frame.contentWindow;
         if (!child || ev.source !== child)
             return;
-        const size = jsonLength(ev.data);
-        if (size === null || size > MAX_READY_CHARS)
+        const size = serializedByteLength(ev.data);
+        if (size === null || size > MAX_READY_BYTES)
             return;
         if (!isReady(ev.data))
             return;

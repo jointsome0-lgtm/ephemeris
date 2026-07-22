@@ -19,7 +19,14 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
+- [ ] 2026-07-22 — commits after `fd9f54a` on
+  `fix/36-f4-editor-run-frontend` — `app/static/src/learn-bridge.ts`,
+  emitted `app/static/learn-bridge.js`, `docs/lesson-bridge-abi.md`,
+  `fixtures/lesson-bridge/`, `verify.py`, `docs/reviews/QUEUE.md` — issue #36
+  phase F frontend slice first adds the editor bridge membrane, its child
+  conventions fixture, additive ABI documentation, and regression coverage;
+  it does not change backend routes, the attempt
+  operation, CSP, sandbox tokens, or terminal statics.
 
 ## Done
 

@@ -1,7 +1,7 @@
 # Lesson bridge ABI (v1)
 
-Status: frozen with D2; extended additively by D5 (§3.1, the `attempts`
-capability). This is the contract between the Learn page's parent runtime
+Status: frozen with D2; extended additively by D5 (§3.1, `attempts`) and
+phase F (§3.2, `editor`). This is the contract between the Learn page's parent runtime
 (`app/static/src/learn-bridge.ts`, emitted `learn-bridge.js`) and a lesson
 page running inside the sandboxed preview iframe. The bundle contract that
 decides *whether* a page may be bridged lives in
@@ -11,8 +11,9 @@ this document owns the wire shapes. The handshake is unchanged since D2.
 ABI v1 shipped with **no write capability** — the membrane itself
 (versioning, identity ownership, teardown rules) landed before any
 state-changing operation existed. D5 added the one write capability,
-`attempts` (§3.1), within v1: a child that never asks for it sees exactly
-the original protocol.
+`attempts` (§3.1), and phase F adds the independent editor operations
+(§3.2), within v1: a child that never asks for them sees exactly the original
+protocol.
 
 ## 1. Trust model
 
@@ -47,10 +48,11 @@ installed; a child that never asks is simply a display page):
 child → parent (window.parent.postMessage)
   { "ephemeris": "lesson-bridge", "type": "ready",
     "abi": [1],                  // supported ABI versions, 1–8 integers
-    "want": ["attempts"] }       // optional capability wishes, ≤16 × ≤64 chars
+    "want": ["attempts", "editor"] } // optional wishes, ≤16 × ≤64 chars
 ```
 
-Constraints: JSON text ≤ 4096 chars; `abi` entries are integers 1–999.
+Constraints: serialized JSON ≤ 4096 UTF-8 bytes; `abi` entries are integers
+1–999.
 Malformed or oversized announcements are ignored (no reply — nothing to
 negotiate with). The child SHOULD post to `window.parent` with targetOrigin
 `new URL(location.href).origin` (its own document URL is the app origin even
@@ -78,7 +80,8 @@ parent → child (postMessage with one transferred MessagePort)
     "abi": 1,                    // the selected version
     "lesson": { "lesson_uid": "…", "page_id": "pg_…",
                 "page_rev": "sha256:…" },
-    "capabilities": ["attempts"] }  // granted = want ∩ what the parent carries
+    "capabilities": ["attempts", "editor"] }
+                                      // granted = want ∩ available routes/metadata
 ```
 
 The transferred port is the bridge. Everything after the welcome flows over
@@ -104,10 +107,20 @@ timeout) as "no persistence available" and stay fully usable read-only.
 ## 3. Port protocol
 
 Requests carry a child-chosen `request_id` (string, 1–128 chars); responses
-echo it. Any message over 64 KiB of JSON text (the spec §6.2 line bound),
-any non-JSON-serializable payload, and any message without a string `op` is
-answered with an error and counted; after 8 protocol errors the parent
-closes the port and the document stays unbridged until reloaded.
+echo it. Bounds are measured on `JSON.stringify(message)` encoded as UTF-8,
+not JavaScript character count. Any message over **512 KiB serialized UTF-8
+bytes**, any non-JSON-serializable payload, and any message without a string
+`op` is answered with an error and counted; after 8 protocol errors the
+parent closes the port and the document stays unbridged until reloaded.
+
+The 512 KiB membrane bound is derived from the largest editor value: 64 KiB
+of raw UTF-8 content can expand to 6 bytes per input byte when every byte is
+represented as a JSON `\uXXXX` escape (384 KiB), then receives a bounded
+operation envelope. The larger membrane bound does not relax semantic
+limits: answers remain 32 KiB raw, artifact content 64 KiB raw, and (when
+added) output chunks 32 KiB raw. Hostile escaping and multibyte strings are
+therefore checked in bytes at both the membrane and their operation-specific
+limit.
 
 v1 operations:
 
@@ -118,10 +131,10 @@ parent → child   { "op": "pong", "request_id": "r1", "abi": 1 }
 
 Anything else: `{ "op": "error", "code": "unknown-op", "request_id": … }`.
 Protocol error codes are `malformed`, `oversized`, `unknown-op`; they count
-toward the 8-error port budget. Attempt refusals (§3.1) use the same
-`error` envelope but are ordinary answers — they reuse the endpoint codes
-and never count. Unknown fields in any message are ignored, never an error —
-that is the forward-compatibility room minor additions use.
+toward the 8-error port budget. Operation refusals (§3.1–§3.2) use the same
+`error` envelope but are ordinary answers — they reuse endpoint codes and
+never count. Unknown fields in any message are ignored, never an error — that
+is the forward-compatibility room minor additions use.
 
 ### 3.1 The `attempts` capability (D5)
 
@@ -189,10 +202,64 @@ parent → child   { "op": "attempt", "request_id": "a1",
   toast ("attempt #N recorded"); there is no modal, and the child receives
   only the structured reply above.
 
+### 3.2 The `editor` capability (phase F)
+
+Granted only when all three routing conditions hold: the child's `want`
+included `"editor"`, the armed page has at least one declared `blocks[]`
+entry in fresh preview metadata, and the parent template supplied its
+`data-artifacts-url`. The attribute is deliberately optional: new statics
+served against an old live backend never grant the capability, so pages keep
+their read-only presentation.
+
+```text
+child → parent   { "op": "artifact.get", "v": 1, "request_id": "g1",
+                   "block_id": "blk_demo1" }
+parent → child   { "op": "artifact.get", "request_id": "g1",
+                   "exists": true, "content": "print('orbit')\n",
+                   "file_rev": "sha256:…", "size": 15 }
+
+child → parent   { "op": "artifact.save", "v": 1, "request_id": "s1",
+                   "block_id": "blk_demo1", "content": "print('star')\n",
+                   "base_rev": "sha256:…" }
+parent → child   { "op": "artifact.save", "request_id": "s1",
+                   "result": "saved", "file_rev": "sha256:…" }
+```
+
+- `v` is the editor operation-envelope version; values other than `1` are
+  `unsupported-version`. `block_id` must match `blk_[a-z0-9]{4,32}`.
+- A missing file returns `exists: false`, empty `content`, `size: 0`, and no
+  `file_rev`; its first save uses the literal `base_rev: "absent"`.
+- Content is limited to 64 KiB raw UTF-8 bytes. `base_rev` is either
+  `"absent"` or the exact revision returned by `artifact.get` or the previous
+  successful save. A `file-conflict` answer carries the current `file_rev`
+  (or `null` when absent) and never overwrites the file.
+- Before either HTTP request, the parent fetches fresh metadata, requires the
+  current generation/port and armed version/identity still to match, and
+  requires `block_id` in that fresh page's `blocks[]`. Before the mutating
+  save it also waits the navigation-settle interval and re-checks the
+  generation and port. The artifact endpoint then independently repeats the
+  manifest, block, revision, path, and file-node checks.
+- Endpoint refusals are relayed by code (`file-conflict`, `unsafe-file`,
+  `rate-limited`, and the rest of the artifact refusal matrix). Parent-local
+  refusals are `capability-not-granted`, `unsupported-version`,
+  `invalid-block-id`, `invalid-content`, `invalid-base-rev`, `file-too-large`,
+  `unknown-block`, `stale-page`, `busy`, and `unavailable`.
+- A duplicate `request_id` while its editor request is pending is dropped;
+  the pending operation supplies the one response. At most four editor
+  operations are in flight per document.
+- Child convention: begin with a useful read-only document. Keep the
+  textarea read-only and controls disabled until `editor` is actually listed
+  in the welcome; silence, an absent grant, an old backend, and direct-open
+  mode all preserve the readable content. Render statuses and any returned
+  data through `textContent` or text nodes, never `innerHTML`. The invented
+  executable example is
+  `fixtures/lesson-bridge/editor-run-conventions.html`.
+
 ## 4. Lifecycle and teardown
 
-- **Navigation ends everything.** The port, the armed identity, and the
-  one-grant flag die with the document (a `MessagePort` cannot outlive it).
+- **Navigation ends everything.** The port, the armed identity, operation
+  in-flight state, and the one-grant flag die with the document (a
+  `MessagePort` cannot outlive it).
   After every reload the child must announce `ready` again and gets fresh
   identity — `page_rev` may have changed.
 - **Stale revision:** the parent polls the preview metadata (~1.2 s); a
@@ -232,7 +299,7 @@ parent → child   { "op": "attempt", "request_id": "a1",
   unchanged: the successor was chosen by the armed lesson document itself,
   which could equally have kept the identical grant and rendered the same
   content. Like the two residuals flanking this one, it is why the
-  `attempts` operation (§3.1) re-validates identity per operation —
+  state-changing operations (§3.1–§3.2) re-validate identity per operation —
   parent-side against fresh metadata and server-side against the
   record-time manifest — instead of trusting port possession.
 
@@ -241,7 +308,7 @@ parent → child   { "op": "attempt", "request_id": "a1",
   frame self-navigates can be delivered to the successor document — the
   browser gives the sender no way to scope delivery to one document. The
   successor is the same trust domain (lesson content), and the write
-  capability that exists (§3.1) never trusts delivery: every operation is
+  capabilities (§3.1–§3.2) never trust delivery: every operation is
   re-validated per use, parent- and server-side.
 - **Profile flip:** the effective profile is folded into the version token,
   so a manifest-only flip reloads the document under the new CSP and sandbox

@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<!-- Vera Example — invented lesson-bridge conventions fixture. The first F4
+     commit exercises only the editor membrane; the run controls are added by
+     the later run-membrane commit so the review boundary stays explicit. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Vera Example editor conventions</title>
+</head>
+<body>
+<h1>Vera Example editor</h1>
+<p id="status" role="status">Read-only preview. Connecting…</p>
+<label for="source">Program</label>
+<textarea id="source" rows="10" cols="60" readonly>print("Invented orbit")
+</textarea>
+<p>
+  <button id="load" type="button" disabled>Load</button>
+  <button id="save" type="button" disabled>Save</button>
+</p>
+<script>
+(() => {
+  "use strict";
+  const BLOCK_ID = "blk_demo1";
+  const status = document.getElementById("status");
+  const source = document.getElementById("source");
+  const load = document.getElementById("load");
+  const save = document.getElementById("save");
+  let port = null;
+  let baseRev = "absent";
+  let sequence = 0;
+  let answered = false;
+
+  // All user-visible bridge data is text. Never feed it to an HTML parser.
+  const say = (text) => { status.textContent = text; };
+  const readOnly = (reason) => {
+    source.readOnly = true;
+    load.disabled = true;
+    save.disabled = true;
+    say(`Read-only preview (${reason}).`);
+  };
+  const requestId = (kind) => `fixture-${kind}-${++sequence}`;
+  const send = (message) => { if (port) port.postMessage(message); };
+
+  if (window.parent === window) {
+    readOnly("direct open: no parent bridge");
+    return;
+  }
+
+  const appOrigin = new URL(location.href).origin;
+  const announce = () => window.parent.postMessage({
+    ephemeris: "lesson-bridge",
+    type: "ready",
+    abi: [1],
+    want: ["editor"],
+  }, appOrigin);
+  const retry = setInterval(() => { if (!answered) announce(); }, 250);
+  const silence = setTimeout(() => {
+    clearInterval(retry);
+    if (!answered) readOnly("bridge unavailable");
+  }, 2000);
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window.parent) return;
+    const message = event.data;
+    if (!message || message.ephemeris !== "lesson-bridge") return;
+    answered = true;
+    clearInterval(retry);
+    clearTimeout(silence);
+    if (message.type !== "welcome" || !event.ports[0]) {
+      readOnly(message.type === "reject" ? "unsupported bridge" : "no grant");
+      return;
+    }
+    const granted = Array.isArray(message.capabilities)
+      && message.capabilities.includes("editor");
+    if (!granted) {
+      readOnly("editor capability not granted");
+      return;
+    }
+    port = event.ports[0];
+    port.onmessage = (portEvent) => {
+      const reply = portEvent.data;
+      if (!reply || typeof reply !== "object") return;
+      if (reply.op === "artifact.get") {
+        source.value = typeof reply.content === "string" ? reply.content : "";
+        baseRev = reply.exists && typeof reply.file_rev === "string"
+          ? reply.file_rev : "absent";
+        say(reply.exists ? "Loaded saved program." : "Loaded a new empty program.");
+      } else if (reply.op === "artifact.save") {
+        if (typeof reply.file_rev === "string") baseRev = reply.file_rev;
+        say(reply.result === "unchanged" ? "Already saved." : "Saved.");
+      } else if (reply.op === "error") {
+        if (reply.code === "file-conflict") {
+          say("The saved file changed. Load it again before saving.");
+        } else {
+          say(`Editor unavailable (${String(reply.code || "unknown")}).`);
+        }
+      }
+    };
+    source.readOnly = false;
+    load.disabled = false;
+    save.disabled = false;
+    say("Editor ready.");
+  });
+
+  load.addEventListener("click", () => send({
+    op: "artifact.get",
+    v: 1,
+    request_id: requestId("load"),
+    block_id: BLOCK_ID,
+  }));
+  save.addEventListener("click", () => send({
+    op: "artifact.save",
+    v: 1,
+    request_id: requestId("save"),
+    block_id: BLOCK_ID,
+    content: source.value,
+    base_rev: baseRev,
+  }));
+  announce();
+})();
+</script>
+</body>
+</html>
