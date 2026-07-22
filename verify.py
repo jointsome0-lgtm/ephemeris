@@ -2397,9 +2397,9 @@ with TestClient(app) as c:
           and "const meta = await fetchMeta()" in _d2_ts.split("const freshBlock = async", 1)[1]
           and "blocks.find((candidate) => candidate.id === blockId)" in _d2_ts
           and _d2_ts[_d2_ts.index("const saveArtifact"):
-                     _d2_ts.index("const postAttempt")].count("await freshBlock") == 2
+                     _d2_ts.index("const runStartEndpoint")].count("await freshBlock") == 2
           and _d2_ts.rindex("await freshBlock", _d2_ts.index("const saveArtifact"),
-                            _d2_ts.index("const postAttempt"))
+                            _d2_ts.index("const runStartEndpoint"))
           < _d2_ts.index("method: \"POST\"", _d2_ts.index("const saveArtifact")))
     check("editor grant refreshes current block metadata at handshake time",
           "const handleReady = async" in _d2_ts
@@ -2430,7 +2430,7 @@ with TestClient(app) as c:
     _fe_fixture = (ROOT / "fixtures" / "lesson-bridge"
                    / "editor-run-conventions.html").read_text(encoding="utf-8")
     check("editor conventions fixture exercises get/save as text-only data",
-          'want: ["editor"]' in _fe_fixture
+          'want: ["editor", "run"]' in _fe_fixture
           and 'op: "artifact.get"' in _fe_fixture
           and 'op: "artifact.save"' in _fe_fixture
           and "status.textContent = text" in _fe_fixture
@@ -2450,6 +2450,71 @@ with TestClient(app) as c:
     check("editor degradation: direct-open fixture stays read-only",
           "window.parent === window" in _fe_fixture
           and 'readOnly("direct open: no parent bridge")' in _fe_fixture)
+
+    # ---- phase F5 frontend: composite save/run, owned SSE relay, cancel ----
+    for _fr_name, _fr_text in (("learn-bridge.ts", _d2_ts), ("learn-bridge.js", _d2_js)):
+        check(f"{_fr_name}: run membrane anchors",
+              'frame.dataset["runsUrl"]' in _fr_text
+              and 'want.includes("run")' in _fr_text
+              and 'capabilities.push("run")' in _fr_text
+              and 'msg["op"] === "artifact.save_run"' in _fr_text
+              and 'msg["op"] === "run.cancel"' in _fr_text
+              and 'op: "run.output"' in _fr_text
+              and 'op: "run.exit"' in _fr_text
+              and "MAX_OUTPUT_BYTES = 32 * 1024" in _fr_text
+              and "MAX_OWNED_RUNS = 16" in _fr_text
+              and "ownedRuns" in _fr_text
+              and "activeRelay" in _fr_text
+              and "RUN_SETTLE_MS" in _fr_text)
+    check("Learn template feature-detects the run endpoint independently",
+          "selected.runs_url is defined" in _fe_template
+          and 'data-runs-url="{{ selected.runs_url }}"' in _fe_template)
+    _fr_save_run = _d2_ts[_d2_ts.index("const saveAndRun"):
+                          _d2_ts.index("const cancelRun")]
+    check("save_run saves successfully before starting the returned revision",
+          _fr_save_run.index("artifactEndpoint(blockId)")
+          < _fr_save_run.index("runStartEndpoint(blockId)")
+          and 'saveResult !== "saved" && saveResult !== "unchanged"' in _fr_save_run
+          and "file_rev: fileRev, idempotency_key: requestId" in _fr_save_run
+          and _fr_save_run.count("await freshBlock") == 3)
+    check("run ownership gates relay and cancel while navigation only aborts relay",
+          "rememberOwnedRun(runId, { generation: gen, block_id: blockId })" in _d2_ts
+          and "const owner = ownedRuns.get(runId)" in _d2_ts
+          and "owner?.generation === gen && owner.block_id === blockId" in _d2_ts
+          and "if (activeRelay) activeRelay.controller.abort()" in _d2_ts
+          and "ownedRuns = new Map()" in _d2_ts
+          and "service.cancel" not in _d2_ts)
+    _fr_port = _d2_ts[_d2_ts.index("const onPortMessage"):
+                      _d2_ts.index("const finishReady")]
+    check("one document-wide stream refuses a second save_run before HTTP",
+          "activeRelay !== null || runStartToken !== null" in _fr_port
+          and _fr_port.index("activeRelay !== null || runStartToken !== null")
+          < _fr_port.index("void saveAndRun")
+          and 'answerError(port, "busy", requestId)' in _fr_port)
+    check("SSE relay validates sequence, stream, UTF-8 size, and terminal cause",
+          'new TextDecoder("utf-8", { fatal: true })' in _d2_ts
+          and 'payload["seq"] !== seq' in _d2_ts
+          and 'stream !== "stdout" && stream !== "stderr"' in _d2_ts
+          and "contentByteLength(text) > MAX_OUTPUT_BYTES" in _d2_ts
+          and "RUN_CAUSES.has(cause)" in _d2_ts
+          and 'op: "run.error"' in _d2_ts)
+    _fr_output_multibyte = "🪐" * ((32 * 1024) // len("🪐".encode("utf-8")))
+    _fr_output_wire = json.dumps(
+        {"op": "run.output", "text": _fr_output_multibyte},
+        ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    check("run output keeps its 32 KiB raw limit inside the serialized cap",
+          len(_fr_output_multibyte.encode("utf-8")) == 32 * 1024
+          and len(_fr_output_wire) < 512 * 1024)
+    check("run conventions fixture exercises save_run, cursor relay, and cancel as text",
+          'op: "artifact.save_run"' in _fe_fixture
+          and 'op: "run.cancel"' in _fe_fixture
+          and 'reply.op === "run.output"' in _fe_fixture
+          and 'reply.op === "run.exit"' in _fe_fixture
+          and "after: cursor" in _fe_fixture
+          and "output.textContent += reply.text" in _fe_fixture
+          and "innerHTML" not in _fe_fixture)
+    check("conventions fixture is test-only, not shipped by the Learn template",
+          "editor-run-conventions" not in _fe_template)
     # frozen docs: the ABI carries the attempt op; the lesson brief teaches
     # the child side of it (child sends ONLY v/op/request_id/question_id/answer)
     _d5_abi = (ROOT / "docs" / "lesson-bridge-abi.md").read_text(encoding="utf-8")
@@ -2465,6 +2530,14 @@ with TestClient(app) as c:
           and "512 KiB" in _d5_abi
           and "6 bytes per input byte" in _d5_abi
           and "64 KiB raw UTF-8 bytes" in _d5_abi)
+    check("ABI §3.3 freezes composite run, relay ownership, and reconnect",
+          "### 3.3" in _d5_abi
+          and '"op": "artifact.save_run", "v": 1' in _d5_abi
+          and '"op": "run.cancel", "v": 1' in _d5_abi
+          and '"op": "run.output"' in _d5_abi
+          and '"op": "run.exit"' in _d5_abi
+          and "There is no bare child-facing run-start operation" in _d5_abi
+          and "**not** call cancel" in _d5_abi)
     check("lesson brief teaches the frozen attempt call",
           '{"op": "attempt", "v": 1' in lessons_svc._AGENTS_TEMPLATE
           and "retry an unanswered submission with the SAME id"

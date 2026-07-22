@@ -1,7 +1,7 @@
 # Lesson bridge ABI (v1)
 
 Status: frozen with D2; extended additively by D5 (§3.1, `attempts`) and
-phase F (§3.2, `editor`). This is the contract between the Learn page's parent runtime
+phase F (§3.2, `editor`; §3.3, `run`). This is the contract between the Learn page's parent runtime
 (`app/static/src/learn-bridge.ts`, emitted `learn-bridge.js`) and a lesson
 page running inside the sandboxed preview iframe. The bundle contract that
 decides *whether* a page may be bridged lives in
@@ -11,9 +11,9 @@ this document owns the wire shapes. The handshake is unchanged since D2.
 ABI v1 shipped with **no write capability** — the membrane itself
 (versioning, identity ownership, teardown rules) landed before any
 state-changing operation existed. D5 added the one write capability,
-`attempts` (§3.1), and phase F adds the independent editor operations
-(§3.2), within v1: a child that never asks for them sees exactly the original
-protocol.
+`attempts` (§3.1), and phase F adds the independent editor and run operations
+(§3.2–§3.3), within v1: a child that never asks for them sees exactly the
+original protocol.
 
 ## 1. Trust model
 
@@ -48,7 +48,7 @@ installed; a child that never asks is simply a display page):
 child → parent (window.parent.postMessage)
   { "ephemeris": "lesson-bridge", "type": "ready",
     "abi": [1],                  // supported ABI versions, 1–8 integers
-    "want": ["attempts", "editor"] } // optional wishes, ≤16 × ≤64 chars
+    "want": ["attempts", "editor", "run"] } // optional wishes, ≤16 × ≤64 chars
 ```
 
 Constraints: serialized JSON ≤ 4096 UTF-8 bytes; `abi` entries are integers
@@ -80,7 +80,7 @@ parent → child (postMessage with one transferred MessagePort)
     "abi": 1,                    // the selected version
     "lesson": { "lesson_uid": "…", "page_id": "pg_…",
                 "page_rev": "sha256:…" },
-    "capabilities": ["attempts", "editor"] }
+    "capabilities": ["attempts", "editor", "run"] }
                                       // granted = want ∩ available routes/metadata
 ```
 
@@ -131,7 +131,7 @@ parent → child   { "op": "pong", "request_id": "r1", "abi": 1 }
 
 Anything else: `{ "op": "error", "code": "unknown-op", "request_id": … }`.
 Protocol error codes are `malformed`, `oversized`, `unknown-op`; they count
-toward the 8-error port budget. Operation refusals (§3.1–§3.2) use the same
+toward the 8-error port budget. Operation refusals (§3.1–§3.3) use the same
 `error` envelope but are ordinary answers — they reuse endpoint codes and
 never count. Unknown fields in any message are ignored, never an error — that
 is the forward-compatibility room minor additions use.
@@ -258,11 +258,76 @@ parent → child   { "op": "artifact.save", "request_id": "s1",
   executable example is
   `fixtures/lesson-bridge/editor-run-conventions.html`.
 
+### 3.3 The `run` capability (phase F)
+
+Granted only when the child asked for `"run"`, both artifact-save and
+run-start template endpoints are present, and fresh handshake metadata has at
+least one block with `run: true`. That metadata flag already folds in the
+registry, suffix, and process-local runner health. It routes the child to the
+membrane; it is not authority for a selected block.
+
+The only child-facing start is the composite save-and-run operation:
+
+```text
+child → parent   { "op": "artifact.save_run", "v": 1,
+                   "request_id": "run-1", "block_id": "blk_demo1",
+                   "content": "print('star')\n", "base_rev": "sha256:…",
+                   "after": 0 }
+parent → child   { "op": "artifact.save_run", "request_id": "run-1",
+                   "result": "started", "run_id": "…uuid…",
+                   "file_rev": "sha256:…" }
+
+parent → child   { "op": "run.output", "run_id": "…", "seq": 1,
+                   "stream": "stdout", "text": "invented output\n" }
+parent → child   { "op": "run.exit", "run_id": "…", "seq": 2,
+                   "cause": "exit", "exit_code": 0,
+                   "truncated": false, "duration_ms": 42 }
+
+child → parent   { "op": "run.cancel", "v": 1,
+                   "request_id": "cancel-1", "run_id": "…uuid…" }
+parent → child   { "op": "run.cancel", "request_id": "cancel-1",
+                   "result": "ack", "run_id": "…uuid…" }
+```
+
+- `artifact.save_run` first applies the exact editor-save contract. Only a
+  `saved` or `unchanged` response advances; `file-conflict` and every other
+  refusal stop without a run start. The parent then starts the selected block
+  with the returned `file_rev` and uses the child `request_id` verbatim as the
+  HTTP `idempotency_key`. There is no bare child-facing run-start operation.
+- The selected block itself must be present and carry `run: true` in fresh
+  metadata before save and again before start. A page-wide `run` grant caused
+  by another block does not confer authority; a selected non-run block is
+  `run-not-enabled`. Both mutations remain behind the generation/port,
+  identity/version, settle, and server-side record-time checks.
+- `after` is the last output sequence the child applied: a non-negative safe
+  integer, default `0`. The SSE request uses that cursor. The parent validates
+  the SSE id against its JSON `seq`, ignores replay overlap, permits only
+  `stdout`/`stderr` text chunks up to 32 KiB raw UTF-8, and relays output as
+  data only. Exit causes are the server's closed set; malformed, oversized,
+  or prematurely closed streams produce `run.error {run_id, code:
+  "unavailable"}` rather than invented output or an invented terminal cause.
+- The parent owns `run_id → {document generation, block_id}`. Cancel, output,
+  and exit resolve through that map; malformed or foreign run ids are
+  `job-missing` without touching the global HTTP routes. Cancel repeats fresh
+  page/block validation and the settle gate, but does not require the block's
+  Run flag to remain true: revocation must not prevent stopping a job already
+  owned by this document. Terminal exits are removed immediately; at most 16
+  failed/reconnectable relay entries are retained for one document.
+- One `artifact.save_run`/stream relay may be active for the document. A
+  second start receives `busy` before save or start HTTP. Run request ids are
+  deduplicated while in flight and at most four run operations are pending.
+- Navigation aborts the client relay and drops the document-owned map; it does
+  **not** call cancel. The bounded server job survives. A new document retries
+  the same logical `request_id`, identical content/base state, and its last
+  applied `after` cursor: the save is `unchanged`, the start idempotently
+  returns the same `run_id`, and the relay resumes strictly after the cursor.
+
 ## 4. Lifecycle and teardown
 
-- **Navigation ends everything.** The port, the armed identity, operation
-  in-flight state, and the one-grant flag die with the document (a
-  `MessagePort` cannot outlive it).
+- **Navigation ends all document-owned bridge state.** The port, armed
+  identity, operation in-flight state, run ownership/relay, and the one-grant
+  flag die with the document (a `MessagePort` cannot outlive it). A server-side
+  run is not document-owned and is never cancelled by teardown (§3.3).
   After every reload the child must announce `ready` again and gets fresh
   identity — `page_rev` may have changed.
 - **Stale revision:** the parent polls the preview metadata (~1.2 s); a
@@ -302,7 +367,7 @@ parent → child   { "op": "artifact.save", "request_id": "s1",
   unchanged: the successor was chosen by the armed lesson document itself,
   which could equally have kept the identical grant and rendered the same
   content. Like the two residuals flanking this one, it is why the
-  state-changing operations (§3.1–§3.2) re-validate identity per operation —
+  state-changing operations (§3.1–§3.3) re-validate identity per operation —
   parent-side against fresh metadata and server-side against the
   record-time manifest — instead of trusting port possession.
 
@@ -311,7 +376,7 @@ parent → child   { "op": "artifact.save", "request_id": "s1",
   frame self-navigates can be delivered to the successor document — the
   browser gives the sender no way to scope delivery to one document. The
   successor is the same trust domain (lesson content), and the write
-  capabilities (§3.1–§3.2) never trust delivery: every operation is
+  capabilities (§3.1–§3.3) never trust delivery: every operation is
   re-validated per use, parent- and server-side.
 - **Profile flip:** the effective profile is folded into the version token,
   so a manifest-only flip reloads the document under the new CSP and sandbox

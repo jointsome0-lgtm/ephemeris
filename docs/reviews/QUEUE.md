@@ -23,11 +23,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `fix/36-f4-editor-run-frontend` — `app/static/src/learn-bridge.ts`,
   emitted `app/static/learn-bridge.js`, `docs/lesson-bridge-abi.md`,
   `fixtures/lesson-bridge/`, `verify.py`, `docs/reviews/QUEUE.md` — issue #36
-  phase F frontend slice first adds the editor bridge membrane, its child
-  conventions fixture, additive ABI documentation, and regression coverage;
-  the first Codex findings round aligns the client block bound with the
+  phase F frontend slice adds the editor bridge membrane first and the run
+  membrane in a later commit, plus their text-only child conventions fixture,
+  additive ABI documentation, and regression coverage. The editor boundary's
+  first Codex findings round aligns the client block bound with the
   manifest, repeats fresh block validation after the save-settle window, and
-  refreshes block metadata before granting the editor; the second round
+  refreshes block metadata before granting the editor; its second round
   preserves the attempt operation's 32 KiB semantic bound inside the wider
   editor membrane. It does not change backend routes, attempt persistence,
   CSP, sandbox tokens, or terminal statics.

@@ -20,8 +20,8 @@
  * by whoever received it, not by whoever can read a broadcast. Messages FROM
  * the child are accepted only when `event.source === frame.contentWindow`.
  *
- * D5 adds the `attempts` capability and phase F adds the editor membrane.
- * Both are child-requested routing facts, never authority: every operation
+ * D5 adds the `attempts` capability and phase F adds the editor/run membranes.
+ * All are child-requested routing facts, never authority: every operation
  * re-fetches preview metadata, re-validates the armed identity and the
  * operation's question/block membership, and lets the server independently
  * enforce the record-time manifest. */
@@ -47,6 +47,10 @@ const POLL_MS = 1200;
 const MAX_ATTEMPTS_INFLIGHT = 4;
 /** Editor operations in flight at once per document. */
 const MAX_EDITOR_INFLIGHT = 4;
+/** Run operations in flight at once per document. */
+const MAX_RUN_INFLIGHT = 4;
+/** Failed/reconnectable relays retained per document; terminal exits delete eagerly. */
+const MAX_OWNED_RUNS = 16;
 /** Mirrors bundle_schema.MAX_BLOCKS: every backend-valid page stays routable. */
 const MAX_BRIDGE_BLOCKS = 100;
 /** Settle delay before the attempt HTTP call (PR-60 round 1, D2 L1): a
@@ -58,16 +62,24 @@ const MAX_BRIDGE_BLOCKS = 100;
 const ATTEMPT_SETTLE_MS = 250;
 /** The same navigation-settle membrane applies before artifact saves. */
 const EDITOR_SETTLE_MS = 250;
+/** Navigation-settle membrane before composite save and cancel mutations. */
+const RUN_SETTLE_MS = 250;
 /** The op-envelope version the attempt operation speaks (independent of the
  * handshake ABI so the submission shape can evolve additively). */
 const ATTEMPT_OP_VERSION = 1;
 const EDITOR_OP_VERSION = 1;
+const RUN_OP_VERSION = 1;
 const MAX_ANSWER_BYTES = 32 * 1024;
 const MAX_CONTENT_BYTES = 64 * 1024;
+const MAX_OUTPUT_BYTES = 32 * 1024;
 const QUESTION_ID_RE = /^q_[a-z0-9]{4,32}$/;
 const BLOCK_ID_RE = /^blk_[a-z0-9]{4,32}$/;
 const FILE_REV_RE = /^sha256:[a-f0-9]{64}$/;
 const BASE_REV_RE = /^(?:absent|sha256:[a-f0-9]{64})$/;
+const JOB_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+const RUN_CAUSES = new Set([
+    "exit", "signal", "timeout", "cancelled", "output-limit", "spawn-failed", "shutdown",
+]);
 const UTF8 = new TextEncoder();
 const frame = document.getElementById("lesson-preview-frame");
 if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
@@ -79,6 +91,9 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     /* Phase-F artifact endpoint prefix. An older live backend renders no data
      * attribute, so `editor` is never granted while the static is ahead. */
     const artifactsUrl = frame.dataset["artifactsUrl"] || null;
+    /* Phase-F run-start endpoint prefix. It is a separate feature-detection
+     * attribute because statics can temporarily run against the old backend. */
+    const runsUrl = frame.dataset["runsUrl"] || null;
     /* The version token the displayed document was served under (server-
      * rendered for the initial navigation, then meta-derived); the binding
      * rule is: identity is armed only while the fresh meta token equals it. */
@@ -130,11 +145,19 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     let capabilities = [];
     let attemptsInflight = new Set();
     let editorInflight = new Set();
+    let runInflight = new Set();
+    let runStartToken = null;
+    let ownedRuns = new Map();
+    let activeRelay = null;
     let armedBlocks = [];
     /* Serialises a handshake-time metadata refresh. An object token prevents a
      * stale document's finally block from clearing a successor's refresh. */
     let grantToken = null;
     const teardown = () => {
+        /* Navigation stops only this document's relay. The server-side job is
+         * deliberately not cancelled and remains reattachable by idempotent replay. */
+        if (activeRelay)
+            activeRelay.controller.abort();
         if (port)
             port.close();
         port = null;
@@ -145,6 +168,10 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         capabilities = [];
         attemptsInflight = new Set();
         editorInflight = new Set();
+        runInflight = new Set();
+        runStartToken = null;
+        ownedRuns = new Map();
+        activeRelay = null;
         armedBlocks = [];
         grantToken = null;
     };
@@ -491,6 +518,305 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             inflight.delete(requestId);
         }
     };
+    const runStartEndpoint = (blockId) => `${runsUrl}/${encodeURIComponent(blockId)}/runs`;
+    const runEndpoint = (runId, suffix) => new URL(`/learn/runs/${encodeURIComponent(runId)}/${suffix}`, window.location.href).toString();
+    const rememberOwnedRun = (runId, owner) => {
+        ownedRuns.delete(runId); // replay moves the same job to the newest slot
+        ownedRuns.set(runId, owner);
+        while (ownedRuns.size > MAX_OWNED_RUNS) {
+            const oldest = ownedRuns.keys().next().value;
+            if (oldest === undefined)
+                break;
+            ownedRuns.delete(oldest);
+        }
+    };
+    const relayRun = async (boundPort, gen, runId, blockId, after) => {
+        const relay = {
+            generation: gen,
+            run_id: runId,
+            controller: new AbortController(),
+        };
+        activeRelay = relay;
+        const ownsRelay = () => {
+            const owner = ownedRuns.get(runId);
+            return activeRelay === relay && gen === generation && port === boundPort
+                && owner?.generation === gen && owner.block_id === blockId;
+        };
+        const relayError = (code) => {
+            if (ownsRelay())
+                boundPort.postMessage({ op: "run.error", run_id: runId, code });
+        };
+        try {
+            const url = new URL(runEndpoint(runId, "stream"));
+            url.searchParams.set("after", String(after));
+            let response;
+            try {
+                response = await fetch(url, {
+                    cache: "no-store",
+                    headers: { Accept: "text/event-stream" },
+                    signal: relay.controller.signal,
+                });
+            }
+            catch {
+                if (!relay.controller.signal.aborted)
+                    relayError("unavailable");
+                return;
+            }
+            if (!ownsRelay())
+                return;
+            if (!response.ok) {
+                let code = "unavailable";
+                try {
+                    const body = await response.json();
+                    if (typeof body === "object" && body !== null) {
+                        const raw = body["error"];
+                        if (typeof raw === "string" && raw.length <= 64)
+                            code = raw;
+                    }
+                }
+                catch {
+                    // keep the generic refusal
+                }
+                const stillOwned = ownsRelay();
+                relayError(code);
+                if (stillOwned && code === "job-missing")
+                    ownedRuns.delete(runId);
+                return;
+            }
+            if (!response.body) {
+                relayError("unavailable");
+                return;
+            }
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder("utf-8", { fatal: true });
+            let buffer = "";
+            let cursor = after;
+            const applyFrame = (frameText) => {
+                let eventName = null;
+                let eventId = null;
+                const dataLines = [];
+                for (const rawLine of frameText.split("\n")) {
+                    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+                    if (line === "" || line.startsWith(":"))
+                        continue;
+                    const colon = line.indexOf(":");
+                    const field = colon < 0 ? line : line.slice(0, colon);
+                    let value = colon < 0 ? "" : line.slice(colon + 1);
+                    if (value.startsWith(" "))
+                        value = value.slice(1);
+                    if (field === "event")
+                        eventName = value;
+                    else if (field === "id")
+                        eventId = value;
+                    else if (field === "data")
+                        dataLines.push(value);
+                }
+                if (eventName === null && eventId === null && dataLines.length === 0)
+                    return false;
+                const seq = eventId === null ? NaN : Number(eventId);
+                if (!Number.isSafeInteger(seq) || seq <= 0 || dataLines.length === 0) {
+                    throw new Error("malformed SSE envelope");
+                }
+                let payload;
+                try {
+                    const value = JSON.parse(dataLines.join("\n"));
+                    if (typeof value !== "object" || value === null)
+                        throw new Error("not an object");
+                    payload = value;
+                }
+                catch {
+                    throw new Error("malformed SSE data");
+                }
+                if (payload["seq"] !== seq)
+                    throw new Error("SSE sequence mismatch");
+                if (seq <= cursor)
+                    return false; // replay overlap: already relayed
+                if (!ownsRelay())
+                    return true; // navigation/teardown: stop immediately
+                if (eventName === "output") {
+                    const stream = payload["stream"];
+                    const text = payload["text"];
+                    if ((stream !== "stdout" && stream !== "stderr")
+                        || typeof text !== "string" || contentByteLength(text) > MAX_OUTPUT_BYTES)
+                        throw new Error("malformed output event");
+                    const message = { op: "run.output", run_id: runId, seq, stream, text };
+                    const size = serializedByteLength(message);
+                    if (size === null || size > MAX_PORT_BYTES)
+                        throw new Error("oversized relay");
+                    boundPort.postMessage(message);
+                    cursor = seq;
+                    return false;
+                }
+                if (eventName === "exit") {
+                    const cause = payload["cause"];
+                    const truncated = payload["truncated"];
+                    const duration = payload["duration_ms"];
+                    if (typeof cause !== "string" || !RUN_CAUSES.has(cause)
+                        || typeof truncated !== "boolean"
+                        || !Number.isSafeInteger(duration) || duration < 0)
+                        throw new Error("malformed exit event");
+                    const message = {
+                        op: "run.exit", run_id: runId, seq, cause, truncated, duration_ms: duration,
+                    };
+                    if (payload["exit_code"] !== undefined) {
+                        if (!Number.isInteger(payload["exit_code"]))
+                            throw new Error("bad exit code");
+                        message["exit_code"] = payload["exit_code"];
+                    }
+                    if (payload["signal"] !== undefined) {
+                        if (!Number.isInteger(payload["signal"]))
+                            throw new Error("bad signal");
+                        message["signal"] = payload["signal"];
+                    }
+                    boundPort.postMessage(message);
+                    cursor = seq;
+                    ownedRuns.delete(runId);
+                    return true;
+                }
+                throw new Error("unknown SSE event");
+            };
+            while (ownsRelay()) {
+                const chunk = await reader.read();
+                buffer += decoder.decode(chunk.value, { stream: !chunk.done });
+                if (UTF8.encode(buffer).byteLength > MAX_PORT_BYTES) {
+                    throw new Error("oversized SSE frame");
+                }
+                let boundary = buffer.indexOf("\n\n");
+                while (boundary >= 0) {
+                    const frameText = buffer.slice(0, boundary);
+                    buffer = buffer.slice(boundary + 2);
+                    if (applyFrame(frameText)) {
+                        await reader.cancel();
+                        return;
+                    }
+                    boundary = buffer.indexOf("\n\n");
+                }
+                if (chunk.done) {
+                    if (buffer.trim() && applyFrame(buffer))
+                        return;
+                    relayError("unavailable"); // a valid stream ends only with run.exit
+                    return;
+                }
+            }
+            await reader.cancel();
+        }
+        catch {
+            if (!relay.controller.signal.aborted)
+                relayError("unavailable");
+        }
+        finally {
+            if (activeRelay === relay)
+                activeRelay = null;
+        }
+    };
+    const saveAndRun = async (boundPort, gen, token, requestId, blockId, content, baseRev, after) => {
+        const inflight = runInflight;
+        inflight.add(requestId);
+        try {
+            const first = await freshBlock(boundPort, gen, requestId, blockId);
+            if (first === null)
+                return;
+            if (!first.run)
+                return answerError(boundPort, "run-not-enabled", requestId);
+            await new Promise((resolve) => setTimeout(resolve, RUN_SETTLE_MS));
+            if (runStartToken !== token || gen !== generation || port !== boundPort
+                || navPending || quarantined)
+                return answerError(boundPort, "stale-page", requestId);
+            const beforeSave = await freshBlock(boundPort, gen, requestId, blockId);
+            if (beforeSave === null)
+                return;
+            if (!beforeSave.run)
+                return answerError(boundPort, "run-not-enabled", requestId);
+            const saved = await readEndpointJson(artifactEndpoint(blockId), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ content, base_rev: baseRev }),
+            });
+            if (runStartToken !== token || gen !== generation || port !== boundPort)
+                return;
+            if (saved === null)
+                return answerError(boundPort, "unavailable", requestId);
+            if (saved["ok"] !== true)
+                return endpointError(boundPort, requestId, saved);
+            const saveResult = saved["result"];
+            const fileRev = saved["file_rev"];
+            if ((saveResult !== "saved" && saveResult !== "unchanged")
+                || typeof fileRev !== "string" || !FILE_REV_RE.test(fileRev))
+                return answerError(boundPort, "unavailable", requestId);
+            /* The run start is a second mutation and may follow a manifest-only edit
+             * after save. Re-check this exact block's health-gated Run authority. */
+            const beforeRun = await freshBlock(boundPort, gen, requestId, blockId);
+            if (beforeRun === null)
+                return;
+            if (!beforeRun.run)
+                return answerError(boundPort, "run-not-enabled", requestId);
+            const started = await readEndpointJson(runStartEndpoint(blockId), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ file_rev: fileRev, idempotency_key: requestId }),
+            });
+            if (runStartToken !== token || gen !== generation || port !== boundPort)
+                return;
+            if (started === null)
+                return answerError(boundPort, "unavailable", requestId);
+            if (started["ok"] !== true)
+                return endpointError(boundPort, requestId, started);
+            const runId = started["job_id"];
+            if (typeof runId !== "string" || !JOB_ID_RE.test(runId)) {
+                return answerError(boundPort, "unavailable", requestId);
+            }
+            rememberOwnedRun(runId, { generation: gen, block_id: blockId });
+            boundPort.postMessage({
+                op: "artifact.save_run",
+                request_id: requestId,
+                result: "started",
+                run_id: runId,
+                file_rev: fileRev,
+            });
+            void relayRun(boundPort, gen, runId, blockId, after);
+        }
+        finally {
+            inflight.delete(requestId);
+            if (runStartToken === token)
+                runStartToken = null;
+        }
+    };
+    const cancelRun = async (boundPort, gen, requestId, runId) => {
+        const inflight = runInflight;
+        inflight.add(requestId);
+        try {
+            const owner = ownedRuns.get(runId);
+            if (!owner || owner.generation !== gen) {
+                return answerError(boundPort, "job-missing", requestId);
+            }
+            if (await freshBlock(boundPort, gen, requestId, owner.block_id) === null)
+                return;
+            await new Promise((resolve) => setTimeout(resolve, RUN_SETTLE_MS));
+            if (gen !== generation || port !== boundPort || navPending || quarantined) {
+                return answerError(boundPort, "stale-page", requestId);
+            }
+            if (await freshBlock(boundPort, gen, requestId, owner.block_id) === null)
+                return;
+            const rec = await readEndpointJson(runEndpoint(runId, "cancel"), { method: "POST" });
+            if (gen !== generation || port !== boundPort)
+                return;
+            if (rec === null)
+                return answerError(boundPort, "unavailable", requestId);
+            if (rec["ok"] !== true) {
+                if (rec["error"] === "job-missing")
+                    ownedRuns.delete(runId);
+                return endpointError(boundPort, requestId, rec);
+            }
+            if (rec["job_id"] !== runId)
+                return answerError(boundPort, "unavailable", requestId);
+            boundPort.postMessage({
+                op: "run.cancel", request_id: requestId, result: "ack", run_id: runId,
+            });
+        }
+        finally {
+            inflight.delete(requestId);
+        }
+    };
     const postAttempt = async (boundPort, gen, requestId, questionId, answer) => {
         /* Capture THIS document's in-flight set (PR-60 round 5): teardown
          * replaces `attemptsInflight`, so a call that outlives its document
@@ -680,6 +1006,58 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             void saveArtifact(port, generation, requestId, blockId, content, baseRev);
             return;
         }
+        if (msg["op"] === "artifact.save_run" || msg["op"] === "run.cancel") {
+            if (requestId === null)
+                return protocolError("malformed", null);
+            if (artifactsUrl === null || runsUrl === null || !capabilities.includes("run"))
+                return answerError(port, "capability-not-granted", requestId);
+            if (msg["v"] !== RUN_OP_VERSION) {
+                return answerError(port, "unsupported-version", requestId);
+            }
+            if (runInflight.has(requestId))
+                return;
+            if (runInflight.size >= MAX_RUN_INFLIGHT) {
+                return answerError(port, "busy", requestId);
+            }
+            if (msg["op"] === "run.cancel") {
+                const runId = msg["run_id"];
+                /* The ownership map is the authority boundary: malformed and foreign
+                 * ids are indistinguishable and never reach the global server route. */
+                if (typeof runId !== "string" || !JOB_ID_RE.test(runId) || !ownedRuns.has(runId)) {
+                    return answerError(port, "job-missing", requestId);
+                }
+                void cancelRun(port, generation, requestId, runId);
+                return;
+            }
+            const blockId = msg["block_id"];
+            const content = msg["content"];
+            const baseRev = msg["base_rev"];
+            const rawAfter = msg["after"] ?? 0;
+            if (typeof blockId !== "string" || !BLOCK_ID_RE.test(blockId)) {
+                return answerError(port, "invalid-block-id", requestId);
+            }
+            if (typeof content !== "string") {
+                return answerError(port, "invalid-content", requestId);
+            }
+            if (contentByteLength(content) > MAX_CONTENT_BYTES) {
+                return answerError(port, "file-too-large", requestId);
+            }
+            if (typeof baseRev !== "string" || !BASE_REV_RE.test(baseRev)) {
+                return answerError(port, "invalid-base-rev", requestId);
+            }
+            if (!Number.isSafeInteger(rawAfter) || rawAfter < 0) {
+                return answerError(port, "invalid-cursor", requestId);
+            }
+            /* One document-wide relay. Refuse before save/start HTTP, so a second
+             * Run click cannot start an unobservable job behind the active stream. */
+            if (activeRelay !== null || runStartToken !== null) {
+                return answerError(port, "busy", requestId);
+            }
+            const token = {};
+            runStartToken = token;
+            void saveAndRun(port, generation, token, requestId, blockId, content, baseRev, rawAfter);
+            return;
+        }
         return protocolError("unknown-op", requestId);
     };
     const finishReady = (data, child) => {
@@ -689,15 +1067,19 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         port = channel.port1;
         port.onmessage = onPortMessage;
         granted = true; // one welcome per loaded document
-        /* Capability negotiation is routing, not authority. `editor` additionally
-         * requires at least one declared block from the handshake-time metadata;
-         * an old backend omits data-artifacts-url, so it stays absent. */
+        /* Capability negotiation is routing, not authority. Editor requires one
+         * block and its endpoint; Run additionally requires a health-gated run
+         * block plus both save and start endpoints. */
         const want = Array.isArray(data.want) ? data.want : [];
         capabilities = [];
         if (attemptsUrl !== null && want.includes("attempts"))
             capabilities.push("attempts");
         if (artifactsUrl !== null && armedBlocks.length > 0 && want.includes("editor")) {
             capabilities.push("editor");
+        }
+        if (artifactsUrl !== null && runsUrl !== null
+            && armedBlocks.some((block) => block.run) && want.includes("run")) {
+            capabilities.push("run");
         }
         child.postMessage({
             ephemeris: "lesson-bridge",
@@ -724,7 +1106,8 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             return;
         }
         const want = Array.isArray(data.want) ? data.want : [];
-        if (artifactsUrl !== null && want.includes("editor")) {
+        const needsBlockRefresh = artifactsUrl !== null && (want.includes("editor") || (runsUrl !== null && want.includes("run")));
+        if (needsBlockRefresh) {
             const gen = generation;
             const token = {};
             grantToken = token;
