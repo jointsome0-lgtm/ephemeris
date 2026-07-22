@@ -19,17 +19,31 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-22 — commits after `0ea44d8` on
-  `fix/36-f2-editor-backend` — `app/main.py`, `app/request_body.py`,
-  `app/services/artifacts.py`, `app/services/lessons.py`,
-  `app/templates/learn.html`, `docs/lesson-artifacts-api.md`, `verify.py`,
-  `docs/reviews/QUEUE.md` — issue #36 phase F slice F1 adds pure bundle reads,
-  manifest-addressed artifact GET/save routes, descriptor-bound safe-file
-  checks, fd-relative atomic publication, revisions/conflicts, save telemetry,
-  bounded request admission, and armed-page block metadata; it does not add a
-  run route or change the existing attempt endpoint.
+_None._
 
 ## Done
+
+- [x] 2026-07-22 — commits after `0ea44d8` on
+  `fix/36-f2-editor-backend`; LANDED via merge commit `be3f9ce`, whose tree is
+  byte-identical to reviewed branch head `31acfbc` — `app/main.py`,
+  `app/request_body.py`, `app/services/artifacts.py`,
+  `app/services/lessons.py`, `app/templates/learn.html`,
+  `docs/lesson-artifacts-api.md`, `verify.py`, `docs/reviews/QUEUE.md` — issue
+  #36 phase F slice F1 adds pure bundle reads, manifest-addressed artifact
+  GET/save routes, descriptor-bound safe-file checks, fd-relative atomic
+  publication, revisions/conflicts, save telemetry, bounded request admission,
+  and armed-page block metadata; it does not add a run route or change the
+  existing attempt endpoint. `240511d` (drain cycle 1) rejects an artifact
+  whose same descriptor changes identity while its bytes are read, preventing
+  a mixed snapshot/revision; verify 696, verify_restore 28. Drained 2026-07-22
+  → `2026-07-22-lesson-artifact-editor-backend-review.md`: one Low finding,
+  resolved in one cycle; no Critical, High, Medium, Low, Info, or open finding
+  remains. Bundle, write-guard, runner-core, sandbox, and lesson-role
+  protections remain resolved; D5 L1 remains mitigated, D5 L2/L3 remain
+  resolved, D4 A1/A2 and the plain-owner-shell condition remain accepted
+  follow-ups. Final verdict: SAFE TO MAKE LIVE for the documented direct-
+  loopback single-worker deployment; wider, proxy-adjacent, or multi-user
+  deployment NO. Live restart is owner-only and was not performed.
 
 - [x] 2026-07-22 — commits after `e3cb882` on
   `fix/36-f1-runner-core`; LANDED via merge commit `76e521d`, whose tree is
