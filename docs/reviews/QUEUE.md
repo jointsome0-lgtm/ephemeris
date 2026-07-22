@@ -19,7 +19,14 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
+- [ ] 2026-07-23 — commits after `1c04bd2` on
+  `fix/35-f5-blocks-activation` — `app/services/lessons.py`, `verify.py`,
+  `docs/reviews/QUEUE.md` — issue #35 phase F activation replaces only the
+  generated lesson brief's inactive editor/run-block section with active
+  manifest, artifact-placement, registered-runner, bridge-operation,
+  text-only-output, graceful-degradation, and teaching-purpose conventions,
+  plus matching verifier anchors. It changes no runtime code path, schema,
+  ABI, sandbox, CSP, route, terminal surface, or other brief section.
 
 ## Done
 

@@ -366,14 +366,32 @@ with TestClient(app) as c:
           and "insert it only as text content" in agents_text
           and "never\n  splice it into markup, attributes, URLs, CSS, or script"
           in agents_text)
-    check("lesson AGENTS.md fences inactive editor and run blocks",
-          "## Coming, not yet active: editor and run blocks" in agents_text
+    check("lesson AGENTS.md activates manifest-declared editor/run blocks",
+          "## Editor and run blocks" in agents_text
           and "bundle spec §4.4" in agents_text
-          and "opaque `runner_id` — never commands" in agents_text
-          and "NOT active yet" in agents_text
-          and "do not author" in agents_text
-          and "hand-rolled runner cannot work inside the page sandbox" in agents_text
-          and "learner's shell) remain the way code gets run" in agents_text)
+          and "docs/lesson-artifacts-api.md" in agents_text
+          and "stable `blk_` id" in agents_text
+          and '`"kind": "editor"`' in agents_text
+          and "optional opaque `runner_id`" in agents_text
+          and "No `runner_id` means editor-only" in agents_text)
+    check("lesson AGENTS.md pins registered single-file runner conventions",
+          "`python-script-v1` for one `.py` file" in agents_text
+          and "`go-run-v1` for one `.go` file" in agents_text
+          and "single-file, dependency-free program" in agents_text
+          and "`attempts/blk_<id>/<file>`" in agents_text
+          and "more than 4 levels below" in agents_text)
+    check("lesson AGENTS.md teaches the text-only editor/run bridge loop",
+          "plain textarea with Load, Save, and Run controls" in agents_text
+          and "`editor`/`run` in the bridge" in agents_text
+          and "`artifact.get`" in agents_text
+          and "`artifact.save`" in agents_text
+          and "`artifact.save_run`" in agents_text
+          and "`run.cancel`" in agents_text
+          and "fresh lesson-wide `request_id`" in agents_text
+          and "`textContent` or text nodes, never as markup" in agents_text
+          and "static snippet cannot" in agents_text
+          and "Terminal experiments" in agents_text
+          and "remain first-class" in agents_text)
     check("lesson AGENTS.md cites the frozen v2 identity + attempts conventions",
           "schema_version" in agents_text and "lesson_uid" in agents_text
           and "pg_" in agents_text and "q_" in agents_text

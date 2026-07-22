@@ -1088,17 +1088,34 @@ font, image) is forbidden.
   index.html. The app's Learn preview live-reloads the open page when you
   save it and shows every manifest page as a tab.
 
-## Coming, not yet active: editor and run blocks
+## Editor and run blocks
 
-The manifest schema reserves `blocks[]` for in-page editor/run blocks
-(see the app's bundle spec §4.4: `blk_` ids, a `file` under an artifact
-root, an opaque `runner_id` — never commands). The app feature behind
-them is NOT active yet. Until the app activates it, do not author
-`blocks[]` entries and do not improvise your own in-page editors or Run
-buttons — a hand-rolled runner cannot work inside the page sandbox, and
-a dead block is weight the learner cannot use. Terminal experiments (the
-learner's shell) remain the way code gets run. This section will change
-when the feature lands; everything else in this brief stays.
+The authorities are the app's bundle spec §4.4 for `blocks[]` and
+`docs/lesson-artifacts-api.md` for artifact files. Declare each block in
+the v2 manifest with a stable `blk_` id and its owning `page`, then set
+`"kind": "editor"`, its `file`, and an optional opaque `runner_id` —
+never a command.
+No `runner_id` means editor-only. The registered runners are
+`python-script-v1` for one `.py` file and `go-run-v1` for one `.go` file;
+both require a single-file, dependency-free program with no package
+download or install.
+
+With the default artifact root, place each file at
+`attempts/blk_<id>/<file>`. Never put it more than 4 levels below its
+artifact root. Author a plain textarea with Load, Save, and Run controls
+(plus Cancel while a run is active). Ask for `editor`/`run` in the bridge
+handshake and keep the textarea read-only and controls disabled unless
+those capabilities are actually granted.
+
+Wire the controls only through `docs/lesson-bridge-abi.md` §3.2/§3.3:
+Load uses `artifact.get`, Save uses `artifact.save`, Run uses the composite
+`artifact.save_run`, and Cancel uses `run.cancel`. Give each new logical
+operation a fresh lesson-wide `request_id`; reuse it only to retry that
+exact operation. Render every status and all `run.output` as text with
+`textContent` or text nodes, never as markup. Use a block only when running
+the code teaches something a static snippet cannot. Terminal experiments
+remain first-class whenever the learner should inspect, combine, or explore
+beyond one bounded editor file.
 
 ## Bridge conventions — wiring Check into pages
 
