@@ -31,6 +31,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   Codex review round 1 fixes same-origin admission before SSE reader
   reservation, refunds rate permits on runner-health refusal, and preserves
   attached streams during retention pruning.
+  Codex review round 2 keeps replay identity while an attached stream protects
+  its job, moves cold health probes off the ASGI event loop and service lock,
+  and prevents late cancellation from relabelling an already reaped process.
 
 ## Done
 

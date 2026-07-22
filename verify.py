@@ -14,6 +14,7 @@ import stat as stat_module
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 # Isolated DB before importing the app.
@@ -5350,6 +5351,82 @@ with TestClient(app) as c:
             and sum(event["event"] == "exit" for event in finished.events) == 1
         )
 
+        health_started = threading.Event()
+        health_release = threading.Event()
+        health_threads = []
+        health_processes = []
+
+        def blocking_health():
+            health_threads.append(threading.get_ident())
+            health_started.set()
+            health_release.wait(timeout=2)
+
+        async def health_spawn(_job):
+            process = _F3Process()
+            health_processes.append(process)
+            return process
+
+        health_service = _runner.RunnerService(
+            spawn_hook=health_spawn, health_hook=blocking_health
+        )
+        loop_thread = threading.get_ident()
+        health_admit_task = _asyncio.create_task(
+            health_service.admit(req("health", "health-key"))
+        )
+        for _ in range(100):
+            if health_started.is_set():
+                break
+            await _asyncio.sleep(0.01)
+        try:
+            health_lookup_responsive = await _asyncio.wait_for(
+                health_service.get("invented-missing"), timeout=0.2
+            ) is None
+        except _asyncio.TimeoutError:
+            health_lookup_responsive = False
+        finally:
+            health_release.set()
+        health_admission = await health_admit_task
+        for _ in range(100):
+            if health_processes:
+                break
+            await _asyncio.sleep(0.01)
+        health_processes[0].finish(0)
+        await health_service.wait(health_admission.job.job_id)
+        result["health_off_loop"] = (
+            health_started.is_set()
+            and health_threads == [health_threads[0]]
+            and health_threads[0] != loop_thread
+            and health_lookup_responsive
+        )
+
+        natural_processes = []
+
+        async def natural_spawn(_job):
+            process = _F3Process()
+            natural_processes.append(process)
+            return process
+
+        natural_service = _runner.RunnerService(
+            spawn_hook=natural_spawn, health_hook=lambda: None
+        )
+        natural = (
+            await natural_service.admit(req("natural", "natural-key"))
+        ).job
+        for _ in range(100):
+            if natural_processes:
+                break
+            await _asyncio.sleep(0.01)
+        natural_processes[0].returncode = 0
+        with _sandbox_mock.patch.object(
+                _runner.RunnerService, "_kill_tree") as natural_kill:
+            natural_cancelled = await natural_service.cancel(natural.job_id)
+        natural_processes[0].finish(0)
+        natural = await natural_service.wait(natural.job_id)
+        result["natural_exit_beats_cancel"] = (
+            not natural_cancelled and natural_kill.call_count == 0
+            and natural.cause == "exit" and natural.exit_code == 0
+        )
+
         cancel_processes = []
 
         async def cancel_spawn(_job):
@@ -5505,6 +5582,15 @@ with TestClient(app) as c:
         new.finished_monotonic = (
             _time.monotonic() - _runner.TERMINAL_RETENTION_SECONDS - 1
         )
+        replay_key = ("new", "new-key")
+        saved_replay = retention_service._idempotency[replay_key]
+        retention_service._idempotency[replay_key] = (
+            saved_replay[0], saved_replay[1], saved_replay[2],
+            _time.monotonic() - 1,
+        )
+        attached_replay = await retention_service.preflight(
+            "new", "new-key", "blk_demo", "sha256:invented"
+        )
         later = (
             await retention_service.admit(req("later", "later-key"))
         ).job
@@ -5515,11 +5601,17 @@ with TestClient(app) as c:
         await retention_service.detach_reader(first_reader)
         await retention_service.detach_reader(second_reader)
         detached_expired = await retention_service.get(new.job_id) is None
+        detached_replay = await retention_service.preflight(
+            "new", "new-key", "blk_demo", "sha256:invented"
+        )
         result["reader_cap"] = (
             third_reader_refused and new.reader_count == 0
         )
         result["reader_retention"] = (
-            attached_survived_pruning and detached_expired
+            isinstance(attached_replay, _runner.Admission)
+            and attached_replay.job is new and attached_replay.replayed
+            and attached_survived_pruning and detached_expired
+            and isinstance(detached_replay, _runner.AdmissionPermit)
         )
 
         shutdown_processes = []
@@ -5557,7 +5649,11 @@ with TestClient(app) as c:
           and _f3_service.get("oversized_snapshot"), str(_f3_service))
     check("F3 first terminal cause wins and releases capacity exactly once",
           _f3_service.get("first_cause_release")
-          and _f3_service.get("spawn_failure"), str(_f3_service))
+            and _f3_service.get("spawn_failure"), str(_f3_service))
+    check("F3 cold health probes leave the event loop and service lock responsive",
+          _f3_service.get("health_off_loop"), str(_f3_service))
+    check("F3 a reaped natural exit cannot be relabelled by late cancel",
+          _f3_service.get("natural_exit_beats_cancel"), str(_f3_service))
     check("F3 one-lock admission closes races and refunds busy rate charges",
           _f3_service.get("per_lesson_race")
           and _f3_service.get("global_race"), str(_f3_service))

@@ -407,12 +407,17 @@ class RunnerService:
         *,
         rate_permit: object = _NO_RATE_PERMIT,
     ) -> Admission:
-        """Replay/rate/capacity/reservation transaction under one lock."""
+        """Validate health off-loop, then reserve under the admission lock."""
+        replay_key = (request.lesson_key, request.idempotency_key)
+        permit_supplied = rate_permit is not _NO_RATE_PERMIT
+        supplied_charge = rate_permit if permit_supplied else None
+
+        # Keep replay/error ordering ahead of health, and reject cheap request
+        # defects without starting subprocess probes.  Health itself must run
+        # outside both the event loop and this lock so status/SSE/cancel remain
+        # responsive during a cold or unhealthy probe.
         async with self._lock:
             self._prune_locked()
-            replay_key = (request.lesson_key, request.idempotency_key)
-            permit_supplied = rate_permit is not _NO_RATE_PERMIT
-            supplied_charge = rate_permit if permit_supplied else None
             try:
                 replay = self._replay_locked(
                     request.lesson_key, request.idempotency_key,
@@ -451,13 +456,51 @@ class RunnerService:
                 basename = PurePosixPath(request.filename).name
                 if basename in ("", ".", "..") or not spec.accepts(basename):
                     raise IncompatibleRunnerError(request.filename)
-                self._health_hook()
             except RunnerError:
                 if permit_supplied:
                     self._refund_rate_locked(
                         request.lesson_key, supplied_charge
                     )
                 raise
+
+        try:
+            await asyncio.to_thread(self._health_hook)
+        except BaseException:
+            if permit_supplied:
+                async with self._lock:
+                    self._refund_rate_locked(
+                        request.lesson_key, supplied_charge
+                    )
+            raise
+
+        # State may have changed while health ran.  Repeat all mutable checks;
+        # a concurrent identical winner replays and any supplied rate permit is
+        # refunded before returning or refusing.
+        async with self._lock:
+            self._prune_locked()
+            try:
+                replay = self._replay_locked(
+                    request.lesson_key, request.idempotency_key,
+                    request.block_id, request.file_rev,
+                )
+            except (IdempotencyConflictError, JobMissingError):
+                if permit_supplied:
+                    self._refund_rate_locked(
+                        request.lesson_key, supplied_charge
+                    )
+                raise
+            if replay is not None:
+                if permit_supplied:
+                    self._refund_rate_locked(
+                        request.lesson_key, supplied_charge
+                    )
+                return replay
+            if not self._accepting:
+                if permit_supplied:
+                    self._refund_rate_locked(
+                        request.lesson_key, supplied_charge
+                    )
+                raise RunnerShuttingDownError("runner service is shutting down")
             rate_charge: object | None = supplied_charge
             if not permit_supplied and self._rate_hook is not None:
                 rate_charge = self._rate_hook(request.lesson_key)
@@ -542,8 +585,13 @@ class RunnerService:
             job = self._jobs.get(job_id)
             if job is None or job.state == FINISHED:
                 return False
-            won = self._begin_termination_locked(job, "cancelled")
             process = job.process
+            if (
+                job.process_reaped
+                or process is not None and process.returncode is not None
+            ):
+                return False
+            won = self._begin_termination_locked(job, "cancelled")
         if won and process is not None:
             self._kill_tree(job)
         return won
@@ -809,10 +857,6 @@ class RunnerService:
 
     def _prune_locked(self) -> None:
         now = time.monotonic()
-        for key, replay in tuple(self._idempotency.items()):
-            expires = replay[3]
-            if expires is not None and now >= expires:
-                self._idempotency.pop(key, None)
         terminal = [
             job for job in self._jobs.values()
             if job.state == FINISHED and job.finished_monotonic is not None
@@ -830,6 +874,14 @@ class RunnerService:
         expired.update(job.job_id for job in unexpired[:excess])
         for job_id in expired:
             self._jobs.pop(job_id, None)
+        for key, replay in tuple(self._idempotency.items()):
+            expires = replay[3]
+            if (
+                expires is not None
+                and now >= expires
+                and replay[2] not in self._jobs
+            ):
+                self._idempotency.pop(key, None)
 
     @staticmethod
     def _kill_tree(job: RunnerJob) -> None:

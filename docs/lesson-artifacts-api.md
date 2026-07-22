@@ -165,6 +165,11 @@ job are charged; replay, idempotency conflict, rate-limit refusal, and a busy
 preflight are uncharged. A capacity race or runner-health/pre-reservation
 admission failure after validation refunds its slot.
 
+Cold runner-health probes execute on a worker thread outside the service lock,
+so they do not stall status, stream, or cancel handling on the ASGI event loop.
+Admission rechecks replay, lifecycle, rate, and capacity after the probe before
+reserving a job.
+
 Status is `Cache-Control: no-store` and returns the job/block/runner/revision,
 state, and `event_recorded`. A terminal status also returns `cause`, optional
 `exit_code` or `signal`, `truncated`, and `duration_ms`.
@@ -201,13 +206,15 @@ data: {"seq":8,"cause":"exit","exit_code":0,"truncated":false,"duration_ms":42}
 Terminal causes are `exit`, `signal`, `timeout`, `cancelled`, `output-limit`,
 `spawn-failed`, or `shutdown`. Cancel is idempotent for active and terminal
 jobs; a winning cancel uses the runner's SIGKILL tree path and the stream still
-ends with `cause: "cancelled"`.
+ends with `cause: "cancelled"`. Once the child has already reaped, a late cancel
+cannot replace its natural `exit` or `signal` cause.
 
 Terminal jobs remain for 15 minutes, with at most eight retained. Oldest
 terminal jobs are evicted first; active jobs and jobs with attached streams are
 excluded. A protected job is pruned after its last reader detaches when it is
 otherwise expired or over the count bound. After eviction, status, stream, and
-cancel return `job-missing`.
+cancel return `job-missing`. Its idempotency replay entry remains valid for as
+long as an attached reader keeps the job retained, even past the ordinary TTL.
 
 Each terminal job attempts one best-effort `lesson_run` event containing
 `lesson_uid`, `lesson_id`, `slug`, `block_id`, `runner_id`, `file_rev`, `cause`,
