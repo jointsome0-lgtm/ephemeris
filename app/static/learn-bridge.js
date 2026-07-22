@@ -389,6 +389,18 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             : null;
     };
     const contentByteLength = (content) => UTF8.encode(content).byteLength;
+    const deriveRunIdempotencyKey = async (requestId, blockId, content) => {
+        try {
+            const material = JSON.stringify([
+                "ephemeris:lesson-run:v1", requestId, blockId, content,
+            ]);
+            const digest = await window.crypto.subtle.digest("SHA-256", UTF8.encode(material));
+            return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+        }
+        catch {
+            return null; // fail closed before save when Web Crypto is unavailable
+        }
+    };
     const endpointError = (to, requestId, record) => {
         const code = typeof record["error"] === "string" && record["error"].length <= 64
             ? record["error"] : "unavailable";
@@ -689,9 +701,6 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             while (ownsRelay()) {
                 const chunk = await reader.read();
                 buffer += decoder.decode(chunk.value, { stream: !chunk.done });
-                if (UTF8.encode(buffer).byteLength > MAX_PORT_BYTES) {
-                    throw new Error("oversized SSE frame");
-                }
                 let boundary = buffer.indexOf("\n\n");
                 while (boundary >= 0) {
                     const frameText = buffer.slice(0, boundary);
@@ -701,6 +710,12 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
                         return;
                     }
                     boundary = buffer.indexOf("\n\n");
+                }
+                /* A browser read may coalesce many individually valid SSE frames.
+                 * Drain every complete frame first; the cap applies only to the one
+                 * incomplete frame retained across reads. */
+                if (UTF8.encode(buffer).byteLength > MAX_PORT_BYTES) {
+                    throw new Error("oversized SSE frame");
                 }
                 if (chunk.done) {
                     if (buffer.trim() && applyFrame(buffer))
@@ -729,6 +744,16 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
                 return;
             if (!first.run)
                 return answerError(boundPort, "run-not-enabled", requestId);
+            /* Bind server idempotency to the whole logical operation before the
+             * save. Same id/block/bytes replays across navigation; changed bytes or
+             * block derive a different valid key instead of saving and then hitting
+             * a retained server idempotency conflict. */
+            const idempotencyKey = await deriveRunIdempotencyKey(requestId, blockId, content);
+            if (runStartToken !== token || gen !== generation || port !== boundPort)
+                return;
+            if (idempotencyKey === null) {
+                return answerError(boundPort, "unavailable", requestId);
+            }
             await new Promise((resolve) => setTimeout(resolve, RUN_SETTLE_MS));
             if (runStartToken !== token || gen !== generation || port !== boundPort
                 || navPending || quarantined)
@@ -764,7 +789,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             const started = await readEndpointJson(runStartEndpoint(blockId), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ file_rev: fileRev, idempotency_key: requestId }),
+                body: JSON.stringify({ file_rev: fileRev, idempotency_key: idempotencyKey }),
             });
             if (runStartToken !== token || gen !== generation || port !== boundPort)
                 return;

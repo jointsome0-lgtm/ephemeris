@@ -292,8 +292,17 @@ parent → child   { "op": "run.cancel", "request_id": "cancel-1",
 - `artifact.save_run` first applies the exact editor-save contract. Only a
   `saved` or `unchanged` response advances; `file-conflict` and every other
   refusal stop without a run start. The parent then starts the selected block
-  with the returned `file_rev` and uses the child `request_id` verbatim as the
-  HTTP `idempotency_key`. There is no bare child-facing run-start operation.
+  with the returned `file_rev`. There is no bare child-facing run-start operation.
+  Before saving, the parent derives the HTTP `idempotency_key` as
+  SHA-256 over a domain-tagged serialized tuple of protocol version, child
+  `request_id`, `block_id`, and content. The same logical operation therefore
+  replays across navigation, while changed bytes or a changed block cannot
+  save successfully and then collide with a retained key from an older run.
+  This is a narrow D-FE-3 deviation from passing `request_id` verbatim: the
+  original shape cannot preflight a server-retained key before the composite's
+  first mutation, and the run-start API intentionally has no separate
+  idempotency-preflight route. If built-in Web Crypto SHA-256 is unavailable,
+  the parent returns `unavailable` before the save.
   For this composite op the id must also be well-formed Unicode without ASCII
   control characters or DEL; the parent rejects an invalid idempotency key
   before it sends the artifact save.

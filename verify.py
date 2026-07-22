@@ -2482,8 +2482,13 @@ with TestClient(app) as c:
           _fr_save_run.index("artifactEndpoint(blockId)")
           < _fr_save_run.index("runStartEndpoint(blockId)")
           and 'saveResult !== "saved" && saveResult !== "unchanged"' in _fr_save_run
-          and "file_rev: fileRev, idempotency_key: requestId" in _fr_save_run
+          and "file_rev: fileRev, idempotency_key: idempotencyKey" in _fr_save_run
           and _fr_save_run.count("await freshBlock") == 3)
+    check("save_run derives parameter-bound idempotency before artifact mutation",
+          'window.crypto.subtle.digest("SHA-256"' in _d2_ts
+          and '"ephemeris:lesson-run:v1", requestId, blockId, content' in _d2_ts
+          and _fr_save_run.index("deriveRunIdempotencyKey")
+          < _fr_save_run.index("artifactEndpoint(blockId)"))
     check("run ownership gates relay and cancel while navigation only aborts relay",
           "rememberOwnedRun(runId, { generation: gen, block_id: blockId })" in _d2_ts
           and "const owner = ownedRuns.get(runId)" in _d2_ts
@@ -2517,6 +2522,11 @@ with TestClient(app) as c:
           and "contentByteLength(text) > MAX_OUTPUT_BYTES" in _d2_ts
           and "RUN_CAUSES.has(cause)" in _d2_ts
           and 'op: "run.error"' in _d2_ts)
+    _fr_relay_loop = _d2_ts[_d2_ts.index("while (ownsRelay())"):
+                            _d2_ts.index("const saveAndRun")]
+    check("SSE relay drains complete coalesced frames before partial-frame cap",
+          _fr_relay_loop.index('let boundary = buffer.indexOf("\\n\\n")')
+          < _fr_relay_loop.index("UTF8.encode(buffer).byteLength > MAX_PORT_BYTES"))
     _fr_output_multibyte = "🪐" * ((32 * 1024) // len("🪐".encode("utf-8")))
     _fr_output_wire = json.dumps(
         {"op": "run.output", "text": _fr_output_multibyte},
