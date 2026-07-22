@@ -5250,6 +5250,47 @@ with TestClient(app) as c:
           _f3_health_a.available and _f3_health_b.available
           and _scopeprobe.call_count == 1 and _roprobe.call_count == 1
           and _cacheprobe.call_count == 1 and _allprobe.call_count == 2)
+
+    _runner._cached_runner_health.cache_clear()
+    _f3_health_workers = 4
+    _f3_health_gate = threading.Barrier(_f3_health_workers)
+    _f3_health_started = threading.Event()
+    _f3_health_release = threading.Event()
+    _f3_health_entries = []
+    _f3_health_results = []
+
+    def _f3_blocking_ro_probe():
+        _f3_health_entries.append(threading.get_ident())
+        _f3_health_started.set()
+        _f3_health_release.wait(timeout=2)
+        return ""
+
+    def _f3_health_worker():
+        _f3_health_gate.wait(timeout=2)
+        _f3_health_results.append(_runner.runner_health())
+
+    with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
+            _sandbox_mock.patch.object(_runner.sandbox, "require_runner_scope_runtime"), \
+            _sandbox_mock.patch.object(
+                _runner, "_probe_ro_bind_data", side_effect=_f3_blocking_ro_probe
+            ), _sandbox_mock.patch.object(
+                _runner, "_probe_go_module_cache", return_value=""
+            ), _sandbox_mock.patch.object(_runner, "_probe_result", return_value=""):
+        _f3_health_threads = [
+            threading.Thread(target=_f3_health_worker)
+            for _ in range(_f3_health_workers)
+        ]
+        for _thread in _f3_health_threads:
+            _thread.start()
+        _f3_health_started.wait(timeout=1)
+        _time.sleep(0.05)
+        _f3_health_release.set()
+        for _thread in _f3_health_threads:
+            _thread.join(timeout=2)
+    check("F3 concurrent cold health callers share one process-lifetime probe",
+          len(_f3_health_entries) == 1
+          and len(_f3_health_results) == _f3_health_workers
+          and all(result.available for result in _f3_health_results))
     _runner._cached_runner_health.cache_clear()
     with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
             _sandbox_mock.patch.object(_runner, "_probe_ro_bind_data", return_value="unsupported"):
@@ -5644,6 +5685,43 @@ with TestClient(app) as c:
             and isinstance(detached_replay, _runner.AdmissionPermit)
         )
 
+        reader_bound_service = _runner.RunnerService(
+            health_hook=lambda: None, max_terminal_jobs=1
+        )
+        reader_job_a = _runner.RunnerJob(
+            "reader-job-a", req("reader-a", "reader-key-a"),
+            _runner_registry.RUNNER_REGISTRY["python-script-v1"],
+            state=_runner.RUNNING,
+        )
+        reader_job_b = _runner.RunnerJob(
+            "reader-job-b", req("reader-b", "reader-key-b"),
+            _runner_registry.RUNNER_REGISTRY["python-script-v1"],
+            state=_runner.RUNNING,
+        )
+        reader_bound_service._jobs.update({
+            reader_job_a.job_id: reader_job_a,
+            reader_job_b.job_id: reader_job_b,
+        })
+        reader_lease_a = await reader_bound_service.attach_reader(
+            reader_job_a.job_id
+        )
+        reader_lease_a_second = await reader_bound_service.attach_reader(
+            reader_job_a.job_id
+        )
+        try:
+            await reader_bound_service.attach_reader(reader_job_b.job_id)
+            distinct_reader_refused = False
+        except _runner.ReaderCapacityError:
+            distinct_reader_refused = True
+        await reader_bound_service.detach_reader(reader_lease_a)
+        await reader_bound_service.detach_reader(reader_lease_a)
+        count_after_double_detach = reader_job_a.reader_count
+        await reader_bound_service.detach_reader(reader_lease_a_second)
+        result["reader_global_bound"] = (
+            distinct_reader_refused and count_after_double_detach == 1
+            and reader_job_a.reader_count == 0
+        )
+
         notify_processes = []
 
         async def notify_spawn(_job):
@@ -5809,8 +5887,62 @@ with TestClient(app) as c:
           and _f3_service.get("reader_cap"), str(_f3_service))
     check("F4 retention pruning preserves attached streams until detach",
           _f3_service.get("reader_retention"), str(_f3_service))
+    check("F4 reader leases are idempotent and distinct-job protection is bounded",
+          _f3_service.get("reader_global_bound"), str(_f3_service))
     check("F4 both SSE readers wake and a raced terminal event is drained",
           _f3_service.get("reader_notifications"), str(_f3_service))
+
+    async def _f4_disconnect_before_body_contract():
+        from starlette.requests import Request as _StarletteRequest
+        from app.main import stream_lesson_run as _stream_lesson_run
+
+        service = _runner.RunnerService(health_hook=lambda: None)
+        request_data = _runner.RunnerRequest(
+            lesson_key="invented-disconnect-lesson", block_id="blk_demo",
+            file_rev="sha256:invented", idempotency_key="invented-disconnect-key",
+            runner_id="python-script-v1", filename="main.py",
+            snapshot=b"print('invented')\n", bundle_dir="/tmp/invented-bundle",
+            bundle_root="/tmp", private_root="/tmp/invented-private",
+        )
+        job = _runner.RunnerJob(
+            "invented-disconnect-job", request_data,
+            _runner_registry.RUNNER_REGISTRY["python-script-v1"],
+            state=_runner.RUNNING,
+        )
+        service._jobs[job.job_id] = job
+        original_service = app.state.runner_service
+        app.state.runner_service = service
+        scope = {
+            "type": "http", "asgi": {"version": "3.0"},
+            "http_version": "1.1", "method": "GET", "scheme": "http",
+            "path": f"/learn/runs/{job.job_id}/stream",
+            "raw_path": f"/learn/runs/{job.job_id}/stream".encode(),
+            "query_string": b"", "headers": [(b"host", b"testserver")],
+            "client": ("127.0.0.1", 50000),
+            "server": ("127.0.0.1", 8765), "app": app,
+        }
+
+        async def disconnected():
+            await _asyncio.sleep(0)
+            return {"type": "http.disconnect"}
+
+        never_send = _asyncio.Event()
+
+        async def blocked_send(_message):
+            await never_send.wait()
+
+        try:
+            response = await _stream_lesson_run(
+                _StarletteRequest(scope, receive=disconnected), job.job_id
+            )
+            await response(scope, disconnected, blocked_send)
+            return job.reader_count
+        finally:
+            app.state.runner_service = original_service
+
+    _f4_disconnect_readers = _asyncio.run(_f4_disconnect_before_body_contract())
+    check("F4 disconnect before SSE body iteration releases its reader lease",
+          _f4_disconnect_readers == 0, str(_f4_disconnect_readers))
 
     try:
         _runner.require_runner_health()

@@ -192,11 +192,14 @@ data: {"seq":7,"stream":"stdout","text":"invented output\n"}
 Sequence numbers increase across stdout and stderr. Text chunks are at most
 32 KiB (the implementation reads 8 KiB raw chunks), and all readers share the
 job's one 1 MiB retained output ring by cursor—there are no per-reader queues.
-At most two readers attach to a job. Idle streams emit a comment heartbeat
-about every 15 seconds. Each reader has its own waiter over the shared retained
-event list, so one reader cannot clear another's wakeup. A state snapshot and
-rechecked cursor ensure a finish racing an empty poll is drained before the
-stream closes. Disconnecting releases the reader slot.
+At most two readers attach to a job, and at most eight distinct jobs hold reader
+leases at once so attached streams cannot bypass the terminal-retention bound.
+Idle streams emit a comment heartbeat about every 15 seconds. Each reader has
+its own waiter over the shared retained event list, so one reader cannot clear
+another's wakeup. A state snapshot and rechecked cursor ensure a finish racing
+an empty poll is drained before the stream closes. Each attachment is an
+idempotent lease released by both generator completion and the response
+lifecycle, including a disconnect before body iteration begins.
 
 After process reap and both stream EOFs, exactly one terminal record is sent:
 

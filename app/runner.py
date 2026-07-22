@@ -13,6 +13,7 @@ import inspect
 import os
 import signal
 import subprocess
+import threading
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -187,7 +188,7 @@ def _probe_go_module_cache() -> str:
 
 
 @cache
-def _cached_runner_health() -> RunnerHealth:
+def _cached_runner_health_unlocked() -> RunnerHealth:
     """Probe the complete F3 execution contract once per process lifetime."""
     try:
         sandbox.require_sandbox_runtime()
@@ -221,6 +222,23 @@ def _cached_runner_health() -> RunnerHealth:
     if detail:
         return RunnerHealth(False, detail)
     return RunnerHealth(True)
+
+
+_runner_health_lock = threading.Lock()
+
+
+def _cached_runner_health() -> RunnerHealth:
+    """Return one process-lifetime probe result with a single-flight cache miss."""
+    with _runner_health_lock:
+        return _cached_runner_health_unlocked()
+
+
+def _clear_cached_runner_health() -> None:
+    with _runner_health_lock:
+        _cached_runner_health_unlocked.cache_clear()
+
+
+_cached_runner_health.cache_clear = _clear_cached_runner_health  # type: ignore[attr-defined]
 
 
 def runner_health() -> RunnerHealth:
@@ -293,6 +311,12 @@ class Admission:
 @dataclass(frozen=True)
 class AdmissionPermit:
     rate_charge: object | None
+
+
+@dataclass
+class ReaderLease:
+    job: RunnerJob
+    active: bool = True
 
 
 SpawnHook = Callable[[RunnerJob], Awaitable[asyncio.subprocess.Process]]
@@ -548,7 +572,7 @@ class RunnerService:
             self._prune_locked()
             return self._jobs.get(job_id)
 
-    async def attach_reader(self, job_id: str) -> RunnerJob:
+    async def attach_reader(self, job_id: str) -> ReaderLease:
         async with self._lock:
             self._prune_locked()
             job = self._jobs.get(job_id)
@@ -556,11 +580,19 @@ class RunnerService:
                 raise JobMissingError(job_id)
             if job.reader_count >= 2:
                 raise ReaderCapacityError(job_id)
+            if job.reader_count == 0 and sum(
+                retained.reader_count > 0 for retained in self._jobs.values()
+            ) >= self._max_terminal_jobs:
+                raise ReaderCapacityError(job_id)
             job.reader_count += 1
-            return job
+            return ReaderLease(job)
 
-    async def detach_reader(self, job: RunnerJob) -> None:
+    async def detach_reader(self, lease: ReaderLease) -> None:
         async with self._lock:
+            if not lease.active:
+                return
+            lease.active = False
+            job = lease.job
             if job.reader_count > 0:
                 job.reader_count -= 1
             self._prune_locked()

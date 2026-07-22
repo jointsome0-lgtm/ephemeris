@@ -1620,6 +1620,20 @@ def _sse_event(event: dict) -> str:
     )
 
 
+class _ReaderStreamingResponse(StreamingResponse):
+    """Release a reader lease even when response setup/send is cancelled."""
+
+    def __init__(self, *args, release_reader, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._release_reader = release_reader
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._release_reader()
+
+
 @app.get("/learn/runs/{job_id}/stream")
 async def stream_lesson_run(request: Request, job_id: str, after: str | None = None):
     origin_rejection = browser_origin_rejection(
@@ -1645,6 +1659,9 @@ async def stream_lesson_run(request: Request, job_id: str, after: str | None = N
     except runner_core.RunnerError as exc:
         return _runner_refusal(exc)
 
+    async def release_reader() -> None:
+        await service.detach_reader(attached)
+
     async def events():
         current = cursor
         try:
@@ -1666,11 +1683,12 @@ async def stream_lesson_run(request: Request, job_id: str, after: str | None = N
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
         finally:
-            await service.detach_reader(attached)
+            await release_reader()
 
-    return StreamingResponse(
+    return _ReaderStreamingResponse(
         events(), media_type="text/event-stream",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        release_reader=release_reader,
     )
 
 
