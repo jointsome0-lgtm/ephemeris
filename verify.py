@@ -2479,6 +2479,19 @@ process.stdout.write(JSON.stringify([
           and 'op: "artifact.save"' in _fe_fixture
           and "status.textContent = text" in _fe_fixture
           and "innerHTML" not in _fe_fixture)
+    check("editor conventions authenticate and consume one handshake result",
+          "answered || event.source !== window.parent" in _fe_fixture
+          and "event.origin !== appOrigin" in _fe_fixture
+          and 'message.abi !== 1' in _fe_fixture
+          and "event.ports.length !== 1" in _fe_fixture
+          and "event.ports.length !== 0" in _fe_fixture
+          and "answered = true" in _fe_fixture)
+    check("editor conventions mint lesson-wide ids and fail closed without entropy",
+          "crypto.getRandomValues(words)" in _fe_fixture
+          and "requestNonce" in _fe_fixture
+          and "secure request ids unavailable" in _fe_fixture
+          and "fixture-${kind}-${requestNonce}-${++sequence}" in _fe_fixture
+          and "retry keeps runRequestId" in _fe_fixture)
     check("editor degradation: no bridge stays useful and read-only",
           "Read-only preview. Connecting" in _fe_fixture
           and "bridge unavailable" in _fe_fixture
@@ -2602,6 +2615,12 @@ process.stdout.write(JSON.stringify([
           and "512 KiB" in _d5_abi
           and "6 bytes per input byte" in _d5_abi
           and "64 KiB raw UTF-8 bytes" in _d5_abi)
+    check("ABI pins authenticated child handshake and fresh logical request ids",
+          "event.origin" in _d5_abi
+          and "exactly one `MessagePort`" in _d5_abi
+          and "first valid result is final" in _d5_abi
+          and "fresh opaque `request_id`" in _d5_abi
+          and "even across reloads and tabs" in _d5_abi)
     check("ABI §3.3 freezes composite run, relay ownership, and reconnect",
           "### 3.3" in _d5_abi
           and '"op": "artifact.save_run", "v": 1' in _d5_abi

@@ -58,6 +58,15 @@ negotiate with). The child SHOULD post to `window.parent` with targetOrigin
 `new URL(location.href).origin` (its own document URL is the app origin even
 though `window.origin` is `"null"` in the sandbox).
 
+The child accepts a terminal handshake result only from `window.parent` when
+`event.origin` exactly equals that non-opaque URL origin and the message has
+the lesson-bridge marker plus the expected envelope. A `welcome` must select an
+announced ABI and transfer exactly one `MessagePort`; a `reject` has its own
+`reason`/`supported` shape and no port. The first valid result is final for the
+loaded document; later messages cannot replace its port or upgrade its
+capabilities. A direct/embedded document whose URL origin is `"null"` skips the
+handshake and remains read-only.
+
 A child usually announces the moment its script runs — before the parent
 has finished binding identity for the freshly loaded document (and, across
 a parent-initiated reload, possibly before the parent processed the load).
@@ -112,6 +121,12 @@ not JavaScript character count. Any message over **512 KiB serialized UTF-8
 bytes**, any non-JSON-serializable payload, and any message without a string
 `op` is answered with an error and counted; after 8 protocol errors the
 parent closes the port and the document stays unbridged until reloaded.
+
+Each new logical action uses a fresh opaque `request_id`, unique across the
+lesson even across reloads and tabs. The child reuses an id only to retry the
+exact same logical action: changed content, a changed block, or an intentional
+new Run gets a new id. This is response correlation for all operations and the
+idempotency boundary for attempts and composite runs.
 
 The 512 KiB membrane bound is derived from the largest editor value: 64 KiB
 of raw UTF-8 content can expand to 6 bytes per input byte when every byte is

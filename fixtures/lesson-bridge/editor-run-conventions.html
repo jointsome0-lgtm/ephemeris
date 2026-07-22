@@ -50,7 +50,6 @@
     cancel.disabled = true;
     say(`Read-only preview (${reason}).`);
   };
-  const requestId = (kind) => `fixture-${kind}-${++sequence}`;
   const send = (message) => { if (port) port.postMessage(message); };
 
   if (window.parent === window) {
@@ -59,6 +58,23 @@
   }
 
   const appOrigin = new URL(location.href).origin;
+  if (appOrigin === "null") {
+    readOnly("opaque URL: no app origin");
+    return;
+  }
+  let requestNonce;
+  try {
+    const words = new Uint32Array(4);
+    crypto.getRandomValues(words);
+    requestNonce = Array.from(
+      words, (word) => word.toString(16).padStart(8, "0"),
+    ).join("");
+  } catch {
+    readOnly("secure request ids unavailable");
+    return;
+  }
+  // New actions are unique across reloads/tabs; retry keeps runRequestId.
+  const requestId = (kind) => `fixture-${kind}-${requestNonce}-${++sequence}`;
   const announce = () => window.parent.postMessage({
     ephemeris: "lesson-bridge",
     type: "ready",
@@ -72,16 +88,28 @@
   }, 2000);
 
   window.addEventListener("message", (event) => {
-    if (event.source !== window.parent) return;
+    if (answered || event.source !== window.parent || event.origin !== appOrigin) return;
     const message = event.data;
     if (!message || message.ephemeris !== "lesson-bridge") return;
+    if (message.type === "reject") {
+      if (event.ports.length !== 0 || message.reason !== "abi-unsupported"
+          || !Array.isArray(message.supported)
+          || !message.supported.every(Number.isInteger)) return;
+      answered = true;
+      clearInterval(retry);
+      clearTimeout(silence);
+      readOnly("unsupported bridge");
+      return;
+    }
+    if (message.type !== "welcome" || message.abi !== 1
+        || event.ports.length !== 1
+        || !Array.isArray(message.capabilities)
+        || !message.capabilities.every((value) => typeof value === "string")) {
+      return;
+    }
     answered = true;
     clearInterval(retry);
     clearTimeout(silence);
-    if (message.type !== "welcome" || !event.ports[0]) {
-      readOnly(message.type === "reject" ? "unsupported bridge" : "no grant");
-      return;
-    }
     const granted = Array.isArray(message.capabilities)
       && message.capabilities.includes("editor");
     if (!granted) {
