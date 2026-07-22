@@ -124,6 +124,18 @@ def _write_rejection(
     return None
 
 
+def browser_origin_rejection(headers: Headers, scheme: str) -> str | None:
+    """Apply the browser same-origin policy to a route that guards safe reads.
+
+    The global middleware deliberately leaves GET/HEAD alone. Streaming
+    routes may call this before reserving scarce server-side reader state.
+    """
+    own = _host_parts(headers.get("host"))
+    if own is None or own[0] not in TRUSTED_HOSTS:
+        return "untrusted Host"
+    return _write_rejection(headers, own, scheme)
+
+
 class SecurityMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app

@@ -162,7 +162,8 @@ All admission decisions live in the runner service: at most one active job per
 lesson and two globally. Starts permit 10 charged validations/admissions per
 lesson per 60 seconds. Grammar/manifest/hash/file refusals and every admitted
 job are charged; replay, idempotency conflict, rate-limit refusal, and a busy
-preflight are uncharged (a capacity race after validation refunds its slot).
+preflight are uncharged. A capacity race or runner-health/pre-reservation
+admission failure after validation refunds its slot.
 
 Status is `Cache-Control: no-store` and returns the job/block/runner/revision,
 state, and `event_recorded`. A terminal status also returns `cause`, optional
@@ -172,7 +173,10 @@ state, and `event_recorded`. A terminal status also returns `cause`, optional
 
 The stream response is `text/event-stream`. `after` is the last applied
 sequence number; `Last-Event-ID` is accepted when `after` is absent. No cursor
-means replay from sequence zero. Every later output record is:
+means replay from sequence zero. Browser requests must be same-origin (or
+`Sec-Fetch-Site: none`); origin-less non-browser loopback clients remain
+accepted. This check runs before a reader slot is reserved. Every later output
+record is:
 
 ```
 id: 7
@@ -200,8 +204,10 @@ jobs; a winning cancel uses the runner's SIGKILL tree path and the stream still
 ends with `cause: "cancelled"`.
 
 Terminal jobs remain for 15 minutes, with at most eight retained. Oldest
-terminal jobs are evicted first; active jobs are excluded. After eviction,
-status, stream, and cancel return `job-missing`.
+terminal jobs are evicted first; active jobs and jobs with attached streams are
+excluded. A protected job is pruned after its last reader detaches when it is
+otherwise expired or over the count bound. After eviction, status, stream, and
+cancel return `job-missing`.
 
 Each terminal job attempts one best-effort `lesson_run` event containing
 `lesson_uid`, `lesson_id`, `slug`, `block_id`, `runner_id`, `file_rev`, `cause`,
@@ -219,6 +225,7 @@ is activated; the iframe never receives raw HTTP status as authority.
 | 400 | `invalid-block-id`, `invalid-base-rev`, `invalid-content` | editor request grammar |
 | 400 | `invalid-file-rev`, `invalid-idempotency-key`, `invalid-cursor` | run request/cursor grammar |
 | 400 | `invalid-json`, `invalid-request` | malformed/non-object JSON or bad Content-Length |
+| 403 | `forbidden` | browser SSE request is not same-origin |
 | 404 | `unknown-lesson` | no lesson with that id or slug |
 | 404 | `job-missing` | job is unknown, expired, or count-evicted |
 | 409 | `manifest-rejected`, `identity-mismatch`, `blocks-unavailable` | manifest/profile refuses the affordance |

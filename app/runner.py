@@ -436,19 +436,28 @@ class RunnerService:
                         request.lesson_key, supplied_charge
                     )
                 raise RunnerShuttingDownError("runner service is shutting down")
-            if not request.private_root:
-                raise RunnerUnavailableError("runner private instance root is required")
-            if len(request.snapshot) > sandbox.RUNNER_FILE_BYTES:
-                raise SnapshotTooLargeError(
-                    f"runner snapshot exceeds {sandbox.RUNNER_FILE_BYTES} bytes"
-                )
-            spec = self._registry.get(request.runner_id)
-            if spec is None:
-                raise UnknownRunnerError(request.runner_id)
-            basename = PurePosixPath(request.filename).name
-            if basename in ("", ".", "..") or not spec.accepts(basename):
-                raise IncompatibleRunnerError(request.filename)
-            self._health_hook()
+            try:
+                if not request.private_root:
+                    raise RunnerUnavailableError(
+                        "runner private instance root is required"
+                    )
+                if len(request.snapshot) > sandbox.RUNNER_FILE_BYTES:
+                    raise SnapshotTooLargeError(
+                        f"runner snapshot exceeds {sandbox.RUNNER_FILE_BYTES} bytes"
+                    )
+                spec = self._registry.get(request.runner_id)
+                if spec is None:
+                    raise UnknownRunnerError(request.runner_id)
+                basename = PurePosixPath(request.filename).name
+                if basename in ("", ".", "..") or not spec.accepts(basename):
+                    raise IncompatibleRunnerError(request.filename)
+                self._health_hook()
+            except RunnerError:
+                if permit_supplied:
+                    self._refund_rate_locked(
+                        request.lesson_key, supplied_charge
+                    )
+                raise
             rate_charge: object | None = supplied_charge
             if not permit_supplied and self._rate_hook is not None:
                 rate_charge = self._rate_hook(request.lesson_key)
@@ -511,6 +520,7 @@ class RunnerService:
         async with self._lock:
             if job.reader_count > 0:
                 job.reader_count -= 1
+            self._prune_locked()
 
     async def events_after(
         self, job_id: str, after: int
@@ -808,12 +818,16 @@ class RunnerService:
             if job.state == FINISHED and job.finished_monotonic is not None
         ]
         terminal.sort(key=lambda job: job.finished_monotonic or 0)
+        protected = [job for job in terminal if job.reader_count > 0]
+        eligible = [job for job in terminal if job.reader_count == 0]
         expired = {
-            job.job_id for job in terminal
+            job.job_id for job in eligible
             if now - (job.finished_monotonic or now) >= self._retention_seconds
         }
-        excess = max(0, len(terminal) - self._max_terminal_jobs)
-        expired.update(job.job_id for job in terminal[:excess])
+        retained_slots = max(0, self._max_terminal_jobs - len(protected))
+        unexpired = [job for job in eligible if job.job_id not in expired]
+        excess = max(0, len(unexpired) - retained_slots)
+        expired.update(job.job_id for job in unexpired[:excess])
         for job_id in expired:
             self._jobs.pop(job_id, None)
 

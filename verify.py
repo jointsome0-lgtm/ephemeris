@@ -5502,10 +5502,24 @@ with TestClient(app) as c:
             third_reader_refused = False
         except _runner.ReaderCapacityError:
             third_reader_refused = True
+        new.finished_monotonic = (
+            _time.monotonic() - _runner.TERMINAL_RETENTION_SECONDS - 1
+        )
+        later = (
+            await retention_service.admit(req("later", "later-key"))
+        ).job
+        await retention_service.wait(later.job_id)
+        attached_survived_pruning = (
+            await retention_service.get(new.job_id) is new
+        )
         await retention_service.detach_reader(first_reader)
         await retention_service.detach_reader(second_reader)
+        detached_expired = await retention_service.get(new.job_id) is None
         result["reader_cap"] = (
             third_reader_refused and new.reader_count == 0
+        )
+        result["reader_retention"] = (
+            attached_survived_pruning and detached_expired
         )
 
         shutdown_processes = []
@@ -5605,6 +5619,8 @@ with TestClient(app) as c:
     check("F4 retention tombstones and the two-reader cap stay bounded",
           _f3_service.get("retention")
           and _f3_service.get("reader_cap"), str(_f3_service))
+    check("F4 retention pruning preserves attached streams until detach",
+          _f3_service.get("reader_retention"), str(_f3_service))
 
     try:
         _runner.require_runner_health()
@@ -5761,6 +5777,14 @@ with TestClient(app) as c:
               and all(seq > _f4_after for seq in _f4_resumed_ids)
               and _f4_stream.text.count("event: exit") == 1
               and _f4_resumed.text.count("event: exit") == 1)
+        _f4_cross_stream = c.get(
+            f"/learn/runs/{_f4_job_id}/stream",
+            headers={"Origin": "http://evil.example"},
+        )
+        check("F4 cross-origin SSE is refused before reserving a reader slot",
+              _f4_cross_stream.status_code == 403
+              and _f4_cross_stream.json().get("error") == "forbidden"
+              and _f4_service._jobs[_f4_job_id].reader_count == 0)
 
         _f4_replay = c.post(_f4_alias_url, json=_f4_payload)
         _f4_conflict = c.post(_f4_run_url, json={
@@ -5834,17 +5858,35 @@ with TestClient(app) as c:
         def _f4_unhealthy():
             raise _runner.RunnerUnavailableError("invented unavailable runtime")
 
-        app.state.runner_service = _runner.RunnerService(
-            spawn_hook=_f4_spawn, health_hook=_f4_unhealthy
-        )
-        _f4_unhealthy_response = c.post(_f4_run_url, json={
-            "file_rev": _f4_file_rev,
-            "idempotency_key": "invented-unhealthy-run",
-        })
-        check("F4 unhealthy runner refuses visibly without spawning",
-              _f4_unhealthy_response.status_code == 409
-              and _f4_unhealthy_response.json().get("error")
-                  == "runner-unavailable"
+        _f4_unhealthy_rate_max = _runs.RATE_MAX_PER_WINDOW
+        _runs.RATE_MAX_PER_WINDOW = 1
+        _runs._reset_rate_limit()
+        try:
+            app.state.runner_service = _runner.RunnerService(
+                spawn_hook=_f4_spawn, health_hook=_f4_unhealthy,
+                rate_hook=_runs._check_rate,
+                rate_refund_hook=_runs._refund_rate,
+            )
+            _f4_unhealthy_responses = [
+                c.post(_f4_run_url, json={
+                    "file_rev": _f4_file_rev,
+                    "idempotency_key": f"invented-unhealthy-run-{index}",
+                })
+                for index in range(2)
+            ]
+            _f4_unhealthy_rate_size = len(
+                _runs._rate.get(_f1["uid"], ())
+            )
+        finally:
+            _runs.RATE_MAX_PER_WINDOW = _f4_unhealthy_rate_max
+            _runs._reset_rate_limit()
+        check("F4 unhealthy runner refuses visibly and refunds rate permits",
+              all(
+                  response.status_code == 409
+                  and response.json().get("error") == "runner-unavailable"
+                  for response in _f4_unhealthy_responses
+              )
+              and _f4_unhealthy_rate_size == 0
               and len(_f4_observed_jobs) == 1)
 
         _f4_cancel_processes = []

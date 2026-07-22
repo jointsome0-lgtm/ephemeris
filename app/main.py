@@ -30,7 +30,7 @@ from starlette.concurrency import run_in_threadpool
 from .db import get_conn, init_db, is_not_future, is_valid_date, now_iso, today_str
 from .request_body import PayloadTooLarge, read_capped
 from . import runner as runner_core
-from .security import install_security
+from .security import browser_origin_rejection, install_security
 from .services import (
     artifacts, attempts, bundle_schema, calendar_events, checkins, export,
     focus, items, lessons, lists, quickadd, retro, runs, stats, tasks,
@@ -1622,6 +1622,11 @@ def _sse_event(event: dict) -> str:
 
 @app.get("/learn/runs/{job_id}/stream")
 async def stream_lesson_run(request: Request, job_id: str, after: str | None = None):
+    origin_rejection = browser_origin_rejection(
+        request.headers, request.scope.get("scheme", "http")
+    )
+    if origin_rejection is not None:
+        return _run_refusal("forbidden", 403, origin_rejection)
     raw_cursor = after
     if raw_cursor is None:
         raw_cursor = request.headers.get("last-event-id")
