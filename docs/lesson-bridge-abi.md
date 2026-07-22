@@ -156,6 +156,9 @@ parent → child   { "op": "attempt", "request_id": "a1",
 - `v` is the operation-envelope version (independent of the handshake ABI;
   a changed submission shape bumps it additively). `v ≠ 1` is answered
   `unsupported-version`.
+- `answer` remains limited to 32 KiB of raw UTF-8. The parent answers
+  `answer-too-large` before HTTP, independently of the wider 512 KiB
+  all-operation membrane needed by escaped editor content.
 - The child supplies **only** `question_id` (the declared manifest id) and
   `answer`. The parent derives the rest: `page_id`/`page_rev` from its own
   armed identity, and the endpoint's `idempotency_key` from the child's

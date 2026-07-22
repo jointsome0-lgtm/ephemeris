@@ -62,6 +62,7 @@ const EDITOR_SETTLE_MS = 250;
  * handshake ABI so the submission shape can evolve additively). */
 const ATTEMPT_OP_VERSION = 1;
 const EDITOR_OP_VERSION = 1;
+const MAX_ANSWER_BYTES = 32 * 1024;
 const MAX_CONTENT_BYTES = 64 * 1024;
 const QUESTION_ID_RE = /^q_[a-z0-9]{4,32}$/;
 const BLOCK_ID_RE = /^blk_[a-z0-9]{4,32}$/;
@@ -626,6 +627,11 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             const answer = msg["answer"];
             if (typeof answer !== "string") {
                 return answerError(port, "invalid-answer", requestId);
+            }
+            /* The all-op membrane is wide enough for worst-case editor escaping;
+             * retain the attempt contract's narrower raw UTF-8 semantic bound. */
+            if (contentByteLength(answer) > MAX_ANSWER_BYTES) {
+                return answerError(port, "answer-too-large", requestId);
             }
             /* One outcome per in-flight request_id: a duplicate while the original
              * is pending is dropped (the pending call will answer), and total

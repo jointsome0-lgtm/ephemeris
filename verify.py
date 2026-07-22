@@ -2363,6 +2363,8 @@ with TestClient(app) as c:
               and '"capability-not-granted"' in _d5_text
               and "MAX_ATTEMPTS_INFLIGHT" in _d5_text
               and "ATTEMPT_SETTLE_MS" in _d5_text
+              and "MAX_ANSWER_BYTES = 32 * 1024" in _d5_text
+              and "contentByteLength(answer) > MAX_ANSWER_BYTES" in _d5_text
               and "attempt #" in _d5_text)
     check("parent runtime re-validates per operation against fresh metadata",
           "metaQuestions" in _d2_ts
@@ -2454,7 +2456,8 @@ with TestClient(app) as c:
     check("ABI §3.1 freezes the attempt operation",
           "### 3.1" in _d5_abi
           and '"op": "attempt", "v": 1' in _d5_abi
-          and "capability-not-granted" in _d5_abi)
+          and "capability-not-granted" in _d5_abi
+          and "32 KiB of raw UTF-8" in _d5_abi)
     check("ABI §3.2 freezes editor ops and derived byte accounting",
           "### 3.2" in _d5_abi
           and '"op": "artifact.get", "v": 1' in _d5_abi

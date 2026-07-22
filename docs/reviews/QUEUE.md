@@ -27,9 +27,10 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   conventions fixture, additive ABI documentation, and regression coverage;
   the first Codex findings round aligns the client block bound with the
   manifest, repeats fresh block validation after the save-settle window, and
-  refreshes block metadata before granting the editor. It does not change
-  backend routes, the attempt operation, CSP, sandbox tokens, or terminal
-  statics.
+  refreshes block metadata before granting the editor; the second round
+  preserves the attempt operation's 32 KiB semantic bound inside the wider
+  editor membrane. It does not change backend routes, attempt persistence,
+  CSP, sandbox tokens, or terminal statics.
 
 ## Done
 
