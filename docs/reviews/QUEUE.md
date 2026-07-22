@@ -25,8 +25,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `fixtures/lesson-bridge/`, `verify.py`, `docs/reviews/QUEUE.md` — issue #36
   phase F frontend slice first adds the editor bridge membrane, its child
   conventions fixture, additive ABI documentation, and regression coverage;
-  it does not change backend routes, the attempt
-  operation, CSP, sandbox tokens, or terminal statics.
+  the first Codex findings round aligns the client block bound with the
+  manifest, repeats fresh block validation after the save-settle window, and
+  refreshes block metadata before granting the editor. It does not change
+  backend routes, the attempt operation, CSP, sandbox tokens, or terminal
+  statics.
 
 ## Done
 

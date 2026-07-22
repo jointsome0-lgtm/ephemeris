@@ -2381,6 +2381,7 @@ with TestClient(app) as c:
               and 'msg["op"] === "artifact.save"' in _fe_text
               and "freshBlock" in _fe_text
               and "metaBlocks" in _fe_text
+              and "MAX_BRIDGE_BLOCKS = 100" in _fe_text
               and "EDITOR_SETTLE_MS" in _fe_text
               and "MAX_EDITOR_INFLIGHT" in _fe_text
               and "contentByteLength(content) > MAX_CONTENT_BYTES" in _fe_text
@@ -2393,8 +2394,17 @@ with TestClient(app) as c:
           "const freshBlock = async" in _d2_ts
           and "const meta = await fetchMeta()" in _d2_ts.split("const freshBlock = async", 1)[1]
           and "blocks.find((candidate) => candidate.id === blockId)" in _d2_ts
-          and _d2_ts.index("await freshBlock", _d2_ts.index("const saveArtifact"))
+          and _d2_ts[_d2_ts.index("const saveArtifact"):
+                     _d2_ts.index("const postAttempt")].count("await freshBlock") == 2
+          and _d2_ts.rindex("await freshBlock", _d2_ts.index("const saveArtifact"),
+                            _d2_ts.index("const postAttempt"))
           < _d2_ts.index("method: \"POST\"", _d2_ts.index("const saveArtifact")))
+    check("editor grant refreshes current block metadata at handshake time",
+          "const handleReady = async" in _d2_ts
+          and "const meta = await fetchMeta()" in _d2_ts.split("const handleReady = async", 1)[1]
+          and "armedBlocks = metaBlocks(meta) ?? []" in
+          _d2_ts.split("const handleReady = async", 1)[1]
+          and "grantToken !== token" in _d2_ts)
 
     # Byte accounting probes the two expansion classes behind the derived
     # 512 KiB membrane cap: ASCII controls that become six-byte JSON escapes,

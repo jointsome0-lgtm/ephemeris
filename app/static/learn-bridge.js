@@ -47,6 +47,8 @@ const POLL_MS = 1200;
 const MAX_ATTEMPTS_INFLIGHT = 4;
 /** Editor operations in flight at once per document. */
 const MAX_EDITOR_INFLIGHT = 4;
+/** Mirrors bundle_schema.MAX_BLOCKS: every backend-valid page stays routable. */
+const MAX_BRIDGE_BLOCKS = 100;
 /** Settle delay before the attempt HTTP call (PR-60 round 1, D2 L1): a
  * self-navigation whose successor completes its load within this window
  * tears the port and generation down BEFORE the write is sent, so the
@@ -128,6 +130,9 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     let attemptsInflight = new Set();
     let editorInflight = new Set();
     let armedBlocks = [];
+    /* Serialises a handshake-time metadata refresh. An object token prevents a
+     * stale document's finally block from clearing a successor's refresh. */
+    let grantToken = null;
     const teardown = () => {
         if (port)
             port.close();
@@ -140,6 +145,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         attemptsInflight = new Set();
         editorInflight = new Set();
         armedBlocks = [];
+        grantToken = null;
     };
     const fetchMeta = async () => {
         try {
@@ -208,7 +214,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         if (typeof meta.bridge_page !== "object" || meta.bridge_page === null)
             return null;
         const list = meta.bridge_page["blocks"];
-        if (!Array.isArray(list) || list.length > 64)
+        if (!Array.isArray(list) || list.length > MAX_BRIDGE_BLOCKS)
             return null;
         const blocks = [];
         for (const value of list) {
@@ -454,6 +460,11 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             if (gen !== generation || port !== boundPort || navPending || quarantined) {
                 return answerError(boundPort, "stale-page", requestId);
             }
+            /* A manifest-only edit does not necessarily navigate the iframe. Repeat
+             * the full identity/block lookup after the settle window so old-page
+             * content cannot target a block moved or repointed during that delay. */
+            if (await freshBlock(boundPort, gen, requestId, blockId) === null)
+                return;
             const rec = await readEndpointJson(artifactEndpoint(blockId), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -665,29 +676,16 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         }
         return protocolError("unknown-op", requestId);
     };
-    const handleReady = (data) => {
-        const child = frame.contentWindow;
-        if (armed === null || granted || !child)
+    const finishReady = (data, child) => {
+        if (armed === null || granted || frame.contentWindow !== child)
             return;
-        if (!data.abi.includes(ABI_VERSION)) {
-            if (rejects < MAX_REJECTS) {
-                rejects += 1;
-                child.postMessage({
-                    ephemeris: "lesson-bridge",
-                    type: "reject",
-                    reason: "abi-unsupported",
-                    supported: [ABI_VERSION],
-                }, "*");
-            }
-            return;
-        }
         const channel = new MessageChannel();
         port = channel.port1;
         port.onmessage = onPortMessage;
         granted = true; // one welcome per loaded document
         /* Capability negotiation is routing, not authority. `editor` additionally
-         * requires at least one declared block on the armed page; an old backend
-         * omits both blocks metadata and data-artifacts-url, so it stays absent. */
+         * requires at least one declared block from the handshake-time metadata;
+         * an old backend omits data-artifacts-url, so it stays absent. */
         const want = Array.isArray(data.want) ? data.want : [];
         capabilities = [];
         if (attemptsUrl !== null && want.includes("attempts"))
@@ -702,6 +700,50 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             lesson: armed,
             capabilities,
         }, "*", [channel.port2]);
+    };
+    const handleReady = async (data) => {
+        const child = frame.contentWindow;
+        if (armed === null || granted || grantToken !== null || !child)
+            return;
+        if (!data.abi.includes(ABI_VERSION)) {
+            if (rejects < MAX_REJECTS) {
+                rejects += 1;
+                child.postMessage({
+                    ephemeris: "lesson-bridge",
+                    type: "reject",
+                    reason: "abi-unsupported",
+                    supported: [ABI_VERSION],
+                }, "*");
+            }
+            return;
+        }
+        const want = Array.isArray(data.want) ? data.want : [];
+        if (artifactsUrl !== null && want.includes("editor")) {
+            const gen = generation;
+            const token = {};
+            grantToken = token;
+            try {
+                const meta = await fetchMeta();
+                if (grantToken !== token || gen !== generation || frame.contentWindow !== child
+                    || armed === null || granted || navPending || quarantined)
+                    return;
+                /* A transient metadata failure gets silence, not a permanently reduced
+                 * welcome: the child's documented ready retry can recover. */
+                if (meta === null)
+                    return;
+                if (String(meta.version ?? "0") !== expectedVersion
+                    || meta.bridge !== true || !identityMatches(meta))
+                    return;
+                armedBlocks = metaBlocks(meta) ?? [];
+                finishReady(data, child);
+            }
+            finally {
+                if (grantToken === token)
+                    grantToken = null;
+            }
+            return;
+        }
+        finishReady(data, child);
     };
     /* In-flight latch for the late-initialisation rescue bind below (PR-55
      * round 6): child `ready` retries (or a hostile fast poster) must not fan
@@ -733,7 +775,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             }
             return;
         }
-        handleReady(ev.data);
+        void handleReady(ev.data);
     });
     /* ---- live-reload poll (the pre-D2 app.js block, now owning binding) ---- */
     let inFlight = false;
