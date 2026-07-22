@@ -1649,16 +1649,20 @@ async def stream_lesson_run(request: Request, job_id: str, after: str | None = N
         current = cursor
         try:
             while True:
-                job, batch = await service.events_after(job_id, current)
+                _job, batch, snapshot_state = await service.events_after(
+                    job_id, current
+                )
                 for event in batch:
                     current = int(event["seq"])
                     yield _sse_event(event)
                     if event["event"] == "exit":
                         return
-                if job.state == runner_core.FINISHED:
+                if snapshot_state == runner_core.FINISHED:
                     return
                 try:
-                    await asyncio.wait_for(job.updated.wait(), timeout=15.0)
+                    await asyncio.wait_for(
+                        service.wait_for_update(job_id, current), timeout=15.0
+                    )
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
         finally:

@@ -193,7 +193,10 @@ Sequence numbers increase across stdout and stderr. Text chunks are at most
 32 KiB (the implementation reads 8 KiB raw chunks), and all readers share the
 job's one 1 MiB retained output ring by cursor—there are no per-reader queues.
 At most two readers attach to a job. Idle streams emit a comment heartbeat
-about every 15 seconds. Disconnecting releases the reader slot.
+about every 15 seconds. Each reader has its own waiter over the shared retained
+event list, so one reader cannot clear another's wakeup. A state snapshot and
+rechecked cursor ensure a finish racing an empty poll is drained before the
+stream closes. Disconnecting releases the reader slot.
 
 After process reap and both stream EOFs, exactly one terminal record is sent:
 
@@ -207,7 +210,8 @@ Terminal causes are `exit`, `signal`, `timeout`, `cancelled`, `output-limit`,
 `spawn-failed`, or `shutdown`. Cancel is idempotent for active and terminal
 jobs; a winning cancel uses the runner's SIGKILL tree path and the stream still
 ends with `cause: "cancelled"`. Once the child has already reaped, a late cancel
-cannot replace its natural `exit` or `signal` cause.
+cannot replace its natural `exit` or `signal` cause. Systemd/process-group kill
+calls run on worker threads, outside the ASGI event loop and service lock.
 
 Terminal jobs remain for 15 minutes, with at most eight retained. Oldest
 terminal jobs are evicted first; active jobs and jobs with attached streams are

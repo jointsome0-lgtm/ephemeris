@@ -276,7 +276,7 @@ class RunnerJob:
     task: asyncio.Task[None] | None = field(default=None, repr=False)
     finished: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     event_attempted: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
-    updated: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    _waiters: set[asyncio.Future[None]] = field(default_factory=set, repr=False)
     _next_seq: int = field(default=1, repr=False)
 
     @property
@@ -567,18 +567,36 @@ class RunnerService:
 
     async def events_after(
         self, job_id: str, after: int
-    ) -> tuple[RunnerJob, tuple[dict, ...]]:
+    ) -> tuple[RunnerJob, tuple[dict, ...], str]:
         async with self._lock:
             self._prune_locked()
             job = self._jobs.get(job_id)
             if job is None:
                 raise JobMissingError(job_id)
-            job.updated.clear()
             events = tuple(
                 event.copy() for event in job.events
                 if int(event["seq"]) > after
             )
-            return job, events
+            return job, events, job.state
+
+    async def wait_for_update(self, job_id: str, after: int) -> None:
+        """Wait without a shared-clear race between concurrent SSE readers."""
+        async with self._lock:
+            self._prune_locked()
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise JobMissingError(job_id)
+            if job.state == FINISHED or any(
+                int(event["seq"]) > after for event in job.events
+            ):
+                return
+            waiter = asyncio.get_running_loop().create_future()
+            job._waiters.add(waiter)
+        try:
+            await waiter
+        finally:
+            async with self._lock:
+                job._waiters.discard(waiter)
 
     async def cancel(self, job_id: str) -> bool:
         async with self._lock:
@@ -593,7 +611,7 @@ class RunnerService:
                 return False
             won = self._begin_termination_locked(job, "cancelled")
         if won and process is not None:
-            self._kill_tree(job)
+            await asyncio.to_thread(self._kill_tree, job)
         return won
 
     async def wait(self, job_id: str) -> RunnerJob | None:
@@ -611,11 +629,15 @@ class RunnerService:
             for job in jobs:
                 self._begin_termination_locked(job, "shutdown")
             tasks = [job.task for job in jobs if job.task is not None]
-        for job in jobs:
+        kill_jobs = [job for job in jobs if job.process is not None]
+        if kill_jobs:
+            await asyncio.gather(*(
+                asyncio.to_thread(self._kill_tree, job) for job in kill_jobs
+            ))
+        for job in kill_jobs:
             process = job.process
             if process is None:
                 continue
-            self._kill_tree(job)
             for reader in (process.stdout, process.stderr):
                 transport = getattr(reader, "_transport", None)
                 if transport is not None:
@@ -678,7 +700,7 @@ class RunnerService:
             else:
                 kill_now = True
         if kill_now:
-            self._kill_tree(job)
+            await asyncio.to_thread(self._kill_tree, job)
 
         readers = [
             asyncio.create_task(self._read_stream(job, "stdout", process.stdout)),
@@ -694,12 +716,12 @@ class RunnerService:
                 async with self._lock:
                     won = self._begin_termination_locked(job, "timeout")
                 if won:
-                    self._kill_tree(job)
+                    await asyncio.to_thread(self._kill_tree, job)
                 returncode = await wait_task
         except asyncio.CancelledError:
             async with self._lock:
                 self._begin_termination_locked(job, "shutdown")
-            self._kill_tree(job)
+            await asyncio.to_thread(self._kill_tree, job)
             returncode = await asyncio.shield(wait_task)
         finally:
             async with self._lock:
@@ -752,7 +774,7 @@ class RunnerService:
                         won = self._begin_termination_locked(job, "output-limit")
                         process = job.process
                     if won and process is not None:
-                        self._kill_tree(job)
+                        await asyncio.to_thread(self._kill_tree, job)
                     # Continue draining, but the combined cap admits no bytes.
             tail = decoder.decode(b"", final=True)
             if tail:
@@ -763,7 +785,7 @@ class RunnerService:
                 won = self._begin_termination_locked(job, "spawn-failed")
                 process = job.process
             if won and process is not None:
-                self._kill_tree(job)
+                await asyncio.to_thread(self._kill_tree, job)
         finally:
             async with self._lock:
                 setattr(job, eof_attr, True)
@@ -777,7 +799,7 @@ class RunnerService:
             "text": text,
         })
         job._next_seq += 1
-        job.updated.set()
+        self._notify_waiters(job)
 
     def _begin_termination_locked(self, job: RunnerJob, cause: str) -> bool:
         if cause not in TERMINAL_CAUSES:
@@ -826,7 +848,7 @@ class RunnerService:
             event["signal"] = job.signal
         job.events.append(event)
         job._next_seq += 1
-        job.updated.set()
+        self._notify_waiters(job)
         job.finished.set()
         replay_key = (job.request.lesson_key, job.request.idempotency_key)
         replay = self._idempotency.get(replay_key)
@@ -853,7 +875,15 @@ class RunnerService:
             job.event_recorded = False
         finally:
             job.event_attempted.set()
-            job.updated.set()
+            self._notify_waiters(job)
+
+    @staticmethod
+    def _notify_waiters(job: RunnerJob) -> None:
+        waiters = tuple(job._waiters)
+        job._waiters.clear()
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_result(None)
 
     def _prune_locked(self) -> None:
         now = time.monotonic()

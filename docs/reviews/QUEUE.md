@@ -34,6 +34,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   Codex review round 2 keeps replay identity while an attached stream protects
   its job, moves cold health probes off the ASGI event loop and service lock,
   and prevents late cancellation from relabelling an already reaped process.
+  Codex review round 3 moves process-tree kills off the event loop, gives SSE
+  readers independent wakeups, and drains an exit that races a stream poll.
 
 ## Done
 

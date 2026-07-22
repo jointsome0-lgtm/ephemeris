@@ -5440,8 +5440,34 @@ with TestClient(app) as c:
         cancelled = (await cancel_service.admit(req("lesson-c", "key-c"))).job
         await _asyncio.sleep(0)
         await _asyncio.sleep(0)
-        with _sandbox_mock.patch.object(_runner.RunnerService, "_kill_tree") as kill:
-            first = await cancel_service.cancel(cancelled.job_id)
+        kill_started = threading.Event()
+        kill_release = threading.Event()
+        kill_threads = []
+
+        def blocking_kill(_job):
+            kill_threads.append(threading.get_ident())
+            kill_started.set()
+            kill_release.wait(timeout=2)
+
+        with _sandbox_mock.patch.object(
+                _runner.RunnerService, "_kill_tree",
+                side_effect=blocking_kill) as kill:
+            cancel_task = _asyncio.create_task(
+                cancel_service.cancel(cancelled.job_id)
+            )
+            for _ in range(100):
+                if kill_started.is_set():
+                    break
+                await _asyncio.sleep(0.01)
+            try:
+                cancel_lookup_responsive = await _asyncio.wait_for(
+                    cancel_service.get(cancelled.job_id), timeout=0.2
+                ) is cancelled
+            except _asyncio.TimeoutError:
+                cancel_lookup_responsive = False
+            finally:
+                kill_release.set()
+            first = await cancel_task
             second = await cancel_service.cancel(cancelled.job_id)
         cancel_processes[0].finish(-9)
         cancelled = await cancel_service.wait(cancelled.job_id)
@@ -5450,6 +5476,10 @@ with TestClient(app) as c:
             and cancelled.reservation_released
             and cancel_service.active_total == 0 and kill.call_count == 1
             and sum(event["event"] == "exit" for event in cancelled.events) == 1
+        )
+        result["cancel_off_loop"] = (
+            kill_started.is_set() and kill_threads == [kill_threads[0]]
+            and kill_threads[0] != loop_thread and cancel_lookup_responsive
         )
 
         async def broken_spawn(_job):
@@ -5614,6 +5644,66 @@ with TestClient(app) as c:
             and isinstance(detached_replay, _runner.AdmissionPermit)
         )
 
+        notify_processes = []
+
+        async def notify_spawn(_job):
+            process = _F3Process()
+            notify_processes.append(process)
+            return process
+
+        notify_service = _runner.RunnerService(
+            spawn_hook=notify_spawn, health_hook=lambda: None
+        )
+        notify_job = (
+            await notify_service.admit(req("notify", "notify-key"))
+        ).job
+        for _ in range(100):
+            if notify_processes and notify_job.state == _runner.RUNNING:
+                break
+            await _asyncio.sleep(0.01)
+        notify_reader_a = await notify_service.attach_reader(notify_job.job_id)
+        notify_reader_b = await notify_service.attach_reader(notify_job.job_id)
+        waiter_a = _asyncio.create_task(
+            notify_service.wait_for_update(notify_job.job_id, 0)
+        )
+        waiter_b = _asyncio.create_task(
+            notify_service.wait_for_update(notify_job.job_id, 0)
+        )
+        for _ in range(100):
+            if len(notify_job._waiters) == 2:
+                break
+            await _asyncio.sleep(0.01)
+        notify_processes[0].stdout.feed_data(b"invented wakeup\n")
+        await _asyncio.wait_for(
+            _asyncio.gather(waiter_a, waiter_b), timeout=1
+        )
+        _seen_job, output_batch, output_state = (
+            await notify_service.events_after(notify_job.job_id, 0)
+        )
+        output_cursor = max(int(event["seq"]) for event in output_batch)
+        _seen_job, empty_batch, pre_finish_state = (
+            await notify_service.events_after(notify_job.job_id, output_cursor)
+        )
+        notify_processes[0].finish(0)
+        await notify_service.wait(notify_job.job_id)
+        await _asyncio.wait_for(
+            notify_service.wait_for_update(notify_job.job_id, output_cursor),
+            timeout=0.2,
+        )
+        _seen_job, terminal_batch, terminal_state = (
+            await notify_service.events_after(notify_job.job_id, output_cursor)
+        )
+        await notify_service.detach_reader(notify_reader_a)
+        await notify_service.detach_reader(notify_reader_b)
+        result["reader_notifications"] = (
+            len(notify_job._waiters) == 0
+            and output_state == _runner.RUNNING
+            and any(event["event"] == "output" for event in output_batch)
+            and empty_batch == () and pre_finish_state == _runner.RUNNING
+            and terminal_state == _runner.FINISHED
+            and [event["event"] for event in terminal_batch] == ["exit"]
+        )
+
         shutdown_processes = []
 
         async def shutdown_spawn(_job):
@@ -5650,6 +5740,8 @@ with TestClient(app) as c:
     check("F3 first terminal cause wins and releases capacity exactly once",
           _f3_service.get("first_cause_release")
             and _f3_service.get("spawn_failure"), str(_f3_service))
+    check("F3 cancel tree kills leave the event loop and service lock responsive",
+          _f3_service.get("cancel_off_loop"), str(_f3_service))
     check("F3 cold health probes leave the event loop and service lock responsive",
           _f3_service.get("health_off_loop"), str(_f3_service))
     check("F3 a reaped natural exit cannot be relabelled by late cancel",
@@ -5717,6 +5809,8 @@ with TestClient(app) as c:
           and _f3_service.get("reader_cap"), str(_f3_service))
     check("F4 retention pruning preserves attached streams until detach",
           _f3_service.get("reader_retention"), str(_f3_service))
+    check("F4 both SSE readers wake and a raced terminal event is drained",
+          _f3_service.get("reader_notifications"), str(_f3_service))
 
     try:
         _runner.require_runner_health()
@@ -6017,7 +6111,9 @@ with TestClient(app) as c:
 
         def _f4_finish_on_kill(job):
             if job.process is not None:
-                job.process.finish(-9)
+                job.process._result.get_loop().call_soon_threadsafe(
+                    job.process.finish, -9
+                )
 
         with _sandbox_mock.patch.object(
                 _runner.RunnerService, "_kill_tree",
