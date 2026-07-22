@@ -4664,6 +4664,7 @@ with TestClient(app) as c:
         _f3_cache_root = Path(_f3_cache_raw)
         _f3_cache_target = _f3_cache_root / "invented-private"
         _f3_cache_target.mkdir()
+        (_f3_cache_target / "mod").mkdir()
         _f3_cache_link = _f3_cache_root / "module-cache"
         _f3_cache_link.symlink_to(_f3_cache_target, target_is_directory=True)
         with _sandbox_mock.patch.object(
@@ -4675,8 +4676,21 @@ with TestClient(app) as c:
                 _f3_cache_link_refused = False
             except OSError:
                 _f3_cache_link_refused = True
-    check("F3 runner refuses a symlinked Go module-cache authority",
-          _f3_cache_link_refused)
+        _f3_cache_parent_link = _f3_cache_root / "cache-parent"
+        _f3_cache_parent_link.symlink_to(
+            _f3_cache_target, target_is_directory=True
+        )
+        with _sandbox_mock.patch.object(
+            _sandbox, "GO_MODULE_CACHE_ROOT", str(_f3_cache_parent_link / "mod")
+        ):
+            try:
+                _f3_cache_fd = _sandbox.open_runner_module_cache_fd()
+                os.close(_f3_cache_fd)
+                _f3_cache_parent_link_refused = False
+            except OSError:
+                _f3_cache_parent_link_refused = True
+    check("F3 runner refuses symlinks in the Go module-cache authority path",
+          _f3_cache_link_refused and _f3_cache_parent_link_refused)
     with _sandbox_mock.patch.object(_sandbox, "RUNNER_FILE_BYTES", 8):
         try:
             _sandbox._snapshot_memfd(b"123456789")

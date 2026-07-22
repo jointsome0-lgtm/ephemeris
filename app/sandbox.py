@@ -557,11 +557,24 @@ def _snapshot_memfd(snapshot: bytes) -> int:
 
 
 def open_runner_module_cache_fd() -> int:
-    """Open the exact cache directory without following a planted root link."""
-    return os.open(
-        GO_MODULE_CACHE_ROOT,
-        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-    )
+    """Open the exact cache directory without following any path component."""
+    path = Path(GO_MODULE_CACHE_ROOT)
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("Go module-cache path must be absolute without '..'")
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for component in path.parts[1:]:
+            child_fd = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=fd,
+            )
+            os.close(fd)
+            fd = child_fd
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 async def spawn_sandboxed(
