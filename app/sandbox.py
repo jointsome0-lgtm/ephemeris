@@ -6,12 +6,13 @@ terminal sessions through that seam; later phases reuse it for other roles.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import os
 import resource
 import subprocess
 from dataclasses import dataclass
 from functools import cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Literal, Mapping, Sequence
 
 
@@ -21,6 +22,26 @@ BWRAP = "/home/aina/.local/bin/bwrap"
 USER_HOME = "/home/aina"
 RUNNER_WORKDIR = "/tmp/ephemeris-runner"
 RUNTIME_DIR = "/run"
+SYSTEMD_RUN = "/usr/bin/systemd-run"
+
+RUNNER_SCRATCH_BYTES = 64 * 1024 * 1024
+RUNNER_HOME_BYTES = 256 * 1024 * 1024
+RUNNER_ADDRESS_SPACE_BYTES = 1024 * 1024 * 1024
+RUNNER_FILE_BYTES = 32 * 1024 * 1024
+RUNNER_MAX_WALL_SECONDS = 120
+RUNNER_NPROC = 4096
+
+RUNNER_SCOPE_PREFIX = (
+    SYSTEMD_RUN,
+    "--user",
+    "--scope",
+    "--collect",
+    "--quiet",
+    "--property=TasksMax=256",
+    "--property=MemoryMax=1G",
+    "--property=MemorySwapMax=0",
+    "--",
+)
 
 
 class SandboxError(RuntimeError):
@@ -84,6 +105,11 @@ _LEARNER_HOME_MOUNTS = (
                "warm Go module cache for offline learner builds"),
     _HomeMount("--ro-bind-try", f"{USER_HOME}/.cache/go-build",
                "warm Go build cache for offline learner builds"),
+)
+
+_RUNNER_HOME_MOUNTS = (
+    _HomeMount("--ro-bind-try", f"{USER_HOME}/go",
+               "warm read-only Go module cache for offline single-file runs"),
 )
 
 _PROFILES: tuple[SandboxProfile, ...] = (
@@ -155,7 +181,7 @@ def _paths_overlap(left: Path, right: Path) -> bool:
     return False
 
 
-def _needs_private_mask(path: str) -> bool:
+def _needs_private_mask(path: str, rebound: Sequence[_HomeMount]) -> bool:
     candidate = Path(path)
     for masked in (Path("/tmp"), Path(RUNTIME_DIR)):
         try:
@@ -169,7 +195,6 @@ def _needs_private_mask(path: str) -> bool:
         return True
     # Blank home is enough unless one of the learner's later cache/tool binds
     # overlaps the private root. Overlaps must be re-masked after those binds.
-    rebound = (*_COMMON_HOME_MOUNTS, *_LEARNER_HOME_MOUNTS)
     return any(
         mount.flag != "--tmpfs"
         and _paths_overlap(candidate, Path(mount.target))
@@ -184,6 +209,8 @@ def build_sandbox_argv(
     bundle_root: str | os.PathLike[str],
     private_root: str | os.PathLike[str] | None = None,
     private_masks: Sequence[str | os.PathLike[str]] = (),
+    snapshot_fd: int | None = None,
+    snapshot_name: str | None = None,
 ) -> list[str]:
     """Purely build the bubblewrap prefix for ``profile`` and ``bundle_dir``.
 
@@ -204,6 +231,32 @@ def build_sandbox_argv(
         [*([private] if private is not None else []),
          *(_pure_mask_root(root) for root in private_masks)]
     ))
+    if profile == "lesson-runner":
+        for root in mask_roots[1 if private is not None else 0:]:
+            try:
+                Path(root).relative_to(bundle)
+            except ValueError:
+                pass
+            else:
+                raise ValueError("a private mask must not be inside the runner bundle")
+    if profile != "lesson-runner" and (snapshot_fd is not None or snapshot_name is not None):
+        raise ValueError("snapshot injection is valid only for lesson-runner")
+    if (snapshot_fd is None) != (snapshot_name is None):
+        raise ValueError("snapshot fd and name must be supplied together")
+    snapshot_target = None
+    if snapshot_name is not None:
+        pure_name = PurePosixPath(snapshot_name)
+        if (
+            pure_name.name != snapshot_name
+            or snapshot_name in (".", "..")
+            or not snapshot_name
+            or len(snapshot_name) > 200
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in snapshot_name)
+        ):
+            raise ValueError("snapshot name must be one safe basename")
+        if snapshot_fd is None or snapshot_fd < 0:
+            raise ValueError("snapshot fd must be open and non-negative")
+        snapshot_target = f"{RUNNER_WORKDIR}/{snapshot_name}"
 
     argv = [BWRAP, "--unshare-all"]
     if profile == "lesson-agent":
@@ -213,10 +266,16 @@ def build_sandbox_argv(
         "--ro-bind", "/", "/",
         "--proc", "/proc",
         "--dev", "/dev",
-        "--tmpfs", "/tmp",
-        "--tmpfs", USER_HOME,
     ])
-    if profile == "lesson-learner":
+    if profile == "lesson-runner":
+        argv.extend([
+            "--size", str(RUNNER_SCRATCH_BYTES), "--tmpfs", "/tmp",
+            "--size", str(RUNNER_HOME_BYTES), "--tmpfs", USER_HOME,
+        ])
+    else:
+        # Preserve the E1 terminal profile argv byte-for-byte.
+        argv.extend(["--tmpfs", "/tmp", "--tmpfs", USER_HOME])
+    if profile in ("lesson-learner", "lesson-runner"):
         # AF_UNIX sockets survive network namespace isolation. Replace the
         # whole runtime tree; /var/run resolves into this mount as well.
         argv.extend(["--tmpfs", RUNTIME_DIR])
@@ -226,22 +285,34 @@ def build_sandbox_argv(
         mounts.extend(_AGENT_HOME_MOUNTS)
     elif profile == "lesson-learner":
         mounts.extend(_LEARNER_HOME_MOUNTS)
+    elif profile == "lesson-runner":
+        mounts.extend(_RUNNER_HOME_MOUNTS)
     for mount in mounts:
         argv.extend(mount.argv())
 
-    if profile == "lesson-learner":
+    if profile in ("lesson-learner", "lesson-runner"):
         # Apply private masks after learner cache/tool re-binds so a private
         # instance nested below one of those paths cannot be reopened by them.
+        rebound = (
+            (*_COMMON_HOME_MOUNTS, *_LEARNER_HOME_MOUNTS)
+            if profile == "lesson-learner"
+            else (*_COMMON_HOME_MOUNTS, *_RUNNER_HOME_MOUNTS)
+        )
         for root in mask_roots:
-            if _needs_private_mask(root):
+            if _needs_private_mask(root, rebound):
                 argv.extend(["--tmpfs", root])
 
     if profile == "lesson-runner":
         argv.extend([
             "--ro-bind", bundle, bundle,
             "--dir", RUNNER_WORKDIR,
-            "--chdir", RUNNER_WORKDIR,
         ])
+        if snapshot_target is not None:
+            argv.extend([
+                "--perms", "0444",
+                "--ro-bind-data", str(snapshot_fd), snapshot_target,
+            ])
+        argv.extend(["--chdir", RUNNER_WORKDIR])
     else:
         argv.extend(["--bind", bundle, bundle, "--chdir", bundle])
     return argv
@@ -295,19 +366,47 @@ _GENEROUS_LIMITS: Mapping[int, int] = {
 }
 
 
-def apply_profile_rlimits(profile: SandboxProfile) -> None:
-    """Apply E1's generous PTY caps; strict runner limits belong to F3."""
-    if profile not in ("lesson-agent", "lesson-learner"):
+def _set_bounded_rlimit(limit: int, cap: int) -> None:
+    _soft, hard = resource.getrlimit(limit)
+    bounded = cap if hard == resource.RLIM_INFINITY else min(cap, hard)
+    resource.setrlimit(limit, (bounded, bounded))
+
+
+def apply_profile_rlimits(
+    profile: SandboxProfile,
+    *,
+    runner_wall_seconds: int | None = None,
+) -> None:
+    """Apply the unchanged terminal caps or F3's strict runner backstops."""
+    if profile in ("lesson-agent", "lesson-learner"):
+        for limit, cap in _GENEROUS_LIMITS.items():
+            _set_bounded_rlimit(limit, cap)
         return
-    for limit, cap in _GENEROUS_LIMITS.items():
-        _soft, hard = resource.getrlimit(limit)
-        bounded = cap if hard == resource.RLIM_INFINITY else min(cap, hard)
-        resource.setrlimit(limit, (bounded, bounded))
+    if profile != "lesson-runner":
+        return
+    if (
+        runner_wall_seconds is None
+        or not 1 <= runner_wall_seconds <= RUNNER_MAX_WALL_SECONDS
+    ):
+        raise ValueError("lesson-runner requires a bounded wall limit")
+    for limit, cap in (
+        (resource.RLIMIT_CPU, runner_wall_seconds),
+        (resource.RLIMIT_AS, RUNNER_ADDRESS_SPACE_BYTES),
+        (resource.RLIMIT_NOFILE, 256),
+        # RLIMIT_NPROC is kernel-wide for the owner uid. The implementation
+        # host already has >1000 threads, so the memo's 1024 false-trips a
+        # cold Go toolchain before useful work. TasksMax remains the job bound.
+        (resource.RLIMIT_NPROC, RUNNER_NPROC),
+        (resource.RLIMIT_FSIZE, RUNNER_FILE_BYTES),
+    ):
+        _set_bounded_rlimit(limit, cap)
 
 
 def profile_preexec_fn(
     profile: SandboxProfile,
     existing: Callable[[], None] | None = None,
+    *,
+    runner_wall_seconds: int | None = None,
 ) -> Callable[[], None]:
     """Compose terminal.py's existing PTY setup with the profile limit hook."""
     if profile not in _PROFILES:
@@ -316,9 +415,50 @@ def profile_preexec_fn(
     def setup() -> None:
         if existing is not None:
             existing()
-        apply_profile_rlimits(profile)
+        apply_profile_rlimits(
+            profile, runner_wall_seconds=runner_wall_seconds
+        )
 
     return setup
+
+
+def _snapshot_memfd(snapshot: bytes) -> int:
+    """Create a sealed, rewinded memfd and verify its readable byte length."""
+    if not isinstance(snapshot, bytes):
+        raise TypeError("runner snapshot must be bytes")
+    flags = os.MFD_CLOEXEC | getattr(os, "MFD_ALLOW_SEALING", 0)
+    fd = os.memfd_create("ephemeris-runner-snapshot", flags)
+    try:
+        view = memoryview(snapshot)
+        written = 0
+        while written < len(view):
+            count = os.write(fd, view[written:])
+            if count <= 0:
+                raise OSError("short write while creating runner snapshot")
+            written += count
+        if os.fstat(fd).st_size != len(snapshot):
+            raise OSError("runner snapshot length changed during creation")
+        os.lseek(fd, 0, os.SEEK_SET)
+        readable = 0
+        while True:
+            chunk = os.read(fd, 64 * 1024)
+            if not chunk:
+                break
+            readable += len(chunk)
+        if readable != len(snapshot):
+            raise OSError("runner snapshot readable length mismatch")
+        os.fchmod(fd, 0o444)
+        if getattr(os, "MFD_ALLOW_SEALING", 0):
+            seals = (
+                fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK
+                | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
+            )
+            fcntl.fcntl(fd, fcntl.F_ADD_SEALS, seals)
+        os.lseek(fd, 0, os.SEEK_SET)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 async def spawn_sandboxed(
@@ -334,26 +474,70 @@ async def spawn_sandboxed(
     stderr: int | None = None,
     env: Mapping[str, str],
     preexec_fn: Callable[[], None] | None = None,
+    snapshot: bytes | None = None,
+    snapshot_name: str | None = None,
+    runner_wall_seconds: int | None = None,
 ) -> asyncio.subprocess.Process:
     """Spawn inside ``profile`` or raise; ``env`` must be explicitly allowlisted."""
     if not command:
         raise ValueError("sandbox command must not be empty")
+    if profile == "lesson-runner" and (
+        snapshot is None or snapshot_name is None or runner_wall_seconds is None
+    ):
+        raise ValueError("lesson-runner requires snapshot bytes, name, and wall limit")
+    if profile != "lesson-runner" and (
+        snapshot is not None or snapshot_name is not None or runner_wall_seconds is not None
+    ):
+        raise ValueError("runner-only spawn arguments used for a terminal profile")
     require_sandbox_runtime()
-    argv = build_sandbox_argv(
-        profile, bundle_dir, bundle_root=bundle_root,
-        private_root=private_root,
-        private_masks=private_masks,
-    ) + ["--", *command]
+    snapshot_fd: int | None = None
     try:
+        if snapshot is not None:
+            snapshot_fd = _snapshot_memfd(snapshot)
+        bwrap_argv = build_sandbox_argv(
+            profile, bundle_dir, bundle_root=bundle_root,
+            private_root=private_root,
+            private_masks=private_masks,
+            snapshot_fd=snapshot_fd,
+            snapshot_name=snapshot_name,
+        )
+        if profile == "lesson-runner":
+            bwrap_argv.append("--clearenv")
+            for name, value in env.items():
+                bwrap_argv.extend(["--setenv", name, value])
+        bwrap_argv.extend(["--", *command])
+        argv = (
+            [*RUNNER_SCOPE_PREFIX, *bwrap_argv]
+            if profile == "lesson-runner" else bwrap_argv
+        )
+        kwargs = {}
+        if snapshot_fd is not None:
+            kwargs["pass_fds"] = (snapshot_fd,)
+            kwargs["start_new_session"] = True
+        spawn_env = dict(env)
+        if profile == "lesson-runner":
+            # systemd-run needs the user-bus locator. bwrap clears these
+            # wrapper-only values before the untrusted command starts.
+            for name in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
+                value = os.environ.get(name)
+                if value:
+                    spawn_env[name] = value
         return await asyncio.create_subprocess_exec(
             *argv,
             stdin=stdin,
             stdout=stdout,
             stderr=stderr,
-            env=dict(env),
-            preexec_fn=profile_preexec_fn(profile, preexec_fn),
+            env=spawn_env,
+            preexec_fn=profile_preexec_fn(
+                profile, preexec_fn,
+                runner_wall_seconds=runner_wall_seconds,
+            ),
+            **kwargs,
         )
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise SandboxSpawnError(
             f"sandbox spawn failed for {profile}: {exc}"
         ) from exc
+    finally:
+        if snapshot_fd is not None:
+            os.close(snapshot_fd)

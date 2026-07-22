@@ -4494,6 +4494,539 @@ with TestClient(app) as c:
         check("E3 host probe skipped when sandbox runtime is unavailable",
               True, _e3_runtime_detail)
 
+    # --- F3: fixed runner registry, sandbox limits, job owner, host matrix ---
+    from app import runner as _runner
+    from app.services import runner_registry as _runner_registry
+
+    _registry_source = (ROOT / "app/services/runner_registry.py").read_text(
+        encoding="utf-8"
+    )
+    check("F3 registry is a pure leaf with the two frozen v1 runners",
+          "from app" not in _registry_source
+          and set(_runner_registry.RUNNER_REGISTRY) == {
+              "python-script-v1", "go-run-v1",
+          }
+          and _runner_registry.RUNNER_REGISTRY["python-script-v1"].argv == (
+              "python3", _runner_registry.SNAPSHOT_PATH,
+          )
+          and _runner_registry.RUNNER_REGISTRY["go-run-v1"].argv == (
+              "go", "run", _runner_registry.SNAPSHOT_PATH,
+          ))
+    _f3_specs_valid = all(
+        spec.argv.count(_runner_registry.SNAPSHOT_PATH) == 1
+        and 1 <= spec.wall_seconds <= _runner_registry.MAX_WALL_SECONDS
+        for spec in _runner_registry.RUNNER_REGISTRY.values()
+    )
+    try:
+        _runner_registry.RunnerSpec(("python3",), (".py",))
+        _f3_bad_spec_refused = False
+    except ValueError:
+        _f3_bad_spec_refused = True
+    check("F3 registry argv has one placeholder and bounded pure data only",
+          _f3_specs_valid and _f3_bad_spec_refused
+          and _runner_registry.RUNNER_REGISTRY["python-script-v1"].accepts("demo.py")
+          and not _runner_registry.RUNNER_REGISTRY["python-script-v1"].accepts("demo.go"))
+
+    _f3_manifest = {
+        "schema_version": 2,
+        "lesson_uid": "1b7e9c9e-4a5d-4f5e-9c6f-2a8b7d3e1f04",
+        "entry": "index.html",
+        "pages": [{"id": "pg_demo", "path": "index.html"}],
+        "artifact_roots": ["attempts"],
+        "blocks": [{
+            "id": "blk_demo", "page": "pg_demo", "kind": "editor",
+            "file": "attempts/blk_demo/main.py", "runner_id": "python-script-v1",
+        }],
+    }
+    _f3_compatible = bschema.read_manifest_text(
+        json.dumps(_f3_manifest), runner_registry=_runner_registry.RUNNER_REGISTRY
+    )
+    _f3_manifest["blocks"][0]["file"] = "attempts/blk_demo/main.go"
+    _f3_incompatible = bschema.read_manifest_text(
+        json.dumps(_f3_manifest), runner_registry=_runner_registry.RUNNER_REGISTRY
+    )
+    check("F3 manifest runner suffix gates Run but retains the editor",
+          _f3_compatible.blocks[0]["run_enabled"] is True
+          and _f3_incompatible.blocks[0]["run_enabled"] is False
+          and "incompatible-runner" in _f3_incompatible.codes())
+    import inspect as _inspect
+    _ensure_source = _inspect.getsource(lessons_svc._ensure_bundle_manifest)
+    check("F3 lesson manifest reads use the real registry at both call sites",
+          _ensure_source.count("runner_registry=RUNNER_REGISTRY") == 2)
+
+    def _f3_argv_digest(argv):
+        return hashlib.sha256(
+            json.dumps(argv, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+    check("F3 sandbox amendments keep agent/learner argv byte-identical",
+          _f3_argv_digest(_sandbox.build_sandbox_argv(
+              "lesson-agent", _sb_bundle, bundle_root=_sb_root
+          )) == "a0a6b85c4d66389748fd17572dc7f5f2bbfb69c92414d9fb21732dde5a0acf5a"
+          and _f3_argv_digest(_sandbox.build_sandbox_argv(
+              "lesson-learner", _sb_bundle, bundle_root=_sb_root
+          )) == "a77d4eeef5689810b8a10cd123fe5600dbe8332b994072c1d09fdd605ce8301f")
+    _f3_private = "/srv/invented-private"
+    _f3_root = f"{_f3_private}/lessons"
+    _f3_bundle = f"{_f3_root}/invented-bundle"
+    _f3_runner_argv = _sandbox.build_sandbox_argv(
+        "lesson-runner", _f3_bundle,
+        bundle_root=_f3_root,
+        private_root=_f3_private,
+        private_masks=("/opt/invented-private-db",),
+        snapshot_fd=7,
+        snapshot_name="main.py",
+    )
+    _f3_tmpfs = [
+        _f3_runner_argv[i + 1] for i, arg in enumerate(_f3_runner_argv)
+        if arg == "--tmpfs"
+    ]
+    check("F3 runner argv has sized scratch/home, /run, and late private masks",
+          ["--size", str(_sandbox.RUNNER_SCRATCH_BYTES), "--tmpfs", "/tmp"]
+              == _f3_runner_argv[_f3_runner_argv.index("--size"):
+                                 _f3_runner_argv.index("--size") + 4]
+          and ["--size", str(_sandbox.RUNNER_HOME_BYTES), "--tmpfs", _sandbox.USER_HOME]
+              in [_f3_runner_argv[i:i + 4] for i in range(len(_f3_runner_argv) - 3)]
+          and _sandbox.RUNTIME_DIR in _f3_tmpfs
+          and _f3_private in _f3_tmpfs
+          and "/opt/invented-private-db" in _f3_tmpfs
+          and _f3_runner_argv.index(_f3_private) < _f3_runner_argv.index(_f3_bundle))
+    check("F3 runner argv injects one 0444 fd snapshot and only the ro Go module cache",
+          ["--perms", "0444", "--ro-bind-data", "7",
+           f"{_sandbox.RUNNER_WORKDIR}/main.py"]
+              in [_f3_runner_argv[i:i + 5] for i in range(len(_f3_runner_argv) - 4)]
+          and ("/home/aina/go", "/home/aina/go")
+              in _sb_mounts(_f3_runner_argv, "--ro-bind-try")
+          and "/home/aina/.cache/go-build" not in _f3_runner_argv
+          and _sb_mounts(_f3_runner_argv, "--ro-bind")[-1]
+              == (_f3_bundle, _f3_bundle)
+          and _f3_runner_argv[-2:] == ["--chdir", _sandbox.RUNNER_WORKDIR])
+    try:
+        _sandbox.build_sandbox_argv(
+            "lesson-runner", _f3_bundle, bundle_root=_f3_root,
+            private_root=_f3_private,
+            private_masks=(f"{_f3_bundle}/invented-secret",),
+        )
+        _f3_overlap_refused = False
+    except ValueError:
+        _f3_overlap_refused = True
+    check("F3 runner fails closed when a private mask is inside the mounted bundle",
+          _f3_overlap_refused)
+
+    async def _f3_snapshot_spawn_contract():
+        observed = {}
+
+        async def successful_spawn(*args, **kwargs):
+            fd = kwargs["pass_fds"][0]
+            observed["fd"] = fd
+            observed["mode"] = os.fstat(fd).st_mode & 0o777
+            observed["argv"] = list(args)
+            observed["new_session"] = kwargs.get("start_new_session")
+            observed["env"] = kwargs["env"]
+            return _types.SimpleNamespace(pid=999, stdout=None, stderr=None)
+
+        with _sandbox_mock.patch.object(_sandbox, "require_sandbox_runtime"), \
+                _sandbox_mock.patch.object(
+                    _sandbox.asyncio, "create_subprocess_exec",
+                    side_effect=successful_spawn,
+                ):
+            await _sandbox.spawn_sandboxed(
+                "lesson-runner", _f3_bundle, ["python3", f"{_sandbox.RUNNER_WORKDIR}/main.py"],
+                bundle_root=_f3_root, private_root=_f3_private,
+                stdin=subprocess.DEVNULL, stdout=_asyncio.subprocess.PIPE,
+                stderr=_asyncio.subprocess.PIPE, env=_runner.RUNNER_ENV,
+                snapshot=b"print('invented')\n", snapshot_name="main.py",
+                runner_wall_seconds=30,
+            )
+        try:
+            os.fstat(observed["fd"])
+            observed["closed_success"] = False
+        except OSError:
+            observed["closed_success"] = True
+
+        failed_fd = {}
+
+        async def failed_spawn(*args, **kwargs):
+            failed_fd["fd"] = kwargs["pass_fds"][0]
+            raise OSError("invented spawn refusal")
+
+        with _sandbox_mock.patch.object(_sandbox, "require_sandbox_runtime"), \
+                _sandbox_mock.patch.object(
+                    _sandbox.asyncio, "create_subprocess_exec",
+                    side_effect=failed_spawn,
+                ):
+            try:
+                await _sandbox.spawn_sandboxed(
+                    "lesson-runner", _f3_bundle, ["python3", f"{_sandbox.RUNNER_WORKDIR}/main.py"],
+                    bundle_root=_f3_root, private_root=_f3_private,
+                    env=_runner.RUNNER_ENV, snapshot=b"invented",
+                    snapshot_name="main.py", runner_wall_seconds=30,
+                )
+            except _sandbox.SandboxSpawnError:
+                pass
+        try:
+            os.fstat(failed_fd["fd"])
+            observed["closed_failure"] = False
+        except OSError:
+            observed["closed_failure"] = True
+        return observed
+
+    _f3_snapshot_spawn = _asyncio.run(_f3_snapshot_spawn_contract())
+    check("F3 snapshot fd is 0444, passed once, and closed on success/failure",
+          _f3_snapshot_spawn["mode"] == 0o444
+          and _f3_snapshot_spawn["closed_success"]
+          and _f3_snapshot_spawn["closed_failure"]
+          and _f3_snapshot_spawn["new_session"] is True)
+    check("F3 spawn is scope-wrapped and clears wrapper-only environment in bwrap",
+          _f3_snapshot_spawn["argv"][:len(_sandbox.RUNNER_SCOPE_PREFIX)]
+              == list(_sandbox.RUNNER_SCOPE_PREFIX)
+          and "--clearenv" in _f3_snapshot_spawn["argv"]
+          and ["--setenv", "PWD", _sandbox.RUNNER_WORKDIR]
+              in [_f3_snapshot_spawn["argv"][i:i + 3]
+                  for i in range(len(_f3_snapshot_spawn["argv"]) - 2)]
+          and set(_f3_snapshot_spawn["env"]) <= {
+              *set(_runner.RUNNER_ENV), "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+          })
+
+    with _sandbox_mock.patch.object(
+            _sandbox.resource, "getrlimit",
+            return_value=(0, _sandbox.resource.RLIM_INFINITY)), \
+            _sandbox_mock.patch.object(_sandbox.resource, "setrlimit") as _setlimit:
+        _sandbox.apply_profile_rlimits(
+            "lesson-runner", runner_wall_seconds=60
+        )
+    _f3_limit_calls = dict(call.args for call in _setlimit.call_args_list)
+    check("F3 runner preexec applies CPU/AS/NOFILE/NPROC/FSIZE backstops",
+          _f3_limit_calls == {
+              _sandbox.resource.RLIMIT_CPU: (60, 60),
+              _sandbox.resource.RLIMIT_AS: (
+                  _sandbox.RUNNER_ADDRESS_SPACE_BYTES,
+                  _sandbox.RUNNER_ADDRESS_SPACE_BYTES,
+              ),
+              _sandbox.resource.RLIMIT_NOFILE: (256, 256),
+              _sandbox.resource.RLIMIT_NPROC: (
+                  _sandbox.RUNNER_NPROC, _sandbox.RUNNER_NPROC,
+              ),
+              _sandbox.resource.RLIMIT_FSIZE: (
+                  _sandbox.RUNNER_FILE_BYTES, _sandbox.RUNNER_FILE_BYTES,
+              ),
+          })
+
+    _runner._cached_runner_health.cache_clear()
+    with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
+            _sandbox_mock.patch.object(_runner, "_probe_ro_bind_data", return_value="") as _roprobe, \
+            _sandbox_mock.patch.object(_runner, "_probe_result", return_value="") as _allprobe:
+        _f3_health_a = _runner.runner_health()
+        _f3_health_b = _runner.runner_health()
+    check("F3 health probes bwrap/ro-bind-data/scope/tools once per process",
+          _f3_health_a.available and _f3_health_b.available
+          and _roprobe.call_count == 1 and _allprobe.call_count == 3)
+    _runner._cached_runner_health.cache_clear()
+    with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
+            _sandbox_mock.patch.object(_runner, "_probe_ro_bind_data", return_value="unsupported"):
+        try:
+            _runner.require_runner_health()
+            _f3_health_refusal = False
+        except _runner.RunnerUnavailableError as exc:
+            _f3_health_refusal = "unsupported" in str(exc)
+    check("F3 unhealthy runner refuses visibly with no degraded spawn",
+          _f3_health_refusal)
+    _runner._cached_runner_health.cache_clear()
+
+    class _F3Process:
+        _next_pid = 900000
+
+        def __init__(self):
+            type(self)._next_pid += 1
+            self.pid = type(self)._next_pid
+            self.stdout = _asyncio.StreamReader()
+            self.stderr = _asyncio.StreamReader()
+            self.returncode = None
+            self._result = _asyncio.get_running_loop().create_future()
+
+        async def wait(self):
+            self.returncode = await self._result
+            return self.returncode
+
+        def finish(self, returncode=0):
+            self.stdout.feed_eof()
+            self.stderr.feed_eof()
+            if not self._result.done():
+                self._result.set_result(returncode)
+
+    async def _f3_service_contracts():
+        def req(lesson="lesson-a", key="key-a", block="blk_demo"):
+            return _runner.RunnerRequest(
+                lesson, block, "sha256:invented", key,
+                "python-script-v1", "attempts/blk_demo/main.py",
+                b"print('invented')\n", "/tmp/private/lessons/demo",
+                "/tmp/private/lessons", "/tmp/private",
+            )
+
+        result = {}
+        processes = []
+
+        async def spawn(_request, _spec):
+            process = _F3Process()
+            processes.append(process)
+            return process
+
+        service = _runner.RunnerService(spawn_hook=spawn, health_hook=lambda: None)
+        admission = await service.admit(req())
+        result["starting"] = admission.job.state == _runner.STARTING
+        await _asyncio.sleep(0)
+        await _asyncio.sleep(0)
+        result["running"] = admission.job.state == _runner.RUNNING
+        processes[0].stdout.feed_data(b"split:\xe2")
+        await _asyncio.sleep(0)
+        processes[0].stdout.feed_data(b"\x82\xac\n")
+        processes[0].finish(0)
+        finished = await service.wait(admission.job.job_id)
+        result["normal"] = (
+            finished.state == _runner.FINISHED
+            and finished.cause == "exit" and finished.exit_code == 0
+            and "split:€\n" == "".join(
+                event["text"] for event in finished.events
+                if event["event"] == "output"
+            )
+            and sum(event["event"] == "exit" for event in finished.events) == 1
+        )
+
+        cancel_processes = []
+
+        async def cancel_spawn(_request, _spec):
+            process = _F3Process()
+            cancel_processes.append(process)
+            return process
+
+        cancel_service = _runner.RunnerService(
+            spawn_hook=cancel_spawn, health_hook=lambda: None
+        )
+        cancelled = (await cancel_service.admit(req("lesson-c", "key-c"))).job
+        await _asyncio.sleep(0)
+        await _asyncio.sleep(0)
+        with _sandbox_mock.patch.object(_runner.RunnerService, "_kill_tree") as kill:
+            first = await cancel_service.cancel(cancelled.job_id)
+            second = await cancel_service.cancel(cancelled.job_id)
+        cancel_processes[0].finish(-9)
+        cancelled = await cancel_service.wait(cancelled.job_id)
+        result["first_cause_release"] = (
+            first and not second and cancelled.cause == "cancelled"
+            and cancelled.reservation_released
+            and cancel_service.active_total == 0 and kill.call_count == 1
+            and sum(event["event"] == "exit" for event in cancelled.events) == 1
+        )
+
+        async def broken_spawn(_request, _spec):
+            raise OSError("invented spawn failure")
+
+        broken_service = _runner.RunnerService(
+            spawn_hook=broken_spawn, health_hook=lambda: None
+        )
+        broken = (await broken_service.admit(req("lesson-d", "key-d"))).job
+        broken = await broken_service.wait(broken.job_id)
+        result["spawn_failure"] = (
+            broken.cause == "spawn-failed" and broken.state == _runner.FINISHED
+            and broken.reservation_released and broken_service.active_total == 0
+        )
+
+        race_processes = []
+
+        async def race_spawn(_request, _spec):
+            process = _F3Process()
+            race_processes.append(process)
+            return process
+
+        race_charges = []
+        race_refunds = []
+
+        def race_rate(lesson):
+            token = (lesson, len(race_charges))
+            race_charges.append(token)
+            return token
+
+        race_service = _runner.RunnerService(
+            spawn_hook=race_spawn, health_hook=lambda: None,
+            rate_hook=race_rate,
+            rate_refund_hook=lambda lesson, token: race_refunds.append((lesson, token)),
+        )
+        per_lesson = await _asyncio.gather(
+            race_service.admit(req("same", "key-1")),
+            race_service.admit(req("same", "key-2")),
+            return_exceptions=True,
+        )
+        result["per_lesson_race"] = (
+            sum(isinstance(item, _runner.Admission) for item in per_lesson) == 1
+            and sum(isinstance(item, _runner.LessonCapacityError) for item in per_lesson) == 1
+            and len(race_charges) == 2 and len(race_refunds) == 1
+        )
+        await _asyncio.sleep(0)
+        for process in race_processes:
+            process.finish(0)
+        for item in per_lesson:
+            if isinstance(item, _runner.Admission):
+                await race_service.wait(item.job.job_id)
+
+        global_processes = []
+
+        async def global_spawn(_request, _spec):
+            process = _F3Process()
+            global_processes.append(process)
+            return process
+
+        global_service = _runner.RunnerService(
+            spawn_hook=global_spawn, health_hook=lambda: None
+        )
+        global_results = await _asyncio.gather(
+            *(global_service.admit(req(f"lesson-{i}", f"key-{i}")) for i in range(3)),
+            return_exceptions=True,
+        )
+        result["global_race"] = (
+            sum(isinstance(item, _runner.Admission) for item in global_results) == 2
+            and sum(isinstance(item, _runner.GlobalCapacityError) for item in global_results) == 1
+        )
+        await _asyncio.sleep(0)
+        for process in global_processes:
+            process.finish(0)
+        for item in global_results:
+            if isinstance(item, _runner.Admission):
+                await global_service.wait(item.job.job_id)
+
+        rate_calls = []
+        replay_processes = []
+
+        async def replay_spawn(_request, _spec):
+            process = _F3Process()
+            replay_processes.append(process)
+            return process
+
+        replay_service = _runner.RunnerService(
+            spawn_hook=replay_spawn, health_hook=lambda: None,
+            rate_hook=lambda lesson: rate_calls.append(lesson) or True,
+        )
+        same_request = req("replay", "same-key")
+        replay_results = await _asyncio.gather(
+            replay_service.admit(same_request), replay_service.admit(same_request)
+        )
+        result["idempotency_first"] = (
+            replay_results[0].job is replay_results[1].job
+            and {item.replayed for item in replay_results} == {False, True}
+            and len(rate_calls) == 1 and replay_service.active_total == 1
+        )
+        await _asyncio.sleep(0)
+        replay_processes[0].finish(0)
+        await replay_service.wait(replay_results[0].job.job_id)
+
+        retention_service = _runner.RunnerService(
+            spawn_hook=broken_spawn, health_hook=lambda: None,
+            max_terminal_jobs=1,
+        )
+        old = (await retention_service.admit(req("old", "old-key"))).job
+        await retention_service.wait(old.job_id)
+        new = (await retention_service.admit(req("new", "new-key"))).job
+        await retention_service.wait(new.job_id)
+        result["retention"] = (
+            await retention_service.get(old.job_id) is None
+            and await retention_service.get(new.job_id) is not None
+        )
+
+        shutdown_processes = []
+
+        async def shutdown_spawn(_request, _spec):
+            process = _F3Process()
+            shutdown_processes.append(process)
+            return process
+
+        shutdown_service = _runner.RunnerService(
+            spawn_hook=shutdown_spawn, health_hook=lambda: None
+        )
+        shutdown_job = (await shutdown_service.admit(req("shutdown", "shutdown-key"))).job
+        await _asyncio.sleep(0)
+        await _asyncio.sleep(0)
+        with _sandbox_mock.patch.object(_runner.RunnerService, "_kill_tree"):
+            shutdown_task = _asyncio.create_task(shutdown_service.shutdown())
+            await _asyncio.sleep(0)
+            shutdown_processes[0].finish(-9)
+            await shutdown_task
+        result["shutdown"] = (
+            shutdown_job.cause == "shutdown"
+            and shutdown_job.state == _runner.FINISHED
+            and shutdown_job.reservation_released
+            and shutdown_service.active_total == 0
+        )
+        return result
+
+    _f3_service = _asyncio.run(_f3_service_contracts())
+    check("F3 state machine reaches FINISHED only after reap/EOF with split UTF-8 intact",
+          _f3_service.get("starting") and _f3_service.get("running")
+          and _f3_service.get("normal"), str(_f3_service))
+    check("F3 first terminal cause wins and releases capacity exactly once",
+          _f3_service.get("first_cause_release")
+          and _f3_service.get("spawn_failure"), str(_f3_service))
+    check("F3 one-lock admission closes races and refunds busy rate charges",
+          _f3_service.get("per_lesson_race")
+          and _f3_service.get("global_race"), str(_f3_service))
+    check("F3 idempotency precedes rate/capacity and terminal retention is bounded",
+          _f3_service.get("idempotency_first")
+          and _f3_service.get("retention"), str(_f3_service))
+    check("F3 shutdown stops jobs through the same exact-release path",
+          _f3_service.get("shutdown"), str(_f3_service))
+
+    _f3_probe_run = subprocess.run(
+        [sys.executable, "scripts/probe_runner.py"],
+        cwd=ROOT,
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        timeout=180,
+    )
+    try:
+        _f3_probe = json.loads(_f3_probe_run.stdout)
+    except (TypeError, ValueError):
+        _f3_probe = {}
+    _f3_probe_extra = _f3_probe_run.stderr.strip() or _f3_probe_run.stdout.strip()
+    check("F3 host matrix: success, syntax error, timeout, and file backstop",
+          _f3_probe_run.returncode == 0
+          and _f3_probe.get("success", {}).get("exit_code") == 0
+          and _f3_probe.get("syntax_error", {}).get("stderr_has_syntax_error") is True
+          and _f3_probe.get("timeout", {}).get("cause") == "timeout"
+          and _f3_probe.get("file_limit", {}).get("failed") is True,
+          _f3_probe_extra)
+    check("F3 host matrix: raw-byte overflow kills at exactly 1 MiB",
+          _f3_probe.get("output_overflow") == {
+              "cause": "output-limit", "output_bytes": 1024 * 1024,
+              "state": "FINISHED", "truncated": True,
+          }, _f3_probe_extra)
+    check("F3 host matrix: descendant cleanup and shutdown both reap to EOF",
+          _f3_probe.get("descendant_cleanup", {}).get("both_eof") is True
+          and _f3_probe.get("descendant_cleanup", {}).get("cause") == "cancelled"
+          and _f3_probe.get("shutdown", {}).get("cause") == "shutdown"
+          and _f3_probe.get("shutdown", {}).get("active_total") == 0,
+          _f3_probe_extra)
+    _f3_isolation = _f3_probe.get("isolation", {})
+    check("F3 host isolation: repo/private/other bundles/run/network are absent",
+          all(_f3_isolation.get(name) is True for name in (
+              "repo_absent", "private_sentinel_absent", "other_bundle_absent",
+              "run_empty", "network_absent",
+          )), _f3_probe_extra)
+    check("F3 host isolation: bundle/module cache ro; scratch/GOCACHE rw; snapshot 0444",
+          all(_f3_isolation.get(name) is True for name in (
+              "bundle_readable", "bundle_read_only", "module_cache_read_only",
+              "scratch_writable", "gocache_writable",
+          ))
+          and _f3_isolation.get("snapshot_mode") == "0o444"
+          and _f3_isolation.get("home_entries") == [".cache", ".local", "go"]
+          and set(_f3_isolation.get("runner_env", ())) == set(_runner.RUNNER_ENV),
+          _f3_probe_extra)
+    check("F3 cold Go and warm-within-job/repeat/change/compile-error matrix passes",
+          _f3_probe.get("cold_go", {}).get("exit_code") == 0
+          and _f3_probe.get("cold_go", {}).get("warm_child_reported") is True
+          and _f3_probe.get("cold_go", {}).get("wall_ms", 60001) < 60000
+          and _f3_probe.get("go_repeated_and_changed", {}).get("repeat_ok") is True
+          and _f3_probe.get("go_repeated_and_changed", {}).get("changed_source_observed") is True
+          and _f3_probe.get("go_compile_error", {}).get("stderr_has_undefined") is True,
+          _f3_probe_extra)
+
     # --- Retro capture (docs/retro-spec.md, issue #49) ----------------------
     # The period grammar mirrors exp2res services/time_input.py; the journaled
     # full-snapshot payload (incl. retro_uuid) is the future adapter's wire format.

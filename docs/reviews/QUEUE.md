@@ -19,7 +19,15 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
+- [ ] 2026-07-22 — commits after `e3cb882` on
+  `fix/36-f1-runner-core` — `app/runner.py`, `app/sandbox.py`,
+  `app/services/runner_registry.py`, `app/services/bundle_schema.py`,
+  `app/services/lessons.py`, `fixtures/runner/`,
+  `scripts/probe_runner.py`, `verify.py`, `docs/reviews/QUEUE.md` — issue #36
+  phase F slice F3 adds the fixed single-file runner registry, immutable
+  fd-backed snapshot sandbox profile, bounded async job owner, cached health
+  probes, admission and retention state, and throwaway isolation/execution
+  fixtures; no HTTP route or live spawn integration is added.
 
 ## Done
 
