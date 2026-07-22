@@ -1,10 +1,10 @@
 # Lesson artifact and run endpoints (phase F)
 
-Status: the editor half is frozen with phase F1. The run sections are reserved
-for the phase-F4 slice. This is the HTTP contract used by the parent Learn
-runtime; the lesson document itself has no network access. Manifest authority
-is [learn-bundle-spec.md §4.4](learn-bundle-spec.md), and the child-facing
-membrane is [lesson-bridge-abi.md](lesson-bridge-abi.md).
+Status: the editor half is frozen with phase F1 and the run API with phase F4.
+This is the HTTP contract used by the parent Learn runtime; the lesson document
+itself has no network access. Manifest authority is
+[learn-bundle-spec.md §4.4](learn-bundle-spec.md), and the child-facing membrane
+is [lesson-bridge-abi.md](lesson-bridge-abi.md).
 
 The documented deployment is direct loopback, single user, single worker, and
 has no auth. Unsafe methods remain behind the central B2 origin guard. A bridge
@@ -90,7 +90,7 @@ The in-process single-worker abuse damper permits 30 save attempts per lesson
 per 60 seconds. Validation/conflict outcomes are charged because they consume
 the manifest/filesystem path; `unchanged` and `rate-limited` are uncharged.
 
-## Refusal matrix
+## Artifact refusal matrix
 
 Every refusal is:
 
@@ -121,6 +121,116 @@ the file is absent). A 429 carries `Retry-After`.
 | 422 | `undiscoverable-path` | save target is outside/deeper than the artifact discovery contract |
 | 429 | `rate-limited` | more than 30 save attempts in the lesson's 60-second window |
 
-The phase-F4 slice extends this document with `unknown-runner`,
-`incompatible-runner`, `runner-unavailable`, `busy`,
-`idempotency-conflict`, `job-missing`, and the run/status/SSE/cancel routes.
+## Run routes
+
+```
+POST /learn/lessons/{lesson_id}/blocks/{block_id}/runs
+POST /learn/lessons/by-slug/{slug}/blocks/{block_id}/runs
+GET  /learn/runs/{job_id}
+GET  /learn/runs/{job_id}/stream[?after=<seq>]
+POST /learn/runs/{job_id}/cancel
+```
+
+The start aliases share one handler. The request is `application/json`, capped
+at 16 KiB, and contains only the last saved revision and the logical-action
+identity:
+
+```json
+{"file_rev":"sha256:…64 lowercase hex…","idempotency_key":"opaque 1–128 chars"}
+```
+
+The server re-reads the record-time manifest through the pure reader, derives
+the path and runner from `block_id`, and opens the artifact under the F1
+per-bundle lock. The one no-follow, single-link regular descriptor supplies
+the size-capped strict-UTF-8 bytes and their hash. A revision mismatch refuses
+with `file-conflict`; a missing file is `file-missing`. Those exact verified
+bytes—not a later path read—are the immutable runner snapshot.
+
+A start succeeds with the in-memory job identity and current state:
+
+```json
+{"ok":true,"job_id":"…","state":"STARTING","replayed":false}
+```
+
+`(lesson_uid, idempotency_key)` retains `(block_id, file_rev, job_id)` with the
+job. An identical replay returns the same job with `replayed: true`, before
+health, rate, capacity, manifest, or filesystem work. Reuse for another block
+or revision is `idempotency-conflict`. A count-evicted job keeps a tombstone
+until its 15-minute retention deadline and answers `job-missing`.
+
+All admission decisions live in the runner service: at most one active job per
+lesson and two globally. Starts permit 10 charged validations/admissions per
+lesson per 60 seconds. Grammar/manifest/hash/file refusals and every admitted
+job are charged; replay, idempotency conflict, rate-limit refusal, and a busy
+preflight are uncharged (a capacity race after validation refunds its slot).
+
+Status is `Cache-Control: no-store` and returns the job/block/runner/revision,
+state, and `event_recorded`. A terminal status also returns `cause`, optional
+`exit_code` or `signal`, `truncated`, and `duration_ms`.
+
+### SSE output and reconnect
+
+The stream response is `text/event-stream`. `after` is the last applied
+sequence number; `Last-Event-ID` is accepted when `after` is absent. No cursor
+means replay from sequence zero. Every later output record is:
+
+```
+id: 7
+event: output
+data: {"seq":7,"stream":"stdout","text":"invented output\n"}
+```
+
+Sequence numbers increase across stdout and stderr. Text chunks are at most
+32 KiB (the implementation reads 8 KiB raw chunks), and all readers share the
+job's one 1 MiB retained output ring by cursor—there are no per-reader queues.
+At most two readers attach to a job. Idle streams emit a comment heartbeat
+about every 15 seconds. Disconnecting releases the reader slot.
+
+After process reap and both stream EOFs, exactly one terminal record is sent:
+
+```
+id: 8
+event: exit
+data: {"seq":8,"cause":"exit","exit_code":0,"truncated":false,"duration_ms":42}
+```
+
+Terminal causes are `exit`, `signal`, `timeout`, `cancelled`, `output-limit`,
+`spawn-failed`, or `shutdown`. Cancel is idempotent for active and terminal
+jobs; a winning cancel uses the runner's SIGKILL tree path and the stream still
+ends with `cause: "cancelled"`.
+
+Terminal jobs remain for 15 minutes, with at most eight retained. Oldest
+terminal jobs are evicted first; active jobs are excluded. After eviction,
+status, stream, and cancel return `job-missing`.
+
+Each terminal job attempts one best-effort `lesson_run` event containing
+`lesson_uid`, `lesson_id`, `slug`, `block_id`, `runner_id`, `file_rev`, `cause`,
+optional `exit_code`, `truncated`, and `duration_ms`. It contains no stdout or
+stderr. Terminal status waits for this attempt so `event_recorded` is an honest
+boolean. Shutdown jobs use the same path.
+
+## Consolidated refusal matrix
+
+Port-level bridge errors use the same `error` codes once the frontend membrane
+is activated; the iframe never receives raw HTTP status as authority.
+
+| status | error | condition |
+|--------|-------|-----------|
+| 400 | `invalid-block-id`, `invalid-base-rev`, `invalid-content` | editor request grammar |
+| 400 | `invalid-file-rev`, `invalid-idempotency-key`, `invalid-cursor` | run request/cursor grammar |
+| 400 | `invalid-json`, `invalid-request` | malformed/non-object JSON or bad Content-Length |
+| 404 | `unknown-lesson` | no lesson with that id or slug |
+| 404 | `job-missing` | job is unknown, expired, or count-evicted |
+| 409 | `manifest-rejected`, `identity-mismatch`, `blocks-unavailable` | manifest/profile refuses the affordance |
+| 409 | `unsafe-file` | root, parent, or artifact descriptor is unsafe |
+| 409 | `file-missing` | declared run artifact does not exist |
+| 409 | `file-conflict` | save base or run revision differs/current identity changed |
+| 409 | `runner-unavailable` | health, lifecycle, sandbox, or scope prerequisite is unavailable |
+| 409 | `busy` | lesson/global job cap or two-reader cap is full |
+| 409 | `idempotency-conflict` | key was used for another block/revision |
+| 413 | `payload-too-large`, `file-too-large` | request or artifact exceeds its byte cap |
+| 415 | `unsupported-media-type` | mutating request is not `application/json` |
+| 422 | `unknown-block` | block did not survive the record-time manifest read |
+| 422 | `unknown-runner`, `incompatible-runner` | runner is absent/unregistered or rejects the suffix |
+| 422 | `invalid-encoding`, `undiscoverable-path` | artifact text/path is outside the contract |
+| 429 | `rate-limited` | save or start window is exhausted; `Retry-After` is present |

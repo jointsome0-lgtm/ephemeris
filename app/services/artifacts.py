@@ -21,6 +21,7 @@ from uuid import uuid4
 
 from ..db import append_event
 from . import bundle_schema, lessons
+from .runner_registry import RUNNER_REGISTRY
 
 
 MAX_FILE_BYTES = 64 * 1024
@@ -70,6 +71,15 @@ class _OpenArtifact:
     fd: int
     data: bytes
     identity: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class RunSnapshot:
+    block_id: str
+    runner_id: str
+    filename: str
+    file_rev: str
+    data: bytes
 
 
 def bundle_lock(slug: str) -> threading.RLock:
@@ -352,6 +362,68 @@ def get_artifact(lesson: dict, block_id: str) -> dict:
                 "file_rev": _revision(opened.data),
                 "size": len(opened.data),
             }
+        finally:
+            if opened is not None:
+                os.close(opened.fd)
+            os.close(parent_fd)
+
+
+def get_run_snapshot(
+    lesson: dict, block_id: str, file_rev: str
+) -> RunSnapshot:
+    """Validate one runnable block and return its exact execution bytes once."""
+    if not isinstance(file_rev, str) or not FILE_REV_RE.match(file_rev):
+        raise ArtifactError(
+            "invalid-file-rev", 400,
+            "file_rev must be sha256:<64 lowercase hex>",
+        )
+    with bundle_lock(lesson["slug"]):
+        read = lessons.read_bundle_readonly(lesson)
+        _require_eligible(read)
+        block, file_parts = _resolve_block(read, block_id, for_save=False)
+        runner_id = block.get("runner_id")
+        spec = RUNNER_REGISTRY.get(runner_id) if isinstance(runner_id, str) else None
+        if spec is None:
+            raise ArtifactError(
+                "unknown-runner", 422,
+                "the block has no registered runner",
+            )
+        filename = file_parts[-1]
+        if not spec.accepts(filename):
+            raise ArtifactError(
+                "incompatible-runner", 422,
+                "the block file is incompatible with its runner",
+            )
+        location = _read_location(lesson, file_parts, create=False)
+        if location is None:
+            raise ArtifactError("file-missing", 409, "artifact file is missing")
+        parent_fd, name, opened = location
+        try:
+            if opened is None:
+                raise ArtifactError("file-missing", 409, "artifact file is missing")
+            try:
+                opened.data.decode("utf-8", errors="strict")
+            except UnicodeDecodeError as exc:
+                raise ArtifactError(
+                    "invalid-encoding", 422, "artifact is not strict UTF-8"
+                ) from exc
+            current_rev = _revision(opened.data)
+            if not _name_matches(parent_fd, name, opened):
+                raise ArtifactError(
+                    "file-conflict", 409,
+                    "artifact changed while the run was being prepared",
+                    file_rev=current_rev,
+                )
+            if file_rev != current_rev:
+                raise ArtifactError(
+                    "file-conflict", 409,
+                    "file_rev does not match the current artifact",
+                    file_rev=current_rev,
+                )
+            return RunSnapshot(
+                block_id=block["id"], runner_id=runner_id,
+                filename=filename, file_rev=current_rev, data=opened.data,
+            )
         finally:
             if opened is not None:
                 os.close(opened.fd)

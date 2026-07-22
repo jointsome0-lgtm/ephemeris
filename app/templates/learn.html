@@ -145,7 +145,8 @@
           data-src="{{ selected.file_url }}"
           data-meta-url="{{ selected.preview_meta_url }}"
           data-attempts-url="/learn/lessons/{{ selected.id }}/attempts"
-          {% if selected.artifacts_url is defined %}data-artifacts-url="{{ selected.artifacts_url }}"{% endif %}
+    {% if selected.artifacts_url is defined %}data-artifacts-url="{{ selected.artifacts_url }}"{% endif %}
+    {% if selected.runs_url is defined %}data-runs-url="{{ selected.runs_url }}"{% endif %}
           data-version="{{ selected.file.version }}"
           sandbox="{{ selected.sandbox if selected.sandbox is defined else 'allow-scripts allow-forms allow-popups allow-downloads' }}"></iframe>
         {# Early load observer: parses (and runs) synchronously right after

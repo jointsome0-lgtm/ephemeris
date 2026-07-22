@@ -11,6 +11,7 @@ only, our own styling/assets (sec7.3).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -19,17 +20,20 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import (
+    FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
 from .db import get_conn, init_db, is_not_future, is_valid_date, now_iso, today_str
 from .request_body import PayloadTooLarge, read_capped
+from . import runner as runner_core
 from .security import install_security
 from .services import (
     artifacts, attempts, bundle_schema, calendar_events, checkins, export,
-    focus, items, lessons, lists, quickadd, retro, stats, tasks,
+    focus, items, lessons, lists, quickadd, retro, runs, stats, tasks,
 )
 from .terminal import client_is_local, setup_terminal, shutdown_terminal
 
@@ -69,8 +73,12 @@ async def _lifespan(app: FastAPI):
         "Ephemeris has NO AUTH (sec20): serve only on a trusted LAN; "
         "never expose to the public internet."
     )
-    yield
-    await shutdown_terminal()  # kill any persistent terminal shells on shutdown
+    app.state.runner_service = runs.create_service()
+    try:
+        yield
+    finally:
+        await app.state.runner_service.shutdown()
+        await shutdown_terminal()  # kill persistent terminal shells on shutdown
 
 
 app = FastAPI(title="Ephemeris", lifespan=_lifespan)
@@ -1066,6 +1074,7 @@ def get_learn(
         # pre-F backend rendering the new working-tree template omits the
         # capability instead of advertising a route it does not have.
         selected["artifacts_url"] = f"/learn/lessons/{selected['id']}/blocks"
+        selected["runs_url"] = f"/learn/lessons/{selected['id']}/blocks"
         # D2: the iframe sandbox attribute follows the effective profile
         # (same owner as the header-level directive); the profile is folded
         # into the version token, so a flip reloads the frame and the parent
@@ -1444,6 +1453,216 @@ def get_lesson_artifact(lesson_id: int, block_id: str):
 @app.post("/learn/lessons/{lesson_id}/blocks/{block_id}/file")
 async def post_lesson_artifact(request: Request, lesson_id: int, block_id: str):
     return await _save_artifact(request, block_id, lesson_id=lesson_id)
+
+
+# --- lesson runs (phase F4 run API) ---------------------------------------
+
+
+def _run_refusal(code: str, status: int, detail: str = "", **fields) -> JSONResponse:
+    headers = {"Cache-Control": "no-store"}
+    if status == 429:
+        headers["Retry-After"] = str(int(fields.get("retry_after", 1)))
+    return JSONResponse(
+        {"ok": False, "error": code, "detail": detail, **fields},
+        status_code=status,
+        headers=headers,
+    )
+
+
+def _runner_refusal(exc: runner_core.RunnerError) -> JSONResponse:
+    if isinstance(exc, runner_core.RateLimitedError):
+        return _run_refusal(
+            "rate-limited", 429, "run start rate limit exceeded",
+            retry_after=int(getattr(exc, "retry_after", runs.RATE_WINDOW_SECONDS)),
+        )
+    if isinstance(exc, runner_core.JobMissingError):
+        return _run_refusal("job-missing", 404, "runner job is no longer retained")
+    if isinstance(exc, runner_core.IdempotencyConflictError):
+        return _run_refusal(
+            "idempotency-conflict", 409,
+            "idempotency_key was already used for another block or revision",
+        )
+    if isinstance(exc, (
+        runner_core.LessonCapacityError,
+        runner_core.GlobalCapacityError,
+        runner_core.ReaderCapacityError,
+    )):
+        return _run_refusal("busy", 409, "runner capacity is busy")
+    if isinstance(exc, runner_core.UnknownRunnerError):
+        return _run_refusal("unknown-runner", 422, "runner is not registered")
+    if isinstance(exc, runner_core.IncompatibleRunnerError):
+        return _run_refusal(
+            "incompatible-runner", 422, "artifact file is incompatible with runner"
+        )
+    if isinstance(exc, runner_core.SnapshotTooLargeError):
+        return _run_refusal("file-too-large", 413, "runner snapshot is too large")
+    return _run_refusal("runner-unavailable", 409, "runner is unavailable")
+
+
+async def _start_run(
+    request: Request,
+    block_id: str,
+    *,
+    lesson_id: int | None = None,
+    slug: str | None = None,
+) -> JSONResponse:
+    content_type = request.headers.get("content-type", "")
+    if content_type.split(";", 1)[0].strip().lower() != "application/json":
+        return _run_refusal(
+            "unsupported-media-type", 415, "run starts are application/json"
+        )
+    try:
+        body = await read_capped(request, runs.MAX_BODY_BYTES)
+    except PayloadTooLarge:
+        return _run_refusal("payload-too-large", 413, "request body too large")
+    except ValueError:
+        return _run_refusal("invalid-request", 400, "bad Content-Length")
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return _run_refusal("invalid-json", 400, "body is not valid JSON")
+    if not isinstance(payload, dict):
+        return _run_refusal("invalid-json", 400, "body must be a JSON object")
+
+    def load_lesson() -> dict | None:
+        conn = get_conn()
+        try:
+            return (
+                lessons.get_lesson_by_slug(conn, slug)
+                if slug is not None else lessons.get_lesson(conn, lesson_id)
+            )
+        finally:
+            conn.close()
+
+    lesson = await run_in_threadpool(load_lesson)
+    if lesson is None:
+        return _run_refusal("unknown-lesson", 404, "unknown lesson")
+    service = request.app.state.runner_service
+    try:
+        admission = await runs.start(service, lesson, block_id, payload)
+    except artifacts.ArtifactError as exc:
+        return _run_refusal(exc.code, exc.status, exc.detail, **exc.fields)
+    except runs.RunRequestError as exc:
+        return _run_refusal(exc.code, exc.status, exc.detail)
+    except runner_core.RunnerError as exc:
+        return _runner_refusal(exc)
+    return JSONResponse(
+        {
+            "ok": True,
+            "job_id": admission.job.job_id,
+            "state": admission.job.state,
+            "replayed": admission.replayed,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/learn/lessons/by-slug/{slug}/blocks/{block_id}/runs")
+async def start_lesson_run_by_slug(request: Request, slug: str, block_id: str):
+    return await _start_run(request, block_id, slug=slug)
+
+
+@app.post("/learn/lessons/{lesson_id}/blocks/{block_id}/runs")
+async def start_lesson_run(request: Request, lesson_id: int, block_id: str):
+    return await _start_run(request, block_id, lesson_id=lesson_id)
+
+
+@app.get("/learn/runs/{job_id}")
+async def get_lesson_run(request: Request, job_id: str):
+    service = request.app.state.runner_service
+    job = await service.get(job_id)
+    if job is None:
+        return _run_refusal("job-missing", 404, "runner job is no longer retained")
+    if job.state == runner_core.FINISHED and not job.event_attempted.is_set():
+        await job.event_attempted.wait()
+    status = runs.status_view(job)
+    if (
+        status["state"] == runner_core.FINISHED
+        and not job.event_attempted.is_set()
+    ):
+        await job.event_attempted.wait()
+        status = runs.status_view(job)
+    return JSONResponse(
+        {"ok": True, **status},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/learn/runs/{job_id}/cancel")
+async def cancel_lesson_run(request: Request, job_id: str):
+    service = request.app.state.runner_service
+    job = await service.get(job_id)
+    if job is None:
+        return _run_refusal("job-missing", 404, "runner job is no longer retained")
+    if job.state != runner_core.FINISHED:
+        await service.cancel(job_id)
+    if job.state == runner_core.FINISHED and not job.event_attempted.is_set():
+        await job.event_attempted.wait()
+    status = runs.status_view(job)
+    if (
+        status["state"] == runner_core.FINISHED
+        and not job.event_attempted.is_set()
+    ):
+        await job.event_attempted.wait()
+        status = runs.status_view(job)
+    return JSONResponse(
+        {"ok": True, **status},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _sse_event(event: dict) -> str:
+    payload = {key: value for key, value in event.items() if key != "event"}
+    return (
+        f"id: {event['seq']}\n"
+        f"event: {event['event']}\n"
+        f"data: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n\n"
+    )
+
+
+@app.get("/learn/runs/{job_id}/stream")
+async def stream_lesson_run(request: Request, job_id: str, after: str | None = None):
+    raw_cursor = after
+    if raw_cursor is None:
+        raw_cursor = request.headers.get("last-event-id")
+    if raw_cursor in (None, ""):
+        cursor = 0
+    else:
+        try:
+            cursor = int(raw_cursor)
+        except ValueError:
+            return _run_refusal("invalid-cursor", 400, "after must be an integer")
+        if cursor < 0:
+            return _run_refusal("invalid-cursor", 400, "after must be non-negative")
+    service = request.app.state.runner_service
+    try:
+        attached = await service.attach_reader(job_id)
+    except runner_core.RunnerError as exc:
+        return _runner_refusal(exc)
+
+    async def events():
+        current = cursor
+        try:
+            while True:
+                job, batch = await service.events_after(job_id, current)
+                for event in batch:
+                    current = int(event["seq"])
+                    yield _sse_event(event)
+                    if event["event"] == "exit":
+                        return
+                if job.state == runner_core.FINISHED:
+                    return
+                try:
+                    await asyncio.wait_for(job.updated.wait(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            await service.detach_reader(attached)
+
+    return StreamingResponse(
+        events(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
 
 
 # --- lesson attempts (D4, learn-bundle-spec.md §6 + docs/lesson-attempts-api.md)

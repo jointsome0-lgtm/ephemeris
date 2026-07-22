@@ -19,7 +19,15 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
+- [ ] 2026-07-22 — commits after `f2487ee` on `fix/36-f3-run-api` —
+  `app/main.py`, `app/runner.py`, `app/services/artifacts.py`,
+  `app/services/runs.py`, `app/templates/learn.html`,
+  `docs/lesson-artifacts-api.md`, `verify.py`, `docs/reviews/QUEUE.md` — issue
+  #36 phase F slice F4 wires the reviewed runner core into the app lifecycle
+  and adds manifest-addressed, revision-bound run start/status/SSE/cancel
+  routes, bounded reader/replay/retention state, run rate accounting, and
+  best-effort terminal telemetry; it does not change the static bridge runtime,
+  terminal PTY/WebSocket core, sandbox limits, or attempt endpoint.
 
 ## Done
 
