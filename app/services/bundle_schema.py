@@ -18,6 +18,7 @@ import os
 import re
 import stat as stat_module
 import tempfile
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -54,8 +55,8 @@ PROFILE_LEGACY = "legacy-display"
 PROFILE_INTERACTIVE = "interactive-local-v1"
 PROFILES = (PROFILE_LEGACY, PROFILE_INTERACTIVE)
 
-# Runner registry (F3) is not built yet: no runner_id is recognized, so every
-# declared runner degrades to `unknown-runner` (Run disabled, editor kept).
+# The schema leaf defaults to no known runners. Application call sites inject
+# F3's real mapping; manifest fixtures inject their own registry (§11).
 RUNNER_REGISTRY: frozenset[str] = frozenset()
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
@@ -94,6 +95,7 @@ _SEVERITY = {
     "dangling-ref": DEGRADED,
     "unknown-profile": DEGRADED,
     "unknown-runner": DEGRADED,
+    "incompatible-runner": DEGRADED,
     "unknown-kind": DEGRADED,
     "overlapping-roots": DEGRADED,
     "invalid-ref": DEGRADED,
@@ -298,7 +300,7 @@ def read_manifest_text(
     text: str,
     *,
     db_lesson: dict | None = None,
-    runner_registry: frozenset[str] = RUNNER_REGISTRY,
+    runner_registry: Collection[str] | Mapping[str, object] = RUNNER_REGISTRY,
 ) -> ManifestRead:
     return read_manifest_bytes(
         text.encode("utf-8"), db_lesson=db_lesson, runner_registry=runner_registry
@@ -309,7 +311,7 @@ def read_manifest_bytes(
     data: bytes,
     *,
     db_lesson: dict | None = None,
-    runner_registry: frozenset[str] = RUNNER_REGISTRY,
+    runner_registry: Collection[str] | Mapping[str, object] = RUNNER_REGISTRY,
 ) -> ManifestRead:
     """Dual-read dispatch (§9.1). Short-circuits only on manifest-too-large,
     manifest-unreadable, and unsupported-version; every other finding
@@ -346,7 +348,7 @@ def read_manifest_path(
     path: Path,
     *,
     db_lesson: dict | None = None,
-    runner_registry: frozenset[str] = RUNNER_REGISTRY,
+    runner_registry: Collection[str] | Mapping[str, object] = RUNNER_REGISTRY,
 ) -> ManifestRead | None:
     """Read a manifest file without ever following a symlink at the manifest
     path itself (§2: a symlinked lesson.json is `symlinked-bundle`, never
@@ -456,7 +458,7 @@ def _read_v2(
     raw: dict,
     *,
     db_lesson: dict | None,
-    runner_registry: frozenset[str],
+    runner_registry: Collection[str] | Mapping[str, object],
 ) -> ManifestRead:
     read = ManifestRead(version=SCHEMA_V2, raw=raw)
 
@@ -633,7 +635,10 @@ def _under_root(file: str, roots: list[str]) -> bool:
 
 
 def _read_blocks(
-    read: ManifestRead, raw: dict, page_ids: set[str], runner_registry: frozenset[str]
+    read: ManifestRead,
+    raw: dict,
+    page_ids: set[str],
+    runner_registry: Collection[str] | Mapping[str, object],
 ) -> list[dict]:
     items = raw.get("blocks")
     if items is not None and not isinstance(items, list):
@@ -711,7 +716,15 @@ def _read_blocks(
             elif runner_id not in runner_registry:
                 read.add("unknown-runner", f"block {bid} runner_id {runner_id!r}")
             else:
-                run_enabled = True
+                spec = runner_registry.get(runner_id) if isinstance(runner_registry, Mapping) else None
+                suffixes = getattr(spec, "suffixes", None)
+                if suffixes is not None and not file.endswith(tuple(suffixes)):
+                    read.add(
+                        "incompatible-runner",
+                        f"block {bid} file {file!r} is incompatible with {runner_id!r}",
+                    )
+                else:
+                    run_enabled = True
         blocks.append({
             "id": bid,
             "page": page,

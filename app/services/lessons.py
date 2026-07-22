@@ -21,6 +21,7 @@ from uuid import uuid4
 
 from ..db import DATA_DIR, append_event, get_conn, now_iso
 from . import bundle_schema
+from .runner_registry import RUNNER_REGISTRY
 
 STATUSES = ("backlog", "studying", "paused", "studied")
 STATUS_LABELS = {
@@ -350,10 +351,14 @@ def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:
         _mkdir_no_follow(lesson_dir / name)
 
     manifest_path = _manifest_path(lesson["slug"])
-    read = bundle_schema.read_manifest_path(manifest_path, db_lesson=lesson)
+    read = bundle_schema.read_manifest_path(
+        manifest_path, db_lesson=lesson, runner_registry=RUNNER_REGISTRY
+    )
     if read is None:  # genuinely missing: creation, not migration (§9.1)
         _write_manifest(manifest_path, _default_manifest(lesson))
-        read = bundle_schema.read_manifest_path(manifest_path, db_lesson=lesson)
+        read = bundle_schema.read_manifest_path(
+            manifest_path, db_lesson=lesson, runner_registry=RUNNER_REGISTRY
+        )
         if read is None:
             return bundle_schema.rejected_read(
                 "manifest-unreadable", "manifest vanished after creation"
