@@ -1228,6 +1228,34 @@ with TestClient(app) as c:
               and (_d2_out / "terminal.js").read_bytes()
               == terminal_js.encode("utf-8"),
               extra=_d2_cp.stdout + _d2_cp.stderr)
+        _d2_mjs = _d2_out / "learn-bridge.mjs"
+        _d2_mjs.write_text(_d2_js, encoding="utf-8")
+        _d2_sha_cp = subprocess.run(
+            [
+                "node", "--input-type=module", "-e",
+                """
+globalThis.document = {getElementById: () => null};
+const {sha256Hex} = await import(process.argv[1]);
+const encode = new TextEncoder();
+process.stdout.write(JSON.stringify([
+  sha256Hex(encode.encode("")),
+  sha256Hex(encode.encode("abc")),
+  sha256Hex(encode.encode("🪐 orbit")),
+  sha256Hex(encode.encode("x".repeat(70000))),
+]));
+""",
+                _d2_mjs.as_uri(),
+            ],
+            cwd=ROOT, capture_output=True, text=True, timeout=30,
+        )
+        _d2_sha_expected = [
+            hashlib.sha256(value).hexdigest()
+            for value in (b"", b"abc", "🪐 orbit".encode("utf-8"), b"x" * 70000)
+        ]
+        check("emitted dependency-free SHA-256 matches standard vectors",
+              _d2_sha_cp.returncode == 0
+              and json.loads(_d2_sha_cp.stdout) == _d2_sha_expected,
+              extra=_d2_sha_cp.stdout + _d2_sha_cp.stderr)
     else:
         if os.environ.get("CI"):
             check("CI has the repo-local TypeScript compiler for emit freshness",
@@ -2485,7 +2513,8 @@ with TestClient(app) as c:
           and "file_rev: fileRev, idempotency_key: idempotencyKey" in _fr_save_run
           and _fr_save_run.count("await freshBlock") == 3)
     check("save_run derives parameter-bound idempotency before artifact mutation",
-          'window.crypto.subtle.digest("SHA-256"' in _d2_ts
+          "export const sha256Hex" in _d2_ts
+          and "window.crypto" not in _d2_ts
           and '"ephemeris:lesson-run:v1", requestId, blockId, content' in _d2_ts
           and _fr_save_run.index("deriveRunIdempotencyKey")
           < _fr_save_run.index("artifactEndpoint(blockId)"))

@@ -38,7 +38,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   the retained partial frame and derives the backend idempotency key from the
   whole save/run operation before the save; generated-brief activation remains
   the separate following F5 slice. It does not change backend routes, attempt
-  persistence, CSP, sandbox tokens, or terminal statics.
+  persistence, CSP, sandbox tokens, or terminal statics. Its third Codex
+  findings round computes that key without secure-context-only Web Crypto so
+  supported plain-HTTP trusted-LAN clients retain Run.
 
 ## Done
 

@@ -301,8 +301,9 @@ parent → child   { "op": "run.cancel", "request_id": "cancel-1",
   This is a narrow D-FE-3 deviation from passing `request_id` verbatim: the
   original shape cannot preflight a server-retained key before the composite's
   first mutation, and the run-start API intentionally has no separate
-  idempotency-preflight route. If built-in Web Crypto SHA-256 is unavailable,
-  the parent returns `unavailable` before the save.
+  idempotency-preflight route. The bounded parent module computes SHA-256
+  dependency-free, so the supported plain-HTTP trusted-LAN mode does not rely
+  on secure-context-only Web Crypto.
   For this composite op the id must also be well-formed Unicode without ASCII
   control characters or DEL; the parent rejects an invalid idempotency key
   before it sends the artifact save.
