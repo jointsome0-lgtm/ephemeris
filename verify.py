@@ -2432,10 +2432,19 @@ process.stdout.write(JSON.stringify([
     _fe_get = _d2_ts[_d2_ts.index("const getArtifact"):
                      _d2_ts.index("const saveArtifact")]
     check("artifact reads revalidate the page block after GET before disclosure",
-          _fe_get.count("await freshBlock") == 2
+          _fe_get.count("await freshBlock") == 3
           and _fe_get.index("const rec = await readEndpointJson")
           < _fe_get.rindex("await freshBlock")
           < _fe_get.index("boundPort.postMessage(reply)"))
+    check("private artifact reads require sticky parent consent before GET",
+          "let artifactReadConsent: boolean | null = null" in _d2_ts
+          and "artifactReadConsent = null" in _d2_ts
+          and "window.confirm(" in _d2_ts
+          and 'answerError(boundPort, "artifact-read-denied", requestId)' in _fe_get
+          and _fe_get.index("allowArtifactRead()")
+          < _fe_get.index("const rec = await readEndpointJson")
+          and _fe_get.index("allowArtifactRead()")
+          < _fe_get.index("await freshBlock", _fe_get.index("allowArtifactRead()")))
     check("editor grant refreshes current block metadata at handshake time",
           "const handleReady = async" in _d2_ts
           and "const meta = await fetchMeta()" in _d2_ts.split("const handleReady = async", 1)[1]
@@ -2511,7 +2520,12 @@ process.stdout.write(JSON.stringify([
           < _fr_save_run.index("runStartEndpoint(blockId)")
           and 'saveResult !== "saved" && saveResult !== "unchanged"' in _fr_save_run
           and "file_rev: fileRev, idempotency_key: idempotencyKey" in _fr_save_run
-          and _fr_save_run.count("await freshBlock") == 3)
+          and _fr_save_run.count("await freshBlock") == 4)
+    check("save_run revalidates page/block Run authority after start before relay",
+          _fr_save_run.index("const started = await readEndpointJson")
+          < _fr_save_run.index("const afterStart = await freshBlock")
+          < _fr_save_run.index("rememberOwnedRun")
+          and 'if (!afterStart.run)' in _fr_save_run)
     check("save_run derives parameter-bound idempotency before artifact mutation",
           "export const sha256Hex" in _d2_ts
           and "window.crypto" not in _d2_ts

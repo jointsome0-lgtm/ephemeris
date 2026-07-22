@@ -232,6 +232,14 @@ parent → child   { "op": "artifact.save", "request_id": "s1",
   `unsupported-version`. `block_id` must match `blk_[a-z0-9]{4,32}`.
 - A missing file returns `exists: false`, empty `content`, `size: 0`, and no
   `file_rev`; its first save uses the literal `base_rev: "absent"`.
+- Artifact bytes are private runtime state, while lesson pages are untrusted
+  and retain the documented same-frame navigation residual (§4). The first
+  `artifact.get` for each loaded document therefore opens a parent-owned
+  confirmation that explicitly warns the learner that the page can navigate
+  and send code it reads to another site. A denial is sticky for that document
+  and returns `artifact-read-denied` without HTTP; acceptance covers its later
+  reads. The parent repeats fresh page/block validation after the prompt and
+  before the GET. A reload requires a new decision.
 - Content is limited to 64 KiB raw UTF-8 bytes. `base_rev` is either
   `"absent"` or the exact revision returned by `artifact.get` or the previous
   successful save. A `file-conflict` answer carries the current `file_rev`
@@ -246,7 +254,8 @@ parent → child   { "op": "artifact.save", "request_id": "s1",
   `rate-limited`, and the rest of the artifact refusal matrix). Parent-local
   refusals are `capability-not-granted`, `unsupported-version`,
   `invalid-block-id`, `invalid-content`, `invalid-base-rev`, `file-too-large`,
-  `unknown-block`, `stale-page`, `busy`, and `unavailable`.
+  `artifact-read-denied`, `unknown-block`, `stale-page`, `busy`, and
+  `unavailable`.
 - A duplicate `request_id` while its editor request is pending is dropped;
   the pending operation supplies the one response. At most four editor
   operations are in flight per document.
@@ -308,9 +317,10 @@ parent → child   { "op": "run.cancel", "request_id": "cancel-1",
   control characters or DEL; the parent rejects an invalid idempotency key
   before it sends the artifact save.
 - The selected block itself must be present and carry `run: true` in fresh
-  metadata before save and again before start. A page-wide `run` grant caused
-  by another block does not confer authority; a selected non-run block is
-  `run-not-enabled`. Both mutations remain behind the generation/port,
+  metadata before save, again before start, and after the start response before
+  the parent remembers or relays the returned job. A page-wide `run` grant
+  caused by another block does not confer authority; a selected non-run block
+  is `run-not-enabled`. Both mutations remain behind the generation/port,
   identity/version, settle, and server-side record-time checks.
 - `after` is the last output sequence the child applied: a non-negative safe
   integer, default `0`. The SSE request uses that cursor. The parent validates

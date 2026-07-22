@@ -40,7 +40,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   the separate following F5 slice. It does not change backend routes, attempt
   persistence, CSP, sandbox tokens, or terminal statics. Its third Codex
   findings round computes that key without secure-context-only Web Crypto so
-  supported plain-HTTP trusted-LAN clients retain Run.
+  supported plain-HTTP trusted-LAN clients retain Run. Its fourth Codex
+  findings round makes private artifact reads fail closed until a sticky
+  per-document parent confirmation explicitly accepts the lesson page's
+  same-frame navigation egress, and repeats fresh block/Run validation after
+  start before exposing the returned job or output.
 
 ## Done
 

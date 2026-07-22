@@ -226,6 +226,9 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     let capabilities = [];
     let attemptsInflight = new Set();
     let editorInflight = new Set();
+    /* null = no decision yet; a denial is sticky for this document so hostile
+     * content cannot turn artifact.get into a browser-dialog loop. */
+    let artifactReadConsent = null;
     let runInflight = new Set();
     let runStartToken = null;
     let ownedRuns = new Map();
@@ -249,6 +252,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         capabilities = [];
         attemptsInflight = new Set();
         editorInflight = new Set();
+        artifactReadConsent = null;
         runInflight = new Set();
         runStartToken = null;
         ownedRuns = new Map();
@@ -532,10 +536,30 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             return null;
         }
     };
+    const allowArtifactRead = () => {
+        if (artifactReadConsent !== null)
+            return artifactReadConsent;
+        try {
+            artifactReadConsent = window.confirm("Allow this untrusted lesson page to read saved learner code? "
+                + "A lesson page can navigate the preview and send code it reads to another site. "
+                + "Allow only if you trust this lesson.");
+        }
+        catch {
+            artifactReadConsent = false;
+        }
+        return artifactReadConsent;
+    };
     const getArtifact = async (boundPort, gen, requestId, blockId) => {
         const inflight = editorInflight;
         inflight.add(requestId);
         try {
+            if (await freshBlock(boundPort, gen, requestId, blockId) === null)
+                return;
+            if (!allowArtifactRead()) {
+                return answerError(boundPort, "artifact-read-denied", requestId);
+            }
+            /* The parent prompt may stay open while an external manifest edit
+             * lands. Re-bind the page/block immediately before the private read. */
             if (await freshBlock(boundPort, gen, requestId, blockId) === null)
                 return;
             const rec = await readEndpointJson(artifactEndpoint(blockId));
@@ -868,6 +892,15 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             if (typeof runId !== "string" || !JOB_ID_RE.test(runId)) {
                 return answerError(boundPort, "unavailable", requestId);
             }
+            /* Start is record-time manifest-bound but not page-bound. A block may
+             * move while the request is in flight; never give the old document the
+             * returned job or its output unless fresh metadata still grants this
+             * exact page/block Run authority. */
+            const afterStart = await freshBlock(boundPort, gen, requestId, blockId);
+            if (afterStart === null)
+                return;
+            if (!afterStart.run)
+                return answerError(boundPort, "run-not-enabled", requestId);
             rememberOwnedRun(runId, { generation: gen, block_id: blockId });
             boundPort.postMessage({
                 op: "artifact.save_run",
