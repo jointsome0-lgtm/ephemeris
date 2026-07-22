@@ -404,7 +404,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         }
         answerError(to, code, requestId);
     };
-    const freshBlock = async (boundPort, gen, requestId, blockId) => {
+    const freshBlocks = async (boundPort, gen, requestId) => {
         const meta = await fetchMeta();
         if (gen !== generation || port !== boundPort || armed === null)
             return null;
@@ -423,6 +423,12 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             answerError(boundPort, "unavailable", requestId);
             return null;
         }
+        return blocks;
+    };
+    const freshBlock = async (boundPort, gen, requestId, blockId) => {
+        const blocks = await freshBlocks(boundPort, gen, requestId);
+        if (blocks === null)
+            return null;
         const block = blocks.find((candidate) => candidate.id === blockId);
         if (!block) {
             answerError(boundPort, "unknown-block", requestId);
@@ -467,6 +473,11 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
                 || (!exists && rev !== undefined)) {
                 return answerError(boundPort, "unavailable", requestId);
             }
+            /* A manifest-only edit can repoint this block while the GET is in
+             * flight. Do not disclose the returned content until the armed page
+             * still owns the exact block under fresh metadata. */
+            if (await freshBlock(boundPort, gen, requestId, blockId) === null)
+                return;
             const reply = {
                 op: "artifact.get", request_id: requestId, exists, content, size,
             };
@@ -789,13 +800,17 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             if (!owner || owner.generation !== gen) {
                 return answerError(boundPort, "job-missing", requestId);
             }
-            if (await freshBlock(boundPort, gen, requestId, owner.block_id) === null)
+            /* Cancellation is a monotonic authority reduction for a job already
+             * admitted through this document's owned map. Keep fresh page identity
+             * and settle checks, but do not strand the job if a manifest-only edit
+             * removes or moves its former block while it is running. */
+            if (await freshBlocks(boundPort, gen, requestId) === null)
                 return;
             await new Promise((resolve) => setTimeout(resolve, RUN_SETTLE_MS));
             if (gen !== generation || port !== boundPort || navPending || quarantined) {
                 return answerError(boundPort, "stale-page", requestId);
             }
-            if (await freshBlock(boundPort, gen, requestId, owner.block_id) === null)
+            if (await freshBlocks(boundPort, gen, requestId) === null)
                 return;
             const rec = await readEndpointJson(runEndpoint(runId, "cancel"), { method: "POST" });
             if (gen !== generation || port !== boundPort)
@@ -1047,6 +1062,32 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             }
             if (!Number.isSafeInteger(rawAfter) || rawAfter < 0) {
                 return answerError(port, "invalid-cursor", requestId);
+            }
+            /* The run service consumes request_id verbatim as an idempotency key.
+             * Reject values it cannot accept before the composite's artifact save,
+             * so invalid input can never save bytes without starting their run. */
+            let validRunKey = true;
+            for (let i = 0; i < requestId.length; i += 1) {
+                const code = requestId.charCodeAt(i);
+                if (code < 32 || code === 127) {
+                    validRunKey = false;
+                    break;
+                }
+                if (code >= 0xd800 && code <= 0xdbff) {
+                    const next = requestId.charCodeAt(i + 1);
+                    if (!(next >= 0xdc00 && next <= 0xdfff)) {
+                        validRunKey = false;
+                        break;
+                    }
+                    i += 1;
+                }
+                else if (code >= 0xdc00 && code <= 0xdfff) {
+                    validRunKey = false;
+                    break;
+                }
+            }
+            if (!validRunKey) {
+                return answerError(port, "invalid-idempotency-key", requestId);
             }
             /* One document-wide relay. Refuse before save/start HTTP, so a second
              * Run click cannot start an unobservable job behind the active stream. */

@@ -294,6 +294,9 @@ parent → child   { "op": "run.cancel", "request_id": "cancel-1",
   refusal stop without a run start. The parent then starts the selected block
   with the returned `file_rev` and uses the child `request_id` verbatim as the
   HTTP `idempotency_key`. There is no bare child-facing run-start operation.
+  For this composite op the id must also be well-formed Unicode without ASCII
+  control characters or DEL; the parent rejects an invalid idempotency key
+  before it sends the artifact save.
 - The selected block itself must be present and carry `run: true` in fresh
   metadata before save and again before start. A page-wide `run` grant caused
   by another block does not confer authority; a selected non-run block is
@@ -309,10 +312,13 @@ parent → child   { "op": "run.cancel", "request_id": "cancel-1",
 - The parent owns `run_id → {document generation, block_id}`. Cancel, output,
   and exit resolve through that map; malformed or foreign run ids are
   `job-missing` without touching the global HTTP routes. Cancel repeats fresh
-  page/block validation and the settle gate, but does not require the block's
-  Run flag to remain true: revocation must not prevent stopping a job already
-  owned by this document. Terminal exits are removed immediately; at most 16
-  failed/reconnectable relay entries are retained for one document.
+  page-identity validation and the settle gate, but does not require the job's
+  former block to remain declared: removing, moving, or revoking the block
+  must not prevent stopping a job already owned by this document. This is a
+  narrow D-FE-4 exception because cancellation only reduces an authority that
+  the owned map proves was previously admitted. Terminal exits are removed
+  immediately; at most 16 failed/reconnectable relay entries are retained for
+  one document.
 - One `artifact.save_run`/stream relay may be active for the document. A
   second start receives `busy` before save or start HTTP. Run request ids are
   deduplicated while in flight and at most four run operations are pending.

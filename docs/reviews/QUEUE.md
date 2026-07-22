@@ -30,7 +30,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   manifest, repeats fresh block validation after the save-settle window, and
   refreshes block metadata before granting the editor; its second round
   preserves the attempt operation's 32 KiB semantic bound inside the wider
-  editor membrane. It does not change backend routes, attempt persistence,
+  editor membrane. The run boundary's first Codex findings round repeats
+  fresh block validation after artifact reads, rejects backend-invalid
+  idempotency keys before composite saves, and keeps owned-job cancellation
+  available after block removal while retaining fresh page-identity checks.
+  It does not change backend routes, attempt persistence,
   CSP, sandbox tokens, or terminal statics.
 
 ## Done

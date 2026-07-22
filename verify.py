@@ -2401,6 +2401,13 @@ with TestClient(app) as c:
           and _d2_ts.rindex("await freshBlock", _d2_ts.index("const saveArtifact"),
                             _d2_ts.index("const runStartEndpoint"))
           < _d2_ts.index("method: \"POST\"", _d2_ts.index("const saveArtifact")))
+    _fe_get = _d2_ts[_d2_ts.index("const getArtifact"):
+                     _d2_ts.index("const saveArtifact")]
+    check("artifact reads revalidate the page block after GET before disclosure",
+          _fe_get.count("await freshBlock") == 2
+          and _fe_get.index("const rec = await readEndpointJson")
+          < _fe_get.rindex("await freshBlock")
+          < _fe_get.index("boundPort.postMessage(reply)"))
     check("editor grant refreshes current block metadata at handshake time",
           "const handleReady = async" in _d2_ts
           and "const meta = await fetchMeta()" in _d2_ts.split("const handleReady = async", 1)[1]
@@ -2484,8 +2491,20 @@ with TestClient(app) as c:
           and "if (activeRelay) activeRelay.controller.abort()" in _d2_ts
           and "ownedRuns = new Map()" in _d2_ts
           and "service.cancel" not in _d2_ts)
+    _fr_cancel = _d2_ts[_d2_ts.index("const cancelRun"):
+                        _d2_ts.index("const postAttempt")]
+    check("owned run cancel survives block removal but keeps fresh page checks",
+          _fr_cancel.count("await freshBlocks") == 2
+          and "await freshBlock(" not in _fr_cancel
+          and _fr_cancel.index("const owner = ownedRuns.get(runId)")
+          < _fr_cancel.index("await freshBlocks"))
     _fr_port = _d2_ts[_d2_ts.index("const onPortMessage"):
                       _d2_ts.index("const finishReady")]
+    check("save_run rejects backend-invalid idempotency keys before mutation",
+          'answerError(port, "invalid-idempotency-key", requestId)' in _fr_port
+          and "requestId.charCodeAt" in _fr_port
+          and _fr_port.index("invalid-idempotency-key")
+          < _fr_port.index("void saveAndRun"))
     check("one document-wide stream refuses a second save_run before HTTP",
           "activeRelay !== null || runStartToken !== null" in _fr_port
           and _fr_port.index("activeRelay !== null || runStartToken !== null")
