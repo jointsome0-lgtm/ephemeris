@@ -16,7 +16,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from functools import cache
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Awaitable, Callable, Mapping
 from uuid import uuid4
@@ -57,7 +57,7 @@ RUNNER_ENV: Mapping[str, str] = MappingProxyType({
     "LANG": "C.UTF-8",
     "LC_ALL": "C.UTF-8",
     "GOCACHE": f"{sandbox.USER_HOME}/.cache/go-build",
-    "GOMODCACHE": f"{sandbox.USER_HOME}/go/pkg/mod",
+    "GOMODCACHE": f"{sandbox.GO_MODULE_CACHE_ROOT}/pkg/mod",
     "GOFLAGS": "-mod=readonly",
 })
 
@@ -155,6 +155,13 @@ def _probe_ro_bind_data() -> str:
         os.close(fd)
 
 
+def _probe_go_module_cache() -> str:
+    module_cache = Path(RUNNER_ENV["GOMODCACHE"])
+    if module_cache.is_dir():
+        return ""
+    return f"required read-only Go module cache is absent: {module_cache}"
+
+
 @cache
 def _cached_runner_health() -> RunnerHealth:
     """Probe the complete F3 execution contract once per process lifetime."""
@@ -188,6 +195,9 @@ def _cached_runner_health() -> RunnerHealth:
         detail = _probe_result(version_argv)
         if detail:
             return RunnerHealth(False, f"{runner_id} executable probe failed: {detail}")
+    detail = _probe_go_module_cache()
+    if detail:
+        return RunnerHealth(False, detail)
     return RunnerHealth(True)
 
 

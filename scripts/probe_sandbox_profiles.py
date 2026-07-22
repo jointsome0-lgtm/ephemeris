@@ -37,7 +37,7 @@ profile, bundle, repo = sys.argv[1:]
 expected_home = {
     "lesson-agent": {".cache", ".claude", ".claude.json", ".codex", ".local", ".nvm", "go"},
     "lesson-learner": {".cache", ".local", "go"},
-    "lesson-runner": {".local"},
+    "lesson-runner": {".local", "go"},
 }[profile]
 home_entries = {entry.name for entry in Path("/home/aina").iterdir()}
 probe_file = Path(bundle) / ".e1-write-probe"
@@ -103,7 +103,8 @@ def run_profile(
     ]
     result = subprocess.run(
         build_sandbox_argv(
-            profile, bundle, bundle_root=bundle_root
+            profile, bundle, bundle_root=bundle_root,
+            private_root=bundle_root.parent if profile == "lesson-runner" else None,
         ) + ["--", *command],
         stdin=subprocess.DEVNULL,
         capture_output=True,

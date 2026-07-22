@@ -24,6 +24,7 @@ RUNNER_WORKDIR = "/tmp/ephemeris-runner"
 RUNTIME_DIR = "/run"
 SYSTEMD_RUN = "/usr/bin/systemd-run"
 EPHEMERIS_CHECKOUT_ROOT = str(Path(__file__).resolve().parents[1])
+GO_MODULE_CACHE_ROOT = f"{USER_HOME}/go"
 
 RUNNER_SCRATCH_BYTES = 64 * 1024 * 1024
 RUNNER_HOME_BYTES = 256 * 1024 * 1024
@@ -109,7 +110,7 @@ _LEARNER_HOME_MOUNTS = (
 )
 
 _RUNNER_HOME_MOUNTS = (
-    _HomeMount("--ro-bind-try", f"{USER_HOME}/go",
+    _HomeMount("--ro-bind", GO_MODULE_CACHE_ROOT,
                "warm read-only Go module cache for offline single-file runs"),
 )
 

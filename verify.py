@@ -3909,6 +3909,7 @@ with TestClient(app) as c:
           set(_sb_mounts(_sb_runner, "--ro-bind")) == {
               ("/", "/"),
               ("/home/aina/.local/bin", "/home/aina/.local/bin"),
+              ("/home/aina/go", "/home/aina/go"),
               (_sb_bundle, _sb_bundle),
           }
           and not _sb_mounts(_sb_runner, "--bind")
@@ -4597,7 +4598,7 @@ with TestClient(app) as c:
            f"{_sandbox.RUNNER_WORKDIR}/main.py"]
               in [_f3_runner_argv[i:i + 5] for i in range(len(_f3_runner_argv) - 4)]
           and ("/home/aina/go", "/home/aina/go")
-              in _sb_mounts(_f3_runner_argv, "--ro-bind-try")
+              in _sb_mounts(_f3_runner_argv, "--ro-bind")
           and "/home/aina/.cache/go-build" not in _f3_runner_argv
           and _sb_mounts(_f3_runner_argv, "--ro-bind")[-1]
               == (_f3_bundle, _f3_bundle)
@@ -4737,12 +4738,14 @@ with TestClient(app) as c:
     _runner._cached_runner_health.cache_clear()
     with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
             _sandbox_mock.patch.object(_runner, "_probe_ro_bind_data", return_value="") as _roprobe, \
+            _sandbox_mock.patch.object(_runner, "_probe_go_module_cache", return_value="") as _cacheprobe, \
             _sandbox_mock.patch.object(_runner, "_probe_result", return_value="") as _allprobe:
         _f3_health_a = _runner.runner_health()
         _f3_health_b = _runner.runner_health()
     check("F3 health probes bwrap/ro-bind-data/scope/tools once per process",
           _f3_health_a.available and _f3_health_b.available
-          and _roprobe.call_count == 1 and _allprobe.call_count == 3)
+          and _roprobe.call_count == 1 and _cacheprobe.call_count == 1
+          and _allprobe.call_count == 3)
     _runner._cached_runner_health.cache_clear()
     with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
             _sandbox_mock.patch.object(_runner, "_probe_ro_bind_data", return_value="unsupported"):
@@ -4751,8 +4754,20 @@ with TestClient(app) as c:
             _f3_health_refusal = False
         except _runner.RunnerUnavailableError as exc:
             _f3_health_refusal = "unsupported" in str(exc)
+    _runner._cached_runner_health.cache_clear()
+    with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
+            _sandbox_mock.patch.object(_runner, "_probe_ro_bind_data", return_value=""), \
+            _sandbox_mock.patch.object(_runner, "_probe_result", return_value=""), \
+            _sandbox_mock.patch.object(
+                _runner, "_probe_go_module_cache", return_value="module cache absent"
+            ):
+        try:
+            _runner.require_runner_health()
+            _f3_cache_refusal = False
+        except _runner.RunnerUnavailableError as exc:
+            _f3_cache_refusal = "module cache absent" in str(exc)
     check("F3 unhealthy runner refuses visibly with no degraded spawn",
-          _f3_health_refusal)
+          _f3_health_refusal and _f3_cache_refusal)
     _runner._cached_runner_health.cache_clear()
 
     class _F3Process:

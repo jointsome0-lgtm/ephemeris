@@ -249,6 +249,8 @@ rejects writes for undeclared `question_id`s (D4/D5).
   key into a registry of fixed command templates compiled into the app
   (F3). Absent ⇒ save-only editor, no Run affordance. Unknown but
   grammar-valid ⇒ Run disabled with a visible `unknown-runner` finding; the
+  editor still works. A known runner whose accepted suffix does not match
+  `file` ⇒ Run disabled with a visible `incompatible-runner` finding; the
   editor still works. Violating the grammar ⇒ the field is dropped
   (`invalid-value`), leaving the same save-only editor as absent.
 
@@ -529,6 +531,7 @@ outcome). This is why one fixture can require several codes at once.
 | `dangling-ref`       | degraded  | question/block references a `page_id` absent from the **post-drop valid page set** (a raw-declared but dropped page counts as missing); item dropped |
 | `unknown-profile`    | degraded  | §5; forced `legacy-display` |
 | `unknown-runner`     | degraded  | §4.4; Run disabled, editor stays |
+| `incompatible-runner` | degraded | §4.4; known runner does not accept the block file suffix; Run disabled, editor stays |
 | `unknown-kind`       | degraded  | §4.4; `blocks[].kind` not recognized; block dropped |
 | `overlapping-roots`  | degraded  | §7; the nested root is dropped |
 | `invalid-ref`        | degraded  | malformed `path`/`concepts` entry, or orphan/non-integer/out-of-range `step`; the ref/step is dropped |
