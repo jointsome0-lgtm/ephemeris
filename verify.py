@@ -1714,6 +1714,37 @@ process.stdout.write(JSON.stringify([
           and _at_rec_text == _at_proj.read_text(encoding="utf-8")
           and len(_at_rec_text.splitlines()) == len(_at_rows()))
 
+    # A public reconcile must never publish caller-local uncommitted rows.
+    # Rejecting an active transaction leaves the prior projection untouched;
+    # after rollback, an ordinary committed snapshot still reconciles.
+    _at_before_uncommitted = _at_proj.read_bytes()
+    _at_conn = get_conn()
+    try:
+        _at_conn.execute("BEGIN")
+        _at_conn.execute(
+            "INSERT INTO lesson_attempts "
+            "(attempt_id, event_uuid, lesson_id, lesson_uid, "
+            " idempotency_key, page_id, question_id, page_rev, "
+            " answer, stale, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(_uuid4()), str(_uuid4()), _at_id, _at["uid"],
+                "vera-uncommitted-1", _at_pg, "q_atpredict1", _at_rev,
+                "Vera Example: this row rolls back.", 0,
+                "2031-01-01T00:00:00.000000+00:00",
+            ),
+        )
+        _at_uncommitted_refused = not attempts_svc.reconcile_projection(
+            _at_conn, _at)
+        _at_conn.rollback()
+        _at_committed_reconcile = attempts_svc.reconcile_projection(
+            _at_conn, _at)
+    finally:
+        _at_conn.close()
+    check("reconcile refuses an active transaction's uncommitted authority",
+          _at_uncommitted_refused and _at_committed_reconcile
+          and _at_proj.read_bytes() == _at_before_uncommitted)
+
     # a short write(2) must complete the line, never report `projected` over
     # a torn tail (PR-57 round 1): force the first os.write to land half
     from unittest import mock as _mock
@@ -1819,6 +1850,40 @@ process.stdout.write(JSON.stringify([
           _at_content_ok
           and _at_proj.read_text(encoding="utf-8") == "".join(_at_good))
 
+    # A same-inode rewrite between the append descriptor's final fstat and
+    # the name seal must not be blessed by the sidecar. The full seal mismatch
+    # forces a rebuild from SQLite.
+    attempts_svc._reset_rate_limit()
+    _at_real_lstat = _os.lstat
+    _at_same_inode = {"mutated": False}
+
+    def _at_mutate_before_name_seal(path, *args, **kwargs):
+        if Path(path) == _at_proj and not _at_same_inode["mutated"]:
+            with _at_proj.open("r+b") as fh:
+                original = fh.read(1)
+                fh.seek(0)
+                fh.write(b"!" if original != b"!" else b"?")
+                fh.flush()
+                _os.fsync(fh.fileno())
+            _at_same_inode["mutated"] = True
+        return _at_real_lstat(path, *args, **kwargs)
+
+    with _mock.patch.object(
+            attempts_svc.os, "lstat", _at_mutate_before_name_seal):
+        _at_same_inode_response = c.post(_at_url, json=dict(
+            _at_body, idempotency_key="vera-same-inode-1",
+            answer="Vera Example: detect the same-inode rewrite."))
+    _at_same_inode_ids = [
+        json.loads(line)["attempt_id"]
+        for line in _at_proj.read_text(encoding="utf-8").splitlines()
+    ]
+    check("post-append same-inode rewrite cannot be sealed as projected",
+          _at_same_inode["mutated"]
+          and _at_same_inode_response.json().get("projection") == "projected"
+          and _at_same_inode_ids == [
+              row["attempt_id"] for row in _at_rows()
+          ])
+
     # close(2) surfacing a delayed write error (PR-57 round 3): target the
     # append descriptor specifically now that the cursor sidecar also opens
     # bounded descriptors. The repair rebuild covers the durable row.
@@ -1860,6 +1925,38 @@ process.stdout.write(JSON.stringify([
               "projection_last": json.loads(_at_lines5[-1])["attempt_id"],
               "authority_last": _at_last3["attempt_id"],
           }))
+
+    # Malformed private state is repair input, never a post-commit 500. A
+    # recursively nested document stays under the fixed 4-KiB read cap but
+    # exceeds Python's JSON nesting depth.
+    _at_state_path, _ = attempts_svc._state_paths(_at)
+    _at_state_path.write_bytes(b"[" * 1100 + b"]" * 1100)
+    _at_recursive_state = c.post(_at_url, json=dict(
+        _at_body, idempotency_key="vera-recursive-state-1",
+        answer="Vera Example: malformed cursor heals."))
+    check("recursive projection cursor state falls back to rebuild",
+          _at_recursive_state.status_code == 200
+          and _at_recursive_state.json().get("projection") == "projected"
+          and len(_at_proj.read_text(encoding="utf-8").splitlines())
+          == len(_at_rows()))
+
+    # A slow sibling projector never holds the HTTP request indefinitely:
+    # lock contention returns pending after the authority commit, then the
+    # next append heals both committed rows under the acquired uid lock.
+    attempts_svc._reset_rate_limit()
+    with attempts_svc._projection_file_lock(_at):
+        _at_busy = c.post(_at_url, json=dict(
+            _at_body, idempotency_key="vera-busy-lock-1",
+            answer="Vera Example: projection lock is busy."))
+    _at_busy_heal = c.post(_at_url, json=dict(
+        _at_body, idempotency_key="vera-busy-heal-1",
+        answer="Vera Example: projection lock is free."))
+    check("busy projection lock returns pending and the next append heals",
+          _at_busy.status_code == 200
+          and _at_busy.json().get("projection") == "pending"
+          and _at_busy_heal.json().get("projection") == "projected"
+          and len(_at_proj.read_text(encoding="utf-8").splitlines())
+          == len(_at_rows()))
 
     # §6.3 replay wins over refusals even mid-race (PR-57 round 2): a retry
     # whose original is still in flight sees the key uncommitted at the early
@@ -2011,6 +2108,10 @@ process.stdout.write(JSON.stringify([
         class _AtStreamingConnection:
             def __init__(self, conn_):
                 self._conn = conn_
+
+            @property
+            def in_transaction(self):
+                return self._conn.in_transaction
 
             def execute(self, *args, **kwargs):
                 return _AtNoFetchAllCursor(
@@ -2198,10 +2299,14 @@ process.stdout.write(JSON.stringify([
             _at_race_b = threading.Thread(
                 target=_at_race_project, args=("b", _at_growth_late))
             _at_race_b.start()
-            _at_b_waited = _at_race_b.is_alive()
+            _at_race_b.join(5)
+            _at_b_returned_pending = (
+                not _at_race_b.is_alive()
+                and _at_race_results.get("b") is False
+            )
             _at_race_release.set()
             _at_race_a.join(10)
-            _at_race_b.join(10)
+        _at_race_project("c", _at_growth_late)
         _at_growth_authority_ids = [
             row_["attempt_id"] for row_ in _at_growth_conn.execute(
                 "SELECT attempt_id FROM lesson_attempts WHERE lesson_id = ? "
@@ -2214,9 +2319,9 @@ process.stdout.write(JSON.stringify([
                 json.loads(line)["attempt_id"] for line in _at_growth_fh
             ]
         check("private uid lock prevents the round-10 stale-rebuild race",
-              _at_snapshot_ok and _at_b_waited
+              _at_snapshot_ok and _at_b_returned_pending
               and not _at_race_a.is_alive() and not _at_race_b.is_alive()
-              and _at_race_results == {"a": True, "b": True}
+              and _at_race_results == {"b": False, "a": True, "c": True}
               and _at_growth_projection_ids == _at_growth_authority_ids)
     finally:
         _at_growth_conn.close()

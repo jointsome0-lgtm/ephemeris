@@ -25,9 +25,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   #58 replaces the attempt projection's database-wide writer-lock section and
   full-prefix append verification with private lesson-UID file locking, a
   durable private cursor/seal, bounded-row fast append, streaming reconcile,
-  schema-v13 cursor indexing, and growth/concurrency/race regressions; it does
-  not change attempt authority, HTTP responses, refusal ordering, rate-limit
-  semantics, or the `attempts.jsonl` line format.
+  schema-v13 cursor indexing, and growth/concurrency/race regressions. The
+  first bot-findings round makes busy locks return projection-pending, refuses
+  reconcile from active transactions, treats recursively malformed state as
+  repair input, and compares the full post-append descriptor/name seal. It
+  does not change attempt authority, HTTP responses, refusal ordering,
+  rate-limit semantics, or the `attempts.jsonl` line format.
 
 - [ ] 2026-07-23 — commits after `c125534` on
   `fix/59-attempt-body-stream-cap`; LANDED via merge commit `06e4674`, whose

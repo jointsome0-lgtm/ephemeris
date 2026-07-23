@@ -306,7 +306,7 @@ def _projection_file_lock(lesson: dict):
         st = os.fstat(fd)
         if not stat_module.S_ISREG(st.st_mode) or st.st_nlink != 1:
             raise OSError("unsafe projection lock file")
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         yield
     finally:
         try:
@@ -382,7 +382,7 @@ def _read_state(lesson: dict) -> dict | None:
         if len(raw) != st.st_size:
             return None
         state = json.loads(raw)
-    except (OSError, UnicodeDecodeError, ValueError):
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
         return None
     finally:
         os.close(fd)
@@ -559,6 +559,8 @@ def reconcile_projection(conn: sqlite3.Connection, lesson: dict) -> bool:
     """Public reconcile entry point (ops/tests). Returns True when the
     projection now matches the authority, False on filesystem failure or
     unavailable private cross-process lock."""
+    if conn.in_transaction:
+        return False
     with _bundle_lock(lesson["slug"]):
         try:
             with _projection_file_lock(lesson):
@@ -576,6 +578,8 @@ def _project_attempt(conn: sqlite3.Connection, lesson: dict, row: dict) -> bool:
     Every repair path holds the same private per-lesson flock while streaming
     its authority snapshot and publishing both file and cursor, preserving the
     PR-57 round-10 stale-rebuild exclusion without a SQLite writer lock."""
+    if conn.in_transaction:
+        return False
     try:
         with _projection_file_lock(lesson):
             return _project_attempt_locked(conn, lesson, row)
@@ -616,12 +620,7 @@ def _project_attempt_locked(
                 os.close(fd)
                 fd = -1
                 name_st = os.lstat(_projection_path(lesson))
-                if (
-                    not stat_module.S_ISREG(name_st.st_mode)
-                    or name_st.st_nlink != 1
-                    or (name_st.st_dev, name_st.st_ino)
-                    != (after.st_dev, after.st_ino)
-                ):
+                if not _seal_matches(name_st, _file_seal(after)):
                     raise OSError("projection name changed during append")
                 _write_state(lesson, {
                     "v": PROJECTION_STATE_VERSION,
