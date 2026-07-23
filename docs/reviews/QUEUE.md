@@ -19,6 +19,25 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
+- [ ] 2026-07-23 — commits after `13cab1b` on
+  `fix/58-attempts-projection-cost` — `app/services/attempts.py`, `app/db.py`,
+  `verify.py`, `docs/lesson-attempts-api.md`, `docs/reviews/QUEUE.md` — issue
+  #58 replaces the attempt projection's database-wide writer-lock section and
+  full-prefix append verification with private lesson-UID file locking, a
+  durable private cursor/seal, bounded-row fast append, streaming reconcile,
+  schema-v13 cursor indexing, and growth/concurrency/race regressions. The
+  first bot-findings round makes busy locks return projection-pending, refuses
+  reconcile from active transactions, treats recursively malformed state as
+  repair input, and compares the full post-append descriptor/name seal. It
+  second round keeps the rendered temp descriptor open across rebuild
+  publication and compares its stable render fields plus full published-name
+  seal before advancing the cursor. The third round validates cursor-id and
+  sort-tail authority anchors, binds append state to the immediate post-write
+  descriptor plus a bounded tail read, detects mtime-restored rebuild
+  rewrites, and never retries a failed close. It does not change attempt
+  authority, HTTP responses, refusal ordering, rate-limit semantics, or the
+  `attempts.jsonl` line format.
+
 - [ ] 2026-07-23 — commits after `c125534` on
   `fix/59-attempt-body-stream-cap`; LANDED via merge commit `06e4674`, whose
   tree is byte-identical to reviewed branch head `9d9b8ee` — `app/main.py`,

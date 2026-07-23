@@ -109,9 +109,23 @@ port-level result codes (the slot reserved in lesson-bridge-abi.md §3).
    identity via `events.uuid` (B4). `created_at` is UTC ISO-8601 and is the
    same string the projection echoes.
 2. One §6.2 line appended to the bundle's `attempts.jsonl` under a
-   per-bundle lock (O_APPEND + fsync, `O_NOFOLLOW`, regular files only).
-   When the file is missing, torn (no trailing newline), behind the table,
-   or replaced by a special file, the append falls back to an idempotent
-   full rebuild from SQLite (ascending `created_at`, ties by `attempt_id`,
-   atomic replace) — `app/services/attempts.py:reconcile_projection` is the
-   same rebuild as a public entry point.
+   private per-lesson UID lock (O_APPEND + fsync, `O_NOFOLLOW`, singly linked
+   regular files only). A small durable cursor/seal under the configured
+   private data root lets the fast path select at most the next two authority
+   rows, validate the cursor-id and sort-tail authority anchors, read back at
+   most the one appended line, and render at most one new line; projection
+   filesystem work holds no SQLite writer transaction. The UID lock, not
+   SQLite's database-wide writer lock, provides cross-process projection
+   exclusion across cursor check, append/rebuild, and publication. A busy UID
+   lock returns `projection: pending` rather than blocking the request.
+3. When the file or cursor is missing, torn, behind the table, reordered, or
+   replaced by a special/multi-link file, the append falls back to an
+   idempotent full rebuild from SQLite (ascending `created_at`, ties by
+   `attempt_id`, atomic replace). Rebuild streams rows into the replacement
+   file rather than retaining history in memory. A row committed after the
+   rebuild's read snapshot cannot be projected by another process while the
+   UID lock is held: a competing projector reports pending, and the next
+   successful lock holder observes the row beyond the durable cursor and
+   advances the file. The PR #57 round-10 stale-rebuild race therefore remains
+   structurally excluded. `app/services/attempts.py:reconcile_projection` is
+   the same rebuild as a public entry point.
