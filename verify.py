@@ -1717,52 +1717,42 @@ process.stdout.write(JSON.stringify([
     # a short write(2) must complete the line, never report `projected` over
     # a torn tail (PR-57 round 1): force the first os.write to land half
     from unittest import mock as _mock
-    _at_conn = get_conn()
-    try:
-        _at_last = _at_rows()[-1]
-        attempts_svc.reconcile_projection(_at_conn, _at)  # consistent baseline
-        _at_keep = _at_proj.read_text(encoding="utf-8").splitlines(keepends=True)[:-1]
-        _at_proj.write_text("".join(_at_keep), encoding="utf-8")  # expect 1 append
-        _at_real_write = _os.write
-        _at_split = {"done": False}
+    _at_real_write = _os.write
+    _at_split = {"done": False}
 
-        def _at_short_write(fd, data):
-            if not _at_split["done"]:
-                _at_split["done"] = True
-                return _at_real_write(fd, bytes(data)[: max(1, len(bytes(data)) // 2)])
-            return _at_real_write(fd, data)
+    def _at_short_write(fd, data):
+        if not _at_split["done"]:
+            _at_split["done"] = True
+            return _at_real_write(fd, bytes(data)[: max(1, len(bytes(data)) // 2)])
+        return _at_real_write(fd, data)
 
-        with _mock.patch("os.write", side_effect=_at_short_write):
-            _at_short_ok = attempts_svc._project_attempt(_at_conn, _at, _at_last)
-    finally:
-        _at_conn.close()
+    with _mock.patch("os.write", side_effect=_at_short_write):
+        _at_short = c.post(_at_url, json=dict(
+            _at_body, idempotency_key="vera-short-1",
+            answer="Vera Example: complete a short append."))
     _at_lines3 = _at_proj.read_text(encoding="utf-8").splitlines()
+    _at_last = _at_rows()[-1]
     check("short write(2) is completed by the append loop, file stays whole",
-          _at_short_ok and _at_split["done"]
+          _at_short.json().get("projection") == "projected" and _at_split["done"]
           and len(_at_lines3) == len(_at_rows())
           and json.loads(_at_lines3[-1])["attempt_id"] == _at_last["attempt_id"])
 
     # §6.1 order guard (PR-57 round 2): a row that does not sort strictly
     # after the projection tail is never blind-appended — the fast path
     # detects the disorder and rebuilds in authority order instead
-    _at_conn = get_conn()
-    try:
-        attempts_svc.reconcile_projection(_at_conn, _at)
-        _at_keep2 = _at_proj.read_text(
-            encoding="utf-8").splitlines(keepends=True)[:-1]
-        _at_proj.write_text("".join(_at_keep2), encoding="utf-8")
-        _at_backdated = dict(_at_rows()[-1],
-                             created_at="2000-01-01T00:00:00+00:00")
-        _at_guard_ok = attempts_svc._project_attempt(_at_conn, _at, _at_backdated)
-    finally:
-        _at_conn.close()
+    with _mock.patch.object(
+            attempts_svc, "_utc_now_iso",
+            return_value="2000-01-01T00:00:00.000000+00:00"):
+        _at_backdated = c.post(_at_url, json=dict(
+            _at_body, idempotency_key="vera-backdated-1",
+            answer="Vera Example: clock stepped backwards."))
     _at_lines4 = _at_proj.read_text(encoding="utf-8").splitlines()
     check("out-of-order append is caught: projection rebuilt in §6.1 order",
-          _at_guard_ok
+          _at_backdated.json().get("projection") == "projected"
           and [json.loads(l)["attempt_id"] for l in _at_lines4]
           == [r["attempt_id"] for r in _at_rows()]
-          and all(json.loads(l)["created_at"] != "2000-01-01T00:00:00+00:00"
-                  for l in _at_lines4))
+          and json.loads(_at_lines4[0])["created_at"]
+          == "2000-01-01T00:00:00.000000+00:00")
 
     # a planted DIRECTORY at the projection name is a deterministic §6.1
     # collision (PR-57 round 10): empty dirs are removed, non-empty moved
@@ -1829,34 +1819,47 @@ process.stdout.write(JSON.stringify([
           _at_content_ok
           and _at_proj.read_text(encoding="utf-8") == "".join(_at_good))
 
-    # close(2) surfacing a delayed write error (PR-57 round 3): the append
-    # fd's close raises after a successful fsync — the projection falls back
-    # to the rebuild instead of failing the already-durable attempt
-    _at_conn = get_conn()
-    try:
-        _at_last3 = _at_rows()[-1]
-        attempts_svc.reconcile_projection(_at_conn, _at)
-        _at_keep3 = _at_proj.read_text(
-            encoding="utf-8").splitlines(keepends=True)[:-1]
-        _at_proj.write_text("".join(_at_keep3), encoding="utf-8")
-        _at_real_close = _os.close
-        _at_close_state = {"raised": False}
+    # close(2) surfacing a delayed write error (PR-57 round 3): target the
+    # append descriptor specifically now that the cursor sidecar also opens
+    # bounded descriptors. The repair rebuild covers the durable row.
+    attempts_svc._reset_rate_limit()
+    _at_real_close = _os.close
+    _at_real_projection_fd = attempts_svc._projection_fd
+    _at_close_state = {"raised": False, "append_fds": set()}
 
-        def _at_bad_close(fd):
-            _at_real_close(fd)
-            if not _at_close_state["raised"]:
-                _at_close_state["raised"] = True
-                raise OSError(28, "No space left on device")
+    def _at_tracked_projection_fd(lesson_, flags):
+        fd = _at_real_projection_fd(lesson_, flags)
+        if flags & _os.O_APPEND:
+            _at_close_state["append_fds"].add(fd)
+        return fd
 
-        with _mock.patch("os.close", side_effect=_at_bad_close):
-            _at_close_ok = attempts_svc._project_attempt(_at_conn, _at, _at_last3)
-    finally:
-        _at_conn.close()
+    def _at_bad_close(fd):
+        _at_real_close(fd)
+        if fd in _at_close_state["append_fds"] and not _at_close_state["raised"]:
+            _at_close_state["raised"] = True
+            raise OSError(28, "No space left on device")
+
+    with _mock.patch.object(
+            attempts_svc, "_projection_fd", _at_tracked_projection_fd), \
+            _mock.patch("os.close", side_effect=_at_bad_close):
+        _at_close = c.post(_at_url, json=dict(
+            _at_body, idempotency_key="vera-close-1",
+            answer="Vera Example: delayed close failure."))
     _at_lines5 = _at_proj.read_text(encoding="utf-8").splitlines()
+    _at_last3 = _at_rows()[-1]
     check("close(2) failure never fails the attempt: rebuild covers the append",
-          _at_close_ok and _at_close_state["raised"]
+          _at_close.json().get("projection") == "projected"
+          and _at_close_state["raised"]
           and len(_at_lines5) == len(_at_rows())
-          and json.loads(_at_lines5[-1])["attempt_id"] == _at_last3["attempt_id"])
+          and json.loads(_at_lines5[-1])["attempt_id"] == _at_last3["attempt_id"],
+          extra=str({
+              "response": _at_close.json(),
+              "raised": _at_close_state["raised"],
+              "projection_lines": len(_at_lines5),
+              "authority_rows": len(_at_rows()),
+              "projection_last": json.loads(_at_lines5[-1])["attempt_id"],
+              "authority_last": _at_last3["attempt_id"],
+          }))
 
     # §6.3 replay wins over refusals even mid-race (PR-57 round 2): a retry
     # whose original is still in flight sees the key uncommitted at the early
@@ -1956,6 +1959,267 @@ process.stdout.write(JSON.stringify([
     check("replay bypasses an exhausted window: duplicate, not 429",
           _at_rl_replay.status_code == 200
           and _at_rl_replay.json()["result"] == "duplicate")
+
+    # Issue #58 growth proof: build a separate, invented 200-row authority
+    # whose answers reproduce the review's multi-megabyte historical prefix.
+    # Reconcile must iterate (a fetchall-capable cursor is deliberately denied),
+    # while one following append may read only the fixed-size private state and
+    # render only its one new line.
+    _at_growth_conn = get_conn()
+    try:
+        _at_growth_id = lessons_svc.create_lesson(
+            _at_growth_conn, "Projection Growth Demo")
+        _at_growth = lessons_svc.get_lesson(
+            _at_growth_conn, _at_growth_id)
+        _at_growth_rows = []
+        for _grow_i in range(200):
+            _grow_attempt = str(_uuid4())
+            _grow_created = (
+                f"2030-01-01T00:{_grow_i // 60:02d}:"
+                f"{_grow_i % 60:02d}.000000+00:00"
+            )
+            _at_growth_rows.append((
+                _grow_attempt, str(_uuid4()), _at_growth_id,
+                _at_growth["uid"], f"growth-{_grow_i}",
+                "pg_growth0001", "q_growth0001",
+                "sha256:" + "0" * 64, "x" * (32 * 1024), 0,
+                _grow_created,
+            ))
+        with _at_growth_conn:
+            _at_growth_conn.executemany(
+                "INSERT INTO lesson_attempts "
+                "(attempt_id, event_uuid, lesson_id, lesson_uid, "
+                " idempotency_key, page_id, question_id, page_rev, "
+                " answer, stale, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                _at_growth_rows,
+            )
+
+        class _AtNoFetchAllCursor:
+            def __init__(self, cursor):
+                self._cursor = cursor
+
+            def __iter__(self):
+                return iter(self._cursor)
+
+            def close(self):
+                self._cursor.close()
+
+            def fetchall(self):
+                raise AssertionError("reconcile must stream, not fetchall")
+
+        class _AtStreamingConnection:
+            def __init__(self, conn_):
+                self._conn = conn_
+
+            def execute(self, *args, **kwargs):
+                return _AtNoFetchAllCursor(
+                    self._conn.execute(*args, **kwargs))
+
+        _at_growth_streamed = attempts_svc.reconcile_projection(
+            _AtStreamingConnection(_at_growth_conn), _at_growth)
+        _at_growth_proj = (
+            Path(lessons_svc.LESSONS_DIR)
+            / _at_growth["slug"] / attempts_svc.PROJECTION_NAME
+        )
+
+        def _at_growth_insert(index, created_at):
+            attempt_id = str(_uuid4())
+            event_uuid = str(_uuid4())
+            with _at_growth_conn:
+                cursor = _at_growth_conn.execute(
+                    "INSERT INTO lesson_attempts "
+                    "(attempt_id, event_uuid, lesson_id, lesson_uid, "
+                    " idempotency_key, page_id, question_id, page_rev, "
+                    " answer, stale, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        attempt_id, event_uuid, _at_growth_id,
+                        _at_growth["uid"], f"growth-{index}",
+                        "pg_growth0001", "q_growth0001",
+                        "sha256:" + "0" * 64,
+                        f"Vera Example growth tail {index}", 0, created_at,
+                    ),
+                )
+            return dict(_at_growth_conn.execute(
+                "SELECT * FROM lesson_attempts WHERE id = ?",
+                (cursor.lastrowid,),
+            ).fetchone())
+
+        _at_growth_next = _at_growth_insert(
+            200, "2030-01-01T00:04:00.000000+00:00")
+        _at_real_read = _os.read
+        _at_real_pread = _os.pread
+        _at_real_projection_line = attempts_svc._projection_line
+        _at_growth_cost = {
+            "read_bytes": 0, "pread_bytes": 0,
+            "render_calls": 0, "render_bytes": 0,
+        }
+
+        def _at_count_read(fd, size):
+            data = _at_real_read(fd, size)
+            _at_growth_cost["read_bytes"] += len(data)
+            return data
+
+        def _at_count_pread(fd, size, offset):
+            data = _at_real_pread(fd, size, offset)
+            _at_growth_cost["pread_bytes"] += len(data)
+            return data
+
+        def _at_count_projection_line(row):
+            line = _at_real_projection_line(row)
+            _at_growth_cost["render_calls"] += 1
+            _at_growth_cost["render_bytes"] += len(line.encode("utf-8"))
+            return line
+
+        with _mock.patch.object(
+                attempts_svc.os, "read", side_effect=_at_count_read), \
+                _mock.patch.object(
+                    attempts_svc.os, "pread", side_effect=_at_count_pread), \
+                _mock.patch.object(
+                    attempts_svc, "_projection_line",
+                    side_effect=_at_count_projection_line):
+            _at_growth_fast = attempts_svc._project_attempt(
+                _at_growth_conn, _at_growth, _at_growth_next)
+        check("projection reconcile streams authority rows in bounded memory",
+              _at_growth_streamed
+              and _at_growth_proj.stat().st_size > 6 * 1024 * 1024)
+        check("one projection append has history-independent reads and rendering",
+              _at_growth_fast
+              and _at_growth_cost["read_bytes"]
+              <= attempts_svc.PROJECTION_STATE_MAX_BYTES
+              and _at_growth_cost["pread_bytes"] == 0
+              and _at_growth_cost["render_calls"] == 1
+              and _at_growth_cost["render_bytes"]
+              <= attempts_svc.MAX_LINE_BYTES,
+              extra=str(_at_growth_cost))
+
+        # Hold the per-lesson projection lock at the actual append write. A
+        # second SQLite connection must still commit an unrelated row before
+        # projection is released; BEGIN IMMEDIATE would make this impossible.
+        _at_growth_concurrent = _at_growth_insert(
+            201, "2030-01-01T00:04:01.000000+00:00")
+        _at_concurrent_line = _at_real_projection_line(
+            _at_growth_concurrent).encode("utf-8")
+        _at_real_write_all = attempts_svc._write_all
+        _at_projection_held = threading.Event()
+        _at_projection_release = threading.Event()
+        _at_projection_result = {}
+
+        def _at_block_projection_write(fd, data):
+            if (
+                bytes(data) == _at_concurrent_line
+                and not _at_projection_held.is_set()
+            ):
+                _at_projection_held.set()
+                if not _at_projection_release.wait(10):
+                    raise OSError("projection writer test timed out")
+            return _at_real_write_all(fd, data)
+
+        def _at_project_in_thread():
+            conn_ = get_conn()
+            try:
+                _at_projection_result["ok"] = attempts_svc._project_attempt(
+                    conn_, _at_growth, _at_growth_concurrent)
+            finally:
+                conn_.close()
+
+        _at_unrelated_ok = False
+        with _mock.patch.object(
+                attempts_svc, "_write_all", _at_block_projection_write):
+            _at_projection_thread = threading.Thread(
+                target=_at_project_in_thread)
+            _at_projection_thread.start()
+            _at_held_ok = _at_projection_held.wait(10)
+            try:
+                _at_unrelated_conn = get_conn()
+                try:
+                    _at_unrelated_conn.execute("PRAGMA busy_timeout = 200")
+                    with _at_unrelated_conn:
+                        _at_unrelated_conn.execute(
+                            "INSERT INTO routine_items "
+                            "(title, group_name, active, sort_order, created_at) "
+                            "VALUES (?, ?, 1, 0, ?)",
+                            (
+                                "Projection Lock Probe",
+                                "Invented Verification",
+                                "2030-01-01T00:00:00+00:00",
+                            ),
+                        )
+                    _at_unrelated_ok = True
+                except sqlite3.OperationalError:
+                    _at_unrelated_ok = False
+                finally:
+                    _at_unrelated_conn.close()
+            finally:
+                _at_projection_release.set()
+            _at_projection_thread.join(10)
+        check("projection append does not hold SQLite's global writer lock",
+              _at_held_ok and _at_unrelated_ok
+              and not _at_projection_thread.is_alive()
+              and _at_projection_result.get("ok") is True)
+
+        # Reproduce the round-10 interleaving: projector A begins a rebuild
+        # snapshot, row B commits while A is paused, then projector B waits on
+        # the private uid lock. A may publish its older snapshot, but B can only
+        # run afterwards and must advance the durable cursor/file through row B.
+        _at_growth_proj.write_text("broken projection\n", encoding="utf-8")
+        _at_race_snapshot = threading.Event()
+        _at_race_release = threading.Event()
+        _at_race_results = {}
+        _at_race_once = {"paused": False}
+
+        def _at_pause_rebuild_line(row):
+            if not _at_race_once["paused"]:
+                _at_race_once["paused"] = True
+                _at_race_snapshot.set()
+                if not _at_race_release.wait(10):
+                    raise OSError("stale-rebuild test timed out")
+            return _at_real_projection_line(row)
+
+        def _at_race_project(name, row):
+            conn_ = get_conn()
+            try:
+                _at_race_results[name] = attempts_svc._project_attempt(
+                    conn_, _at_growth, row)
+            finally:
+                conn_.close()
+
+        with _mock.patch.object(
+                attempts_svc, "_projection_line", _at_pause_rebuild_line):
+            _at_race_a = threading.Thread(
+                target=_at_race_project,
+                args=("a", _at_growth_concurrent),
+            )
+            _at_race_a.start()
+            _at_snapshot_ok = _at_race_snapshot.wait(10)
+            _at_growth_late = _at_growth_insert(
+                202, "2030-01-01T00:04:02.000000+00:00")
+            _at_race_b = threading.Thread(
+                target=_at_race_project, args=("b", _at_growth_late))
+            _at_race_b.start()
+            _at_b_waited = _at_race_b.is_alive()
+            _at_race_release.set()
+            _at_race_a.join(10)
+            _at_race_b.join(10)
+        _at_growth_authority_ids = [
+            row_["attempt_id"] for row_ in _at_growth_conn.execute(
+                "SELECT attempt_id FROM lesson_attempts WHERE lesson_id = ? "
+                "ORDER BY created_at, attempt_id",
+                (_at_growth_id,),
+            )
+        ]
+        with _at_growth_proj.open(encoding="utf-8") as _at_growth_fh:
+            _at_growth_projection_ids = [
+                json.loads(line)["attempt_id"] for line in _at_growth_fh
+            ]
+        check("private uid lock prevents the round-10 stale-rebuild race",
+              _at_snapshot_ok and _at_b_waited
+              and not _at_race_a.is_alive() and not _at_race_b.is_alive()
+              and _at_race_results == {"a": True, "b": True}
+              and _at_growth_projection_ids == _at_growth_authority_ids)
+    finally:
+        _at_growth_conn.close()
 
     # ---- F1: pure artifact reads + conflict-safe editor backend ------------
     from app.services import artifacts as artifacts_svc
@@ -3924,6 +4188,11 @@ process.stdout.write(JSON.stringify([
 
         check("schema migrated to current version",
               cconn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION)
+        check("v13 installs the bounded attempt projection cursor index",
+              "idx_attempts_lesson_cursor" in {
+                  row["name"] for row in cconn.execute(
+                      "PRAGMA index_list(lesson_attempts)")
+              })
         oid = ce.create_event(cconn, "Orbit Drill", start_date="2027-04-07", freq="weekly",
                               byweekday="1010100", start_time="09:10", end_time="09:55")
         sid = ce.create_event(cconn, "Signal Lab", start_date="2027-04-07", freq="weekly",

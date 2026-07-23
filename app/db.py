@@ -124,7 +124,7 @@ def get_conn() -> sqlite3.Connection:
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -523,6 +523,20 @@ def _migrate_to_12(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA_V12)
 
 
+# v13 — bounded lesson-attempt projection cursor lookup (issue #58): the
+# app-private durable sidecar advances by the authority row id. This covering
+# prefix lets one projection append ask for at most the next two rows without
+# scanning attempts belonging to other lessons or historical answer bytes.
+_SCHEMA_V13 = """
+CREATE INDEX IF NOT EXISTS idx_attempts_lesson_cursor
+  ON lesson_attempts(lesson_id, id);
+"""
+
+
+def _migrate_to_13(conn: sqlite3.Connection) -> None:
+    conn.executescript(_SCHEMA_V13)
+
+
 # Ordered, idempotent steps. A schema change must NEVER require deleting the
 # ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
 _MIGRATIONS = [
@@ -538,6 +552,7 @@ _MIGRATIONS = [
     (10, _migrate_to_10),
     (11, _migrate_to_11),
     (12, _migrate_to_12),
+    (13, _migrate_to_13),
 ]
 
 

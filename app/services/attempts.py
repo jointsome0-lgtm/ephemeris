@@ -23,22 +23,28 @@ save-only; a future agent subscribes to `lesson_attempt` events instead).
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import sqlite3
 import stat as stat_module
+import tempfile
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from ..db import append_event
+from ..db import DATA_DIR, append_event
 from . import bundle_schema, lessons
 
 PROJECTION_NAME = "attempts.jsonl"
+PROJECTION_STATE_DIR = DATA_DIR / "attempt-projections"
+PROJECTION_STATE_VERSION = 1
+PROJECTION_STATE_MAX_BYTES = 4096
 RECORD_KIND = "attempt"
 RECORD_VERSION = 1
 
@@ -263,47 +269,220 @@ def _projection_path(lesson: dict) -> Path:
     return lessons.LESSONS_DIR / lesson["slug"] / PROJECTION_NAME
 
 
-def _read_all(fd: int, size: int) -> bytes:
-    """Whole-file positional read — the append offset is untouched. Bounded
-    by the attempt volume itself: per-lesson, human-scale, §6.2-capped
-    lines."""
-    chunks = []
-    offset = 0
-    while offset < size:
-        chunk = os.pread(fd, 1 << 16, offset)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        offset += len(chunk)
-    return b"".join(chunks)
+def _state_paths(lesson: dict) -> tuple[Path, Path]:
+    uid = lesson.get("uid")
+    if not isinstance(uid, str) or bundle_schema.UUID_RE.match(uid) is None:
+        raise OSError("lesson has no safe projection-state identity")
+    return (
+        PROJECTION_STATE_DIR / f"{uid}.json",
+        PROJECTION_STATE_DIR / f"{uid}.lock",
+    )
 
 
-def _begin_projection_txn(conn: sqlite3.Connection) -> bool:
-    """Cross-process serialization for projection writes (PR-57 round 10):
-    SQLite's BEGIN IMMEDIATE write lock is the interprocess lock. While a
-    projection section holds it, a sibling process can neither commit new
-    attempt rows nor run its own projection section, so a rebuild's
-    authority snapshot can never go stale before its os.replace lands —
-    a stale rebuild overwriting a newer file is structurally impossible.
-    False = the lock is busy past the driver timeout; the caller reports
-    the projection pending rather than blocking or failing the write."""
+def _ensure_state_dir() -> None:
+    PROJECTION_STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    st = os.lstat(PROJECTION_STATE_DIR)
+    if not stat_module.S_ISDIR(st.st_mode):
+        raise OSError("projection state root is not a directory")
+
+
+@contextmanager
+def _projection_file_lock(lesson: dict):
+    """Private per-lesson cross-process exclusion for projection work.
+
+    PR-57 round 10 used SQLite's database-wide writer lock. The immutable
+    lesson uid now names a lock outside the agent-writable bundle, so only
+    sibling projection work serializes; unrelated SQLite writers remain free.
+    """
+    _ensure_state_dir()
+    _, lock_path = _state_paths(lesson)
+    fd = os.open(
+        lock_path,
+        os.O_RDWR | os.O_CREAT | os.O_NONBLOCK
+        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        0o600,
+    )
     try:
-        conn.execute("BEGIN IMMEDIATE")
-    except sqlite3.OperationalError:
+        st = os.fstat(fd)
+        if not stat_module.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            raise OSError("unsafe projection lock file")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        count = os.write(fd, view)
+        if count <= 0:
+            raise OSError("short write on projection file")
+        view = view[count:]
+
+
+def _file_seal(st: os.stat_result) -> dict:
+    return {
+        "dev": st.st_dev,
+        "ino": st.st_ino,
+        "size": st.st_size,
+        "mtime_ns": st.st_mtime_ns,
+        "ctime_ns": st.st_ctime_ns,
+    }
+
+
+def _seal_matches(st: os.stat_result, seal: dict) -> bool:
+    return (
+        stat_module.S_ISREG(st.st_mode)
+        and st.st_nlink == 1
+        and all(
+            isinstance(seal.get(name), int)
+            and seal[name] == value
+            for name, value in (
+                ("dev", st.st_dev),
+                ("ino", st.st_ino),
+                ("size", st.st_size),
+                ("mtime_ns", st.st_mtime_ns),
+                ("ctime_ns", st.st_ctime_ns),
+            )
+        )
+    )
+
+
+def _read_state(lesson: dict) -> dict | None:
+    state_path, _ = _state_paths(lesson)
+    try:
+        fd = os.open(
+            state_path,
+            os.O_RDONLY | os.O_NONBLOCK
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if (
+            not stat_module.S_ISREG(st.st_mode)
+            or st.st_nlink != 1
+            or st.st_size > PROJECTION_STATE_MAX_BYTES
+        ):
+            return None
+        chunks = []
+        remaining = st.st_size + 1
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) != st.st_size:
+            return None
+        state = json.loads(raw)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    finally:
+        os.close(fd)
+    if not isinstance(state, dict):
+        return None
+    cursor_id = state.get("cursor_id")
+    tail_created = state.get("tail_created_at")
+    tail_attempt = state.get("tail_attempt_id")
+    seal = state.get("file")
+    if (
+        state.get("v") != PROJECTION_STATE_VERSION
+        or state.get("lesson_uid") != lesson.get("uid")
+        or isinstance(cursor_id, bool)
+        or not isinstance(cursor_id, int)
+        or cursor_id < 0
+        or not isinstance(seal, dict)
+        or (
+            cursor_id == 0
+            and (tail_created is not None or tail_attempt is not None)
+        )
+        or (
+            cursor_id > 0
+            and (
+                not isinstance(tail_created, str)
+                or not isinstance(tail_attempt, str)
+            )
+        )
+    ):
+        return None
+    return state
+
+
+def _write_state(lesson: dict, state: dict) -> None:
+    _ensure_state_dir()
+    state_path, _ = _state_paths(lesson)
+    data = (
+        json.dumps(state, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("ascii")
+    if len(data) > PROJECTION_STATE_MAX_BYTES:
+        raise OSError("projection state exceeds its fixed bound")
+    fd, tmp_name = tempfile.mkstemp(
+        dir=PROJECTION_STATE_DIR, prefix=".attempt-state-"
+    )
+    try:
+        try:
+            _write_all(fd, data)
+            os.fsync(fd)
+            os.close(fd)
+            fd = -1
+        except BaseException:
+            if fd >= 0:
+                os.close(fd)
+                fd = -1
+            raise
+        os.replace(tmp_name, state_path)
+        parent_fd = os.open(
+            PROJECTION_STATE_DIR,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _projection_fd(lesson: dict, flags: int) -> int:
+    return os.open(
+        _projection_path(lesson),
+        flags | os.O_NONBLOCK
+        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        0o600,
+    )
+
+
+def _projection_matches_state(lesson: dict, state: dict) -> bool:
+    try:
+        fd = _projection_fd(lesson, os.O_RDONLY)
+    except OSError:
         return False
-    return True
+    try:
+        return _seal_matches(os.fstat(fd), state["file"])
+    finally:
+        os.close(fd)
 
 
 def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
     """Idempotent reconcile (§6.1): rewrite the whole projection from the
-    authority — deduped by construction (one line per row), ascending
-    created_at with ties by attempt_id, atomically replaced. Heals missing,
-    truncated, torn, and planted-special-file states alike (os.replace
-    swaps the name without ever opening the old one); a planted DIRECTORY
-    would block that rename, so it is resolved first as a deterministic
-    §6.1 collision (PR-57 round 10) — removed when empty, moved aside
-    under a unique name otherwise (foreign content is never destroyed).
-    Callers hold the bundle lock and the BEGIN IMMEDIATE projection txn."""
+    authority in bounded memory: rows are rendered directly from the SQLite
+    cursor into one fsynced temporary file, ascending created_at with ties by
+    attempt_id, then atomically replaced. The private cursor is published only
+    after the projection rename is durable. A missing/old cursor therefore
+    causes another safe rebuild after a crash, never a blind append."""
     path = _projection_path(lesson)
     try:
         st = os.lstat(path)
@@ -314,118 +493,155 @@ def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
             os.rmdir(path)
         except OSError:
             os.rename(path, f"{path}.collision-{uuid4().hex[:8]}")
-    rows = conn.execute(
-        "SELECT * FROM lesson_attempts WHERE lesson_id = ? "
-        "ORDER BY created_at, attempt_id",
-        (lesson["id"],),
-    ).fetchall()
-    text = "".join(_projection_line(dict(row)) for row in rows)
-    bundle_schema.atomic_write_text(path, text)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".attempts-")
+    cursor_id = 0
+    tail_created_at = None
+    tail_attempt_id = None
+    try:
+        rows = conn.execute(
+            "SELECT * FROM lesson_attempts WHERE lesson_id = ? "
+            "ORDER BY created_at, attempt_id",
+            (lesson["id"],),
+        )
+        try:
+            for sqlite_row in rows:
+                row = dict(sqlite_row)
+                line = _projection_line(row).encode("utf-8")
+                _write_all(fd, line)
+                cursor_id = max(cursor_id, row["id"])
+                tail_created_at = row["created_at"]
+                tail_attempt_id = row["attempt_id"]
+        finally:
+            rows.close()
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.replace(tmp_name, path)
+        parent_fd = os.open(
+            path.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+        final_fd = _projection_fd(lesson, os.O_RDONLY)
+        try:
+            final_st = os.fstat(final_fd)
+            if not stat_module.S_ISREG(final_st.st_mode) or final_st.st_nlink != 1:
+                raise OSError("unsafe rebuilt projection")
+            seal = _file_seal(final_st)
+        finally:
+            os.close(final_fd)
+        _write_state(lesson, {
+            "v": PROJECTION_STATE_VERSION,
+            "lesson_uid": lesson["uid"],
+            "cursor_id": cursor_id,
+            "tail_created_at": tail_created_at,
+            "tail_attempt_id": tail_attempt_id,
+            "file": seal,
+        })
+    except BaseException:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def reconcile_projection(conn: sqlite3.Connection, lesson: dict) -> bool:
     """Public reconcile entry point (ops/tests). Returns True when the
     projection now matches the authority, False on filesystem failure or
-    a busy cross-process lock."""
+    unavailable private cross-process lock."""
     with _bundle_lock(lesson["slug"]):
-        if not _begin_projection_txn(conn):
-            return False
         try:
-            _rebuild_projection(conn, lesson)
-        except OSError:
+            with _projection_file_lock(lesson):
+                _rebuild_projection(conn, lesson)
+        except (OSError, sqlite3.Error):
             return False
-        finally:
-            conn.execute("COMMIT")
     return True
 
 
 def _project_attempt(conn: sqlite3.Connection, lesson: dict, row: dict) -> bool:
     """Synchronous projection append, called under the bundle lock after the
-    transaction committed. Fast path (PR-57 round 6: content-verified, not
-    count-heuristic): the new row must sort last in the §6.1 authority
-    order and the file's bytes must equal the rebuild of every earlier row
-    exactly — then one O_APPEND + fsync line lands the same content the
-    rebuild would produce. Anything else — torn tail, missing/misordered/
-    foreign lines, a clock step backwards, a planted symlink/FIFO at the
-    name — falls back to the reconcile rebuild. Returns False (projection
-    pending) only when the filesystem refuses both; the authoritative
-    write is already durable either way. The whole section — snapshot,
-    verify, append or rebuild — runs inside the BEGIN IMMEDIATE projection
-    txn, serializing it against sibling processes' commits and projection
-    sections (PR-57 round 10)."""
-    if not _begin_projection_txn(conn):
-        return False
+    transaction committed. The fast path consults a private durable cursor,
+    selects at most two authority rows after it, verifies the projection's
+    descriptor seal and single-link guard, and renders at most one new line.
+    Every repair path holds the same private per-lesson flock while streaming
+    its authority snapshot and publishing both file and cursor, preserving the
+    PR-57 round-10 stale-rebuild exclusion without a SQLite writer lock."""
     try:
-        return _project_attempt_locked(conn, lesson, row)
-    finally:
-        conn.execute("COMMIT")
+        with _projection_file_lock(lesson):
+            return _project_attempt_locked(conn, lesson, row)
+    except (OSError, sqlite3.Error):
+        return False
 
 
 def _project_attempt_locked(
     conn: sqlite3.Connection, lesson: dict, row: dict
 ) -> bool:
-    rows = conn.execute(
-        "SELECT * FROM lesson_attempts WHERE lesson_id = ? "
-        "ORDER BY created_at, attempt_id",
-        (lesson["id"],),
-    ).fetchall()
-    appended = False
-    if rows and rows[-1]["attempt_id"] == row["attempt_id"]:
-        # The appended bytes come from the authority row, so a verified
-        # prefix + this line is byte-identical to a full rebuild.
-        line = _projection_line(dict(rows[-1]))
-        prefix = "".join(
-            _projection_line(dict(r)) for r in rows[:-1]
-        ).encode("utf-8")
-        try:
-            fd = os.open(
-                _projection_path(lesson),
-                os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK
-                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
-                0o600,
-            )
-        except OSError:
+    del row  # the committed authority, not caller memory, supplies file bytes
+    state = _read_state(lesson)
+    if state is not None and _projection_matches_state(lesson, state):
+        unseen = conn.execute(
+            "SELECT * FROM lesson_attempts "
+            "WHERE lesson_id = ? AND id > ? ORDER BY id LIMIT 2",
+            (lesson["id"], state["cursor_id"]),
+        ).fetchall()
+        if not unseen:
+            return True
+        candidate = dict(unseen[0])
+        tail = (state["tail_created_at"], state["tail_attempt_id"])
+        candidate_key = (candidate["created_at"], candidate["attempt_id"])
+        if len(unseen) == 1 and (
+            state["cursor_id"] == 0 or candidate_key > tail
+        ):
+            line = _projection_line(candidate).encode("utf-8")
             fd = -1
-        if fd >= 0:
+            appended = False
             try:
-                st = os.fstat(fd)
+                fd = _projection_fd(lesson, os.O_RDWR | os.O_APPEND)
+                before = os.fstat(fd)
+                if not _seal_matches(before, state["file"]):
+                    raise OSError("projection changed before append")
+                _write_all(fd, line)
+                os.fsync(fd)
+                after = os.fstat(fd)
+                os.close(fd)
+                fd = -1
+                name_st = os.lstat(_projection_path(lesson))
                 if (
-                    stat_module.S_ISREG(st.st_mode)
-                    # A planted hard link passes O_NOFOLLOW + S_ISREG but
-                    # would leak the append into its other name's file
-                    # (PR-57 round 11) — only a singly-linked private file
-                    # takes the fast path; the rebuild below replaces the
-                    # NAME, leaving the link's target untouched.
-                    and st.st_nlink == 1
-                    and st.st_size == len(prefix)
-                    and _read_all(fd, st.st_size) == prefix
+                    not stat_module.S_ISREG(name_st.st_mode)
+                    or name_st.st_nlink != 1
+                    or (name_st.st_dev, name_st.st_ino)
+                    != (after.st_dev, after.st_ino)
                 ):
-                    # write(2) may land short (ENOSPC, rlimits): loop until
-                    # the whole line is down — a partial append must never
-                    # report `projected` (the rebuild below replaces the
-                    # torn tail it leaves behind).
-                    data = memoryview(line.encode("utf-8"))
-                    while data:
-                        n = os.write(fd, data)
-                        if n <= 0:
-                            raise OSError("short write on attempts.jsonl")
-                        data = data[n:]
-                    os.fsync(fd)
-                    appended = True
+                    raise OSError("projection name changed during append")
+                _write_state(lesson, {
+                    "v": PROJECTION_STATE_VERSION,
+                    "lesson_uid": lesson["uid"],
+                    "cursor_id": candidate["id"],
+                    "tail_created_at": candidate["created_at"],
+                    "tail_attempt_id": candidate["attempt_id"],
+                    "file": _file_seal(name_st),
+                })
+                appended = True
             except OSError:
                 appended = False
             finally:
-                try:
-                    os.close(fd)
-                except OSError:
-                    # close(2) can surface a delayed write error (NFS/FUSE
-                    # ENOSPC/EIO). The fsync'd append may be moot then —
-                    # count it as not appended and let the rebuild path
-                    # decide; a projection problem must never fail the
-                    # durable write.
-                    appended = False
-    if appended:
-        return True
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        appended = False
+            if appended:
+                return True
     try:
         _rebuild_projection(conn, lesson)
     except OSError:
@@ -585,7 +801,7 @@ def _record_locked(
                     "answer": submission["answer"],
                     "stale": stale,
                 })
-                conn.execute(
+                insert_cursor = conn.execute(
                     "INSERT INTO lesson_attempts "
                     "(attempt_id, event_uuid, lesson_id, lesson_uid, "
                     " idempotency_key, page_id, question_id, page_rev, "
@@ -617,7 +833,11 @@ def _record_locked(
                 raise
         else:
             projected = _project_attempt(
-                conn, lesson, {**row, "event_uuid": event_uuid}
+                conn, lesson, {
+                    **row,
+                    "id": insert_cursor.lastrowid,
+                    "event_uuid": event_uuid,
+                }
             )
             return {
                 "result": "recorded",
