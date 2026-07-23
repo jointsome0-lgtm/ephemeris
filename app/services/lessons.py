@@ -1092,20 +1092,32 @@ font, image) is forbidden.
 
 The authorities are the app's bundle spec §4.4 for `blocks[]` and
 `docs/lesson-artifacts-api.md` for artifact files. Declare each block in
-the v2 manifest with a stable `blk_` id and its owning `page`, then set
-`"kind": "editor"`, its `file`, and an optional opaque `runner_id` —
-never a command.
+an unrejected v2 manifest whose `runtime.profile` is exactly
+`interactive-local-v1`; a missing or legacy profile keeps every block
+inert. Preserve the current registered profile unless you are deliberately
+upgrading the page for interactivity. Give the block a stable `blk_` id and
+its owning `page`, then set `"kind": "editor"`, its `file`, and an optional
+opaque `runner_id` — never a command.
 No `runner_id` means editor-only. The registered runners are
 `python-script-v1` for one `.py` file and `go-run-v1` for one `.go` file;
 both require a single-file, dependency-free program with no package
 download or install.
 
-With the default artifact root, place each file at
-`attempts/blk_<id>/<file>`. Never put it more than 4 levels below its
-artifact root. Author a plain textarea with Load, Save, and Run controls
-(plus Cancel while a run is active). Ask for `editor`/`run` in the bridge
-handshake and keep the textarea read-only and controls disabled unless
-those capabilities are actually granted.
+With the default artifact root, point `blocks[].file` at
+`attempts/blk_<id>/<file>` and never more than 4 levels below the root.
+This declares where a learner save will place the file: learner artifacts
+are read-only for you, so never create or change that file. Put starter
+text in the page's textarea/default editor state; the artifact appears only
+when the learner saves it.
+
+Author a plain textarea with Load and Save. When the block declares a
+registered runner, add Run and Cancel while a run is active. For that
+runner-backed page, the one ready announcement is
+`{"ephemeris":"lesson-bridge","type":"ready","abi":[1],"want":["attempts","editor","run"]}`.
+Use that capability list in place of the attempts-only ready example in the
+general bridge recipe below. An editor-only page omits `run` and its controls.
+Keep the textarea read-only and controls disabled unless the requested
+capabilities are actually granted.
 
 Wire the controls only through `docs/lesson-bridge-abi.md` §3.2/§3.3:
 Load uses `artifact.get`, Save uses `artifact.save`, Run uses the composite

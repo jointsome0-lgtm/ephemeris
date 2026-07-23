@@ -370,19 +370,30 @@ with TestClient(app) as c:
           "## Editor and run blocks" in agents_text
           and "bundle spec §4.4" in agents_text
           and "docs/lesson-artifacts-api.md" in agents_text
+          and "`runtime.profile` is exactly" in agents_text
+          and "`interactive-local-v1`" in agents_text
+          and "missing or legacy profile keeps every block" in agents_text
           and "stable `blk_` id" in agents_text
           and '`"kind": "editor"`' in agents_text
-          and "optional opaque `runner_id`" in agents_text
+          and "optional" in agents_text
+          and "opaque `runner_id`" in agents_text
           and "No `runner_id` means editor-only" in agents_text)
     check("lesson AGENTS.md pins registered single-file runner conventions",
           "`python-script-v1` for one `.py` file" in agents_text
           and "`go-run-v1` for one `.go` file" in agents_text
           and "single-file, dependency-free program" in agents_text
           and "`attempts/blk_<id>/<file>`" in agents_text
-          and "more than 4 levels below" in agents_text)
+          and "never more than 4 levels below" in agents_text
+          and "learner artifacts" in agents_text
+          and "never create or change that file" in agents_text
+          and "Put starter" in agents_text
+          and "text in the page's textarea" in agents_text)
     check("lesson AGENTS.md teaches the text-only editor/run bridge loop",
-          "plain textarea with Load, Save, and Run controls" in agents_text
-          and "`editor`/`run` in the bridge" in agents_text
+          "plain textarea with Load and Save" in agents_text
+          and "add Run and Cancel" in agents_text
+          and "editor-only page omits `run`" in agents_text
+          and '"want":["attempts","editor","run"]' in agents_text
+          and "attempts-only ready example" in agents_text
           and "`artifact.get`" in agents_text
           and "`artifact.save`" in agents_text
           and "`artifact.save_run`" in agents_text

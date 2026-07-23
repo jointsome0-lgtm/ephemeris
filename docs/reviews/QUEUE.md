@@ -25,8 +25,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   generated lesson brief's inactive editor/run-block section with active
   manifest, artifact-placement, registered-runner, bridge-operation,
   text-only-output, graceful-degradation, and teaching-purpose conventions,
-  plus matching verifier anchors. It changes no runtime code path, schema,
-  ABI, sandbox, CSP, route, terminal surface, or other brief section.
+  plus matching verifier anchors. Its first Codex findings round makes the
+  artifact path declaration explicitly non-writing for learner-owned files,
+  requires the registered interactive profile, and supplies one concrete
+  ready announcement that requests the editor/run capabilities. It changes no
+  runtime code path, schema, ABI, sandbox, CSP, route, terminal surface, or
+  other brief section.
 
 ## Done
 
