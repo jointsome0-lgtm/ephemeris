@@ -480,9 +480,11 @@ def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
     """Idempotent reconcile (§6.1): rewrite the whole projection from the
     authority in bounded memory: rows are rendered directly from the SQLite
     cursor into one fsynced temporary file, ascending created_at with ties by
-    attempt_id, then atomically replaced. The private cursor is published only
-    after the projection rename is durable. A missing/old cursor therefore
-    causes another safe rebuild after a crash, never a blind append."""
+    attempt_id, then atomically replaced. The rendered descriptor stays open
+    across publication: its pre/post identity, size, and mtime must be stable,
+    and its full post-replace seal must match the public name before the cursor
+    is published. A crash or bundle-side rewrite therefore leaves missing or
+    mismatched state and causes another safe rebuild, never a blind append."""
     path = _projection_path(lesson)
     try:
         st = os.lstat(path)
@@ -514,8 +516,12 @@ def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
         finally:
             rows.close()
         os.fsync(fd)
-        os.close(fd)
-        fd = -1
+        rendered_st = os.fstat(fd)
+        if (
+            not stat_module.S_ISREG(rendered_st.st_mode)
+            or rendered_st.st_nlink != 1
+        ):
+            raise OSError("unsafe rebuilt projection temp")
         os.replace(tmp_name, path)
         parent_fd = os.open(
             path.parent,
@@ -526,22 +532,27 @@ def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
             os.fsync(parent_fd)
         finally:
             os.close(parent_fd)
-        final_fd = _projection_fd(lesson, os.O_RDONLY)
-        try:
-            final_st = os.fstat(final_fd)
-            if not stat_module.S_ISREG(final_st.st_mode) or final_st.st_nlink != 1:
-                raise OSError("unsafe rebuilt projection")
-            seal = _file_seal(final_st)
-        finally:
-            os.close(final_fd)
-        _write_state(lesson, {
+        published_st = os.fstat(fd)
+        if (
+            (published_st.st_dev, published_st.st_ino, published_st.st_size,
+             published_st.st_mtime_ns)
+            != (rendered_st.st_dev, rendered_st.st_ino, rendered_st.st_size,
+                rendered_st.st_mtime_ns)
+        ):
+            raise OSError("rebuilt projection changed during publication")
+        state = {
             "v": PROJECTION_STATE_VERSION,
             "lesson_uid": lesson["uid"],
             "cursor_id": cursor_id,
             "tail_created_at": tail_created_at,
             "tail_attempt_id": tail_attempt_id,
-            "file": seal,
-        })
+            "file": _file_seal(published_st),
+        }
+        if not _seal_matches(os.lstat(path), state["file"]):
+            raise OSError("rebuilt projection changed during publication")
+        os.close(fd)
+        fd = -1
+        _write_state(lesson, state)
     except BaseException:
         if fd >= 0:
             try:

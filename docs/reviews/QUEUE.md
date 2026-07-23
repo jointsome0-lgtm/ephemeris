@@ -29,8 +29,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   first bot-findings round makes busy locks return projection-pending, refuses
   reconcile from active transactions, treats recursively malformed state as
   repair input, and compares the full post-append descriptor/name seal. It
-  does not change attempt authority, HTTP responses, refusal ordering,
-  rate-limit semantics, or the `attempts.jsonl` line format.
+  second round keeps the rendered temp descriptor open across rebuild
+  publication and compares its stable render fields plus full published-name
+  seal before advancing the cursor. It does not change attempt authority,
+  HTTP responses, refusal ordering, rate-limit semantics, or the
+  `attempts.jsonl` line format.
 
 - [ ] 2026-07-23 — commits after `c125534` on
   `fix/59-attempt-body-stream-cap`; LANDED via merge commit `06e4674`, whose

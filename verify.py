@@ -1958,6 +1958,44 @@ process.stdout.write(JSON.stringify([
           and len(_at_proj.read_text(encoding="utf-8").splitlines())
           == len(_at_rows()))
 
+    # Rebuild keeps the rendered temp descriptor open across replace. A
+    # same-inode rewrite immediately after publication changes its post-replace
+    # seal relative to the rendered snapshot, returns pending, and is healed by
+    # the next append instead of becoming trusted cursor state.
+    attempts_svc._reset_rate_limit()
+    _at_proj.write_text("force a rebuild\n", encoding="utf-8")
+    _at_real_replace2 = _os.replace
+    _at_rebuild_mutation = {"done": False}
+
+    def _at_replace_then_mutate(src, dst, *args, **kwargs):
+        result = _at_real_replace2(src, dst, *args, **kwargs)
+        if Path(dst) == _at_proj and not _at_rebuild_mutation["done"]:
+            with _at_proj.open("r+b") as fh:
+                original = fh.read(1)
+                fh.seek(0)
+                fh.write(b"!" if original != b"!" else b"?")
+                fh.flush()
+                _os.fsync(fh.fileno())
+            _at_rebuild_mutation["done"] = True
+        return result
+
+    with _mock.patch.object(
+            attempts_svc.os, "replace", _at_replace_then_mutate):
+        _at_rebuild_race = c.post(_at_url, json=dict(
+            _at_body, idempotency_key="vera-rebuild-race-1",
+            answer="Vera Example: rebuild publication raced."))
+    _at_rebuild_heal = c.post(_at_url, json=dict(
+        _at_body, idempotency_key="vera-rebuild-heal-1",
+        answer="Vera Example: rebuild race healed."))
+    check("rebuild cannot seal a post-replace same-inode rewrite",
+          _at_rebuild_mutation["done"]
+          and _at_rebuild_race.json().get("projection") == "pending"
+          and _at_rebuild_heal.json().get("projection") == "projected"
+          and [
+              json.loads(line)["attempt_id"]
+              for line in _at_proj.read_text(encoding="utf-8").splitlines()
+          ] == [row["attempt_id"] for row in _at_rows()])
+
     # §6.3 replay wins over refusals even mid-race (PR-57 round 2): a retry
     # whose original is still in flight sees the key uncommitted at the early
     # check, then hits unknown-question after the question was retired — the
