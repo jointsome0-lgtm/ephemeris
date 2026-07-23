@@ -19,35 +19,23 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
-
-## Done
-
-- [x] 2026-07-23 — commits after `1c04bd2` on
-  `fix/35-f5-blocks-activation`; reviewed application head `c148e6b` —
+- [ ] 2026-07-23 — commits after `1c04bd2` on
+  `fix/35-f5-blocks-activation`; application fixes through `c148e6b` —
   `app/services/lessons.py`, `verify.py`, `docs/reviews/QUEUE.md` — issue #35
   phase F activation replaces only the generated lesson brief's inactive
   editor/run-block section with active manifest, artifact-placement,
   registered-runner, bridge-operation, text-only-output,
   graceful-degradation, and teaching-purpose conventions, plus matching
-  verifier anchors. Its first Codex findings round makes the artifact path
-  declaration explicitly non-writing for learner-owned files, requires the
-  registered interactive profile, and supplies one concrete ready announcement
-  that requests the editor/run capabilities. `d2f97f4` (drain cycle 1) gates
-  editor and Run affordances independently and repeats the minimum frozen
-  operation/revision/run-ownership rules inside the generated workspace;
-  `c148e6b` (drain cycle 2) handles parent-relayed `run.error` as an owned
-  terminal UI state; verify 756, verify_restore 28. It changes no runtime code
-  path, schema, ABI, sandbox, CSP, route, terminal surface, or other brief
-  section. Drained 2026-07-23 →
-  `2026-07-23-blocks-activation-review.md`: three Low findings, all resolved
-  in two cycles; no Critical, High, Medium, Low, Info, or open finding remains.
-  Brief-writer, teaching/data-boundary, bridge, artifact, runner, run-API,
-  frontend, lesson-role, and terminal protections retain the report's stated
-  dispositions; F4's generated-pedagogy activation condition is resolved.
-  Final verdict: SAFE TO MAKE LIVE for the documented direct-loopback
-  single-worker deployment; wider, proxy-adjacent, or multi-user deployment
-  NO. Live restart is owner-only and was not performed.
+  verifier anchors. Earlier review rounds make learner artifacts non-writing
+  for the agent, require the interactive profile and concrete capability
+  request, gate editor and Run independently, repeat minimum operation and
+  revision rules inside the generated workspace, and handle `run.error` as an
+  owned terminal UI state. Review of the first Done-bookkeeping head reopened
+  the drain for request-scoped error handling and conditional `attempts`
+  negotiation. It changes no runtime code path, schema, ABI, sandbox, CSP,
+  route, terminal surface, or other brief section.
+
+## Done
 
 - [x] 2026-07-22 — commits after `fd9f54a` on
   `fix/36-f4-editor-run-frontend` — `app/static/src/learn-bridge.ts`,

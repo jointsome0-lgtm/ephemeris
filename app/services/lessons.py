@@ -1113,13 +1113,15 @@ when the learner saves it.
 Author a plain textarea with Load and Save. When the block declares a
 registered runner, add Run and Cancel while a run is active. For that
 runner-backed page, the one ready announcement is
-`{"ephemeris":"lesson-bridge","type":"ready","abi":[1],"want":["attempts","editor","run"]}`.
-Use that capability list in place of the attempts-only ready example in the
-general bridge recipe below. An editor-only page asks for `editor`, adds
-`attempts` only if it also records declared questions, and omits `run` and its
-controls. Gate each affordance independently: only an `editor` grant makes the
-textarea writable and enables Load/Save; only a `run` grant enables Run/Cancel.
-A missing `run` grant never disables a granted editor.
+`{"ephemeris":"lesson-bridge","type":"ready","abi":[1],"want":["editor","run"]}`.
+Add `attempts` to that same array only when the page also records answers to
+declared questions; then its list is `["attempts","editor","run"]`. Use that
+capability list in place of the attempts-only ready example in the general
+bridge recipe below. An editor-only page asks for `editor`, adds `attempts`
+under the same declared-answer condition, and omits `run` and its controls.
+Gate each affordance independently: only an `editor` grant makes the textarea
+writable and enables Load/Save; only a `run` grant enables Run/Cancel. A
+missing `run` grant never disables a granted editor.
 
 Wire the controls only through `docs/lesson-bridge-abi.md` §3.2/§3.3:
 Load uses `artifact.get`, Save uses `artifact.save`, Run uses the composite
@@ -1136,14 +1138,20 @@ minimum frozen requests rather than guessing their envelopes:
 Every `…` above is a placeholder to replace, never a literal id or value.
 After Load, use `base_rev: "absent"` only when `exists` is false; otherwise
 retain its `file_rev`. After Save or Save/Run, advance to the returned
-`file_rev`. Match ordinary replies to `request_id`; accept `run.output`,
-`run.exit`, and `run.error` only for the `run_id` returned by this page's
-Save/Run. Apply only increasing `seq` values from output and exit messages,
-and treat either `run.exit` or `run.error` as the end of the active Run state.
-Keep the last applied sequence as `after` for an exact retry. Render every
-status, artifact content, and run output as text with textarea `.value`,
-`textContent`, or text nodes, never as markup. Use a block only when running
-the code teaches something a static snippet cannot. Terminal experiments
+`file_rev`. Match ordinary replies to `request_id`. Any request may instead
+return `{"op":"error","request_id":"…","code":"…"}`: match that id, clear
+only that request's pending state, preserve the textarea and last `base_rev`,
+and show `code` as text. A failed Save/Run never enters active-run state; a
+failed Cancel does not prove the owned job stopped, so keep it active until
+its `run.exit` or `run.error` arrives.
+
+Accept `run.output`, `run.exit`, and `run.error` only for the `run_id` returned
+by this page's Save/Run. Apply only increasing `seq` values from output and
+exit messages, and treat either `run.exit` or `run.error` as the end of the
+active Run state. Keep the last applied sequence as `after` for an exact retry.
+Render every status, artifact content, and run output as text with textarea
+`.value`, `textContent`, or text nodes, never as markup. Use a block only when
+running the code teaches something a static snippet cannot. Terminal experiments
 remain first-class whenever the learner should inspect, combine, or explore
 beyond one bounded editor file.
 

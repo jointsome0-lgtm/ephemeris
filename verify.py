@@ -392,11 +392,13 @@ with TestClient(app) as c:
           "plain textarea with Load and Save" in agents_text
           and "add Run and Cancel" in agents_text
           and "editor-only page asks for `editor`" in agents_text
-          and "`attempts` only if it also records" in agents_text
+          and "same declared-answer condition" in agents_text
           and "Gate each affordance independently" in agents_text
           and "placeholder to replace, never a literal" in agents_text
           and "missing `run` grant never disables" in agents_text
-          and '"want":["attempts","editor","run"]' in agents_text
+          and '"want":["editor","run"]' in agents_text
+          and '["attempts","editor","run"]' in agents_text
+          and "only when the page also records answers" in agents_text
           and "attempts-only ready example" in agents_text
           and "`artifact.get`" in agents_text
           and "`artifact.save`" in agents_text
@@ -407,11 +409,18 @@ with TestClient(app) as c:
           and '"op":"artifact.save","v":1' in agents_text
           and '"op":"artifact.save_run","v":1' in agents_text
           and '"op":"run.cancel","v":1' in agents_text
+          and '"op":"error","request_id":"…","code":"…"' in agents_text
+          and "match that id, clear" in agents_text
+          and "only that request's pending state" in agents_text
+          and "failed Save/Run never enters active-run state" in agents_text
+          and "failed Cancel does not prove" in agents_text
           and 'base_rev: "absent"' in agents_text
           and "`run.exit`, and `run.error`" in agents_text
           and "only increasing `seq` values" in agents_text
-          and "end of the active Run state" in agents_text
-          and "textarea `.value`" in agents_text
+          and "`run.exit` or `run.error` as the end" in agents_text
+          and "active Run state" in agents_text
+          and "with textarea" in agents_text
+          and "`.value`, `textContent`" in agents_text
           and "`textContent`, or text nodes" in agents_text
           and "static snippet cannot" in agents_text
           and "Terminal experiments" in agents_text
