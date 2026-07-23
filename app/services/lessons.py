@@ -1088,17 +1088,77 @@ font, image) is forbidden.
   index.html. The app's Learn preview live-reloads the open page when you
   save it and shows every manifest page as a tab.
 
-## Coming, not yet active: editor and run blocks
+## Editor and run blocks
 
-The manifest schema reserves `blocks[]` for in-page editor/run blocks
-(see the app's bundle spec §4.4: `blk_` ids, a `file` under an artifact
-root, an opaque `runner_id` — never commands). The app feature behind
-them is NOT active yet. Until the app activates it, do not author
-`blocks[]` entries and do not improvise your own in-page editors or Run
-buttons — a hand-rolled runner cannot work inside the page sandbox, and
-a dead block is weight the learner cannot use. Terminal experiments (the
-learner's shell) remain the way code gets run. This section will change
-when the feature lands; everything else in this brief stays.
+The authorities are the app's bundle spec §4.4 for `blocks[]` and
+`docs/lesson-artifacts-api.md` for artifact files. Declare each block in
+an unrejected v2 manifest whose `runtime.profile` is exactly
+`interactive-local-v1`; a missing or legacy profile keeps every block
+inert. Preserve the current registered profile unless you are deliberately
+upgrading the page for interactivity. Give the block a stable `blk_` id and
+its owning `page`, then set `"kind": "editor"`, its `file`, and an optional
+opaque `runner_id` — never a command.
+No `runner_id` means editor-only. The registered runners are
+`python-script-v1` for one `.py` file and `go-run-v1` for one `.go` file;
+both require a single-file, dependency-free program with no package
+download or install. They are non-interactive and receive no standard input:
+never use Python `input()` or read Go `os.Stdin`. Put invented fixed input in
+the program, or keep an experiment that needs learner input in the terminal.
+
+With the default artifact root, point `blocks[].file` at
+`attempts/blk_<id>/<file>` and never more than 4 levels below the root.
+This declares where a learner save will place the file: learner artifacts
+are read-only for you, so never create or change that file. Put starter
+text in the page's textarea/default editor state; the artifact appears only
+when the learner saves it.
+
+Author a plain textarea with Load and Save. When the block declares a
+registered runner, add Run and Cancel while a run is active. For that
+runner-backed page, the one ready announcement is
+`{"ephemeris":"lesson-bridge","type":"ready","abi":[1],"want":["editor","run"]}`.
+Add `attempts` to that same array only when the page also records answers to
+declared questions; then its list is `["attempts","editor","run"]`. Use that
+capability list in place of the attempts-only ready example in the general
+bridge recipe below. An editor-only page asks for `editor`, adds `attempts`
+under the same declared-answer condition, and omits `run` and its controls.
+Gate each affordance independently: only an `editor` grant makes the textarea
+writable and enables Load/Save; only a `run` grant enables Run/Cancel. A
+missing `run` grant never disables a granted editor.
+
+Wire the controls only through `docs/lesson-bridge-abi.md` §3.2/§3.3:
+Load uses `artifact.get`, Save uses `artifact.save`, Run uses the composite
+`artifact.save_run`, and Cancel uses `run.cancel`. Give each new logical
+operation a fresh lesson-wide `request_id`; reuse it only to retry that exact
+operation. The app repository may not be present in this shell, so use these
+minimum frozen requests rather than guessing their envelopes:
+
+- Load: `{"op":"artifact.get","v":1,"request_id":"…","block_id":"blk_…"}`.
+- Save: `{"op":"artifact.save","v":1,"request_id":"…","block_id":"blk_…","content":"…","base_rev":"absent"}`.
+- Run: `{"op":"artifact.save_run","v":1,"request_id":"…","block_id":"blk_…","content":"…","base_rev":"absent","after":0}`.
+- Cancel: `{"op":"run.cancel","v":1,"request_id":"…","run_id":"…"}`.
+
+Every `…` above is a placeholder to replace, never a literal id or value.
+After Load, use `base_rev: "absent"` only when `exists` is false; otherwise
+retain its `file_rev`. After Save or Save/Run, advance to the returned
+`file_rev`. Match ordinary replies to `request_id`. Any request may instead
+return `{"op":"error","request_id":"…","code":"…"}`: match that id, clear
+only that request's pending state, preserve the textarea, and show `code` as
+text. After a Load error, keep the last known `base_rev`. After any Save or
+Save/Run error, mark `base_rev` unknown and require a successful Load before
+enabling another Save or Run: the file mutation may have landed before the
+later failure. A failed Save/Run never enters active-run state. For a failed
+Cancel, `job-missing` is terminal locally, so clear active-run state; for any
+other code keep the owned run active until its `run.exit` or `run.error`.
+
+Accept `run.output`, `run.exit`, and `run.error` only for the `run_id` returned
+by this page's Save/Run. Apply only increasing `seq` values from output and
+exit messages, and treat either `run.exit` or `run.error` as the end of the
+active Run state. Keep the last applied sequence as `after` for an exact retry.
+Render every status, artifact content, and run output as text with textarea
+`.value`, `textContent`, or text nodes, never as markup. Use a block only when
+running the code teaches something a static snippet cannot. Terminal experiments
+remain first-class whenever the learner should inspect, combine, or explore
+beyond one bounded editor file.
 
 ## Bridge conventions — wiring Check into pages
 
