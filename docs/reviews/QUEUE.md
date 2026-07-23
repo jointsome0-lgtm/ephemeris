@@ -19,7 +19,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-23 — commits after `13cab1b` on
+_None._
+
+## Done
+
+- [x] 2026-07-23 — commits after `13cab1b` on
   `fix/58-attempts-projection-cost`; LANDED via merge commit `f004546`, whose
   tree is byte-identical to reviewed branch head `4256a2c` —
   `app/services/attempts.py`, `app/db.py`,
@@ -38,9 +42,15 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   descriptor plus a bounded tail read, detects mtime-restored rebuild
   rewrites, and never retries a failed close. It does not change attempt
   authority, HTTP responses, refusal ordering, rate-limit semantics, or the
-  `attempts.jsonl` line format.
-
-## Done
+  `attempts.jsonl` line format. No drain fix commit was required; verify 770,
+  verify_restore 28. Drained 2026-07-23 →
+  `2026-07-23-attempts-projection-cost-review.md`: no Critical, High, Medium,
+  Low, Info, or open finding; zero fix cycles. Attempt-backend A2 is resolved;
+  A1 is resolved by the preceding body-stream-cap drain. D5 L1 remains
+  mitigated and D5 L2/L3 remain resolved. Final verdict: SAFE TO MAKE LIVE for
+  the documented direct-loopback single-worker deployment; wider,
+  proxy-adjacent, or multi-user deployment NO. Live restart is owner-only and
+  was not performed.
 
 - [x] 2026-07-23 — commits after `c125534` on
   `fix/59-attempt-body-stream-cap`; LANDED via merge commit `06e4674`, whose
@@ -53,11 +63,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   fix commit was required; verify 770, verify_restore 28. Drained 2026-07-23 →
   `2026-07-23-attempt-body-stream-cap-review.md`: no Critical, High, Medium,
   Low, Info, or open finding; zero fix cycles. Attempt-backend A1 is resolved;
-  A2 remains the separate Pending projection-cost entry. D5 L1 remains
+  A2 is resolved by the later projection-cost drain above. D5 L1 remains
   mitigated and D5 L2/L3 remain resolved. Final verdict: SAFE TO MAKE LIVE for
-  the documented direct-loopback single-worker deployment subject to the
-  repository-wide queue gate; wider, proxy-adjacent, or multi-user deployment
-  NO. Live restart is owner-only and was not performed.
+  the documented direct-loopback single-worker deployment; wider,
+  proxy-adjacent, or multi-user deployment NO. Live restart is owner-only and
+  was not performed.
 
 - [x] 2026-07-23 — commits after `1c04bd2` on
   `fix/35-f5-blocks-activation`; reviewed application head `418615f` —
