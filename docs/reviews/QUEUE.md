@@ -19,27 +19,36 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-23 — commits after `1c04bd2` on
-  `fix/35-f5-blocks-activation`; application fixes through `c148e6b` —
+_None._
+
+## Done
+
+- [x] 2026-07-23 — commits after `1c04bd2` on
+  `fix/35-f5-blocks-activation`; reviewed application head `418615f` —
   `app/services/lessons.py`, `verify.py`, `docs/reviews/QUEUE.md` — issue #35
   phase F activation replaces only the generated lesson brief's inactive
   editor/run-block section with active manifest, artifact-placement,
   registered-runner, bridge-operation, text-only-output,
   graceful-degradation, and teaching-purpose conventions, plus matching
-  verifier anchors. Earlier review rounds make learner artifacts non-writing
-  for the agent, require the interactive profile and concrete capability
-  request, gate editor and Run independently, repeat minimum operation and
-  revision rules inside the generated workspace, and handle `run.error` as an
-  owned terminal UI state. Review of the first Done-bookkeeping head reopened
-  the drain for request-scoped error handling and conditional `attempts`
-  negotiation; cycle 3 applies both. Its exact-head review keeps the drain open
-  for terminal `job-missing` cancellation, revision resync after mutating
-  errors, the runner's no-stdin rule, and an explicitly superseded interim
-  report verdict; cycle 4 applies those four corrections. It changes no runtime
-  code path, schema, ABI, sandbox, CSP, route, terminal surface, or other brief
-  section.
-
-## Done
+  verifier anchors. The initial PR findings round preserves learner-artifact
+  ownership, requires the interactive profile, and supplies the concrete
+  editor/run ready request. `d2f97f4` (drain cycle 1) gates editor and Run
+  independently and repeats the minimum frozen operation/revision/run-ownership
+  rules; `c148e6b` (cycle 2) handles parent-relayed `run.error`; `a0e694f`
+  (cycle 3) handles request-scoped errors and negotiates `attempts` only for
+  declared answers; `418615f` (cycle 4) closes terminal `job-missing`,
+  mutating-error revision resync, no-stdin runner guidance, and stale-report
+  verdict handling. Verify 756, verify_restore 28. It changes no runtime code
+  path, schema, ABI, sandbox, CSP, route, terminal surface, or other brief
+  section. Drained 2026-07-23 →
+  `2026-07-23-blocks-activation-review.md`: nine Low findings, all resolved in
+  four cycles; no Critical, High, Medium, Low, Info, or open finding remains.
+  Brief-writer, teaching/data-boundary, bridge, artifact, runner, run-API,
+  frontend, lesson-role, and terminal protections retain the report's stated
+  dispositions; F4's generated-pedagogy activation condition is resolved.
+  Final verdict: SAFE TO MAKE LIVE for the documented direct-loopback
+  single-worker deployment; wider, proxy-adjacent, or multi-user deployment
+  NO. Live restart is owner-only and was not performed.
 
 - [x] 2026-07-22 — commits after `fd9f54a` on
   `fix/36-f4-editor-run-frontend` — `app/static/src/learn-bridge.ts`,

@@ -343,3 +343,48 @@ changes for all nine are present, but cycle 4 and its later closeout have not
 yet passed the exact-head review gate. `docs/reviews/QUEUE.md` therefore remains
 Pending. Wider, proxy-adjacent, or multi-user deployment remains **NO**, and a
 live restart remains owner-only and was not performed.
+
+## FINAL SUPERSEDING ADDENDUM — fix commit `418615f` (cycle 4 of 10)
+
+Fresh review of the exact `a0e694f..418615f` diff found no new Critical, High,
+Medium, Low, Info, or other finding. PR #72's exact application head
+`418615f95fac14b4684296625828d04eb8f17ced` had its CI workflow green and
+received the review bot's clean `+1` at 2026-07-23 01:08:22 UTC. The change
+remains limited to the active generated guidance, its verifier anchors, and
+the report/queue state that explicitly kept the drain Pending while open.
+
+### A6–A9 — resolved and re-verified
+
+The exact reviewed text now treats only Cancel `job-missing` as locally
+terminal, requires a Load after any mutating request error before another
+Save/Run, states the runners' closed-stdin contract, and leaves no stale SAFE
+verdict after a Pending reopen. The parent/backend remain fail closed and
+unchanged; these rules align generated UI state with the already-reviewed
+runtime rather than adding authority.
+
+## Final closing verification
+
+- Cycle-4 `python verify.py` — **756 passed, 0 failed**.
+- Cycle-4 `python verify_restore.py` — **28 passed, 0 failed**.
+- Cycle-4 `git diff --check`, one-template-hunk assertion,
+  `python -m py_compile app/services/lessons.py verify.py`, and public hygiene
+  — passed.
+- Exact application head `418615f`: GitHub CI — green; review bot — clean
+  `+1`; no new inline finding.
+- The final report/Done bookkeeping changes no application, schema, ABI,
+  sandbox, CSP, route, static, terminal, or listener behavior.
+
+## FINAL SUPERSEDING VERDICT
+
+**SAFE TO MAKE LIVE for the documented direct-loopback `127.0.0.1:8765`,
+single-worker, unauthenticated single-user deployment.** Across the complete
+drain, **9 Low, 0 Critical, 0 High, 0 Medium, and 0 Info** findings were raised;
+all nine were resolved in **4 of 10** cycles, and no open finding remains for
+this queue entry. The generated editor/run guidance is self-contained,
+least-privilege, revision-safe after ambiguous mutations, terminal-state-safe,
+non-interactive where the runner is non-interactive, and still bound to the
+reviewed parent/backend authorities. All prior-condition dispositions in this
+report remain unchanged except that F4's generated-pedagogy activation
+condition is resolved. Wider, proxy-adjacent, or multi-user deployment remains
+**NO**. The queue entry may move to Done. A live restart remains owner-only and
+was not performed.
