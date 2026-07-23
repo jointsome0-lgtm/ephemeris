@@ -244,3 +244,102 @@ authenticated bridge operations, fixed runner authority, and text-only data
 handling. Wider, proxy-adjacent, or multi-user deployment remains **NO**. The
 queue entry may move to Done. A live restart remains owner-only and was not
 performed.
+
+## REOPENING ADDENDUM — exact-head reviews `fa13d5c` and `a0e694f`
+
+The closing verdict immediately above is **SUPERSEDED for the current tree**.
+The first Done-bookkeeping head `fa13d5c` received two fresh instruction
+findings, both fixed in cycle 3 as `a0e694f`; exact-head review of
+that fix found three further instruction details plus the stale report verdict
+itself. The queue is Pending again. No version of this report may be used as a
+restart approval until a later superseding closing verdict explicitly closes
+this addendum on a reviewed exact head.
+
+### A4 — Request-scoped bridge errors were not given UI/state handling (Low, confirmed; resolved in cycle 3)
+
+The cycle-2 text matched success replies and asynchronous run messages but did
+not say that Load, Save, Save/Run, and Cancel can instead answer with
+`op: "error"` and the same `request_id`. Generated pages could leave an
+operation pending or silently hide conflict, consent denial, admission, and
+degradation states. The parent/backend still failed closed, so no authority
+was gained.
+
+Cycle 3 adds the frozen error envelope, request-id matching, text-only code
+display, and per-request pending-state release. Its first revision rule was
+deliberately conservative but incomplete; A8 below tightens mutating failures.
+
+### A5 — Runner pages requested unused `attempts` authority (Low, confirmed; resolved in cycle 3)
+
+The runner-backed concrete ready message always requested `attempts`, even on
+a page that did not record declared answers. Because capability negotiation is
+independent, that unnecessarily granted the page an attempt channel for other
+declared questions on the armed page. Server-side question identity still
+bounded writes, but the grant violated least privilege and could let unrelated
+page script produce misleading records.
+
+Cycle 3 makes the concrete runner list `editor` + `run` and adds `attempts` to
+that one announcement only when the page actually records declared answers.
+The editor-only instruction uses the same condition.
+
+### A6 — `job-missing` Cancel cannot wait for a later relay event (Low, confirmed; resolved in cycle 4)
+
+Cycle 3 initially told every failed Cancel to retain active state until
+`run.exit` or `run.error`. For `job-missing`, however, the parent removes the
+owned run before replying, and the relay's ownership gate then prevents any
+later asynchronous message. The generated controls would stay stuck forever.
+
+Cycle 4 distinguishes that terminal code: `job-missing` clears local active-run
+state, while other Cancel errors release only the request-pending state and
+retain the owned run until its actual asynchronous terminal message.
+
+### A7 — The report claimed closure while the queue was Pending (Low, confirmed; resolved for the interim state)
+
+The first closeout commit reopened the queue but left the earlier three-finding
+SAFE verdict as the report's last word. That contradicted the repository's
+deployment gate and made the document reusable as stale approval. This
+reopening addendum explicitly supersedes that verdict and states the only
+current posture: Pending and not restart-approved. A final SAFE verdict remains
+for a later exact-head-reviewed closeout commit.
+
+### A8 — Mutating errors can leave the child revision unknown (Low, confirmed; resolved in cycle 4)
+
+Cycle 3 told every request error to preserve the last `base_rev`. A Save/Run can
+publish the artifact successfully and then fail its fresh Run check or start;
+an ordinary Save can likewise have a durable file before a later visible
+failure. Reusing the old revision guarantees a conflict despite matching
+textarea bytes.
+
+Cycle 4 preserves the known revision only after a Load error. Any Save or
+Save/Run error keeps the learner's textarea but marks the revision unknown and
+requires a successful Load before the next mutation. This is safe for both
+pre-write refusals and post-write failures and never guesses server state.
+
+### A9 — Runner examples omitted the closed-stdin contract (Low, confirmed; resolved in cycle 4)
+
+The runner launches every program with `stdin=subprocess.DEVNULL`; a generated
+Python `input()` or Go `os.Stdin` exercise therefore sees EOF or fails instead
+of accepting learner input. The previous single-file/dependency-free wording
+did not expose this execution boundary.
+
+Cycle 4 now calls both runners non-interactive, forbids standard-input examples,
+and directs fixed invented input into the program while retaining the terminal
+for experiments that need learner interaction.
+
+## Reopened verification and interim verdict
+
+- Cycle-3 host `python verify.py` — **756 passed, 0 failed**.
+- Cycle-3 host `python verify_restore.py` — **28 passed, 0 failed**.
+- Cycle-3 `git diff --check`, one-template-hunk assertion, Python compile, and
+  public hygiene — passed.
+- Cycle-4 host `python verify.py` — **756 passed, 0 failed**.
+- Cycle-4 host `python verify_restore.py` — **28 passed, 0 failed**.
+- Cycle-4 `git diff --check`, one-template-hunk assertion, Python compile, and
+  public hygiene — passed. These changes are not closed until their own
+  exact-head review completes.
+
+**NOT YET SAFE TO MAKE LIVE.** The current drain has raised **9 Low, 0
+Critical, 0 High, 0 Medium, and 0 Info** findings across four cycles; the text
+changes for all nine are present, but cycle 4 and its later closeout have not
+yet passed the exact-head review gate. `docs/reviews/QUEUE.md` therefore remains
+Pending. Wider, proxy-adjacent, or multi-user deployment remains **NO**, and a
+live restart remains owner-only and was not performed.

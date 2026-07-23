@@ -382,6 +382,10 @@ with TestClient(app) as c:
           "`python-script-v1` for one `.py` file" in agents_text
           and "`go-run-v1` for one `.go` file" in agents_text
           and "single-file, dependency-free program" in agents_text
+          and "non-interactive and receive no standard input" in agents_text
+          and "never use Python `input()`" in agents_text
+          and "read Go `os.Stdin`" in agents_text
+          and "needs learner input in the terminal" in agents_text
           and "`attempts/blk_<id>/<file>`" in agents_text
           and "never more than 4 levels below" in agents_text
           and "learner artifacts" in agents_text
@@ -412,8 +416,14 @@ with TestClient(app) as c:
           and '"op":"error","request_id":"…","code":"…"' in agents_text
           and "match that id, clear" in agents_text
           and "only that request's pending state" in agents_text
+          and "After a Load error" in agents_text
+          and "After any Save or" in agents_text
+          and "Save/Run error, mark `base_rev` unknown" in agents_text
+          and "require a successful Load" in agents_text
+          and "file mutation may have landed" in agents_text
           and "failed Save/Run never enters active-run state" in agents_text
-          and "failed Cancel does not prove" in agents_text
+          and "`job-missing` is terminal locally" in agents_text
+          and "other code keep the owned run active" in agents_text
           and 'base_rev: "absent"' in agents_text
           and "`run.exit`, and `run.error`" in agents_text
           and "only increasing `seq` values" in agents_text

@@ -1101,7 +1101,9 @@ opaque `runner_id` — never a command.
 No `runner_id` means editor-only. The registered runners are
 `python-script-v1` for one `.py` file and `go-run-v1` for one `.go` file;
 both require a single-file, dependency-free program with no package
-download or install.
+download or install. They are non-interactive and receive no standard input:
+never use Python `input()` or read Go `os.Stdin`. Put invented fixed input in
+the program, or keep an experiment that needs learner input in the terminal.
 
 With the default artifact root, point `blocks[].file` at
 `attempts/blk_<id>/<file>` and never more than 4 levels below the root.
@@ -1140,10 +1142,13 @@ After Load, use `base_rev: "absent"` only when `exists` is false; otherwise
 retain its `file_rev`. After Save or Save/Run, advance to the returned
 `file_rev`. Match ordinary replies to `request_id`. Any request may instead
 return `{"op":"error","request_id":"…","code":"…"}`: match that id, clear
-only that request's pending state, preserve the textarea and last `base_rev`,
-and show `code` as text. A failed Save/Run never enters active-run state; a
-failed Cancel does not prove the owned job stopped, so keep it active until
-its `run.exit` or `run.error` arrives.
+only that request's pending state, preserve the textarea, and show `code` as
+text. After a Load error, keep the last known `base_rev`. After any Save or
+Save/Run error, mark `base_rev` unknown and require a successful Load before
+enabling another Save or Run: the file mutation may have landed before the
+later failure. A failed Save/Run never enters active-run state. For a failed
+Cancel, `job-missing` is terminal locally, so clear active-run state; for any
+other code keep the owned run active until its `run.exit` or `run.error`.
 
 Accept `run.output`, `run.exit`, and `run.error` only for the `run_id` returned
 by this page's Save/Run. Apply only increasing `seq` values from output and

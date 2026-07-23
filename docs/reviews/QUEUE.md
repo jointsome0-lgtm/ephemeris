@@ -32,8 +32,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   revision rules inside the generated workspace, and handle `run.error` as an
   owned terminal UI state. Review of the first Done-bookkeeping head reopened
   the drain for request-scoped error handling and conditional `attempts`
-  negotiation. It changes no runtime code path, schema, ABI, sandbox, CSP,
-  route, terminal surface, or other brief section.
+  negotiation; cycle 3 applies both. Its exact-head review keeps the drain open
+  for terminal `job-missing` cancellation, revision resync after mutating
+  errors, the runner's no-stdin rule, and an explicitly superseded interim
+  report verdict; cycle 4 applies those four corrections. It changes no runtime
+  code path, schema, ABI, sandbox, CSP, route, terminal surface, or other brief
+  section.
 
 ## Done
 
