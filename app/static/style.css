@@ -708,7 +708,6 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
 .due.today { color: var(--astral); }
 .due.overdue { color: var(--warn); }
 .trow-tag { color: var(--faint); font-size: 12px; display: inline-flex; align-items: center; gap: 3px; }
-.cd-pill { color: var(--orange); font-weight: 500; }
 .streak-pill { color: var(--gold); font-size: 12px; font-weight: 500; }
 
 /* round star-check (Ephemeris), priority-tinted */
@@ -730,11 +729,6 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
 .checkbox.on.p3 { background: var(--prio-high); border-color: var(--prio-high); }
 .checkbox.on .cbx-tick { opacity: 1; }
 
-/* countdown row uses a round emoji chip instead of a checkbox */
-.cd-chip {
-  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%;
-  display: grid; place-items: center; background: var(--primary-soft); font-size: 14px;
-}
 
 /* ===== habit tab ========================================================= */
 /* TickTick anchors the habit list left of the rail (~890px) and keeps the
@@ -999,7 +993,6 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
 .cm-event { font-size: 12px; padding: 2px 6px; border-radius: 5px; color: #fff; background: var(--primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* chip state ladder shared by the month chip (.cm-event) and the week all-day
    chip (.cw-chip) — one owner, mirroring the chip_class() macro in _cal.html */
-.cm-event.cd, .cw-chip.cd { background: var(--orange); }
 .cm-event.done, .cw-chip.done { background: var(--card-bg); color: var(--faint); text-decoration: line-through; }
 .cm-event.hi, .cw-chip.hi { background: var(--prio-high); }
 .cm-event.med, .cw-chip.med { background: var(--prio-medium); }
@@ -1030,7 +1023,7 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
 .cw-allday-cell:last-child { border-right: 0; }
 .cw-allday-cell.today { background: var(--hover); }
 .cw-chip { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: var(--primary); color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* its .ev/.cd/.done/.hi/.med states live in the shared ladder beside .cm-event */
+/* its .ev/.done/.hi/.med states live in the shared ladder beside .cm-event */
 
 .cw-body { height: var(--cw-h); position: relative; }
 .cw-gutter, .cw-daycol { position: relative; height: 100%; }

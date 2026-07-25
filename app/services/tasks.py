@@ -1,8 +1,7 @@
-"""Tasks — one-off to-dos and countdown events (sec21), TickTick-style.
+"""Tasks — one-off to-dos (sec21), TickTick-style.
 
 A task lives in a list (defaulting to Inbox), may have a due date, a priority, and
-a note; `kind='countdown'` marks an event we count down to. Completion is a
-reversible toggle (completed_at timestamp ⇄ NULL) — nothing is hidden or lost, in
+a note. Completion is a reversible toggle (completed_at timestamp ⇄ NULL) — nothing is hidden or lost, in
 keeping with the recovery-not-shame goal (sec16.5). Each write appends its event
 (sec14.1) in one transaction. Reads here back the smart lists (Today / Next 7 Days
 / Inbox / Completed) and per-list views.
@@ -20,7 +19,6 @@ PRIORITIES = (0, 1, 2, 3)
 # Seeded once on first run so Today/Lists aren't empty (sec17 seed pattern).
 # (title, list_name|None=Inbox, due_offset_days|None, kind, completed)
 SEED_TASKS = [
-    ("Weekend", None, 2, "countdown", False),
     ("Reply to emails", "Inbox", 0, "task", False),
     ("Buy groceries", "Shopping", 0, "task", False),
     ("Read 10 pages", "Study", 0, "task", False),
@@ -63,7 +61,7 @@ def create_task(
     note: str | None = None,
 ) -> int:
     title, due_date, priority = _clean(title, due_date, priority)
-    if kind not in ("task", "countdown"):
+    if kind not in ("task",):
         kind = "task"
     if list_id is None:
         list_id = lists_svc.inbox_id(conn)
@@ -173,15 +171,6 @@ def today_tasks(conn: sqlite3.Connection, today: str | None = None) -> list[sqli
     ).fetchall()
 
 
-def countdowns(conn: sqlite3.Connection, today: str | None = None) -> list[sqlite3.Row]:
-    """Upcoming countdown events (kind='countdown'), nearest first."""
-    today = today or today_str()
-    return conn.execute(
-        _SELECT + "WHERE t.completed_at IS NULL AND t.kind='countdown' "
-        "ORDER BY (t.due_date IS NULL), t.due_date, t.id",
-    ).fetchall()
-
-
 def completed_on(conn: sqlite3.Connection, day: str | None = None) -> list[sqlite3.Row]:
     """Tasks completed on `day` (default today)."""
     day = day or today_str()
@@ -221,7 +210,7 @@ def due_between(conn: sqlite3.Connection, start: str, end: str) -> list[sqlite3.
     """Every task (any kind) with a due date in [start, end] — for the calendar grid."""
     return conn.execute(
         _SELECT + "WHERE t.due_date IS NOT NULL AND t.due_date >= ? AND t.due_date <= ? "
-        "ORDER BY t.due_date, t.priority DESC, (t.kind='countdown') DESC, t.id",
+        "ORDER BY t.due_date, t.priority DESC, t.id",
         (start, end),
     ).fetchall()
 

@@ -141,16 +141,13 @@ with TestClient(app) as c:
     # the rich day-review view now lives at /history (week strip + day sections)
     check("history has week strip", 'class="week-strip"' in c.get("/history").text)
 
-    # --- premium views: calendar / focus / countdown / search / trash
+    # --- premium views: calendar / focus / search / trash
     r = c.get("/calendar")
     check("GET /calendar 200", r.status_code == 200, str(r.status_code))
     check("calendar has month grid", "cal-month" in r.text)
     r = c.get("/focus")
     check("GET /focus 200", r.status_code == 200, str(r.status_code))
     check("focus has timer", 'id="focus-time"' in r.text and 'id="focus-start"' in r.text)
-    r = c.get("/countdown")
-    check("GET /countdown 200", r.status_code == 200, str(r.status_code))
-    check("countdown shows seeded event (Weekend)", "Weekend" in r.text)
     r = c.get("/search?q=groceries")
     check("GET /search 200 + finds task", r.status_code == 200 and "Buy groceries" in r.text)
     r = c.get("/search")
@@ -4025,12 +4022,10 @@ process.stdout.write(JSON.stringify([
     from app.services import lists as _lists
 
     r = c.get("/today")
-    check("today has Countdown section", ">Countdown<" in r.text)
     check("today has Completed section", ">Completed<" in r.text)
     check("today quick-add posts to /tasks", 'action="/tasks"' in r.text)
     check("list-sidebar shows Inbox", ">Inbox<" in r.text)
     check("list-sidebar shows a user list (Shopping)", "Shopping" in r.text)
-    check("today shows seeded countdown (Weekend)", "Weekend" in r.text)
 
     conn = _gc()
     inbox = _lists.inbox_id(conn)
@@ -4854,7 +4849,7 @@ process.stdout.write(JSON.stringify([
     rhome = c.get("/today").text
     check("mobile More sheet toggles a slide-up with the rail's overflow links",
           'id="more-toggle"' in rhome and 'class="more-sheet"' in rhome
-          and all(f'href="{h}"' in rhome for h in ("/countdown", "/retro", "/export", "/items")))
+          and all(f'href="{h}"' in rhome for h in ("/retro", "/export", "/items")))
 
     # --- Terminal core: trust gate + session ownership (review F1–F4) ----
     import asyncio as _asyncio
