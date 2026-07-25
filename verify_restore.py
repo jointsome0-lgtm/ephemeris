@@ -588,7 +588,7 @@ added_after_boot = booted_audit[len(source_audit):]
 check(
     "first app boot preserves the stream prefix and adds only documented seed events",
     booted_audit[:len(source_audit)] == source_audit
-    and len(added_after_boot) == 6
+    and len(added_after_boot) == 5
     and {record["type"] for record in added_after_boot} <= {"task_created", "task_completed"},
     str([record.get("type") for record in added_after_boot]),
 )

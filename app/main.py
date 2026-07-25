@@ -165,23 +165,6 @@ def due_label(date_str: str | None, today: str | None = None) -> str:
     return d.strftime("%b %-d, %Y")
 
 
-def countdown_label(date_str: str | None, today: str | None = None) -> str:
-    """Days-to-event label for a countdown card, e.g. '12 days left'."""
-    if not date_str:
-        return "no date"
-    today = today or today_str()
-    delta = (_date.fromisoformat(date_str) - _date.fromisoformat(today)).days
-    if delta == 0:
-        return "Today"
-    if delta == 1:
-        return "Tomorrow"
-    if delta > 1:
-        return f"{delta} days left"
-    if delta == -1:
-        return "Yesterday"
-    return f"{-delta} days ago"
-
-
 templates.env.globals.update(
     static_url=static_url,
     avatar=item_avatar,
@@ -189,7 +172,6 @@ templates.env.globals.update(
     status_desc=status_desc,
     status_meta=STATUS_META,
     due_label=due_label,
-    countdown_label=countdown_label,
     client_is_local=client_is_local,  # gates the terminal drawer in base.html
 )
 
@@ -467,12 +449,11 @@ def favicon() -> Response:
 @app.get("/today")
 def get_today(request: Request, sel: str | None = None, month: str | None = None,
               flash: str | None = None):
-    """Today as a task list (sec21): Countdown / Habit / Tasks / Completed."""
+    """Today as a task list (sec21): Habit / Tasks / Completed."""
     conn = get_conn()
     try:
         today = today_str()
         sections = [
-            {"title": "Countdown", "kind": "countdown", "rows": tasks.countdowns(conn, today)},
             {"title": "Habit", "kind": "habit", "rows": _habit_rows(conn, today)},
             {"title": "Tasks", "kind": "task", "rows": tasks.today_tasks(conn, today)},
             {"title": "Completed", "kind": "task", "rows": tasks.completed_on(conn, today)},
@@ -558,22 +539,6 @@ def get_trash(request: Request):
         conn.close()
 
 
-@app.get("/countdown")
-def get_countdown(request: Request, sel: str | None = None, month: str | None = None,
-                  flash: str | None = None):
-    """Countdown events (kind='countdown'), nearest first — the rail's ⏳ tab."""
-    conn = get_conn()
-    try:
-        sections = [{"title": "Countdown", "kind": "countdown", "rows": tasks.countdowns(conn)}]
-        return _render_tasks(
-            request, conn, page_title="Countdown", active="countdown", sections=sections,
-            show_add=True, add_list_id=lists.inbox_id(conn), add_list_name="Inbox",
-            add_kind="countdown", sel=sel, month=month, flash=flash, rail="countdown",
-        )
-    finally:
-        conn.close()
-
-
 @app.get("/search")
 def get_search(request: Request, q: str = ""):
     """Substring search over task titles + notes, plus Learn lessons."""
@@ -598,7 +563,7 @@ def get_search(request: Request, q: str = ""):
 
 
 def _task_chip(t) -> dict:
-    """A due task/countdown as a calendar chip — shared by the month + week views
+    """A due task as a calendar chip — shared by the month + week views
     (the templates' chip class ladder reads exactly these keys)."""
     return {
         "title": t["title"], "kind": t["kind"],
@@ -673,7 +638,6 @@ _PALETTE_VIEWS = [
     {"label": "Calendar", "href": "/calendar", "icon": "calendar"},
     {"label": "Focus", "href": "/focus", "icon": "focus"},
     {"label": "Habits", "href": "/habits", "icon": "habit"},
-    {"label": "Countdown", "href": "/countdown", "icon": "countdown"},
     {"label": "Learn", "href": "/learn", "icon": "learn"},
     {"label": "Retro", "href": "/retro", "icon": "retro"},
     {"label": "Search", "href": "/search", "icon": "search"},
