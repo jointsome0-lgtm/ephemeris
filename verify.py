@@ -141,13 +141,10 @@ with TestClient(app) as c:
     # the rich day-review view now lives at /history (week strip + day sections)
     check("history has week strip", 'class="week-strip"' in c.get("/history").text)
 
-    # --- premium views: calendar / matrix / focus / countdown / search / trash
+    # --- premium views: calendar / focus / countdown / search / trash
     r = c.get("/calendar")
     check("GET /calendar 200", r.status_code == 200, str(r.status_code))
     check("calendar has month grid", "cal-month" in r.text)
-    r = c.get("/matrix")
-    check("GET /matrix 200", r.status_code == 200, str(r.status_code))
-    check("matrix has 4 quadrants", r.text.count('class="quad ') == 4, str(r.text.count('class="quad ')))
     r = c.get("/focus")
     check("GET /focus 200", r.status_code == 200, str(r.status_code))
     check("focus has timer", 'id="focus-time"' in r.text and 'id="focus-start"' in r.text)
@@ -3780,7 +3777,6 @@ process.stdout.write(JSON.stringify([
     check("focus ring is a progress-driven astrolabe SVG",
           'class="astrolabe"' in focus and "astro-progress" in focus and 'id="focus-ring"' in focus)
     check("astrolabe keeps the timer ids", 'id="focus-time"' in focus and 'id="focus-start"' in focus)
-    check("empty quadrant shows a constellation", "es-constellation" in c.get("/matrix").text)
 
     r = c.get("/items")
     check("GET /items 200", r.status_code == 200, str(r.status_code))
@@ -4818,32 +4814,11 @@ process.stdout.write(JSON.stringify([
           rjson.status_code == 200 and rjson.json().get("ok") is True
           and "!2" in rjson.json().get("label", ""), rjson.text[:120])
 
-    # --- Drag & drop: matrix reorder/reprioritise + calendar event move (M4) ----
-    from app.services import calendar_events as _ce, tasks as _tasks
+    # --- Drag & drop: calendar event move (M4) ---------------------------------
+    from app.services import calendar_events as _ce
 
     mconn = get_conn()
     try:
-        ta = _tasks.create_task(mconn, "dnd A", priority=1)
-        tb = _tasks.create_task(mconn, "dnd B", priority=1)
-        tc = _tasks.create_task(mconn, "dnd C", priority=1)
-        _tasks.move_task(mconn, tc, after_id=ta, before_id=tb)   # reorder: A < C < B
-        oa, ob, oc = (mconn.execute("SELECT sort_order FROM tasks WHERE id=?", (i,)).fetchone()[0]
-                      for i in (ta, tb, tc))
-        check("move_task reorders within a quadrant (A < C < B by sort_order)",
-              oa < oc < ob, f"{oa},{oc},{ob}")
-        res = _tasks.move_task(mconn, tc, priority=3)             # cross-quadrant
-        check("move_task reprioritises across quadrants (C -> priority 3)",
-              res["priority"] == 3 and
-              mconn.execute("SELECT priority FROM tasks WHERE id=?", (tc,)).fetchone()[0] == 3)
-        mconn.execute("UPDATE tasks SET sort_order=5 WHERE id=?", (ta,))   # zero-gap neighbours
-        mconn.execute("UPDATE tasks SET sort_order=6 WHERE id=?", (tb,))
-        mconn.commit()
-        _tasks.move_task(mconn, tc, priority=1, after_id=ta, before_id=tb)
-        na, nb, nc = (mconn.execute("SELECT sort_order FROM tasks WHERE id=?", (i,)).fetchone()[0]
-                      for i in (ta, tb, tc))
-        check("move_task respaces when neighbours have no gap (A < C < B holds)",
-              na < nc < nb, f"{na},{nc},{nb}")
-
         eo = _ce.create_event(mconn, "dnd once", start_date="2026-07-10",
                               freq="once", all_day=True)
         er = _ce.create_event(mconn, "dnd weekly", start_date="2026-07-10",
@@ -4860,19 +4835,6 @@ process.stdout.write(JSON.stringify([
         check("move_event refuses a recurring series", refused)
     finally:
         mconn.close()
-
-    rmv = c.post(f"/tasks/{ta}/move", data={"priority": "0", "return_to": "/matrix"},
-                 headers={"X-Partial": "1"})
-    check("POST /tasks/{id}/move returns JSON with the new priority",
-          rmv.status_code == 200 and rmv.json().get("ok") is True
-          and rmv.json().get("priority") == 0, rmv.text[:120])
-    check("POST /tasks/{id}/move rejects an unknown task id (422)",
-          c.post("/tasks/999999/move", data={"priority": "1"},
-                 headers={"X-Partial": "1"}).status_code == 422)
-
-    check("matrix rows are draggable inside quadrant drop zones",
-          all(s in c.get("/matrix").text for s in
-              ('draggable="true"', 'data-dropzone="matrix"', 'data-priority=')))
 
     rrec = c.post(f"/calendar/events/{er}/move", data={"date": "2026-07-16"},
                   headers={"X-Partial": "1"})
@@ -4892,7 +4854,7 @@ process.stdout.write(JSON.stringify([
     rhome = c.get("/today").text
     check("mobile More sheet toggles a slide-up with the rail's overflow links",
           'id="more-toggle"' in rhome and 'class="more-sheet"' in rhome
-          and all(f'href="{h}"' in rhome for h in ("/countdown", "/learn", "/export", "/items")))
+          and all(f'href="{h}"' in rhome for h in ("/countdown", "/retro", "/export", "/items")))
 
     # --- Terminal core: trust gate + session ownership (review F1–F4) ----
     import asyncio as _asyncio
