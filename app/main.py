@@ -594,7 +594,7 @@ def get_search(request: Request, q: str = ""):
     )
 
 
-# --- Calendar (month grid) + Eisenhower Matrix (sec: premium views) ---------
+# --- Calendar (month grid) (sec: premium views) -----------------------------
 
 
 def _task_chip(t) -> dict:
@@ -672,7 +672,6 @@ _PALETTE_VIEWS = [
     {"label": "Tasks", "href": "/today", "icon": "tasks"},
     {"label": "Calendar", "href": "/calendar", "icon": "calendar"},
     {"label": "Focus", "href": "/focus", "icon": "focus"},
-    {"label": "Matrix", "href": "/matrix", "icon": "matrix"},
     {"label": "Habits", "href": "/habits", "icon": "habit"},
     {"label": "Countdown", "href": "/countdown", "icon": "countdown"},
     {"label": "Learn", "href": "/learn", "icon": "learn"},
@@ -984,33 +983,6 @@ def post_event_move(request: Request, event_id: int, date: str = Form(...),
     finally:
         conn.close()
     return _events_redirect(return_to)
-
-
-# Eisenhower quadrants keyed by our priority field (high→urgent+important … none→neither)
-_MATRIX_QUADRANTS = [
-    (3, "Urgent & Important"),
-    (2, "Not Urgent & Important"),
-    (1, "Urgent & Unimportant"),
-    (0, "Not Urgent & Unimportant"),
-]
-
-
-@app.get("/matrix")
-def get_matrix(request: Request):
-    conn = get_conn()
-    try:
-        buckets: dict[int, list] = {3: [], 2: [], 1: [], 0: []}
-        for t in tasks.all_open(conn):
-            buckets.get(t["priority"], buckets[0]).append(t)
-    finally:
-        conn.close()
-    # within a quadrant, manual order (sort_order) is primary so drag-reorder shows
-    for rows in buckets.values():
-        rows.sort(key=lambda t: (t["sort_order"], t["id"]))
-    quadrants = [{"title": title, "priority": p, "rows": buckets[p]} for p, title in _MATRIX_QUADRANTS]
-    return templates.TemplateResponse(request,
-        "matrix.html", {"request": request, "rail": "matrix", "quadrants": quadrants}
-    )
 
 
 @app.get("/learn")
@@ -2212,40 +2184,6 @@ def post_task_update(
             due_date=(due_date or None), priority=priority, list_id=list_id,
         )
     except tasks.TaskError as exc:
-        return RedirectResponse(_with_flash(_safe_return(return_to), str(exc)), status_code=303)
-    finally:
-        conn.close()
-    return RedirectResponse(_safe_return(return_to), status_code=303)
-
-
-@app.post("/tasks/{task_id}/move")
-def post_task_move(
-    request: Request,
-    task_id: int,
-    priority: str = Form(""),
-    after: str = Form(""),
-    before: str = Form(""),
-    return_to: str = Form("/matrix"),
-):
-    """Drag-and-drop reposition (matrix): `priority` = target quadrant (optional),
-    `after`/`before` = the task ids now above/below the drop slot."""
-    json_mode = _wants_json(request)
-
-    def _int_or_none(v: str):
-        v = (v or "").strip()
-        return int(v) if v.lstrip("-").isdigit() else None
-
-    conn = get_conn()
-    try:
-        res = tasks.move_task(
-            conn, task_id, priority=_int_or_none(priority),
-            after_id=_int_or_none(after), before_id=_int_or_none(before),
-        )
-        if json_mode:
-            return JSONResponse({"ok": True, "task_id": task_id, **res})
-    except tasks.TaskError as exc:
-        if json_mode:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
         return RedirectResponse(_with_flash(_safe_return(return_to), str(exc)), status_code=303)
     finally:
         conn.close()

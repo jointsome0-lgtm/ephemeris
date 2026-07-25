@@ -1072,22 +1072,6 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
 .event-form:not(:has(select[name="freq"] option[value="weekly"]:checked)) .ef-days-row { display: none; }
 .event-form:has(select[name="freq"] option[value="once"]:checked) .ef-interval-row { display: none; }
 
-/* ===== matrix view ====================================================== */
-.matrix-grid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 14px; min-height: calc(100vh - 110px); }
-.quad { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: inset 0 1px 0 var(--hairline); padding: 14px 16px; display: flex; flex-direction: column; overflow: hidden; }
-.quad-head { display: flex; align-items: baseline; gap: 9px; font-size: 14px; font-weight: 500; margin-bottom: 8px; }
-.quad-count { color: var(--faint); font-size: 12px; font-weight: 400; }
-.quad-badge { font-family: var(--font-display); font-size: 34px; font-weight: 600; line-height: 1; letter-spacing: .02em; opacity: .9; }
-.quad.q1 .quad-head { color: var(--prio-high); } .quad.q1 .quad-badge { color: var(--prio-high); }
-.quad.q2 .quad-head { color: var(--prio-medium); } .quad.q2 .quad-badge { color: var(--prio-medium); }
-.quad.q3 .quad-head { color: var(--prio-low); } .quad.q3 .quad-badge { color: var(--prio-low); }
-.quad.q4 .quad-head { color: var(--green); } .quad.q4 .quad-badge { color: var(--green); }
-.quad-body { flex: 1 1 auto; overflow-y: auto; }
-.quad-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; height: 100%; color: var(--faint); font-size: 13px; }
-.quad-empty .es-illus { width: 96px; color: var(--faint); }
-/* hover-lift for matrix cards (the shared .trow transition already covers transform) */
-.matrix-grid .trow:hover { transform: translateY(-1px); background: var(--hover); box-shadow: var(--shadow-sm); }
-
 /* ===== focus / pomodoro ================================================= */
 .focus-layout { display: flex; gap: 0; }
 .focus-main { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; padding-top: 56px; }
@@ -1303,15 +1287,10 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
   @keyframes eph-pal-in { from { transform: translateY(-8px); opacity: 0; } to { transform: none; opacity: 1; } }
 }
 
-/* ===== drag & drop (matrix + calendar) ================================== */
-.trow[draggable="true"] { cursor: grab; }
-.matrix-grid .trow.dragging { opacity: 0.4; cursor: grabbing; }
-.quad-body.over { outline: 2px dashed var(--astral); outline-offset: -4px; border-radius: 8px; background: var(--glow); }
+/* ===== drag & drop (calendar) =========================================== */
 .cm-event.ev[draggable="true"] { cursor: grab; }
 .cm-event.dragging { opacity: 0.4; }
 .cm-cell.over { outline: 2px solid var(--astral); outline-offset: -2px; background: var(--glow); }
-/* the placeholder is always in the DOM (for drag-to-empty); show it only when the quadrant has no rows */
-.quad-body:has(.trow) .quad-empty { display: none; }
 
 /* ===== bottom nav + "More" sheet (mobile only) ========================== */
 .bottom-nav, .more-sheet, .more-backdrop { display: none; }
@@ -1339,7 +1318,6 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
   .detail.detail-empty, .detail.detail-illus { display: none; }
   .detail:not(.detail-empty) { position: fixed; inset: 0; z-index: 100; width: auto; height: auto; flex: none; border: none; }
   .stat-grid, .focus-stat-grid { grid-template-columns: 1fr 1fr; }
-  .matrix-grid { grid-template-columns: 1fr; grid-template-rows: none; }
   .focus-layout { flex-direction: column; }
   .focus-side { flex: none; width: auto; height: auto; border-left: none; border-top: 1px solid var(--border); }
   .cal-month { min-height: 0; }
