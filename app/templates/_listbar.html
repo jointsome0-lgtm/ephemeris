@@ -26,12 +26,6 @@
     </a>
     {% endfor %}
 
-    <div class="lb-section"><span>Filters</span></div>
-    <p class="lb-desc">Display tasks filtered by list, date, priority, tag, and more.</p>
-
-    <div class="lb-section"><span>Tags</span></div>
-    <p class="lb-desc">Categorize your tasks with tags. Type “#” when adding a task.</p>
-
     <div class="lb-divider"></div>
     <a class="lb-link {% if active == 'completed' %}active{% endif %}" href="/completed">
       <span class="lb-ico">{{ ic.icon('completed') }}</span><span class="lb-name">Completed</span>

@@ -283,8 +283,8 @@ def _migrate_to_4(conn: sqlite3.Connection) -> None:
 # recurrence rule, never materialised. Soft-archived, never hard-deleted, so a series
 # stays joinable to its audit events (sec14.1 / recovery goal sec16.5). Kept SEPARATE
 # from `tasks` on purpose: recurring time-blocks must not pollute the task smart-lists
-# / Matrix and carry no "done" semantics (a class happens, it isn't completed — that's
-# what the Habit tab is for).
+# and carry no "done" semantics (a class happens, it isn't completed — that's what the
+# Habit tab is for).
 _SCHEMA_V5 = """
 CREATE TABLE IF NOT EXISTS calendar_events (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

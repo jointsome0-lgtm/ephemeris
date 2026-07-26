@@ -99,33 +99,3 @@ def create_list(conn: sqlite3.Connection, name: str, emoji: str | None = None) -
         list_id = cur.lastrowid
         append_event(conn, "list_created", {"list_id": list_id, "name": name, "emoji": emoji})
     return list_id
-
-
-def rename_list(conn: sqlite3.Connection, list_id: int, name: str, emoji: str | None = None) -> None:
-    row = get_list(conn, list_id)
-    if row is None:
-        raise ListError("unknown list")
-    name = _clean_name(name)
-    emoji = (emoji or "").strip() or row["emoji"]
-    ts = now_iso()
-    with conn:
-        conn.execute(
-            "UPDATE lists SET name = ?, emoji = ?, updated_at = ? WHERE id = ?",
-            (name, emoji, ts, list_id),
-        )
-        append_event(conn, "list_updated", {"list_id": list_id, "name": name, "emoji": emoji})
-
-
-def archive_list(conn: sqlite3.Connection, list_id: int) -> None:
-    """Soft-archive a user list; its tasks move to Inbox so nothing is orphaned."""
-    row = get_list(conn, list_id)
-    if row is None:
-        raise ListError("unknown list")
-    if row["kind"] == "inbox":
-        raise ListError("the Inbox can’t be deleted")
-    ts = now_iso()
-    inbox = inbox_id(conn)
-    with conn:
-        conn.execute("UPDATE tasks SET list_id = ? WHERE list_id = ?", (inbox, list_id))
-        conn.execute("UPDATE lists SET archived_at = ? WHERE id = ?", (ts, list_id))
-        append_event(conn, "list_archived", {"list_id": list_id, "name": row["name"]})

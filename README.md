@@ -9,10 +9,9 @@ See [`docs/system-design.md`](docs/system-design.md) for the full design.
 **Status:** runnable and actively implemented. Today/Tasks, Calendar (month),
 Focus (Pomodoro + persisted stats), Habits, Search, and JSONL Export are
 available, with light/dark themes and Mode A (no-JS PRG) + Mode B (fetch)
-progressive enhancement. Security, backup,
-cleanup, and Learn work continues through focused issues and the repository's
-normal review and verification protocols; it is not waiting on a
-repository-wide SDD freeze.
+progressive enhancement. Security, backup, cleanup, and Learn work continues
+through focused issues and the repository's normal review and verification
+protocols; it is not waiting on a repository-wide SDD freeze.
 
 Integration v1 composes separately owned Atlas and Exp2Res views through
 optional configured URLs on the same-machine/loopback topology. Ephemeris does
