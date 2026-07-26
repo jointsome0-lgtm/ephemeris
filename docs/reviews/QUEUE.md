@@ -19,7 +19,24 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
+- [ ] 2026-07-26 — commits after `4dea680` on `fix/25-platform-support` —
+  `app/terminal.py`, `app/sandbox.py`, `app/services/attempts.py`, `app/db.py`,
+  `app/main.py`, `app/services/focus.py`, `app/services/stats.py`, `verify.py`,
+  `README.md` — issue #25 moves the `fcntl`/`pty`/`termios` imports in
+  `app/terminal.py`, the `fcntl`/`resource` imports in `app/sandbox.py` and the
+  `fcntl` import in `app/services/attempts.py` from module level into the
+  functions that use them. `terminal.py` gains `_pty_stack()`, which caches the
+  three modules and raises `_UnsupportedPlatformError` when they are absent;
+  `setup_terminal()` calls it when the opt-in switch is on, and
+  `_create_session()` calls it before `pty.openpty()`. `_child_setup()` and
+  `sandbox.profile_preexec_fn()`'s `setup()` read the cached modules; the
+  imports are performed in the parent before the fork. `sandbox._GENEROUS_LIMITS`
+  is keyed by rlimit name instead of `resource.RLIMIT_*` value. The loopback peer
+  check, Host/Origin validation, the `EPHEMERIS_ENABLE_TERMINAL` switch and the
+  no-`--proxy-headers` contract are unchanged. `app/db.py` gains `pretty_date()`,
+  replacing seven `strftime("%-d")` call sites. `verify.py` adds a subprocess
+  probe that imports `app.main` with `fcntl`/`pty`/`termios`/`resource` blocked,
+  and repoints two mock targets from module globals to the stdlib modules.
 
 ## Done
 
