@@ -305,7 +305,6 @@ body.term-right-open .tt-shell { padding-right: var(--term-w, 42vw); }
 }
 .lb-section .lb-add { color: var(--faint); font-size: 15px; line-height: 1; padding: 2px 4px; border-radius: 6px; cursor: pointer; }
 .lb-section .lb-add:hover { background: var(--hover); color: var(--text); }
-.lb-desc { padding: 2px 10px 4px; font-size: 12px; color: var(--faint); line-height: 1.5; }
 .lb-divider { height: 1px; background: var(--border); margin: 10px 6px; }
 
 /* --- content --- */
@@ -1071,10 +1070,9 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
 .seg { display: inline-flex; background: var(--hover); border-radius: 9px; padding: 3px; gap: 2px; margin-bottom: 40px; }
 .seg button { border: none; background: none; color: var(--muted); padding: 6px 18px; border-radius: 7px; cursor: pointer; font-weight: 500; }
 .seg button.on { background: var(--card-bg); color: var(--text); box-shadow: var(--shadow-sm); }
-/* Pomo/Stopwatch switch lives centered in the header (TickTick), actions on the right */
+/* Pomo/Stopwatch switch lives centered in the header (TickTick) */
 .focus-head { position: relative; }
 .focus-head .seg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); margin: 0; }
-.focus-head .head-actions { margin-left: auto; }
 .focus-task { display: inline-flex; align-items: center; gap: 2px; color: var(--muted); font-size: 14px; margin: 4px 0 16px; }
 .focus-task:hover { color: var(--text); }
 .focus-task svg { width: 14px; height: 14px; }
