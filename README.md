@@ -26,6 +26,11 @@ This project uses [uv](https://docs.astral.sh/uv/) for dependency management;
 Ephemeris refuses to start until `ACTIVITY_DATA_DIR` names an explicitly
 configured private path outside the public checkout.
 
+Platform: the app itself runs anywhere Python does. The terminal drawer is the
+one exception — it needs a Unix PTY, so it is Unix-only, and it stays off unless
+`EPHEMERIS_ENABLE_TERMINAL` is set. Opting it in without a PTY fails at startup
+with an explicit message rather than breaking the rest of the app.
+
 ```bash
 uv sync                      # build .venv from uv.lock
 export ACTIVITY_DATA_DIR=~/.local/share/ephemeris
