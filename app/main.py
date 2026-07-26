@@ -27,7 +27,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from .db import get_conn, init_db, is_not_future, is_valid_date, now_iso, today_str
+from .db import (
+    get_conn, init_db, is_not_future, is_valid_date, now_iso, pretty_date, today_str,
+)
 from .request_body import PayloadTooLarge, read_capped
 from . import runner as runner_core
 from .security import browser_origin_rejection, install_security
@@ -161,8 +163,8 @@ def due_label(date_str: str | None, today: str | None = None) -> str:
     if 1 < delta <= 7:
         return d.strftime("%a")
     if d.year == _date.fromisoformat(today).year:
-        return d.strftime("%b %-d")
-    return d.strftime("%b %-d, %Y")
+        return pretty_date(d)
+    return pretty_date(d, year=True)
 
 
 templates.env.globals.update(
@@ -312,7 +314,7 @@ def _render_day(request: Request, date: str, nav_active: str, flash: str | None,
             "request": request,
             "date": date,
             "weekday": d.strftime("%A"),
-            "pretty_date": d.strftime("%b %-d"),
+            "pretty_date": pretty_date(d),
             "is_today": date == today_str(),
             "groups": groups,
             "daily_note": daily_note,
@@ -802,7 +804,7 @@ def get_calendar_week(request: Request, date: str | None = None, ev: str | None 
     elif sun.year == last.year:
         label = f"{sun.strftime('%b')} {sun.day} – {last.strftime('%b')} {last.day}, {sun.year}"
     else:
-        label = f"{sun.strftime('%b %-d, %Y')} – {last.strftime('%b %-d, %Y')}"
+        label = f"{pretty_date(sun, year=True)} – {pretty_date(last, year=True)}"
     ctx.update({
         "request": request, "rail": "calendar", "week_label": label,
         "prev_url": f"/calendar/week?date={(sun - timedelta(days=7)).isoformat()}",
@@ -1924,7 +1926,7 @@ def _render_habits(request: Request, sel=None, month=None, edit=False, flash=Non
         groups = _enrich_groups(raw_groups, hist, strip, _date.fromisoformat(today))
         ctx = {
             "request": request, "rail": "habit", "date": today, "today": today,
-            "pretty_date": _date.fromisoformat(today).strftime("%b %-d"),
+            "pretty_date": pretty_date(_date.fromisoformat(today)),
             "week": strip, "groups": groups, "flash": flash,
             "daily_note": checkins.get_daily_note(conn, today),
             "sections": items.list_sections(conn),

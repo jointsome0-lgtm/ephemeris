@@ -12,7 +12,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import date as _date, timedelta
 
-from ..db import append_event, now_iso, today_str
+from ..db import append_event, now_iso, pretty_date, today_str
 
 MODES = ("pomo", "stopwatch")
 # A single session can't reasonably exceed a day; clamp bogus client values so a
@@ -170,7 +170,7 @@ def get_session_view(conn: sqlite3.Connection, session_id: int) -> dict | None:
 
 
 def _daily_title(d: _date, minutes: int, pomos: int) -> str:
-    md = d.strftime("%a %b %-d")
+    md = pretty_date(d, weekday=True)
     if not minutes and not pomos:
         return f"{md} · no focus"
     bits = [f"{minutes}m"]
