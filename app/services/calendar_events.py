@@ -2,7 +2,7 @@
 
 A row IS the series: concrete occurrences are expanded on read from the recurrence
 rule (`occurs_on`), never materialised. This keeps recurring slots out of the task
-smart-lists / Matrix and gives them no completion semantics — a class *happens*, it
+smart-lists and gives them no completion semantics — a class *happens*, it
 isn't "done" (that's the Habit tab's job). Series are soft-archived, never hard-
 deleted, so they stay joinable to their audit events (sec14.1). Each write appends
 its event in the same transaction, same convention as tasks.py / items.py.

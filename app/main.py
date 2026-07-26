@@ -307,7 +307,7 @@ def _render_day(request: Request, date: str, nav_active: str, flash: str | None,
         if it["status"] in ("full_done", "light_done")
     )
     return templates.TemplateResponse(request,
-        "today.html",
+        "habit_day.html",
         {
             "request": request,
             "date": date,

@@ -10,10 +10,6 @@
     <button class="on" data-mode="pomo">Pomo</button>
     <button data-mode="stopwatch">Stopwatch</button>
   </div>
-  <div class="head-actions">
-    <button class="head-btn" title="Add">{{ ic.icon('plus') }}</button>
-    <button class="head-btn" title="More">{{ ic.icon('more') }}</button>
-  </div>
 </header>
 <div class="focus-layout">
   <div class="focus-main">
@@ -69,7 +65,6 @@
     {% endif %}
     <div class="focus-rec-head">
       <h2>Focus Record</h2>
-      <button class="head-btn" title="Add record">{{ ic.icon('plus') }}</button>
     </div>
     <ul class="focus-rec-list" id="focus-rec-list">
       {% for r in records %}
