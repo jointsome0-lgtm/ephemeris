@@ -6,9 +6,7 @@ terminal sessions through that seam; later phases reuse it for other roles.
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import os
-import resource
 import subprocess
 from dataclasses import dataclass
 from functools import cache
@@ -451,13 +449,19 @@ def require_sandbox_runtime() -> None:
         )
 
 
-_GENEROUS_LIMITS: Mapping[int, int] = {
-    resource.RLIMIT_NOFILE: 4096,
-    resource.RLIMIT_NPROC: 4096,
+# Keyed by rlimit NAME, not by resource.RLIMIT_* value: `resource` is Unix-only
+# and this module sits on main.py's unconditional import chain (main -> terminal
+# -> sandbox), so the constant must not need it at module import time. Resolved
+# against the module at the point of use, where the platform is known to have it.
+_GENEROUS_LIMITS: Mapping[str, int] = {
+    "RLIMIT_NOFILE": 4096,
+    "RLIMIT_NPROC": 4096,
 }
 
 
 def _set_bounded_rlimit(limit: int, cap: int) -> None:
+    import resource
+
     _soft, hard = resource.getrlimit(limit)
     bounded = cap if hard == resource.RLIM_INFINITY else min(cap, hard)
     resource.setrlimit(limit, (bounded, bounded))
@@ -469,9 +473,11 @@ def apply_profile_rlimits(
     runner_wall_seconds: int | None = None,
 ) -> None:
     """Apply the unchanged terminal caps or F3's strict runner backstops."""
+    import resource
+
     if profile in ("lesson-agent", "lesson-learner"):
-        for limit, cap in _GENEROUS_LIMITS.items():
-            _set_bounded_rlimit(limit, cap)
+        for name, cap in _GENEROUS_LIMITS.items():
+            _set_bounded_rlimit(getattr(resource, name), cap)
         return
     if profile != "lesson-runner":
         return
@@ -502,6 +508,10 @@ def profile_preexec_fn(
     """Compose terminal.py's existing PTY setup with the profile limit hook."""
     if profile not in _PROFILES:
         raise ValueError(f"unknown sandbox profile: {profile}")
+    # setup() runs between fork and exec, where a module's FIRST import could
+    # deadlock on the import lock. Pay for it here, in the parent, so the child's
+    # `import resource` is only a sys.modules hit.
+    import resource  # noqa: F401
 
     def setup() -> None:
         if existing is not None:
@@ -544,6 +554,8 @@ def _snapshot_memfd(snapshot: bytes) -> int:
             raise OSError("runner snapshot readable length mismatch")
         os.fchmod(fd, 0o444)
         if getattr(os, "MFD_ALLOW_SEALING", 0):
+            import fcntl
+
             seals = (
                 fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK
                 | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE

@@ -22,15 +22,13 @@ or Ctrl+`); there is no dedicated page route, only this websocket.
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import ipaddress
 import json
 import os
-import pty
 import signal
 import socket
 import struct
-import termios
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -57,6 +55,43 @@ _TERMINAL_ENABLED = (
     os.environ.get("EPHEMERIS_ENABLE_TERMINAL", "").strip().lower()
     in {"1", "true", "yes", "on"}
 )
+
+
+class _UnsupportedPlatformError(RuntimeError):
+    """This platform has no PTY, so no terminal session can exist here."""
+
+
+_PTY_STACK: tuple | None = None
+
+
+def _pty_stack():
+    """The Unix-only (fcntl, pty, termios) trio, imported at the point of use.
+
+    main.py imports this module unconditionally — before EPHEMERIS_ENABLE_TERMINAL
+    gets to decide anything — so importing these at module level would take the
+    whole app down on a platform that has no PTY, terminal or not. Importing them
+    here keeps module import platform-clean and turns "no PTY on this OS" into one
+    explicit refusal instead of an ImportError from three frames up the chain.
+
+    Cached, and every path that forks warms it in the parent first (setup_terminal
+    at startup, _create_session before pty.openpty), because _child_setup runs
+    between fork and exec, where importing a module for the first time could
+    deadlock on the import lock. Post-fork this is a tuple read, never an import.
+    """
+    global _PTY_STACK
+    if _PTY_STACK is None:
+        try:
+            import fcntl
+            import pty
+            import termios
+        except ImportError as exc:
+            raise _UnsupportedPlatformError(
+                f"the terminal needs a Unix PTY (fcntl/pty/termios), which "
+                f"{sys.platform} does not provide; unset EPHEMERIS_ENABLE_TERMINAL "
+                f"to run the rest of the app on this platform"
+            ) from exc
+        _PTY_STACK = (fcntl, pty, termios)
+    return _PTY_STACK
 
 
 class _LessonWorkspaceError(Exception):
@@ -147,6 +182,7 @@ def _ws_is_trusted(ws: WebSocket) -> bool:
 
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
+    fcntl, _pty, termios = _pty_stack()
     try:
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
     except OSError:
@@ -155,7 +191,11 @@ def _set_winsize(fd: int, rows: int, cols: int) -> None:
 
 def _child_setup() -> None:
     """Run in the forked child before exec: own a new session and make the pty
-    slave (fd 0) our controlling terminal, so job control + isatty work."""
+    slave (fd 0) our controlling terminal, so job control + isatty work.
+
+    Runs post-fork, so _pty_stack() must already be warm (it is: _create_session
+    opens the pty before spawning) and only reads the cached tuple here."""
+    fcntl, _pty, termios = _pty_stack()
     os.setsid()
     try:
         fcntl.ioctl(0, termios.TIOCSCTTY, 0)
@@ -663,6 +703,7 @@ async def _create_session(
         proxy = await asyncio.to_thread(_detect_proxy_env, role)
         env.update(proxy)
 
+        _fcntl, pty, _termios = _pty_stack()
         master_fd, slave_fd = pty.openpty()
         os.set_blocking(master_fd, False)  # pump + input writes are add_reader/add_writer-driven
         if sandbox_profile is not None:
@@ -952,6 +993,9 @@ def setup_terminal(app: FastAPI) -> None:
     globals in main.py.)"""
     if not _TERMINAL_ENABLED:
         return
+    # Opted in, so a missing PTY is a startup error, not a mystery at the first
+    # websocket frame. Also warms the cache before any session can fork.
+    _pty_stack()
 
     @app.websocket("/terminal/ws")
     async def terminal_ws(ws: WebSocket):

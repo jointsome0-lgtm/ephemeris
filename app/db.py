@@ -12,7 +12,7 @@ import json
 import os
 import re
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -64,6 +64,20 @@ def now_iso() -> str:
 def now_stamp() -> str:
     """Compact, filename-safe local timestamp, e.g. 2026-06-06-211000 (sec18.1)."""
     return _now().strftime("%Y-%m-%d-%H%M%S")
+
+
+def pretty_date(d: date, *, weekday: bool = False, year: bool = False) -> str:
+    """Human date with an unpadded day number: 'Jul 4', 'Sat Jul 4', 'Jul 4, 2026'.
+
+    One owner for what used to be five spellings of strftime("%b %-d"). The `-`
+    no-pad flag is a glibc extension — absent from C89 strftime, so it is not
+    portable (Windows spells it `%#d`, and other libcs reject it outright). Only
+    the day number needs it, so it is rendered by hand and everything else stays
+    with strftime, keeping the month/weekday names locale-driven and the output
+    byte-identical to the old format strings.
+    """
+    out = d.strftime("%a %b " if weekday else "%b ") + str(d.day)
+    return out + d.strftime(", %Y") if year else out
 
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")

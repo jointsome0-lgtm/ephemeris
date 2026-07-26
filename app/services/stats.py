@@ -20,7 +20,7 @@ import calendar as _cal
 import sqlite3
 from datetime import date as _date, timedelta
 
-from ..db import today_str
+from ..db import pretty_date, today_str
 
 KEPT = ("full_done", "light_done")
 
@@ -264,6 +264,6 @@ def week_pulse(
             "checkins": ci, "focus_min": fmin, "tasks": tk,
             "total": ci + tk + (1 if fmin else 0),
             "is_today": d == end_d,
-            "title": f"{d.strftime('%a %b %-d')} · {ci} kept · {fmin}m focus · {tk} done",
+            "title": f"{pretty_date(d, weekday=True)} · {ci} kept · {fmin}m focus · {tk} done",
         })
     return out

@@ -23,7 +23,6 @@ save-only; a future agent subscribes to `lesson_attempt` events instead).
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
@@ -294,6 +293,21 @@ def _projection_file_lock(lesson: dict):
     lesson uid now names a lock outside the agent-writable bundle, so only
     sibling projection work serializes; unrelated SQLite writers remain free.
     """
+    # Unix-only, and this module is on main.py's import chain, so it is imported
+    # here rather than at module level. Bound before the try: the finally below
+    # unlocks, and a failure between open and lock must surface its own error,
+    # not an UnboundLocalError from the cleanup path.
+    #
+    # A platform with no flock is an unavailable lock, not a crash: both callers
+    # already degrade that to a False return ("projection: pending"), and the
+    # attempt row is committed before projection runs. Raising OSError keeps that
+    # contract instead of an ImportError escaping past their handlers as a 500
+    # over an attempt that was in fact recorded.
+    try:
+        import fcntl
+    except ImportError as exc:
+        raise OSError("advisory file locking (fcntl.flock) is unavailable") from exc
+
     _ensure_state_dir()
     _, lock_path = _state_paths(lesson)
     fd = os.open(

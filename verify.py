@@ -7,6 +7,7 @@ contract still holds. Prints PASS/FAIL per assertion; exits non-zero on any fail
 from __future__ import annotations
 
 import hashlib
+import importlib.abc as _importlib_abc
 import json
 import os
 import sqlite3
@@ -15,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from datetime import date as _vdate
 from pathlib import Path
 
 # Isolated DB before importing the app.
@@ -30,7 +32,7 @@ os.environ["EPHEMERIS_TRUSTED_HOSTS"] = "testserver,localhost,127.0.0.1,::1"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.db import SCHEMA_VERSION, get_conn, today_str  # noqa: E402
+from app.db import SCHEMA_VERSION, get_conn, pretty_date, today_str  # noqa: E402
 from app.main import app  # noqa: E402
 
 PASS = 0
@@ -83,6 +85,63 @@ def item_row(item_id: int):
         conn.close()
 
 
+_NO_PTY_PROBE = r"""
+import importlib.abc
+import sys
+
+# Stand in for a platform with no PTY (issue #25): Windows has none of these, and
+# no CI runner here does either, so the platform is faked by refusing the imports.
+_BLOCKED = {"fcntl", "pty", "termios", "resource"}
+
+
+class _NoUnixModules(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split(".")[0] in _BLOCKED:
+            raise ImportError(f"no module named {fullname!r} on this platform")
+        return None
+
+
+for _name in [m for m in sys.modules if m.split(".")[0] in _BLOCKED]:
+    del sys.modules[_name]
+sys.meta_path.insert(0, _NoUnixModules())
+
+# terminal.py must import even with no PTY: main.py imports it unconditionally,
+# before the opt-in switch is consulted.
+from app import terminal as _term
+
+_refused = ""
+try:
+    import app.main
+    _imported = True
+except _term._UnsupportedPlatformError as exc:
+    _imported = False
+    _refused = str(exc)
+
+print("|".join((
+    str(_imported),
+    str(all(callable(fn) for fn in (
+        _term.client_is_local, _term.setup_terminal, _term.shutdown_terminal,
+    ))),
+    _refused.replace("|", "/"),
+)))
+"""
+
+
+def no_pty_probe(enabled: bool):
+    """Import the app in a fresh process with the Unix-only modules unavailable."""
+    env = os.environ.copy()
+    env.pop("EPHEMERIS_ENABLE_TERMINAL", None)
+    if enabled:
+        env["EPHEMERIS_ENABLE_TERMINAL"] = "1"
+    return subprocess.run(
+        [sys.executable, "-c", _NO_PTY_PROBE],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+
 def terminal_wiring_probe(enabled: bool):
     """Import the app in a fresh process because terminal routes wire at import."""
     env = os.environ.copy()
@@ -111,6 +170,55 @@ check(
     enabled_terminal_wiring.returncode == 0
     and enabled_terminal_wiring.stdout.strip() == "True True True True",
     enabled_terminal_wiring.stderr.strip() or enabled_terminal_wiring.stdout.strip(),
+)
+
+# Issue #25: the app must import on a platform with no PTY. The terminal is the
+# only Unix-only surface, and it is off by default, so its imports happen at the
+# point of use — not on main.py's unconditional import chain.
+no_pty_default = no_pty_probe(False)
+_no_pty_default_out = no_pty_default.stdout.strip().split("|")
+check(
+    "platform support: app imports with fcntl/pty/termios/resource unavailable",
+    no_pty_default.returncode == 0 and _no_pty_default_out == ["True", "True", ""],
+    no_pty_default.stderr.strip() or no_pty_default.stdout.strip(),
+)
+no_pty_enabled = no_pty_probe(True)
+_no_pty_enabled_out = no_pty_enabled.stdout.strip().split("|")
+check(
+    "platform support: opting the terminal in with no PTY refuses explicitly",
+    no_pty_enabled.returncode == 0
+    and _no_pty_enabled_out[:2] == ["False", "True"]
+    and "fcntl/pty/termios" in _no_pty_enabled_out[-1]
+    and "EPHEMERIS_ENABLE_TERMINAL" in _no_pty_enabled_out[-1],
+    no_pty_enabled.stderr.strip() or no_pty_enabled.stdout.strip(),
+)
+
+# Issue #25: pretty_date() replaced strftime("%-d"), a glibc-only extension. Two
+# independent fidelity checks — literal expectations, which hold on any libc, and
+# a comparison against the exact format strings it replaced, which is the real
+# regression guard while this runs on glibc.
+_pd_dates = [
+    _vdate(2026, 7, 4),    # single-digit day: the whole reason %-d was there
+    _vdate(2026, 7, 26),
+    _vdate(2026, 1, 1),
+    _vdate(2026, 12, 31),
+    _vdate(2024, 2, 29),   # leap day
+]
+check(
+    "date helper: unpadded day, no leading zero, in all three spellings",
+    pretty_date(_vdate(2026, 7, 4)) == "Jul 4"
+    and pretty_date(_vdate(2026, 7, 4), year=True) == "Jul 4, 2026"
+    and pretty_date(_vdate(2026, 7, 4), weekday=True) == "Sat Jul 4"
+    and pretty_date(_vdate(2026, 12, 31), year=True) == "Dec 31, 2026",
+)
+check(
+    "date helper: byte-identical to the strftime(\"%-d\") formats it replaced",
+    all(
+        pretty_date(d) == d.strftime("%b %-d")
+        and pretty_date(d, year=True) == d.strftime("%b %-d, %Y")
+        and pretty_date(d, weekday=True) == d.strftime("%a %b %-d")
+        for d in _pd_dates
+    ),
 )
 
 
@@ -1707,6 +1815,43 @@ process.stdout.write(JSON.stringify([
           _at_rec_ok and _at_rec_ok2
           and _at_rec_text == _at_proj.read_text(encoding="utf-8")
           and len(_at_rec_text.splitlines()) == len(_at_rows()))
+
+    # Issue #25: fcntl is imported at the point of use, so a platform without it
+    # must read as an unavailable lock, not a crash. The attempt row is committed
+    # before projection runs, so an ImportError escaping past the callers' narrow
+    # (OSError, sqlite3.Error) handlers would 500 over an attempt that WAS
+    # recorded; both entry points must degrade to False ("projection: pending").
+    class _NoFcntlFinder(_importlib_abc.MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == "fcntl":
+                raise ImportError("no module named 'fcntl' on this platform")
+            return None
+
+    _at_saved_fcntl = sys.modules.pop("fcntl", None)
+    sys.meta_path.insert(0, _NoFcntlFinder())
+    _at_conn = get_conn()
+    try:
+        try:
+            with attempts_svc._projection_file_lock(_at):
+                pass
+            _at_nofcntl_lock = "no error"
+        except OSError as exc:              # ImportError is NOT an OSError
+            _at_nofcntl_lock = "oserror" if "fcntl" in str(exc) else "other"
+        except ImportError:
+            _at_nofcntl_lock = "importerror"
+        _at_nofcntl_project = attempts_svc._project_attempt(
+            _at_conn, _at, _at_rows()[-1])
+        _at_nofcntl_reconcile = attempts_svc.reconcile_projection(_at_conn, _at)
+    finally:
+        _at_conn.close()
+        sys.meta_path[:] = [f for f in sys.meta_path
+                            if not isinstance(f, _NoFcntlFinder)]
+        if _at_saved_fcntl is not None:
+            sys.modules["fcntl"] = _at_saved_fcntl
+    check("no fcntl: projection degrades to pending, never a 500 over a saved attempt",
+          _at_nofcntl_lock == "oserror"
+          and _at_nofcntl_project is False
+          and _at_nofcntl_reconcile is False)
 
     # A public reconcile must never publish caller-local uncommitted rows.
     # Rejecting an active transaction leaves the prior projection untouched;
@@ -4861,6 +5006,11 @@ process.stdout.write(JSON.stringify([
 
     from app import terminal as _terminal
 
+    # terminal.py imports the PTY stack at the point of use (issue #25), so there
+    # is no _terminal.pty global to patch; patch the stdlib module the lazy import
+    # resolves to. Reading it here also asserts the stack loads on this platform.
+    _terminal_pty = _terminal._pty_stack()[1]
+
     # a non-loopback peer (TestClient reports "testclient") is closed pre-accept
     gate_rejected = False
     try:
@@ -5041,6 +5191,11 @@ process.stdout.write(JSON.stringify([
     from app import sandbox as _sandbox
     from unittest import mock as _sandbox_mock
 
+    # sandbox.py imports `resource` at the point of use (issue #25), so the rlimit
+    # checks below patch the stdlib module itself — the same object the function's
+    # local import resolves to.
+    import resource as _resource_mod
+
     _sb_root = "/tmp/ephemeris-e1-verify"
     _sb_bundle = f"{_sb_root}/invented-bundle"
     _sb_agent = _sandbox.build_sandbox_argv(
@@ -5201,9 +5356,7 @@ process.stdout.write(JSON.stringify([
     except TypeError:
         _sb_env_required = True
     check("E1 rlimits and env: PTY caps hooked, explicit child env required",
-          set(_sandbox._GENEROUS_LIMITS) == {
-              _sandbox.resource.RLIMIT_NOFILE, _sandbox.resource.RLIMIT_NPROC,
-          }
+          set(_sandbox._GENEROUS_LIMITS) == {"RLIMIT_NOFILE", "RLIMIT_NPROC"}
           and _sandbox.profile_preexec_fn("lesson-agent") is not None
           and _sandbox.profile_preexec_fn("lesson-runner") is not None
           and _sb_env_required)
@@ -5542,7 +5695,7 @@ process.stdout.write(JSON.stringify([
         with _sandbox_mock.patch.object(
                 _terminal, "resolve_terminal_workspace", return_value=workspace), \
                 _sandbox_mock.patch.object(_terminal, "DB_PATH", bundle_db), \
-                _sandbox_mock.patch.object(_terminal.pty, "openpty") as openpty, \
+                _sandbox_mock.patch.object(_terminal_pty, "openpty") as openpty, \
                 _sandbox_mock.patch.object(
                     _terminal, "spawn_sandboxed",
                     new=_sandbox_mock.AsyncMock()) as spawn:
@@ -6059,25 +6212,25 @@ process.stdout.write(JSON.stringify([
           })
 
     with _sandbox_mock.patch.object(
-            _sandbox.resource, "getrlimit",
-            return_value=(0, _sandbox.resource.RLIM_INFINITY)), \
-            _sandbox_mock.patch.object(_sandbox.resource, "setrlimit") as _setlimit:
+            _resource_mod, "getrlimit",
+            return_value=(0, _resource_mod.RLIM_INFINITY)), \
+            _sandbox_mock.patch.object(_resource_mod, "setrlimit") as _setlimit:
         _sandbox.apply_profile_rlimits(
             "lesson-runner", runner_wall_seconds=60
         )
     _f3_limit_calls = dict(call.args for call in _setlimit.call_args_list)
     check("F3 runner preexec applies CPU/AS/NOFILE/NPROC/FSIZE backstops",
           _f3_limit_calls == {
-              _sandbox.resource.RLIMIT_CPU: (60, 60),
-              _sandbox.resource.RLIMIT_AS: (
+              _resource_mod.RLIMIT_CPU: (60, 60),
+              _resource_mod.RLIMIT_AS: (
                   _sandbox.RUNNER_ADDRESS_SPACE_BYTES,
                   _sandbox.RUNNER_ADDRESS_SPACE_BYTES,
               ),
-              _sandbox.resource.RLIMIT_NOFILE: (256, 256),
-              _sandbox.resource.RLIMIT_NPROC: (
+              _resource_mod.RLIMIT_NOFILE: (256, 256),
+              _resource_mod.RLIMIT_NPROC: (
                   _sandbox.RUNNER_NPROC, _sandbox.RUNNER_NPROC,
               ),
-              _sandbox.resource.RLIMIT_FSIZE: (
+              _resource_mod.RLIMIT_FSIZE: (
                   _sandbox.RUNNER_FILE_BYTES, _sandbox.RUNNER_FILE_BYTES,
               ),
           })
