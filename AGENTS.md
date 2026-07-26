@@ -52,6 +52,10 @@ Do not copy real task titles, habit names, notes, dates, screenshots, export row
 - The terminal PTY/WS core (`app/terminal.py`) is delicate (detach/reattach + fd lifecycle): changes to it go through their own dedicated review, never a ride-along cleanup pass.
 - Scope passes to a fresh, small target (a path or the latest commit). Do not re-run a pass over the same accumulated unpushed pile.
 
+## Review Findings: Don't Over-Engineer
+
+Review critics over-produce. Act on findings that name a concrete failure — wrong behaviour, crash, data loss, broken contract — in the app as deployed: single user, loopback-only, no auth, one worker. Reject the rest with the reason written down: hardening for a deployment this project does not have, abstraction for hypothetical futures, style rewrites. Real defects are never what gets waved off.
+
 ## Public-Safety Check
 
 Before finishing any change that touches storage, exports, docs, screenshots, tests, fixtures, or agent instructions, run:
