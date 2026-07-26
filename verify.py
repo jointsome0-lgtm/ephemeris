@@ -7,6 +7,7 @@ contract still holds. Prints PASS/FAIL per assertion; exits non-zero on any fail
 from __future__ import annotations
 
 import hashlib
+import importlib.abc as _importlib_abc
 import json
 import os
 import sqlite3
@@ -1814,6 +1815,43 @@ process.stdout.write(JSON.stringify([
           _at_rec_ok and _at_rec_ok2
           and _at_rec_text == _at_proj.read_text(encoding="utf-8")
           and len(_at_rec_text.splitlines()) == len(_at_rows()))
+
+    # Issue #25: fcntl is imported at the point of use, so a platform without it
+    # must read as an unavailable lock, not a crash. The attempt row is committed
+    # before projection runs, so an ImportError escaping past the callers' narrow
+    # (OSError, sqlite3.Error) handlers would 500 over an attempt that WAS
+    # recorded; both entry points must degrade to False ("projection: pending").
+    class _NoFcntlFinder(_importlib_abc.MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == "fcntl":
+                raise ImportError("no module named 'fcntl' on this platform")
+            return None
+
+    _at_saved_fcntl = sys.modules.pop("fcntl", None)
+    sys.meta_path.insert(0, _NoFcntlFinder())
+    _at_conn = get_conn()
+    try:
+        try:
+            with attempts_svc._projection_file_lock(_at):
+                pass
+            _at_nofcntl_lock = "no error"
+        except OSError as exc:              # ImportError is NOT an OSError
+            _at_nofcntl_lock = "oserror" if "fcntl" in str(exc) else "other"
+        except ImportError:
+            _at_nofcntl_lock = "importerror"
+        _at_nofcntl_project = attempts_svc._project_attempt(
+            _at_conn, _at, _at_rows()[-1])
+        _at_nofcntl_reconcile = attempts_svc.reconcile_projection(_at_conn, _at)
+    finally:
+        _at_conn.close()
+        sys.meta_path[:] = [f for f in sys.meta_path
+                            if not isinstance(f, _NoFcntlFinder)]
+        if _at_saved_fcntl is not None:
+            sys.modules["fcntl"] = _at_saved_fcntl
+    check("no fcntl: projection degrades to pending, never a 500 over a saved attempt",
+          _at_nofcntl_lock == "oserror"
+          and _at_nofcntl_project is False
+          and _at_nofcntl_reconcile is False)
 
     # A public reconcile must never publish caller-local uncommitted rows.
     # Rejecting an active transaction leaves the prior projection untouched;

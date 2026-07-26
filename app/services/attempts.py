@@ -297,7 +297,16 @@ def _projection_file_lock(lesson: dict):
     # here rather than at module level. Bound before the try: the finally below
     # unlocks, and a failure between open and lock must surface its own error,
     # not an UnboundLocalError from the cleanup path.
-    import fcntl
+    #
+    # A platform with no flock is an unavailable lock, not a crash: both callers
+    # already degrade that to a False return ("projection: pending"), and the
+    # attempt row is committed before projection runs. Raising OSError keeps that
+    # contract instead of an ImportError escaping past their handlers as a 500
+    # over an attempt that was in fact recorded.
+    try:
+        import fcntl
+    except ImportError as exc:
+        raise OSError("advisory file locking (fcntl.flock) is unavailable") from exc
 
     _ensure_state_dir()
     _, lock_path = _state_paths(lesson)
