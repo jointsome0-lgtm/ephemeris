@@ -19,20 +19,32 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-27 — `c159a2b` on `fix/terminal-copy-affordance`, landing after the
-  drain of the entry below; the entry stays current with the branch: any further
-  branch commit, and the merge commit itself once the PR lands, is appended here
-  before any drain or restart — `app/static/src/terminal.ts` (+ emitted
-  `app/static/terminal.js`), `verify.py` — the terminal client's custom key
-  handler calls `preventDefault()` on the copy path when Shift is held, so the
-  Ctrl+Shift+C alias no longer leaves the event's browser default action to run
-  after the selection is written; xterm's `_keyDown` returns at the custom
-  handler before its own `cancel()`, so the handler's `false` return does not
-  cancel the event. Plain Ctrl+C is not cancelled, and the no-selection path is
-  unchanged. `verify.py` anchors the added line inside the same branch. No other
-  file, and no Python runtime path, changed. verify 767, verify_restore 28.
+_None._
 
 ## Done
+
+- [x] 2026-07-27 — `c159a2b`, `0d32ad` on
+  `fix/terminal-copy-affordance`, landing after the drain of the terminal copy
+  affordance entry below — `app/static/src/terminal.ts` (+ emitted
+  `app/static/terminal.js`), `verify.py`, `docs/reviews/QUEUE.md` — the
+  terminal client's custom key handler calls `preventDefault()` on the copy
+  path when Shift is held, so the Ctrl+Shift+C alias no longer leaves the
+  event's browser default action to run after the selection is written;
+  xterm's `_keyDown` returns at the custom handler before its own `cancel()`,
+  so the handler's `false` return does not cancel the event. Plain Ctrl+C is
+  not cancelled, and the no-selection path is unchanged. `verify.py` anchors
+  the added line inside the same branch. No other application file, and no
+  Python runtime path, changed. No drain fix commit was required; verify 767,
+  verify_restore 28. Drained 2026-07-27 →
+  `2026-07-27-terminal-copy-alias-event-cancel-review.md`: no Critical, High,
+  Medium, Low, Info, or open finding; zero fix cycles. The E4 two-surface and
+  generated-runtime protections and terminal-tab L1 remain resolved;
+  terminal-opt-in T1 remains accepted only for the deliberately plain owner
+  shell; the trusted agent's network/credential posture and the
+  direct-loopback mitigation are unchanged. Final verdict: SAFE TO MAKE LIVE
+  for the documented direct-loopback single-worker deployment; wider,
+  proxy-adjacent, or multi-user deployment NO. Live restart is owner-only and
+  was not performed.
 
 - [x] 2026-07-27 — `d1d487d`, `4b398e6` on
   `fix/terminal-copy-affordance` —
