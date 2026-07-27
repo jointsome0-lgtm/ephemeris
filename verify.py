@@ -2651,6 +2651,715 @@ process.stdout.write(JSON.stringify([
     finally:
         _at_growth_conn.close()
 
+    # ---- S1: lesson assessments — the tutor-memory authority layer ---------
+    # (S-DESIGN D-S1-1..D-S1-4, docs/lesson-assessments-api.md)
+    from uuid import uuid4 as _as_uuid4
+    from app.services import assessments as assess_svc
+
+    _as_conn = get_conn()
+    try:
+        _as_id = lessons_svc.create_lesson(_as_conn, "Assessment Authority Demo")
+        _as = lessons_svc.get_lesson(_as_conn, _as_id)
+        _as_fold_id = lessons_svc.create_lesson(_as_conn, "Assessment Fold Demo")
+        _as_fold = lessons_svc.get_lesson(_as_conn, _as_fold_id)
+        _as_probe_id = lessons_svc.create_lesson(_as_conn, "Assessment Check Demo")
+        _as_probe = lessons_svc.get_lesson(_as_conn, _as_probe_id)
+        _as_arch_id = lessons_svc.create_lesson(_as_conn, "Assessment Archive Demo")
+        _as_fp_id = lessons_svc.create_lesson(_as_conn, "Assessment Fingerprint Demo")
+    finally:
+        _as_conn.close()
+
+    # schema v14: the table, its index, and the columns the memo binds
+    _as_schema_conn = get_conn()
+    try:
+        _as_cols = {r["name"] for r in _as_schema_conn.execute(
+            "PRAGMA table_info(lesson_assessments)")}
+        _as_indexes = {r["name"] for r in _as_schema_conn.execute(
+            "PRAGMA index_list(lesson_assessments)")}
+        _as_user_version = _as_schema_conn.execute(
+            "PRAGMA user_version").fetchone()[0]
+    finally:
+        _as_schema_conn.close()
+    check("schema v14 adds lesson_assessments with the D-S1-1 columns",
+          _as_user_version == 14 == SCHEMA_VERSION
+          and _as_cols == {
+              "id", "assessment_id", "event_uuid", "lesson_id", "lesson_uid",
+              "sitting_id", "mode", "idempotency_key", "fingerprint", "kind",
+              "level", "basis", "attempt_id", "question_id", "concepts_json",
+              "note", "next_action", "supersedes", "created_at"}
+          and "idx_assessments_lesson_kind" in _as_indexes)
+
+    # The per-kind CHECKs are schema-level self-enforcement (S-M1): the typed
+    # authority must stay structurally valid under restore tooling or a future
+    # second writer, not only under the endpoint's validation. Probe them with
+    # direct INSERTs on a lesson the endpoint checks never touch.
+    def _as_raw_insert(**over):
+        row = {
+            "assessment_id": str(_as_uuid4()), "event_uuid": str(_as_uuid4()),
+            "lesson_id": _as_probe_id, "lesson_uid": _as_probe["uid"],
+            "sitting_id": None, "mode": "tutoring",
+            "idempotency_key": "raw-" + _as_uuid4().hex,
+            "fingerprint": "sha256:" + "0" * 64, "kind": "summary",
+            "level": None, "basis": None, "attempt_id": None,
+            "question_id": None, "concepts_json": None,
+            "note": "Vera Example: raw CHECK probe.", "next_action": None,
+            "supersedes": None,
+            "created_at": "2030-01-01T00:00:00.000000+00:00",
+        }
+        row.update(over)
+        conn_ = get_conn()
+        try:
+            with conn_:
+                conn_.execute(
+                    "INSERT INTO lesson_assessments ("
+                    + ", ".join(row) + ") VALUES ("
+                    + ", ".join("?" * len(row)) + ")",
+                    tuple(row.values()))
+            return "accepted"
+        except sqlite3.IntegrityError:
+            return "rejected"
+        finally:
+            conn_.close()
+
+    _as_valid_seed = _as_raw_insert()
+    _as_check_probes = {
+        "review without attempt_id": _as_raw_insert(
+            kind="review", level="correct"),
+        "review with an evidence level": _as_raw_insert(
+            kind="review", level="passed", attempt_id=str(_as_uuid4())),
+        "evidence without concepts": _as_raw_insert(
+            kind="evidence", level="weak", basis="attempts"),
+        # NULL, not just wrong: SQLite's `NULL IN (...)` is NULL and a CHECK
+        # passes on NULL, so the constraints spell the IS NOT NULL out
+        "evidence without basis": _as_raw_insert(
+            kind="evidence", level="weak", concepts_json='["c"]'),
+        "evidence without level": _as_raw_insert(
+            kind="evidence", basis="live", concepts_json='["c"]'),
+        "review without level": _as_raw_insert(
+            kind="review", attempt_id=str(_as_uuid4())),
+        "evidence with a review level": _as_raw_insert(
+            kind="evidence", level="correct", basis="live",
+            concepts_json='["c"]'),
+        "evidence with an unknown basis": _as_raw_insert(
+            kind="evidence", level="weak", basis="rumour",
+            concepts_json='["c"]'),
+        "summary carrying a level": _as_raw_insert(kind="summary", level="seen"),
+        "summary carrying an attempt": _as_raw_insert(
+            kind="summary", attempt_id=str(_as_uuid4())),
+        "retraction without supersedes": _as_raw_insert(kind="retraction"),
+        "retraction carrying concepts": _as_raw_insert(
+            kind="retraction", supersedes=str(_as_uuid4()),
+            concepts_json='["c"]'),
+        "next_action outside a summary": _as_raw_insert(
+            kind="review", level="correct", attempt_id=str(_as_uuid4()),
+            next_action="do the thing"),
+        "basis outside evidence": _as_raw_insert(kind="summary", basis="live"),
+        "unknown kind": _as_raw_insert(kind="verdict"),
+        "unknown mode": _as_raw_insert(mode="grading"),
+        "empty note": _as_raw_insert(note=""),
+        # a retraction that DOES satisfy its supersedes conjunct must still be
+        # rejected for the fields it may not carry — otherwise the probes above
+        # would pass on the supersedes clause alone
+        "retraction carrying a level": _as_raw_insert(
+            kind="retraction", supersedes=str(_as_uuid4()), level="correct"),
+        "retraction carrying an attempt": _as_raw_insert(
+            kind="retraction", supersedes=str(_as_uuid4()),
+            attempt_id=str(_as_uuid4())),
+    }
+    check("per-kind CHECK constraints reject rows violating any stated conjunct",
+          _as_valid_seed == "accepted"
+          and all(outcome == "rejected"
+                  for outcome in _as_check_probes.values()),
+          f"{_as_valid_seed} / "
+          + ", ".join(f"{k}={v}" for k, v in _as_check_probes.items()
+                      if v != "rejected"))
+    _as_taken_uuid = str(_as_uuid4())
+    _as_taken_ref = str(_as_uuid4())
+    check("UNIQUE(lesson_id, idempotency_key), event_uuid and assessment_id hold",
+          _as_raw_insert(idempotency_key="raw-dup") == "accepted"
+          and _as_raw_insert(idempotency_key="raw-dup") == "rejected"
+          and _as_raw_insert(event_uuid=_as_taken_uuid) == "accepted"
+          and _as_raw_insert(event_uuid=_as_taken_uuid) == "rejected"
+          and _as_raw_insert(assessment_id=_as_taken_ref) == "accepted"
+          and _as_raw_insert(assessment_id=_as_taken_ref) == "rejected")
+
+    # one recorded attempt to diagnose: the lesson needs a declared question
+    _as_dir = Path(lessons_svc.LESSONS_DIR) / _as["slug"]
+    _as_raw_manifest = json.loads(
+        (_as_dir / "lesson.json").read_text(encoding="utf-8"))
+    _as_pg = _as_raw_manifest["pages"][0]["id"]
+    _as_raw_manifest["questions"] = [
+        {"id": "q_asfirst001", "page": _as_pg, "kind": "prediction"}]
+    bschema.write_manifest(_as_dir / "lesson.json", _as_raw_manifest)
+    (_as_dir / "index.html").write_text(
+        "<html>Vera Example assessment page</html>", encoding="utf-8")
+    _as_rev = "sha256:" + hashlib.sha256(
+        (_as_dir / "index.html").read_bytes()).hexdigest()
+    attempts_svc._reset_rate_limit()
+    _as_attempt = c.post(f"/learn/lessons/{_as_id}/attempts", json={
+        "question_id": "q_asfirst001", "page_id": _as_pg, "page_rev": _as_rev,
+        "answer": "Vera Example: the loop runs three times.",
+        "idempotency_key": "vera-as-att-1"}).json()
+    _as_attempt_id = _as_attempt["attempt_id"]
+    _as_url = f"/learn/lessons/{_as_id}/assessments"
+    assess_svc._reset_rate_limit()
+
+    def _as_rows(lesson_id=None):
+        conn_ = get_conn()
+        try:
+            return [dict(r) for r in conn_.execute(
+                "SELECT * FROM lesson_assessments WHERE lesson_id = ? ORDER BY id",
+                (lesson_id if lesson_id is not None else _as_id,)).fetchall()]
+        finally:
+            conn_.close()
+
+    def _as_events():
+        conn_ = get_conn()
+        try:
+            return conn_.execute(
+                "SELECT uuid, payload_json FROM events "
+                "WHERE type = 'lesson_assessment' ORDER BY id").fetchall()
+        finally:
+            conn_.close()
+
+    _as_review_body = {
+        "kind": "review", "level": "partial", "attempt_id": _as_attempt_id,
+        "note": "Vera Example: counts the loop edges, not the iterations.",
+        "idempotency_key": "vera-as-1"}
+    _as_r1 = c.post(_as_url, json=_as_review_body)
+    _as_j1 = _as_r1.json()
+    _as_row1 = _as_rows()[0]
+    check("review recorded: durable row, seq is the rowid, projection pending",
+          _as_r1.status_code == 200 and _as_j1["result"] == "recorded"
+          and _as_j1["assessment_id"] == _as_row1["assessment_id"]
+          and _as_j1["seq"] == _as_row1["id"]
+          and _as_j1["projection"] == "pending"
+          and _as_row1["fingerprint"].startswith("sha256:")
+          and _as_row1["mode"] == "tutoring"
+          and _as_row1["created_at"].endswith("+00:00")
+          and len(_as_row1["created_at"].split(".")[-1]) == len("000000+00:00"))
+    check("question_id is copied from the attempt row; sitting_id stays NULL",
+          _as_row1["question_id"] == "q_asfirst001"
+          and _as_row1["attempt_id"] == _as_attempt_id
+          and _as_row1["sitting_id"] is None
+          and _as_row1["lesson_uid"] == _as["uid"])
+    _as_ev = _as_events()
+    _as_ev1 = json.loads(_as_ev[-1]["payload_json"])
+    check("row and lesson_assessment event share one txn + event uuid",
+          len(_as_ev) == 1 and _as_ev[-1]["uuid"] == _as_row1["event_uuid"])
+    # ...and the transaction is real in both directions: a failing ledger append
+    # must leave no orphan authority row (a matching uuid alone would also hold
+    # if the row were committed first)
+    def _as_failing_append(*args, **kwargs):
+        raise sqlite3.OperationalError("ledger append refused (probe)")
+
+    with _mock.patch.object(assess_svc, "append_event", _as_failing_append):
+        try:
+            _as_atomic_raised = None
+            c.post(_as_url, json={
+                "kind": "summary", "note": "Vera Example: event will fail.",
+                "idempotency_key": "vera-as-atomic-1"})
+        except sqlite3.OperationalError as exc:
+            _as_atomic_raised = exc
+    check("a failing ledger append rolls the assessment row back",
+          all(r["idempotency_key"] != "vera-as-atomic-1" for r in _as_rows())
+          and len(_as_rows()) == 1 and len(_as_events()) == 1)
+    check("lesson_assessment payload echoes the full D-S1-1 field list",
+          list(_as_ev1.keys()) == [
+              "lesson_uid", "lesson_id", "slug", "assessment_id", "seq",
+              "kind", "mode", "sitting_id", "level", "basis", "attempt_id",
+              "question_id", "concepts", "note", "next_action", "supersedes",
+              "created_at"]
+          and _as_ev1["lesson_uid"] == _as["uid"] and _as_ev1["lesson_id"] == _as_id
+          and _as_ev1["slug"] == _as["slug"] and _as_ev1["seq"] == _as_row1["id"]
+          and _as_ev1["question_id"] == "q_asfirst001"
+          and _as_ev1["sitting_id"] is None and _as_ev1["mode"] == "tutoring"
+          and _as_ev1["note"] == _as_review_body["note"]
+          and "title" not in _as_ev1 and "fingerprint" not in _as_ev1)
+
+    # idempotency (D-S1-3): the fingerprint is the whole validated submission
+    _as_replay = c.post(_as_url, json=_as_review_body)
+    _as_null_replay = c.post(_as_url, json=dict(
+        _as_review_body, basis=None, next_action=None, supersedes=None))
+    check("replay returns the original assessment_id/seq and writes nothing",
+          _as_replay.status_code == 200
+          and _as_replay.json() == dict(_as_j1, result="duplicate")
+          # an explicit null reads as absent, so it fingerprints identically
+          and _as_null_replay.json() == dict(_as_j1, result="duplicate")
+          and len(_as_rows()) == 1 and len(_as_events()) == 1)
+    # every validated field is part of what the key identifies: a regression
+    # that dropped one from the canonical form would silently coalesce a
+    # DIFFERENT judgment into the original row
+    _as_conflicts = {
+        "note": dict(_as_review_body,
+                     note="Vera Example: a different diagnosis entirely."),
+        "level": dict(_as_review_body, level="incorrect"),
+        "mode": dict(_as_review_body, mode="exam"),
+        "attempt_id": dict(_as_review_body, attempt_id=str(_as_uuid4())),
+        "concepts": dict(_as_review_body, concepts=["loops"]),
+        "kind": {"kind": "summary", "note": _as_review_body["note"],
+                 "idempotency_key": _as_review_body["idempotency_key"]},
+    }
+    _as_conflict_out = {name: c.post(_as_url, json=body)
+                        for name, body in _as_conflicts.items()}
+    _as_ev_conflicts = {
+        "basis": {"kind": "evidence", "level": "weak", "basis": "runs",
+                  "concepts": ["loops"], "note": "Vera Example: evidence.",
+                  "idempotency_key": "vera-as-ev-basis"},
+        "next_action": {"kind": "summary", "note": "Vera Example: summary.",
+                        "next_action": "Read section two.",
+                        "idempotency_key": "vera-as-na"},
+        "supersedes": {"kind": "summary", "note": "Vera Example: summary two.",
+                       "idempotency_key": "vera-as-sup"},
+    }
+    # on their own lesson: these three need an original row per key, and the
+    # row-count assertions below belong to the main lesson
+    _as_fp_url = f"/learn/lessons/{_as_fp_id}/assessments"
+    for _as_name, _as_body in _as_ev_conflicts.items():
+        c.post(_as_fp_url, json=_as_body)  # the original write for this key
+    _as_ev_conflict_out = {
+        "basis": c.post(_as_fp_url, json=dict(
+            _as_ev_conflicts["basis"], basis="live")),
+        "next_action": c.post(_as_fp_url, json=dict(
+            _as_ev_conflicts["next_action"], next_action="Read section three.")),
+        # a known key with a changed submission conflicts BEFORE the
+        # mutable-state refusals: this supersedes names another lesson's row
+        "supersedes": c.post(_as_fp_url, json=dict(
+            _as_ev_conflicts["supersedes"], supersedes=_as_j1["assessment_id"])),
+    }
+    check("every validated field is in the fingerprint: any change conflicts",
+          all(resp.status_code == 409
+              and resp.json()["error"] == "idempotency-conflict"
+              for resp in list(_as_conflict_out.values())
+              + list(_as_ev_conflict_out.values())),
+          ", ".join(f"{name}={resp.status_code}/{resp.json().get('error')}"
+                    for name, resp in list(_as_conflict_out.items())
+                    + list(_as_ev_conflict_out.items())
+                    if resp.json().get("error") != "idempotency-conflict"))
+
+    # closed vocabularies and per-kind shape: distinct code each, nothing coerced
+    def _as_error(body):
+        return c.post(_as_url, json=dict(
+            {"idempotency_key": "vera-as-" + _as_uuid4().hex[:8]}, **body)).json()
+
+    _as_note = "Vera Example: a note."
+    _as_refusals = {
+        "unknown-field": _as_error({
+            "kind": "summary", "note": _as_note, "question_id": "q_asfirst001"}),
+        "sitting_id is client-supplied": _as_error({
+            "kind": "summary", "note": _as_note, "sitting_id": "sid-1"}),
+        "invalid-kind": _as_error({"kind": "verdict", "note": _as_note}),
+        "invalid-mode": _as_error({
+            "kind": "summary", "mode": "grading", "note": _as_note}),
+        "invalid-level (cross vocabulary)": _as_error({
+            "kind": "review", "level": "passed", "attempt_id": _as_attempt_id,
+            "note": _as_note}),
+        "invalid-level (on a summary)": _as_error({
+            "kind": "summary", "level": "seen", "note": _as_note}),
+        "invalid-basis (unknown)": _as_error({
+            "kind": "evidence", "level": "weak", "basis": "rumour",
+            "concepts": ["loops"], "note": _as_note}),
+        "invalid-basis (outside evidence)": _as_error({
+            "kind": "review", "level": "correct", "attempt_id": _as_attempt_id,
+            "basis": "live", "note": _as_note}),
+        "invalid-attempt-id (missing on review)": _as_error({
+            "kind": "review", "level": "correct", "note": _as_note}),
+        "invalid-attempt-id (on a summary)": _as_error({
+            "kind": "summary", "attempt_id": _as_attempt_id, "note": _as_note}),
+        "invalid-concepts (missing on evidence)": _as_error({
+            "kind": "evidence", "level": "weak", "basis": "live",
+            "note": _as_note}),
+        "invalid-concepts (too many)": _as_error({
+            "kind": "evidence", "level": "weak", "basis": "live",
+            "concepts": [f"c{i}" for i in range(9)], "note": _as_note}),
+        "invalid-concepts (control character)": _as_error({
+            "kind": "evidence", "level": "weak", "basis": "live",
+            "concepts": ["loops\u0001"], "note": _as_note}),
+        "invalid-concepts (empty list)": _as_error({
+            "kind": "evidence", "level": "weak", "basis": "live",
+            "concepts": [], "note": _as_note}),
+        "invalid-concepts (on a retraction)": _as_error({
+            "kind": "retraction", "supersedes": _as_j1["assessment_id"],
+            "concepts": ["loops"], "note": _as_note}),
+        "invalid-note (blank)": _as_error({"kind": "summary", "note": "   "}),
+        "invalid-next-action (outside a summary)": _as_error({
+            "kind": "review", "level": "correct", "attempt_id": _as_attempt_id,
+            "note": _as_note, "next_action": "re-run the exercise"}),
+        "invalid-supersedes (missing on retraction)": _as_error({
+            "kind": "retraction", "note": _as_note}),
+        "invalid-supersedes (not a uuid)": _as_error({
+            "kind": "retraction", "supersedes": "nope", "note": _as_note}),
+        "invalid-idempotency-key": c.post(_as_url, json={
+            "kind": "summary", "note": _as_note,
+            "idempotency_key": "ctrl\x01char"}).json(),
+    }
+    _as_expected = {
+        "unknown-field": "unknown-field",
+        "sitting_id is client-supplied": "unknown-field",
+        "invalid-kind": "invalid-kind",
+        "invalid-mode": "invalid-mode",
+        "invalid-level (cross vocabulary)": "invalid-level",
+        "invalid-level (on a summary)": "invalid-level",
+        "invalid-basis (unknown)": "invalid-basis",
+        "invalid-basis (outside evidence)": "invalid-basis",
+        "invalid-attempt-id (missing on review)": "invalid-attempt-id",
+        "invalid-attempt-id (on a summary)": "invalid-attempt-id",
+        "invalid-concepts (missing on evidence)": "invalid-concepts",
+        "invalid-concepts (too many)": "invalid-concepts",
+        "invalid-concepts (control character)": "invalid-concepts",
+        "invalid-concepts (empty list)": "invalid-concepts",
+        "invalid-concepts (on a retraction)": "invalid-concepts",
+        "invalid-note (blank)": "invalid-note",
+        "invalid-next-action (outside a summary)": "invalid-next-action",
+        "invalid-supersedes (missing on retraction)": "invalid-supersedes",
+        "invalid-supersedes (not a uuid)": "invalid-supersedes",
+        "invalid-idempotency-key": "invalid-idempotency-key",
+    }
+    check("every vocabulary/shape violation gets its own distinct code",
+          all(_as_refusals[label].get("error") == code
+              for label, code in _as_expected.items())
+          and len(_as_rows()) == 1,
+          ", ".join(f"{label}={_as_refusals[label].get('error')}"
+                    for label, code in _as_expected.items()
+                    if _as_refusals[label].get("error") != code))
+    check("note over 8 KiB and next_action over 512 B have their own codes",
+          _as_error({"kind": "summary",
+                     "note": "x" * (assess_svc.MAX_NOTE_BYTES + 1)}
+                    ).get("error") == "note-too-large"
+          and _as_error({
+              "kind": "summary", "note": _as_note,
+              "next_action": "x" * (assess_svc.MAX_NEXT_ACTION_BYTES + 1)}
+          ).get("error") == "next-action-too-large")
+
+    # references are validated against THIS lesson: an attempt or an assessment
+    # of another lesson is unknown here, never a cross-lesson write
+    _as_foreign = _as_error({
+        "kind": "review", "level": "correct", "attempt_id": _at_j1["attempt_id"],
+        "note": _as_note})
+    _as_unknown_att = _as_error({
+        "kind": "review", "level": "correct", "attempt_id": str(_as_uuid4()),
+        "note": _as_note})
+    _as_unknown_sup = _as_error({
+        "kind": "retraction", "supersedes": str(_as_uuid4()), "note": _as_note})
+    check("attempt/supersedes references are scoped to the lesson (422)",
+          _as_foreign.get("error") == "unknown-attempt"
+          and _as_unknown_att.get("error") == "unknown-attempt"
+          and _as_unknown_sup.get("error") == "unknown-supersedes"
+          and len(_as_rows()) == 1)
+
+    # evidence: server-side concept dedup, basis recorded, level from its own
+    # vocabulary; `live` grounds any level including `passed` (owner decision 2)
+    _as_ev_resp = c.post(_as_url, json={
+        "kind": "evidence", "level": "passed", "basis": "live",
+        "concepts": ["loops", "loops", "off-by-one"],
+        "note": "Vera Example: explained the boundary out loud, unprompted.",
+        "idempotency_key": "vera-as-ev-1"})
+    _as_ev_row = _as_rows()[-1]
+    check("evidence records basis and deduplicates concepts server-side",
+          _as_ev_resp.status_code == 200
+          and json.loads(_as_ev_row["concepts_json"]) == ["loops", "off-by-one"]
+          and _as_ev_row["basis"] == "live" and _as_ev_row["level"] == "passed"
+          and _as_ev_row["id"] > _as_row1["id"])
+    _as_exam = c.post(_as_url, json={
+        "kind": "summary", "mode": "exam",
+        "concepts": ["loops"],
+        "note": "Vera Example: check-up covered iteration bounds.",
+        "next_action": "Move on to slices.",
+        "idempotency_key": "vera-as-sum-1"})
+    check("summary carries mode=exam and an optional next_action",
+          _as_exam.status_code == 200
+          and _as_rows()[-1]["mode"] == "exam"
+          and _as_rows()[-1]["next_action"] == "Move on to slices."
+          and _as_rows()[-1]["level"] is None)
+
+    # NOT bridge-gated (D-S1-4): the legacy and rejected-manifest bundles that
+    # refuse ATTEMPT writes must still accept the tutor's memory
+    _as_legacy = c.post(f"/learn/lessons/{_v1_id}/assessments", json={
+        "kind": "summary", "note": "Vera Example: legacy bundle, spoken answers.",
+        "idempotency_key": "vera-as-legacy-1"})
+    _as_rejected = c.post(f"/learn/lessons/{_rej_id}/assessments", json={
+        "kind": "evidence", "level": "seen", "basis": "live",
+        "concepts": ["goroutines"],
+        "note": "Vera Example: covered in the terminal, manifest is broken.",
+        "idempotency_key": "vera-as-rejected-1"})
+    check("legacy and rejected-manifest lessons still record assessments",
+          _as_legacy.status_code == 200
+          and _as_legacy.json()["result"] == "recorded"
+          and _as_rejected.status_code == 200
+          and _as_rejected.json()["result"] == "recorded")
+    check("unknown lesson id and slug both 404",
+          c.post("/learn/lessons/999999/assessments", json={
+              "kind": "summary", "note": _as_note,
+              "idempotency_key": "vera-as-404"}).status_code == 404
+          and c.post("/learn/lessons/by-slug/no-such-lesson/assessments", json={
+              "kind": "summary", "note": _as_note,
+              "idempotency_key": "vera-as-404"}).status_code == 404)
+
+    # archived lessons refuse (D-S1-4) — but a replay of an already-durable
+    # write still returns its outcome: replay precedes mutable-state refusals
+    _as_arch_url = f"/learn/lessons/{_as_arch_id}/assessments"
+    _as_arch_body = {"kind": "summary",
+                     "note": "Vera Example: recorded before archiving.",
+                     "idempotency_key": "vera-as-arch-1"}
+    _as_arch_first = c.post(_as_arch_url, json=_as_arch_body)
+    _as_arch_conn = get_conn()
+    try:
+        lessons_svc.archive_lesson(_as_arch_conn, _as_arch_id)
+        _as_arch_view = lessons_svc.get_lesson(_as_arch_conn, _as_arch_id)
+    finally:
+        _as_arch_conn.close()
+    _as_arch_new = c.post(_as_arch_url, json=dict(
+        _as_arch_body, idempotency_key="vera-as-arch-2"))
+    _as_arch_replay = c.post(_as_arch_url, json=_as_arch_body)
+    check("archived lesson refuses new writes but still answers replays",
+          _as_arch_first.status_code == 200 and _as_arch_view["archived"]
+          and _as_arch_new.status_code == 409
+          and _as_arch_new.json()["error"] == "lesson-archived"
+          and _as_arch_replay.status_code == 200
+          and _as_arch_replay.json() == dict(
+              _as_arch_first.json(), result="duplicate")
+          and len(_as_rows(_as_arch_id)) == 1)
+
+    # PR #85 round 1: the caller's lesson view is a snapshot. The archive can
+    # commit between the handler's read and the insert (the owner archives in
+    # the browser while the tutor's write is in the threadpool), so the binding
+    # refusal reads the committed archive state inside the write transaction.
+    _as_stale_conn = get_conn()
+    try:
+        _as_stale_id = lessons_svc.create_lesson(_as_stale_conn, "Assessment Race Demo")
+        _as_stale_view = lessons_svc.get_lesson(_as_stale_conn, _as_stale_id)
+        lessons_svc.archive_lesson(_as_stale_conn, _as_stale_id)
+        _as_stale_refusal = None
+        try:
+            assess_svc.record_assessment(
+                _as_stale_conn, _as_stale_view, {
+                    "kind": "summary",
+                    "note": "Vera Example: raced the archive.",
+                    "idempotency_key": "vera-as-race-1"})
+        except assess_svc.AssessmentError as exc:
+            _as_stale_refusal = exc.code
+    finally:
+        _as_stale_conn.close()
+    check("a lesson archived after the handler's read still refuses the write",
+          _as_stale_view["archived"] is False
+          and _as_stale_refusal == "lesson-archived"
+          and len(_as_rows(_as_stale_id)) == 0)
+
+    # PR #85 round 1: the fold's deactivation lookup is correlated — without an
+    # index on (lesson_id, supersedes) it rescans the lesson's whole history
+    # once per row, making every active_state() consumer quadratic
+    _as_plan_conn = get_conn()
+    try:
+        _as_plan = [r["detail"] for r in _as_plan_conn.execute(
+            "EXPLAIN QUERY PLAN " + assess_svc.ACTIVE_ROWS_SQL, (_as_fold_id,))]
+    finally:
+        _as_plan_conn.close()
+    check("the active fold's supersedes lookup is index-bounded",
+          any("idx_assessments_lesson_supersedes" in detail
+              for detail in _as_plan),
+          " | ".join(_as_plan))
+
+    # slug alias shares the handler
+    _as_slug = c.post(f"/learn/lessons/by-slug/{_as['slug']}/assessments", json={
+        "kind": "summary", "note": "Vera Example: recorded through the alias.",
+        "idempotency_key": "vera-as-slug-1"})
+    check("slug-alias route records against the same lesson",
+          _as_slug.status_code == 200
+          and _as_slug.json()["result"] == "recorded"
+          and _as_rows()[-1]["lesson_uid"] == _as["uid"])
+
+    # active-state fold (D-S1-2) on its own lesson: latest active evidence per
+    # concept, latest active review per attempt, latest active summary
+    _as_fold_url = f"/learn/lessons/{_as_fold_id}/assessments"
+
+    def _as_fold_post(body, key):
+        return c.post(_as_fold_url, json=dict(body, idempotency_key=key)).json()
+
+    _as_f_ev1 = _as_fold_post({
+        "kind": "evidence", "level": "weak", "basis": "attempts",
+        "concepts": ["slices", "capacity"],
+        "note": "Vera Example: confuses length with capacity."}, "fold-1")
+    _as_f_ev2 = _as_fold_post({
+        "kind": "evidence", "level": "developing", "basis": "live",
+        "concepts": ["capacity"],
+        "note": "Vera Example: predicted the growth step correctly."}, "fold-2")
+    _as_f_sum1 = _as_fold_post({
+        "kind": "summary", "note": "Vera Example: first sitting."}, "fold-3")
+    _as_f_sum2 = _as_fold_post({
+        "kind": "summary", "note": "Vera Example: second sitting.",
+        "supersedes": _as_f_sum1["assessment_id"]}, "fold-4")
+    _as_f_retract = _as_fold_post({
+        "kind": "retraction", "supersedes": _as_f_ev2["assessment_id"],
+        "note": "Vera Example: that was a different learner's answer."},
+        "fold-5")
+    # a SECOND active evidence for one concept: "slices" now has two live
+    # candidates, so latest-wins is exercised rather than last-one-standing
+    _as_f_ev3 = _as_fold_post({
+        "kind": "evidence", "level": "passed", "basis": "artifacts",
+        "concepts": ["slices"],
+        "note": "Vera Example: reslice exercise came out right."}, "fold-6")
+    _as_fold_conn = get_conn()
+    try:
+        _as_state = assess_svc.active_state(_as_fold_conn, _as_fold_id)
+        _as_active = assess_svc.active_rows(_as_fold_conn, _as_fold_id)
+    finally:
+        _as_fold_conn.close()
+    check("active fold: retracted/superseded rows drop out, latest wins by seq",
+          [row["assessment_id"] for row in _as_active] == [
+              _as_f_ev1["assessment_id"], _as_f_sum2["assessment_id"],
+              _as_f_retract["assessment_id"], _as_f_ev3["assessment_id"]]
+          and set(_as_state["evidence_by_concept"]) == {"slices", "capacity"}
+          # slices: the later of two ACTIVE rows; capacity: falls back to the
+          # earlier one because the later was retracted
+          and _as_state["evidence_by_concept"]["slices"]["assessment_id"]
+          == _as_f_ev3["assessment_id"]
+          and _as_state["evidence_by_concept"]["capacity"]["assessment_id"]
+          == _as_f_ev1["assessment_id"]
+          and _as_state["summary"]["assessment_id"] == _as_f_sum2["assessment_id"]
+          and _as_state["reviews_by_attempt"] == {})
+
+    # latest ACTIVE review per attempt, on the lesson that has a real attempt
+    _as_rev2 = c.post(_as_url, json={
+        "kind": "review", "level": "unclear", "attempt_id": _as_attempt_id,
+        "note": "Vera Example: second look, still ambiguous.",
+        "idempotency_key": "vera-as-rev-2"}).json()
+    _as_rev3 = c.post(_as_url, json={
+        "kind": "review", "level": "correct", "attempt_id": _as_attempt_id,
+        "note": "Vera Example: third look; the earlier read was wrong.",
+        "supersedes": _as_rev2["assessment_id"],
+        "idempotency_key": "vera-as-rev-3"}).json()
+    _as_rev_conn = get_conn()
+    try:
+        _as_rev_state = assess_svc.active_state(_as_rev_conn, _as_id)
+    finally:
+        _as_rev_conn.close()
+    check("latest ACTIVE review per attempt wins over earlier and superseded",
+          set(_as_rev_state["reviews_by_attempt"]) == {_as_attempt_id}
+          and _as_rev_state["reviews_by_attempt"][_as_attempt_id][
+              "assessment_id"] == _as_rev3["assessment_id"]
+          # neither the first review nor the superseded second may win
+          and _as_rev3["assessment_id"] not in (
+              _as_j1["assessment_id"], _as_rev2["assessment_id"]))
+    check("supersedes is validated against the same lesson (422 across lessons)",
+          c.post(_as_fold_url, json={
+              "kind": "retraction", "supersedes": _as_j1["assessment_id"],
+              "note": "Vera Example: wrong lesson.",
+              "idempotency_key": "fold-cross"}).json().get(
+                  "error") == "unknown-supersedes")
+
+    # rate limit + refund table (D-S1-3): replays are not new writes
+    _as_rate_url = f"/learn/lessons/{_as_fold_id}/assessments"
+    assess_svc._reset_rate_limit()
+    _as_rate_first = c.post(_as_rate_url, json={
+        "kind": "summary", "note": "Vera Example: rate window seed.",
+        "idempotency_key": "rate-seed"})
+    for _as_i in range(assess_svc.RATE_MAX_PER_WINDOW - 2):
+        c.post(_as_rate_url, json={
+            "kind": "summary", "note": f"Vera Example: filler {_as_i}.",
+            "idempotency_key": f"rate-fill-{_as_i}"})
+    _as_rate_replay = c.post(_as_rate_url, json={
+        "kind": "summary", "note": "Vera Example: rate window seed.",
+        "idempotency_key": "rate-seed"})
+    _as_rate_last = c.post(_as_rate_url, json={
+        "kind": "summary", "note": "Vera Example: the refunded slot.",
+        "idempotency_key": "rate-last"})
+    _as_rate_over = c.post(_as_rate_url, json={
+        "kind": "summary", "note": "Vera Example: over the window.",
+        "idempotency_key": "rate-over"})
+    _as_rate_replay_over = c.post(_as_rate_url, json={
+        "kind": "summary", "note": "Vera Example: rate window seed.",
+        "idempotency_key": "rate-seed"})
+    check("rate limit is 30/60s per lesson; replays cost no window budget",
+          _as_rate_first.status_code == 200
+          and _as_rate_replay.json()["result"] == "duplicate"
+          # without the refund this write would have been the 31st charge
+          and _as_rate_last.status_code == 200
+          and _as_rate_last.json()["result"] == "recorded"
+          and _as_rate_over.status_code == 429
+          and _as_rate_over.json()["error"] == "rate-limited"
+          and _as_rate_over.headers.get("Retry-After") == "60"
+          # replay precedes the rate limit: a retry never loses its outcome
+          and _as_rate_replay_over.status_code == 200
+          and _as_rate_replay_over.json()["result"] == "duplicate")
+    assess_svc._reset_rate_limit()
+
+    # The refund table proper: the checks above only prove that a replay found
+    # BEFORE the rate charge costs nothing. A retry racing its own original
+    # sees the key uncommitted at that early check, gets charged, and only
+    # discovers the duplicate under the write lock — that slot must come back,
+    # or retries against a slow original starve real writes. Staged by making
+    # the first replay lookup of the request miss.
+    _as_real_replay = assess_svc._replay_or_conflict
+    _as_replay_calls = {"n": 0}
+
+    def _as_late_replay(*args, **kwargs):
+        _as_replay_calls["n"] += 1
+        if _as_replay_calls["n"] == 1:
+            return None  # the racing retry cannot see its original yet
+        return _as_real_replay(*args, **kwargs)
+
+    _as_refund_body = {
+        "kind": "summary", "note": "Vera Example: the racing retry.",
+        "idempotency_key": "vera-as-refund-1"}
+    assess_svc._reset_rate_limit()
+    _as_refund_first = c.post(_as_url, json=_as_refund_body)
+    _as_window_before = len(assess_svc._rate.get(_as_id, ()))
+    with _mock.patch.object(
+            assess_svc, "_replay_or_conflict", _as_late_replay):
+        _as_refund_late = c.post(_as_url, json=_as_refund_body)
+    _as_window_after = len(assess_svc._rate.get(_as_id, ()))
+    check("a replay that only surfaces under the write lock refunds its slot",
+          _as_refund_first.json()["result"] == "recorded"
+          and _as_replay_calls["n"] >= 2
+          and _as_refund_late.status_code == 200
+          and _as_refund_late.json() == dict(
+              _as_refund_first.json(), result="duplicate")
+          and _as_window_before == 1 and _as_window_after == 1,
+          f"calls={_as_replay_calls['n']} "
+          f"window {_as_window_before}->{_as_window_after}")
+    assess_svc._reset_rate_limit()
+
+    # body admission (64 KiB) and the B2 write guard
+    check("assessment route sits behind the B2 write guard (Origin null / cross)",
+          c.post(_as_url, json=_as_review_body,
+                 headers={"Origin": "null"}).status_code == 403
+          and c.post(_as_url, json=_as_review_body,
+                     headers={"Origin": "http://evil.example"}).status_code == 403
+          and c.post(_as_url, json=_as_review_body,
+                     headers={"Origin": "http://testserver"}).status_code == 200)
+    check("body admission: 415 / 413 / invalid-json / non-object",
+          c.post(_as_url, content=b"kind=summary",
+                 headers={"content-type": "application/x-www-form-urlencoded"}
+                 ).status_code == 415
+          and c.post(_as_url, content=b"{" + b" " * (80 * 1024),
+                     headers={"content-type": "application/json"}
+                     ).status_code == 413
+          and c.post(_as_url, content=b"not json {",
+                     headers={"content-type": "application/json"}
+                     ).json()["error"] == "invalid-json"
+          and c.post(_as_url, json=[1, 2, 3]).json()["error"] == "invalid-json"
+          and c.post(_as_url, content=b"[" * 20000 + b"]" * 20000,
+                     headers={"content-type": "application/json"}
+                     ).json()["error"] == "invalid-json")
+    _as_stream = _at_asyncio.run(_at_direct_asgi(
+        _as_url, 1, [b"x" * (16 * 1024) for _ in range(8)]))
+    _as_stream_slug = _at_asyncio.run(_at_direct_asgi(
+        f"/learn/lessons/by-slug/{_as['slug']}/assessments", 1,
+        [b"x" * (16 * 1024) for _ in range(8)]))
+    _as_negative = _at_asyncio.run(_at_direct_asgi(_as_url, -1, [b"{}"]))
+    check("assessment aliases abort dishonest bodies mid-stream, reject "
+          "negative Content-Length",
+          _as_stream == (413, 5) and _as_stream_slug == (413, 5)
+          and _as_negative == (400, 0))
+
+    # recovery posture (S-M6): the export is an audit feed, not recovery —
+    # restore keeps `lesson_assessment` as audit and never rebuilds the table
+    _as_restore_src = (
+        ROOT / "scripts" / "restore_from_export.py").read_text(encoding="utf-8")
+    check("restore tooling does not reconstruct lesson_assessments",
+          "lesson_assessment" not in _as_restore_src
+          and "lesson_assessments" not in _as_restore_src)
+
     # ---- F1: pure artifact reads + conflict-safe editor backend ------------
     from app.services import artifacts as artifacts_svc
     import types as _f1_types

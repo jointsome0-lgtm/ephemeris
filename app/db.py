@@ -102,15 +102,28 @@ def is_not_future(s: str) -> bool:
 # --- event ledger (sec14.1): append-only audit feed -------------------------
 
 
-def append_event(conn: sqlite3.Connection, type_: str, payload: dict) -> str:
+def append_event(
+    conn: sqlite3.Connection,
+    type_: str,
+    payload: dict,
+    *,
+    event_uuid: str | None = None,
+) -> str:
     """Append one audit event — call inside the same transaction as the write it
     describes. One owner of the ledger write contract (payload_version, JSON form,
     timestamp source) for every service.
 
     Returns the event's persistent UUID (schema v9): the stable identity that
     survives export/redelivery, for callers that need to reference the event
-    (issue #17 audit-export slice)."""
-    event_uuid = str(uuid4())
+    (issue #17 audit-export slice).
+
+    `event_uuid` lets a caller mint that identity first, for the one shape this
+    function could not otherwise serve: a row whose `event_uuid` column is NOT
+    NULL *and* whose own rowid must be echoed into the event payload (schema v14
+    `lesson_assessments` / `seq`). The row must then be inserted before the
+    event, so the uuid cannot come back from here. Callers that pass one own its
+    uniqueness; every existing caller keeps the minted-here default."""
+    event_uuid = event_uuid or str(uuid4())
     conn.execute(
         "INSERT INTO events (uuid, timestamp, type, payload_version, payload_json) "
         "VALUES (?, ?, ?, 1, ?)",
@@ -138,7 +151,7 @@ def get_conn() -> sqlite3.Connection:
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -554,6 +567,82 @@ def _migrate_to_13(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA_V13)
 
 
+# v14 — lesson_assessments (S-DESIGN D-S1-1, phase S slice s1): the authority
+# for what the TUTOR concluded, beside `lesson_attempts` (what the learner did).
+# One table with a `kind` discriminator: the four kinds share writer, transport,
+# validation skeleton and ledger event, and differ only in which references are
+# required — which is exactly what the per-kind CHECKs below encode. Those
+# CHECKs are deliberate schema-level self-enforcement: the typed authority must
+# stay structurally valid under restore tooling or any future second writer, not
+# only under the endpoint's own validation.
+#
+# `id` (rowid) is THE recency/ordering authority, exposed as `seq` in the event
+# and the API — `created_at` is UTC-microsecond display metadata. Rows are
+# append-only: a wrong record is corrected by a later row naming it in
+# `supersedes` (or by a `retraction`), never by UPDATE or DELETE, so the fold in
+# `app/services/assessments.py:active_state` is the current-state view and the
+# table stays the full history.
+_SCHEMA_V14 = """
+CREATE TABLE IF NOT EXISTS lesson_assessments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  assessment_id TEXT NOT NULL UNIQUE,
+  event_uuid TEXT NOT NULL UNIQUE,
+  lesson_id INTEGER NOT NULL REFERENCES lessons(id),
+  lesson_uid TEXT NOT NULL,
+  sitting_id TEXT,
+  mode TEXT NOT NULL DEFAULT 'tutoring'
+       CHECK(mode IN ('tutoring','exam')),
+  idempotency_key TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  kind TEXT NOT NULL
+       CHECK(kind IN ('review','evidence','summary','retraction')),
+  level TEXT,
+  basis TEXT,
+  attempt_id TEXT,
+  question_id TEXT,
+  concepts_json TEXT,
+  note TEXT NOT NULL CHECK(length(note) > 0),
+  next_action TEXT,
+  supersedes TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(lesson_id, idempotency_key),
+  -- The IS NOT NULL conjuncts are load-bearing, not belt-and-braces: SQLite is
+  -- three-valued, so `NULL IN (...)` is NULL, `false OR NULL` is NULL, and a
+  -- CHECK only fails on false. Without them a review with a NULL level, or an
+  -- evidence with a NULL level/basis, would pass the constraint and defeat the
+  -- reason these CHECKs exist (S-M1: stay structurally valid under restore
+  -- tooling or a future second writer, not only under this endpoint).
+  CHECK(kind != 'review' OR (attempt_id IS NOT NULL
+        AND level IS NOT NULL
+        AND level IN ('correct','partial','incorrect','unclear'))),
+  CHECK(kind != 'evidence' OR (concepts_json IS NOT NULL
+        AND level IS NOT NULL
+        AND level IN ('seen','weak','developing','passed')
+        AND basis IS NOT NULL
+        AND basis IN ('attempts','artifacts','runs','live','mixed'))),
+  CHECK(kind != 'summary' OR (level IS NULL AND attempt_id IS NULL)),
+  CHECK(kind != 'retraction' OR (supersedes IS NOT NULL AND level IS NULL
+        AND attempt_id IS NULL AND concepts_json IS NULL)),
+  CHECK(kind = 'summary' OR next_action IS NULL),
+  CHECK(kind = 'evidence' OR basis IS NULL)
+);
+
+CREATE INDEX IF NOT EXISTS idx_assessments_lesson_kind
+  ON lesson_assessments(lesson_id, kind, id);
+
+-- The active-state fold asks, for every row of a lesson, whether any sibling
+-- names it in `supersedes`. Without this index that correlated lookup scans
+-- the lesson's whole history once per row, so the fold — which s2 runs on
+-- every write and s4 on every render — is quadratic in lifetime assessments.
+CREATE INDEX IF NOT EXISTS idx_assessments_lesson_supersedes
+  ON lesson_assessments(lesson_id, supersedes);
+"""
+
+
+def _migrate_to_14(conn: sqlite3.Connection) -> None:
+    conn.executescript(_SCHEMA_V14)
+
+
 # Ordered, idempotent steps. A schema change must NEVER require deleting the
 # ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
 _MIGRATIONS = [
@@ -570,6 +659,7 @@ _MIGRATIONS = [
     (11, _migrate_to_11),
     (12, _migrate_to_12),
     (13, _migrate_to_13),
+    (14, _migrate_to_14),
 ]
 
 
