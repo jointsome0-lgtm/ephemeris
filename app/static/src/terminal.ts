@@ -360,9 +360,19 @@ interface SurfaceConfig {
     if (term.attachCustomKeyEventHandler) {
       term.attachCustomKeyEventHandler(function (e: KeyboardEvent) {
         var key = String(e.key || '').toLowerCase();
-        if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && key === 'c') {
+        // Ctrl+C copies only when something is selected — with no selection it
+        // must still reach the PTY as SIGINT. Ctrl+Shift+C is the explicit copy
+        // alias and takes the same path, so with no selection it also falls
+        // through exactly as it did before.
+        if (e.ctrlKey && !e.altKey && !e.metaKey && key === 'c') {
           if (term.hasSelection && term.hasSelection()) {
             writeClipboardText(term.getSelection ? term.getSelection() : '');
+            // Returning false stops xterm but not the browser: its _keyDown
+            // returns before the cancel() that would preventDefault. Plain
+            // Ctrl+C's default is the browser copying the same selection, so
+            // it stays as it was; the alias' default is the devtools
+            // inspector, which must not open on a copy.
+            if (e.shiftKey) e.preventDefault();
             return false;
           }
           return true;
@@ -840,6 +850,30 @@ interface SurfaceConfig {
   if (minBtn) minBtn.addEventListener('click', function () {
     setMinimized(!drawer.classList.contains('minimized'));
   });
+  // The copy-on-select flag was already read per selection; this only makes it
+  // reachable. Default stays off, and the state lives under the per-surface key.
+  var copySelBtn = document.getElementById(config.idPrefix + '-copysel');
+  if (copySelBtn) {
+    var syncCopySelect = function () {
+      var on = copyOnSelectEnabled();
+      copySelBtn!.setAttribute('aria-pressed', on ? 'true' : 'false');
+      copySelBtn!.classList.toggle('active', on);
+    };
+    copySelBtn.addEventListener('click', function () {
+      var next = !copyOnSelectEnabled();
+      try { localStorage.setItem(COPY_SELECT_KEY, next ? '1' : '0'); } catch (_) {}
+      syncCopySelect();
+      focusSoon();
+    });
+    // Another document — the same drawer kind in a second tab — can flip the
+    // flag, and selection handling re-reads it live. Without this the button
+    // would keep showing this tab's stale answer. A null key is a clear().
+    window.addEventListener('storage', function (e) {
+      if (e.key && e.key !== COPY_SELECT_KEY) return;
+      syncCopySelect();
+    });
+    syncCopySelect();
+  }
 
   var handle = document.getElementById(config.idPrefix + '-resize');
   if (handle) {
