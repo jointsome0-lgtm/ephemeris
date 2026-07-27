@@ -356,17 +356,37 @@ with TestClient(app) as c:
           and "new ClipboardAddon.Base64()" in terminal_js
           and "writeOnlyClipboardProvider()" in terminal_js
           and "readText: function () { return ''; }" in terminal_js)
+    # Anchor the whole branch, not just its guard: a copy path that returned true
+    # (also reaching the PTY) or a no-selection path that returned false
+    # (swallowing SIGINT) would satisfy the guard line alone.
+    copy_branch = (
+        "                    if (e.ctrlKey && !e.altKey && !e.metaKey && key === 'c') {\n"
+        "                        if (term.hasSelection && term.hasSelection()) {\n"
+        "                            writeClipboardText(term.getSelection ? term.getSelection() : '');\n"
+        "                            return false;\n"
+        "                        }\n"
+        "                        return true;\n"
+        "                    }\n"
+    )
     check("terminal.js copies on Ctrl+C-with-selection and on the Ctrl+Shift+C alias",
-          "if (e.ctrlKey && !e.altKey && !e.metaKey && key === 'c')" in terminal_js
+          copy_branch in terminal_js
           and "!e.shiftKey && !e.altKey && !e.metaKey && key === 'c'" not in terminal_js
           and "if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && key === 'v')"
           in terminal_js)
     check("terminal.js wires the copy-on-select toggle, default still off",
-          "config.idPrefix + '-copysel'" in terminal_js
+          "var copySelBtn = document.getElementById(config.idPrefix + '-copysel');\n"
+          "        if (copySelBtn) {" in terminal_js  # absent button stays a no-op
           and "copySelBtn.setAttribute('aria-pressed', on ? 'true' : 'false')" in terminal_js
           and "copySelBtn.classList.toggle('active', on)" in terminal_js
-          and "localStorage.setItem(COPY_SELECT_KEY, next ? '1' : '0')" in terminal_js
-          and "localStorage.getItem(COPY_SELECT_KEY) === '1'" in terminal_js)
+          and "localStorage.setItem(COPY_SELECT_KEY, next ? '1' : '0');\n"
+              "                }\n                catch (_) { }" in terminal_js
+          and "localStorage.getItem(COPY_SELECT_KEY) === '1'" in terminal_js
+          # the persisted value is read on load, and a sibling tab's write follows
+          and "            });\n            syncCopySelect();\n        }" in terminal_js
+          and "window.addEventListener('storage', function (e) {\n"
+              "                if (e.key && e.key !== COPY_SELECT_KEY)\n"
+              "                    return;\n"
+              "                syncCopySelect();" in terminal_js)
     learner_tpl = (ROOT / "app" / "templates" / "learn.html").read_text(encoding="utf-8")
     copy_hint = "copy: Ctrl+C or Ctrl+Shift+C with a selection · paste: Ctrl+Shift+V"
     for tpl_label, tpl_text, copysel_id in (
@@ -382,8 +402,9 @@ with TestClient(app) as c:
               and "ic.icon('copy')" in btn)
     icons_tpl = (ROOT / "app" / "templates" / "_icons.html").read_text(encoding="utf-8")
     check("_icons.html has a line-art copy glyph in the 24-box house style",
-          "'copy':" in icons_tpl
-          and '<rect x="9" y="9" width="11.5" height="11.5" rx="2.5"/>' in icons_tpl)
+          "'copy':      '<rect x=\"9\" y=\"9\" width=\"11.5\" height=\"11.5\" rx=\"2.5\"/>"
+          "<path d=\"M6 15H5.5A2 2 0 0 1 3.5 13V5.5A2 2 0 0 1 5.5 3.5H13A2 2 0 0 1 15 5.5V6\"/>',"
+          in icons_tpl)
     check("terminal.js sources the xterm theme from CSS custom properties",
           "theme: terminalTheme()" in terminal_js
           and "selectionBackground: cssVar('--term-selection-background'" in terminal_js

@@ -859,6 +859,13 @@ interface SurfaceConfig {
       syncCopySelect();
       focusSoon();
     });
+    // Another document — the same drawer kind in a second tab — can flip the
+    // flag, and selection handling re-reads it live. Without this the button
+    // would keep showing this tab's stale answer. A null key is a clear().
+    window.addEventListener('storage', function (e) {
+      if (e.key && e.key !== COPY_SELECT_KEY) return;
+      syncCopySelect();
+    });
     syncCopySelect();
   }
 
