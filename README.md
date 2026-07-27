@@ -99,8 +99,9 @@ loginctl enable-linger "$USER"        # keep running after logout / across reboo
 Status: `systemctl --user status ephemeris` · logs: `journalctl --user -u ephemeris -f`.
 The template ships with `127.0.0.1`; copy-and-edit (don't symlink) so your local
 host choice never lands back in Git. Copies made before `--no-proxy-headers` was
-added to the template keep the old `ExecStart` — add the flag by hand and
-restart the unit (see [security model](docs/security-model.md)).
+added to the template keep the old `ExecStart` — add the flag by hand, then
+`systemctl --user daemon-reload && systemctl --user restart ephemeris` so the
+edited unit is the one that starts (see [security model](docs/security-model.md)).
 
 ### Migrating an existing in-checkout data directory
 

@@ -12,9 +12,9 @@ Security problems go through [`SECURITY.md`](SECURITY.md), not a public issue.
 
 ```bash
 uv sync
-python verify.py            # both suites create their own throwaway data dir
-python verify_restore.py
-python scripts/check_public_hygiene.py
+uv run python verify.py     # both suites create their own throwaway data dir
+uv run python verify_restore.py
+uv run python scripts/check_public_hygiene.py
 ```
 
 All of these must pass before a PR, and CI must be green on the PR head.
