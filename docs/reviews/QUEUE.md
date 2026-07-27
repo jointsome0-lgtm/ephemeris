@@ -19,7 +19,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-26 — commits after `4dea680` on `fix/25-platform-support` —
+- [ ] 2026-07-26 — commits after `4dea680` on `fix/25-platform-support`;
+  LANDED via merge commit `a2aa560`, whose tree is byte-identical to reviewed
+  branch head `95593ba` —
   `app/terminal.py`, `app/sandbox.py`, `app/services/attempts.py`, `app/db.py`,
   `app/main.py`, `app/services/focus.py`, `app/services/stats.py`, `verify.py`,
   `README.md` — issue #25 moves the `fcntl`/`pty`/`termios` imports in
