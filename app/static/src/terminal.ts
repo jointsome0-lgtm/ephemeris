@@ -360,7 +360,11 @@ interface SurfaceConfig {
     if (term.attachCustomKeyEventHandler) {
       term.attachCustomKeyEventHandler(function (e: KeyboardEvent) {
         var key = String(e.key || '').toLowerCase();
-        if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && key === 'c') {
+        // Ctrl+C copies only when something is selected — with no selection it
+        // must still reach the PTY as SIGINT. Ctrl+Shift+C is the explicit copy
+        // alias and takes the same path, so with no selection it also falls
+        // through exactly as it did before.
+        if (e.ctrlKey && !e.altKey && !e.metaKey && key === 'c') {
           if (term.hasSelection && term.hasSelection()) {
             writeClipboardText(term.getSelection ? term.getSelection() : '');
             return false;
@@ -840,6 +844,23 @@ interface SurfaceConfig {
   if (minBtn) minBtn.addEventListener('click', function () {
     setMinimized(!drawer.classList.contains('minimized'));
   });
+  // The copy-on-select flag was already read per selection; this only makes it
+  // reachable. Default stays off, and the state lives under the per-surface key.
+  var copySelBtn = document.getElementById(config.idPrefix + '-copysel');
+  if (copySelBtn) {
+    var syncCopySelect = function () {
+      var on = copyOnSelectEnabled();
+      copySelBtn!.setAttribute('aria-pressed', on ? 'true' : 'false');
+      copySelBtn!.classList.toggle('active', on);
+    };
+    copySelBtn.addEventListener('click', function () {
+      var next = !copyOnSelectEnabled();
+      try { localStorage.setItem(COPY_SELECT_KEY, next ? '1' : '0'); } catch (_) {}
+      syncCopySelect();
+      focusSoon();
+    });
+    syncCopySelect();
+  }
 
   var handle = document.getElementById(config.idPrefix + '-resize');
   if (handle) {

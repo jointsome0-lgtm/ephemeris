@@ -356,6 +356,34 @@ with TestClient(app) as c:
           and "new ClipboardAddon.Base64()" in terminal_js
           and "writeOnlyClipboardProvider()" in terminal_js
           and "readText: function () { return ''; }" in terminal_js)
+    check("terminal.js copies on Ctrl+C-with-selection and on the Ctrl+Shift+C alias",
+          "if (e.ctrlKey && !e.altKey && !e.metaKey && key === 'c')" in terminal_js
+          and "!e.shiftKey && !e.altKey && !e.metaKey && key === 'c'" not in terminal_js
+          and "if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && key === 'v')"
+          in terminal_js)
+    check("terminal.js wires the copy-on-select toggle, default still off",
+          "config.idPrefix + '-copysel'" in terminal_js
+          and "copySelBtn.setAttribute('aria-pressed', on ? 'true' : 'false')" in terminal_js
+          and "copySelBtn.classList.toggle('active', on)" in terminal_js
+          and "localStorage.setItem(COPY_SELECT_KEY, next ? '1' : '0')" in terminal_js
+          and "localStorage.getItem(COPY_SELECT_KEY) === '1'" in terminal_js)
+    learner_tpl = (ROOT / "app" / "templates" / "learn.html").read_text(encoding="utf-8")
+    copy_hint = "copy: Ctrl+C or Ctrl+Shift+C with a selection · paste: Ctrl+Shift+V"
+    for tpl_label, tpl_text, copysel_id in (
+        ("base.html", base_html, "term-copysel"),
+        ("learn.html", learner_tpl, "learner-term-copysel"),
+    ):
+        btn = tpl_text[tpl_text.find(f'id="{copysel_id}"'):][:400]
+        check(f"{tpl_label} drawer carries the copy-on-select toggle naming the shortcuts",
+              f'id="{copysel_id}"' in tpl_text
+              and 'class="term-btn term-copysel"' in tpl_text
+              and 'aria-pressed="false"' in btn
+              and btn.count(copy_hint) == 2  # title + aria-label
+              and "ic.icon('copy')" in btn)
+    icons_tpl = (ROOT / "app" / "templates" / "_icons.html").read_text(encoding="utf-8")
+    check("_icons.html has a line-art copy glyph in the 24-box house style",
+          "'copy':" in icons_tpl
+          and '<rect x="9" y="9" width="11.5" height="11.5" rx="2.5"/>' in icons_tpl)
     check("terminal.js sources the xterm theme from CSS custom properties",
           "theme: terminalTheme()" in terminal_js
           and "selectionBackground: cssVar('--term-selection-background'" in terminal_js
