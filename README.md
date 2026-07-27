@@ -36,7 +36,7 @@ uv sync                      # build .venv from uv.lock
 export ACTIVITY_DATA_DIR=~/.local/share/ephemeris
 
 # Desktop-only (safe default — not reachable from other devices):
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers
 ```
 
 Open <http://localhost:8000>. The SQLite file and seed items are created on first
@@ -48,7 +48,7 @@ No uv? A pinned `requirements.txt` (generated from `uv.lock`) is the pip fallbac
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 export ACTIVITY_DATA_DIR=~/.local/share/ephemeris
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers
 ```
 
 ## Open from your phone (same Wi-Fi)
@@ -76,7 +76,8 @@ The supported boundary is localhost by default, or a trusted LAN when explicitly
 enabled; public-internet deployment is unsupported in v0. The embedded terminal
 is off by default (opt in with `EPHEMERIS_ENABLE_TERMINAL=1`) and remains
 loopback-only when enabled. See the [security model](docs/security-model.md)
-for the deployment assumptions and known limitations.
+for the deployment assumptions and known limitations, and
+[`SECURITY.md`](SECURITY.md) for how to report a vulnerability.
 The ecosystem-wide security policy lives in [selfos `SECURITY.md`](https://github.com/jointsome0-lgtm/selfos/blob/main/SECURITY.md);
 this repo's security model stays authoritative for ephemeris-specific deployment
 assumptions.
@@ -97,7 +98,9 @@ loginctl enable-linger "$USER"        # keep running after logout / across reboo
 
 Status: `systemctl --user status ephemeris` · logs: `journalctl --user -u ephemeris -f`.
 The template ships with `127.0.0.1`; copy-and-edit (don't symlink) so your local
-host choice never lands back in Git.
+host choice never lands back in Git. Copies made before `--no-proxy-headers` was
+added to the template keep the old `ExecStart` — add the flag by hand and
+restart the unit (see [security model](docs/security-model.md)).
 
 ### Migrating an existing in-checkout data directory
 

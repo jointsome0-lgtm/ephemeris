@@ -43,6 +43,13 @@ Uvicorn's `--no-proxy-headers`; do not put the terminal behind a proxy that
 rewrites the client address from forwarded headers. Otherwise
 `scope["client"]` can become attacker-influenced and weaken the loopback check.
 
+The flag is not a no-op: the pinned Uvicorn version honors forwarded headers by
+default, so every launch command in this repository — README, the systemd
+template, `docs/system-design.md`, and the example above — passes
+`--no-proxy-headers`, and it must stay there. Keep it even when the terminal is
+off, so enabling `EPHEMERIS_ENABLE_TERMINAL` later cannot silently start a
+process whose loopback peer check reads an attacker-influenced client address.
+
 ### Enabling the terminal (opt-in)
 
 The terminal is disabled unless `EPHEMERIS_ENABLE_TERMINAL` is set to a truthy
