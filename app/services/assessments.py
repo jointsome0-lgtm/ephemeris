@@ -466,7 +466,9 @@ def record_assessment(conn: sqlite3.Connection, lesson: dict, payload: dict) -> 
         rate_stamp = _check_rate(lesson["id"])
         if lesson.get("archived"):
             # D-S1-4: the owner unarchives first — a distinct 409, never a
-            # silent write into a lesson that has been put away.
+            # silent write into a lesson that has been put away. This is the
+            # cheap early refusal on the caller's view of the lesson; the
+            # binding one runs inside the write transaction (_record_locked).
             raise AssessmentError(
                 "lesson-archived", 409,
                 "this lesson is archived; restore it before recording",
@@ -523,10 +525,35 @@ def _record_locked(
         created_at = _utc_now_iso()
         concepts = submission["concepts"]
         try:
-            with conn:
-                # ONE transaction (D-S1-1): the row and its `lesson_assessment`
-                # event commit or roll back together. No filesystem work runs
-                # inside it (D-S1-5) — the s2 projection is post-commit work.
+            # ONE transaction (D-S1-1): the row and its `lesson_assessment`
+            # event commit or roll back together. No filesystem work runs
+            # inside it (D-S1-5) — the s2 projection is post-commit work.
+            #
+            # BEGIN IMMEDIATE rather than the usual `with conn:`, because the
+            # archive re-check below must be part of THIS transaction. Python's
+            # sqlite3 opens its implicit transaction at the first DML statement,
+            # so a SELECT inside `with conn:` would still read in autocommit and
+            # leave the same window the caller's stale view has: lesson read,
+            # archive committed elsewhere, assessment inserted anyway. Taking
+            # the write lock up front gives the archive and this write a
+            # definitive order.
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                current = conn.execute(
+                    "SELECT archived_at FROM lessons WHERE id = ?",
+                    (lesson["id"],),
+                ).fetchone()
+                if current is None:
+                    raise AssessmentError(
+                        "unknown-lesson", 404, "the lesson no longer exists"
+                    )
+                if current["archived_at"] is not None:
+                    # The binding refusal: whatever the caller's view said, the
+                    # committed state at write time is what decides.
+                    raise AssessmentError(
+                        "lesson-archived", 409,
+                        "this lesson is archived; restore it before recording",
+                    )
                 cursor = conn.execute(
                     "INSERT INTO lesson_assessments "
                     "(assessment_id, event_uuid, lesson_id, lesson_uid, "
@@ -572,6 +599,10 @@ def _record_locked(
                     "supersedes": submission["supersedes"],
                     "created_at": created_at,
                 }, event_uuid=event_uuid)
+            except BaseException:
+                conn.rollback()
+                raise
+            conn.commit()
         except sqlite3.IntegrityError:
             # The same idempotency key landed from another PROCESS (a stale
             # second server; in-process writers serialize on the lesson lock) —
@@ -626,20 +657,25 @@ def row_view(row: sqlite3.Row | dict) -> dict:
     }
 
 
+# The deactivation lookup is correlated, so it needs `idx_assessments_lesson_
+# supersedes` to stay bounded — without that index it rescans the lesson's whole
+# history per row and the fold goes quadratic. verify asserts the query plan.
+ACTIVE_ROWS_SQL = (
+    "SELECT * FROM lesson_assessments a WHERE a.lesson_id = ? "
+    "AND NOT EXISTS (SELECT 1 FROM lesson_assessments s "
+    "                WHERE s.lesson_id = a.lesson_id "
+    "                  AND s.supersedes = a.assessment_id) "
+    "ORDER BY a.id"
+)
+
+
 def active_rows(conn: sqlite3.Connection, lesson_id: int) -> list[dict]:
     """Rows not targeted by any `supersedes`, ascending `seq` (D-S1-2).
 
     A retraction and a one-write correction deactivate their target the same
     way; `supersedes` is validated same-lesson at write time, so the join
     cannot reach across lessons."""
-    rows = conn.execute(
-        "SELECT * FROM lesson_assessments a WHERE a.lesson_id = ? "
-        "AND NOT EXISTS (SELECT 1 FROM lesson_assessments s "
-        "                WHERE s.lesson_id = a.lesson_id "
-        "                  AND s.supersedes = a.assessment_id) "
-        "ORDER BY a.id",
-        (lesson_id,),
-    ).fetchall()
+    rows = conn.execute(ACTIVE_ROWS_SQL, (lesson_id,)).fetchall()
     return [row_view(row) for row in rows]
 
 

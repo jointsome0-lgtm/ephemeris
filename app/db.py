@@ -629,6 +629,13 @@ CREATE TABLE IF NOT EXISTS lesson_assessments (
 
 CREATE INDEX IF NOT EXISTS idx_assessments_lesson_kind
   ON lesson_assessments(lesson_id, kind, id);
+
+-- The active-state fold asks, for every row of a lesson, whether any sibling
+-- names it in `supersedes`. Without this index that correlated lookup scans
+-- the lesson's whole history once per row, so the fold — which s2 runs on
+-- every write and s4 on every render — is quadratic in lifetime assessments.
+CREATE INDEX IF NOT EXISTS idx_assessments_lesson_supersedes
+  ON lesson_assessments(lesson_id, supersedes);
 """
 
 

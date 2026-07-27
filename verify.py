@@ -2665,6 +2665,7 @@ process.stdout.write(JSON.stringify([
         _as_probe_id = lessons_svc.create_lesson(_as_conn, "Assessment Check Demo")
         _as_probe = lessons_svc.get_lesson(_as_conn, _as_probe_id)
         _as_arch_id = lessons_svc.create_lesson(_as_conn, "Assessment Archive Demo")
+        _as_fp_id = lessons_svc.create_lesson(_as_conn, "Assessment Fingerprint Demo")
     finally:
         _as_conn.close()
 
@@ -2756,8 +2757,16 @@ process.stdout.write(JSON.stringify([
         "unknown kind": _as_raw_insert(kind="verdict"),
         "unknown mode": _as_raw_insert(mode="grading"),
         "empty note": _as_raw_insert(note=""),
+        # a retraction that DOES satisfy its supersedes conjunct must still be
+        # rejected for the fields it may not carry — otherwise the probes above
+        # would pass on the supersedes clause alone
+        "retraction carrying a level": _as_raw_insert(
+            kind="retraction", supersedes=str(_as_uuid4()), level="correct"),
+        "retraction carrying an attempt": _as_raw_insert(
+            kind="retraction", supersedes=str(_as_uuid4()),
+            attempt_id=str(_as_uuid4())),
     }
-    check("per-kind CHECK constraints reject every structurally invalid row",
+    check("per-kind CHECK constraints reject rows violating any stated conjunct",
           _as_valid_seed == "accepted"
           and all(outcome == "rejected"
                   for outcome in _as_check_probes.values()),
@@ -2838,6 +2847,23 @@ process.stdout.write(JSON.stringify([
     _as_ev1 = json.loads(_as_ev[-1]["payload_json"])
     check("row and lesson_assessment event share one txn + event uuid",
           len(_as_ev) == 1 and _as_ev[-1]["uuid"] == _as_row1["event_uuid"])
+    # ...and the transaction is real in both directions: a failing ledger append
+    # must leave no orphan authority row (a matching uuid alone would also hold
+    # if the row were committed first)
+    def _as_failing_append(*args, **kwargs):
+        raise sqlite3.OperationalError("ledger append refused (probe)")
+
+    with _mock.patch.object(assess_svc, "append_event", _as_failing_append):
+        try:
+            _as_atomic_raised = None
+            c.post(_as_url, json={
+                "kind": "summary", "note": "Vera Example: event will fail.",
+                "idempotency_key": "vera-as-atomic-1"})
+        except sqlite3.OperationalError as exc:
+            _as_atomic_raised = exc
+    check("a failing ledger append rolls the assessment row back",
+          all(r["idempotency_key"] != "vera-as-atomic-1" for r in _as_rows())
+          and len(_as_rows()) == 1 and len(_as_events()) == 1)
     check("lesson_assessment payload echoes the full D-S1-1 field list",
           list(_as_ev1.keys()) == [
               "lesson_uid", "lesson_id", "slug", "assessment_id", "seq",
@@ -2861,15 +2887,55 @@ process.stdout.write(JSON.stringify([
           # an explicit null reads as absent, so it fingerprints identically
           and _as_null_replay.json() == dict(_as_j1, result="duplicate")
           and len(_as_rows()) == 1 and len(_as_events()) == 1)
-    _as_conflict = c.post(_as_url, json=dict(
-        _as_review_body, note="Vera Example: a different diagnosis entirely."))
-    _as_conflict_level = c.post(_as_url, json=dict(
-        _as_review_body, level="incorrect"))
-    check("same key + different submission is idempotency-conflict, not a merge",
-          _as_conflict.status_code == 409
-          and _as_conflict.json()["error"] == "idempotency-conflict"
-          and _as_conflict_level.status_code == 409
-          and len(_as_rows()) == 1)
+    # every validated field is part of what the key identifies: a regression
+    # that dropped one from the canonical form would silently coalesce a
+    # DIFFERENT judgment into the original row
+    _as_conflicts = {
+        "note": dict(_as_review_body,
+                     note="Vera Example: a different diagnosis entirely."),
+        "level": dict(_as_review_body, level="incorrect"),
+        "mode": dict(_as_review_body, mode="exam"),
+        "attempt_id": dict(_as_review_body, attempt_id=str(_as_uuid4())),
+        "concepts": dict(_as_review_body, concepts=["loops"]),
+        "kind": {"kind": "summary", "note": _as_review_body["note"],
+                 "idempotency_key": _as_review_body["idempotency_key"]},
+    }
+    _as_conflict_out = {name: c.post(_as_url, json=body)
+                        for name, body in _as_conflicts.items()}
+    _as_ev_conflicts = {
+        "basis": {"kind": "evidence", "level": "weak", "basis": "runs",
+                  "concepts": ["loops"], "note": "Vera Example: evidence.",
+                  "idempotency_key": "vera-as-ev-basis"},
+        "next_action": {"kind": "summary", "note": "Vera Example: summary.",
+                        "next_action": "Read section two.",
+                        "idempotency_key": "vera-as-na"},
+        "supersedes": {"kind": "summary", "note": "Vera Example: summary two.",
+                       "idempotency_key": "vera-as-sup"},
+    }
+    # on their own lesson: these three need an original row per key, and the
+    # row-count assertions below belong to the main lesson
+    _as_fp_url = f"/learn/lessons/{_as_fp_id}/assessments"
+    for _as_name, _as_body in _as_ev_conflicts.items():
+        c.post(_as_fp_url, json=_as_body)  # the original write for this key
+    _as_ev_conflict_out = {
+        "basis": c.post(_as_fp_url, json=dict(
+            _as_ev_conflicts["basis"], basis="live")),
+        "next_action": c.post(_as_fp_url, json=dict(
+            _as_ev_conflicts["next_action"], next_action="Read section three.")),
+        # a known key with a changed submission conflicts BEFORE the
+        # mutable-state refusals: this supersedes names another lesson's row
+        "supersedes": c.post(_as_fp_url, json=dict(
+            _as_ev_conflicts["supersedes"], supersedes=_as_j1["assessment_id"])),
+    }
+    check("every validated field is in the fingerprint: any change conflicts",
+          all(resp.status_code == 409
+              and resp.json()["error"] == "idempotency-conflict"
+              for resp in list(_as_conflict_out.values())
+              + list(_as_ev_conflict_out.values())),
+          ", ".join(f"{name}={resp.status_code}/{resp.json().get('error')}"
+                    for name, resp in list(_as_conflict_out.items())
+                    + list(_as_ev_conflict_out.items())
+                    if resp.json().get("error") != "idempotency-conflict"))
 
     # closed vocabularies and per-kind shape: distinct code each, nothing coerced
     def _as_error(body):
@@ -3054,6 +3120,45 @@ process.stdout.write(JSON.stringify([
               _as_arch_first.json(), result="duplicate")
           and len(_as_rows(_as_arch_id)) == 1)
 
+    # PR #85 round 1: the caller's lesson view is a snapshot. The archive can
+    # commit between the handler's read and the insert (the owner archives in
+    # the browser while the tutor's write is in the threadpool), so the binding
+    # refusal reads the committed archive state inside the write transaction.
+    _as_stale_conn = get_conn()
+    try:
+        _as_stale_id = lessons_svc.create_lesson(_as_stale_conn, "Assessment Race Demo")
+        _as_stale_view = lessons_svc.get_lesson(_as_stale_conn, _as_stale_id)
+        lessons_svc.archive_lesson(_as_stale_conn, _as_stale_id)
+        _as_stale_refusal = None
+        try:
+            assess_svc.record_assessment(
+                _as_stale_conn, _as_stale_view, {
+                    "kind": "summary",
+                    "note": "Vera Example: raced the archive.",
+                    "idempotency_key": "vera-as-race-1"})
+        except assess_svc.AssessmentError as exc:
+            _as_stale_refusal = exc.code
+    finally:
+        _as_stale_conn.close()
+    check("a lesson archived after the handler's read still refuses the write",
+          _as_stale_view["archived"] is False
+          and _as_stale_refusal == "lesson-archived"
+          and len(_as_rows(_as_stale_id)) == 0)
+
+    # PR #85 round 1: the fold's deactivation lookup is correlated — without an
+    # index on (lesson_id, supersedes) it rescans the lesson's whole history
+    # once per row, making every active_state() consumer quadratic
+    _as_plan_conn = get_conn()
+    try:
+        _as_plan = [r["detail"] for r in _as_plan_conn.execute(
+            "EXPLAIN QUERY PLAN " + assess_svc.ACTIVE_ROWS_SQL, (_as_fold_id,))]
+    finally:
+        _as_plan_conn.close()
+    check("the active fold's supersedes lookup is index-bounded",
+          any("idx_assessments_lesson_supersedes" in detail
+              for detail in _as_plan),
+          " | ".join(_as_plan))
+
     # slug alias shares the handler
     _as_slug = c.post(f"/learn/lessons/by-slug/{_as['slug']}/assessments", json={
         "kind": "summary", "note": "Vera Example: recorded through the alias.",
@@ -3087,6 +3192,12 @@ process.stdout.write(JSON.stringify([
         "kind": "retraction", "supersedes": _as_f_ev2["assessment_id"],
         "note": "Vera Example: that was a different learner's answer."},
         "fold-5")
+    # a SECOND active evidence for one concept: "slices" now has two live
+    # candidates, so latest-wins is exercised rather than last-one-standing
+    _as_f_ev3 = _as_fold_post({
+        "kind": "evidence", "level": "passed", "basis": "artifacts",
+        "concepts": ["slices"],
+        "note": "Vera Example: reslice exercise came out right."}, "fold-6")
     _as_fold_conn = get_conn()
     try:
         _as_state = assess_svc.active_state(_as_fold_conn, _as_fold_id)
@@ -3096,12 +3207,39 @@ process.stdout.write(JSON.stringify([
     check("active fold: retracted/superseded rows drop out, latest wins by seq",
           [row["assessment_id"] for row in _as_active] == [
               _as_f_ev1["assessment_id"], _as_f_sum2["assessment_id"],
-              _as_f_retract["assessment_id"]]
+              _as_f_retract["assessment_id"], _as_f_ev3["assessment_id"]]
           and set(_as_state["evidence_by_concept"]) == {"slices", "capacity"}
-          and all(row["assessment_id"] == _as_f_ev1["assessment_id"]
-                  for row in _as_state["evidence_by_concept"].values())
+          # slices: the later of two ACTIVE rows; capacity: falls back to the
+          # earlier one because the later was retracted
+          and _as_state["evidence_by_concept"]["slices"]["assessment_id"]
+          == _as_f_ev3["assessment_id"]
+          and _as_state["evidence_by_concept"]["capacity"]["assessment_id"]
+          == _as_f_ev1["assessment_id"]
           and _as_state["summary"]["assessment_id"] == _as_f_sum2["assessment_id"]
           and _as_state["reviews_by_attempt"] == {})
+
+    # latest ACTIVE review per attempt, on the lesson that has a real attempt
+    _as_rev2 = c.post(_as_url, json={
+        "kind": "review", "level": "unclear", "attempt_id": _as_attempt_id,
+        "note": "Vera Example: second look, still ambiguous.",
+        "idempotency_key": "vera-as-rev-2"}).json()
+    _as_rev3 = c.post(_as_url, json={
+        "kind": "review", "level": "correct", "attempt_id": _as_attempt_id,
+        "note": "Vera Example: third look; the earlier read was wrong.",
+        "supersedes": _as_rev2["assessment_id"],
+        "idempotency_key": "vera-as-rev-3"}).json()
+    _as_rev_conn = get_conn()
+    try:
+        _as_rev_state = assess_svc.active_state(_as_rev_conn, _as_id)
+    finally:
+        _as_rev_conn.close()
+    check("latest ACTIVE review per attempt wins over earlier and superseded",
+          set(_as_rev_state["reviews_by_attempt"]) == {_as_attempt_id}
+          and _as_rev_state["reviews_by_attempt"][_as_attempt_id][
+              "assessment_id"] == _as_rev3["assessment_id"]
+          # neither the first review nor the superseded second may win
+          and _as_rev3["assessment_id"] not in (
+              _as_j1["assessment_id"], _as_rev2["assessment_id"]))
     check("supersedes is validated against the same lesson (422 across lessons)",
           c.post(_as_fold_url, json={
               "kind": "retraction", "supersedes": _as_j1["assessment_id"],
@@ -3131,7 +3269,7 @@ process.stdout.write(JSON.stringify([
     _as_rate_replay_over = c.post(_as_rate_url, json={
         "kind": "summary", "note": "Vera Example: rate window seed.",
         "idempotency_key": "rate-seed"})
-    check("rate limit is 30/60s per lesson; replays are refunded, not charged",
+    check("rate limit is 30/60s per lesson; replays cost no window budget",
           _as_rate_first.status_code == 200
           and _as_rate_replay.json()["result"] == "duplicate"
           # without the refund this write would have been the 31st charge
@@ -3143,6 +3281,42 @@ process.stdout.write(JSON.stringify([
           # replay precedes the rate limit: a retry never loses its outcome
           and _as_rate_replay_over.status_code == 200
           and _as_rate_replay_over.json()["result"] == "duplicate")
+    assess_svc._reset_rate_limit()
+
+    # The refund table proper: the checks above only prove that a replay found
+    # BEFORE the rate charge costs nothing. A retry racing its own original
+    # sees the key uncommitted at that early check, gets charged, and only
+    # discovers the duplicate under the write lock — that slot must come back,
+    # or retries against a slow original starve real writes. Staged by making
+    # the first replay lookup of the request miss.
+    _as_real_replay = assess_svc._replay_or_conflict
+    _as_replay_calls = {"n": 0}
+
+    def _as_late_replay(*args, **kwargs):
+        _as_replay_calls["n"] += 1
+        if _as_replay_calls["n"] == 1:
+            return None  # the racing retry cannot see its original yet
+        return _as_real_replay(*args, **kwargs)
+
+    _as_refund_body = {
+        "kind": "summary", "note": "Vera Example: the racing retry.",
+        "idempotency_key": "vera-as-refund-1"}
+    assess_svc._reset_rate_limit()
+    _as_refund_first = c.post(_as_url, json=_as_refund_body)
+    _as_window_before = len(assess_svc._rate.get(_as_id, ()))
+    with _mock.patch.object(
+            assess_svc, "_replay_or_conflict", _as_late_replay):
+        _as_refund_late = c.post(_as_url, json=_as_refund_body)
+    _as_window_after = len(assess_svc._rate.get(_as_id, ()))
+    check("a replay that only surfaces under the write lock refunds its slot",
+          _as_refund_first.json()["result"] == "recorded"
+          and _as_replay_calls["n"] >= 2
+          and _as_refund_late.status_code == 200
+          and _as_refund_late.json() == dict(
+              _as_refund_first.json(), result="duplicate")
+          and _as_window_before == 1 and _as_window_after == 1,
+          f"calls={_as_replay_calls['n']} "
+          f"window {_as_window_before}->{_as_window_after}")
     assess_svc._reset_rate_limit()
 
     # body admission (64 KiB) and the B2 write guard

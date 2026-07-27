@@ -48,7 +48,16 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   caller-supplied `event_uuid`; every existing caller is unchanged.
   `app/services/attempts.py`, the bridge ABI, `app/terminal.py`, the sandbox
   profiles, the generated brief and `docs/learn-bundle-spec.md` are unchanged,
-  and no existing route changed. verify 792, verify_restore 28.
+  and no existing route changed. The first PR-findings round moves the binding
+  archived-lesson refusal inside the write transaction, which is opened with
+  `BEGIN IMMEDIATE` so the committed archive state is read under the write lock
+  rather than in autocommit, and adds
+  `idx_assessments_lesson_supersedes (lesson_id, supersedes)` to the same v14
+  script so the active-state fold's correlated deactivation lookup is bounded.
+  The independent correctness re-check over the same diff added no code change:
+  its one Medium concerned SQL-level enforcement of the concepts array shape,
+  rebutted in the PR body, and its five Low findings were verifier-strength
+  gaps, all closed by additional checks. verify 797, verify_restore 28.
 
 ## Done
 
