@@ -19,7 +19,25 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
+- [ ] 2026-07-27 — `d1d487d` on `fix/terminal-copy-affordance`; the entry stays
+  current with the branch: any further branch commit, and the merge commit
+  itself once the PR lands, is appended here before any drain or restart —
+  `app/static/src/terminal.ts` (+ emitted `app/static/terminal.js`),
+  `app/templates/base.html`, `app/templates/learn.html`,
+  `app/templates/_icons.html`, `app/static/style.css`, `verify.py` — the
+  terminal client's custom key handler no longer requires Shift to be up in its
+  Ctrl+C branch, so Ctrl+Shift+C takes the same selection-only copy path; with
+  no selection both combinations still return true to xterm. Both drawer
+  headers gain a `<button id="<prefix>-copysel">` that reads and writes the
+  existing per-surface `al-term-copyselect` / `al-term-learner-copyselect`
+  localStorage flag, reflects it through `aria-pressed` and an `.active` class,
+  and is a no-op when the element is absent; the stored default is unchanged.
+  The button's `title`/`aria-label` name the copy and paste shortcuts.
+  `_icons.html` gains a `copy` glyph; `style.css` gains a `.term-btn.active`
+  rule and one selector in the right-dock minimized hide list. The WebSocket
+  protocol, the loopback/Origin gates, `writeOnlyClipboardProvider`,
+  `EPHEMERIS_ENABLE_TERMINAL`, session/tab persistence and the drawer metrics
+  are unchanged. No Python runtime path changed. verify 767, verify_restore 28.
 
 ## Done
 
