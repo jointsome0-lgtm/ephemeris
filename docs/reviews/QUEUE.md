@@ -19,7 +19,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-27 — `d1d487d` on `fix/terminal-copy-affordance`; the entry stays
+- [ ] 2026-07-27 — `d1d487d`, `4b398e6` on `fix/terminal-copy-affordance`; the entry stays
   current with the branch: any further branch commit, and the merge commit
   itself once the PR lands, is appended here before any drain or restart —
   `app/static/src/terminal.ts` (+ emitted `app/static/terminal.js`),
@@ -37,7 +37,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   rule and one selector in the right-dock minimized hide list. The WebSocket
   protocol, the loopback/Origin gates, `writeOnlyClipboardProvider`,
   `EPHEMERIS_ENABLE_TERMINAL`, session/tab persistence and the drawer metrics
-  are unchanged. No Python runtime path changed. verify 767, verify_restore 28.
+  are unchanged. No Python runtime path changed. `4b398e6` adds a `storage`
+  listener, guarded on that same key, that re-runs the button's state sync when
+  another document writes the flag, and anchors the new verifier checks to the
+  full key-handler branch, the missing-element guard, the load-time sync, the
+  write's exception handling, the listener, and the complete icon entry.
+  verify 767, verify_restore 28.
 
 ## Done
 
