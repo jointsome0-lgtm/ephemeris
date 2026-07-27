@@ -19,7 +19,18 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
+- [ ] 2026-07-27 — `c159a2b` on `fix/terminal-copy-affordance`, landing after the
+  drain of the entry below; the entry stays current with the branch: any further
+  branch commit, and the merge commit itself once the PR lands, is appended here
+  before any drain or restart — `app/static/src/terminal.ts` (+ emitted
+  `app/static/terminal.js`), `verify.py` — the terminal client's custom key
+  handler calls `preventDefault()` on the copy path when Shift is held, so the
+  Ctrl+Shift+C alias no longer leaves the event's browser default action to run
+  after the selection is written; xterm's `_keyDown` returns at the custom
+  handler before its own `cancel()`, so the handler's `false` return does not
+  cancel the event. Plain Ctrl+C is not cancelled, and the no-selection path is
+  unchanged. `verify.py` anchors the added line inside the same branch. No other
+  file, and no Python runtime path, changed. verify 767, verify_restore 28.
 
 ## Done
 
