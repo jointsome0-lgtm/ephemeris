@@ -19,9 +19,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-27 — `d1d487d`, `4b398e6` on `fix/terminal-copy-affordance`; the entry stays
-  current with the branch: any further branch commit, and the merge commit
-  itself once the PR lands, is appended here before any drain or restart —
+_None._
+
+## Done
+
+- [x] 2026-07-27 — `d1d487d`, `4b398e6` on
+  `fix/terminal-copy-affordance` —
   `app/static/src/terminal.ts` (+ emitted `app/static/terminal.js`),
   `app/templates/base.html`, `app/templates/learn.html`,
   `app/templates/_icons.html`, `app/static/style.css`, `verify.py` — the
@@ -41,10 +44,17 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   listener, guarded on that same key, that re-runs the button's state sync when
   another document writes the flag, and anchors the new verifier checks to the
   full key-handler branch, the missing-element guard, the load-time sync, the
-  write's exception handling, the listener, and the complete icon entry.
-  verify 767, verify_restore 28.
-
-## Done
+  write's exception handling, the listener, and the complete icon entry. No
+  drain fix commit was required; verify 767, verify_restore 28. Drained
+  2026-07-27 → `2026-07-27-terminal-copy-affordance-review.md`: no Critical,
+  High, Medium, Low, Info, or open finding; zero fix cycles. The E4
+  two-surface and generated-runtime protections and terminal-tab L1 remain
+  resolved; terminal-opt-in T1 remains accepted only for the deliberately
+  plain owner shell; the trusted agent's network/credential posture and the
+  direct-loopback mitigation are unchanged. Final verdict: SAFE TO MAKE LIVE
+  for the documented direct-loopback single-worker deployment; wider,
+  proxy-adjacent, or multi-user deployment NO. Live restart is owner-only and
+  was not performed.
 
 - [x] 2026-07-26 — commits after `4dea680` on `fix/25-platform-support`;
   LANDED via merge commit `a2aa560`, whose tree is byte-identical to reviewed
