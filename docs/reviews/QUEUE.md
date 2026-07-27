@@ -19,10 +19,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-28 — commits after `c9f4a8a` on
-  `fix/4-s1-assessments-authority`; the entry stays current with the branch:
-  any further branch commit, and the merge commit itself once the PR lands, is
-  appended here before any drain or restart — `app/db.py`,
+- [ ] 2026-07-28 — `f614614` and `491f0e4` on
+  `fix/4-s1-assessments-authority`, merged into `main` as `5976697` (PR #85) —
+  `app/db.py`,
   `app/services/assessments.py` (new), `app/main.py`,
   `docs/lesson-assessments-api.md` (new), `verify.py`,
   `docs/reviews/QUEUE.md` — issue #4 phase S slice s1 adds a write route
