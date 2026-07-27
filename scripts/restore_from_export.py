@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restore the reconstructible subset of a Tick-like JSONL export.
+"""Restore the reconstructible subset of an Ephemeris JSONL export.
 
 The current export is not a full database snapshot.  This command therefore
 accepts only a fresh target and always reports the tables and metadata that the
@@ -489,7 +489,7 @@ def print_summary(target: Path, result: dict[str, Any]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Restore the reconstructible subset of a Tick-like JSONL export."
+        description="Restore the reconstructible subset of an Ephemeris JSONL export."
     )
     parser.add_argument("export_file", type=Path)
     parser.add_argument("target_activity_data_dir", type=Path)
