@@ -367,6 +367,12 @@ interface SurfaceConfig {
         if (e.ctrlKey && !e.altKey && !e.metaKey && key === 'c') {
           if (term.hasSelection && term.hasSelection()) {
             writeClipboardText(term.getSelection ? term.getSelection() : '');
+            // Returning false stops xterm but not the browser: its _keyDown
+            // returns before the cancel() that would preventDefault. Plain
+            // Ctrl+C's default is the browser copying the same selection, so
+            // it stays as it was; the alias' default is the devtools
+            // inspector, which must not open on a copy.
+            if (e.shiftKey) e.preventDefault();
             return false;
           }
           return true;

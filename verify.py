@@ -358,21 +358,31 @@ with TestClient(app) as c:
           and "readText: function () { return ''; }" in terminal_js)
     # Anchor the whole branch, not just its guard: a copy path that returned true
     # (also reaching the PTY) or a no-selection path that returned false
-    # (swallowing SIGINT) would satisfy the guard line alone.
+    # (swallowing SIGINT) would satisfy the guard line alone. The alias also
+    # cancels the event — returning false does not, since xterm's _keyDown
+    # returns before its own cancel() — so Ctrl+Shift+C cannot copy and open the
+    # browser's inspector at once. Plain Ctrl+C keeps its default untouched.
     copy_branch = (
         "                    if (e.ctrlKey && !e.altKey && !e.metaKey && key === 'c') {\n"
         "                        if (term.hasSelection && term.hasSelection()) {\n"
         "                            writeClipboardText(term.getSelection ? term.getSelection() : '');\n"
+    )
+    copy_branch_tail = (
+        "                            if (e.shiftKey)\n"
+        "                                e.preventDefault();\n"
         "                            return false;\n"
         "                        }\n"
         "                        return true;\n"
         "                    }\n"
     )
+    paste_branch = "if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && key === 'v')"
     check("terminal.js copies on Ctrl+C-with-selection and on the Ctrl+Shift+C alias",
-          copy_branch in terminal_js
-          and "!e.shiftKey && !e.altKey && !e.metaKey && key === 'c'" not in terminal_js
-          and "if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && key === 'v')"
-          in terminal_js)
+          # the tail closes the same branch the head opens: head, then tail,
+          # then the untouched paste branch (only comments may sit between)
+          0 <= terminal_js.find(copy_branch)
+          < terminal_js.find(copy_branch_tail)
+          < terminal_js.find(paste_branch)
+          and "!e.shiftKey && !e.altKey && !e.metaKey && key === 'c'" not in terminal_js)
     check("terminal.js wires the copy-on-select toggle, default still off",
           "var copySelBtn = document.getElementById(config.idPrefix + '-copysel');\n"
           "        if (copySelBtn) {" in terminal_js  # absent button stays a no-op
