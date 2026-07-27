@@ -19,7 +19,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-26 — commits after `4dea680` on `fix/25-platform-support`;
+_None._
+
+## Done
+
+- [x] 2026-07-26 — commits after `4dea680` on `fix/25-platform-support`;
   LANDED via merge commit `a2aa560`, whose tree is byte-identical to reviewed
   branch head `95593ba` —
   `app/terminal.py`, `app/sandbox.py`, `app/services/attempts.py`, `app/db.py`,
@@ -38,9 +42,15 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   no-`--proxy-headers` contract are unchanged. `app/db.py` gains `pretty_date()`,
   replacing seven `strftime("%-d")` call sites. `verify.py` adds a subprocess
   probe that imports `app.main` with `fcntl`/`pty`/`termios`/`resource` blocked,
-  and repoints two mock targets from module globals to the stdlib modules.
-
-## Done
+  and repoints two mock targets from module globals to the stdlib modules. No
+  drain fix commit was required; verify 762, verify_restore 28. Drained
+  2026-07-27 → `2026-07-27-platform-support-review.md`: no Critical, High,
+  Medium, Low, Info, or open finding; zero fix cycles. The earlier PR P1 is
+  resolved by `95593ba`; terminal, sandbox, runner, attempt, bridge, and
+  data-boundary conditions retain the report's explicit dispositions. Final
+  verdict: SAFE TO MAKE LIVE for the documented direct-loopback single-worker
+  deployment; wider, proxy-adjacent, or multi-user deployment NO. Live restart
+  is owner-only and was not performed.
 
 - [x] 2026-07-23 — commits after `13cab1b` on
   `fix/58-attempts-projection-cost`; LANDED via merge commit `f004546`, whose
