@@ -1,6 +1,6 @@
 # Security model
 
-Tick-like v0 is a local-first, single-user application. Its security boundary is
+Ephemeris v0 is a local-first, single-user application. Its security boundary is
 the machine and network on which it runs, not an application login.
 
 ## Supported deployments

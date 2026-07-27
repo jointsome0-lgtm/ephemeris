@@ -1,6 +1,7 @@
 """End-to-end verification via TestClient on a throwaway DB.
 
-Run: PYTHONPATH=/home/aina/projects/ephemeris ACTIVITY_DATA_DIR=/tmp/al-verify python verify.py
+Run from the repository root: `uv run python verify.py` — the script creates its
+own throwaway ACTIVITY_DATA_DIR, so no environment setup is needed.
 Exercises the new Manage Items CRUD + events and re-checks the §16.4 write
 contract still holds. Prints PASS/FAIL per assertion; exits non-zero on any fail.
 """
