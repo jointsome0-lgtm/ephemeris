@@ -32,7 +32,9 @@ Environment=ACTIVITY_DATA_DIR=%h/.local/share/ephemeris
 # Concrete venv interpreter built by `uv sync` — no PATH/shim dependency.
 # Default 127.0.0.1 = desktop-only (safe). The app has NO AUTH.
 # For phone/LAN access change to --host 0.0.0.0 — ONLY on a trusted network.
-ExecStart=%h/projects/ephemeris/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+# Keep --no-proxy-headers: it makes the client address the app sees the real
+# peer, which the loopback checks depend on (see docs/security-model.md).
+ExecStart=%h/projects/ephemeris/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers
 Restart=on-failure
 RestartSec=3
 # New files (DB, exports, lesson briefs) stay private to the service user.
