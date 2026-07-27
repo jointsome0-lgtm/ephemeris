@@ -34,8 +34,8 @@ from .request_body import PayloadTooLarge, read_capped
 from . import runner as runner_core
 from .security import browser_origin_rejection, install_security
 from .services import (
-    artifacts, attempts, bundle_schema, calendar_events, checkins, export,
-    focus, items, lessons, lists, quickadd, retro, runs, stats, tasks,
+    artifacts, assessments, attempts, bundle_schema, calendar_events, checkins,
+    export, focus, items, lessons, lists, quickadd, retro, runs, stats, tasks,
 )
 from .terminal import client_is_local, setup_terminal, shutdown_terminal
 
@@ -1722,6 +1722,103 @@ async def post_lesson_attempt_by_slug(request: Request, slug: str):
 @app.post("/learn/lessons/{lesson_id}/attempts")
 async def post_lesson_attempt(request: Request, lesson_id: int):
     return await _record_attempt_request(request, lesson_id=lesson_id)
+
+
+# --- lesson assessments (S-DESIGN D-S1, docs/lesson-assessments-api.md) ------
+
+# The submission is small by contract (note ≤ 8 KiB, next_action ≤ 512 B); the
+# body cap only has to admit the worst-case JSON escaping of a valid note plus
+# the fixed fields. It is a quarter of the attempt cap because assessments
+# diagnose BY REFERENCE — nothing here ever carries an attempt body.
+_ASSESSMENT_MAX_BODY = 64 * 1024
+
+
+def _assessment_refusal(code: str, status: int, detail: str = "") -> JSONResponse:
+    headers = {"Cache-Control": "no-store"}
+    if status == 429:
+        headers["Retry-After"] = str(int(assessments.RATE_WINDOW_SECONDS))
+    return JSONResponse(
+        {"ok": False, "error": code, "detail": detail},
+        status_code=status,
+        headers=headers,
+    )
+
+
+async def _record_assessment_request(
+    request: Request, *, lesson_id: int | None = None, slug: str | None = None
+) -> JSONResponse:
+    """Shared handler for the id and slug-alias assessment routes — the D4
+    admission shape, deliberately (the attempt handler owns its own copy and
+    stays untouched). The async layer owns body admission (bounded, JSON only);
+    the blocking service work runs in the threadpool like every sync route. The
+    B2 perimeter middleware already applied its unsafe-method origin policy:
+    the lesson-agent shell's origin-less request passes, the sandboxed lesson
+    iframe's `Origin: null` never reaches here — the tutor writes verdicts, the
+    lesson page must not."""
+    length = request.headers.get("content-length")
+    if length is None:
+        return _assessment_refusal("length-required", 411, "Content-Length is required")
+    try:
+        expected_len = int(length)
+    except ValueError:
+        return _assessment_refusal("invalid-request", 400, "bad Content-Length")
+    if expected_len < 0:
+        return _assessment_refusal("invalid-request", 400, "bad Content-Length")
+    if expected_len > _ASSESSMENT_MAX_BODY:
+        return _assessment_refusal("payload-too-large", 413, "request body too large")
+    content_type = request.headers.get("content-type", "")
+    if content_type.split(";", 1)[0].strip().lower() != "application/json":
+        return _assessment_refusal(
+            "unsupported-media-type", 415, "submissions are application/json"
+        )
+    try:
+        body = await read_capped(request, _ASSESSMENT_MAX_BODY)
+    except PayloadTooLarge:
+        return _assessment_refusal("payload-too-large", 413, "request body too large")
+    except ValueError:
+        return _assessment_refusal("invalid-request", 400, "bad Content-Length")
+    try:
+        payload = json.loads(body)
+    except (ValueError, RecursionError):
+        # RecursionError: json.loads on deeply nested input (well under the
+        # byte cap) — still just a malformed body, never a 500.
+        return _assessment_refusal("invalid-json", 400, "body is not valid JSON")
+    if not isinstance(payload, dict):
+        return _assessment_refusal("invalid-json", 400, "body must be a JSON object")
+
+    def work() -> dict:
+        conn = get_conn()
+        try:
+            if slug is not None:
+                lesson = lessons.get_lesson_by_slug(conn, slug)
+            else:
+                lesson = lessons.get_lesson(conn, lesson_id)
+            if lesson is None:
+                raise assessments.AssessmentError(
+                    "unknown-lesson", 404, "unknown lesson"
+                )
+            return assessments.record_assessment(conn, lesson, payload)
+        finally:
+            conn.close()
+
+    try:
+        result = await run_in_threadpool(work)
+    except assessments.AssessmentError as exc:
+        return _assessment_refusal(exc.code, exc.status, exc.detail)
+    return JSONResponse(
+        {"ok": True, **result}, headers={"Cache-Control": "no-store"}
+    )
+
+
+# Registered before the {lesson_id} route so "by-slug" is never parsed as an id.
+@app.post("/learn/lessons/by-slug/{slug}/assessments")
+async def post_lesson_assessment_by_slug(request: Request, slug: str):
+    return await _record_assessment_request(request, slug=slug)
+
+
+@app.post("/learn/lessons/{lesson_id}/assessments")
+async def post_lesson_assessment(request: Request, lesson_id: int):
+    return await _record_assessment_request(request, lesson_id=lesson_id)
 
 
 @app.post("/learn/lessons")

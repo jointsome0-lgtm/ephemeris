@@ -19,7 +19,36 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
+- [ ] 2026-07-28 — commits after `c9f4a8a` on
+  `fix/4-s1-assessments-authority`; the entry stays current with the branch:
+  any further branch commit, and the merge commit itself once the PR lands, is
+  appended here before any drain or restart — `app/db.py`,
+  `app/services/assessments.py` (new), `app/main.py`,
+  `docs/lesson-assessments-api.md` (new), `verify.py`,
+  `docs/reviews/QUEUE.md` — issue #4 phase S slice s1 adds a write route
+  `POST /learn/lessons/{lesson_id}/assessments` and its `by-slug` alias,
+  recording tutor assessments. Schema v14 adds the `lesson_assessments` table
+  with per-kind CHECK constraints, `UNIQUE(event_uuid)`,
+  `UNIQUE(assessment_id)` and `UNIQUE(lesson_id, idempotency_key)`; each row is
+  written in one transaction with a `lesson_assessment` ledger event whose
+  payload echoes the record. The handler admits at most 64 KiB through the
+  shared capped-stream helper, requires `application/json`, refuses unknown
+  top-level fields, validates four kinds against closed vocabularies, bounds
+  `note` at 8 KiB and `next_action` at 512 UTF-8 bytes, accepts 1–8 opaque
+  concept refs deduplicated server-side, copies `question_id` from the
+  referenced `lesson_attempts` row, validates `attempt_id` and `supersedes`
+  against the same lesson, refuses archived lessons, and applies a per-lesson
+  30-per-60s in-process rate limit with the attempts-style refund table.
+  Idempotency stores a SHA-256 fingerprint of the canonical validated
+  submission; a replayed key with a matching fingerprint returns the original
+  row and a differing one is a conflict, and the replay lookup precedes every
+  mutable-state refusal. The route reads no manifest and applies no bridge
+  eligibility gate. `sitting_id` is always NULL and `projection` is always
+  `pending` in this slice. `app/db.py`'s `append_event` gains an optional
+  caller-supplied `event_uuid`; every existing caller is unchanged.
+  `app/services/attempts.py`, the bridge ABI, `app/terminal.py`, the sandbox
+  profiles, the generated brief and `docs/learn-bundle-spec.md` are unchanged,
+  and no existing route changed. verify 792, verify_restore 28.
 
 ## Done
 
