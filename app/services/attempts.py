@@ -750,32 +750,40 @@ def _project_attempt_locked(
 # no transaction. The write path, its cursor/seal state and `attempts.jsonl`
 # are untouched by anything below.
 
-# One row per question — the newest by rowid, which is the insertion authority
-# the same way `seq` is for assessments (`created_at` can tie at microsecond
-# resolution, rowids cannot). The grouping seeks through
-# `idx_attempts_lesson_question`.
-_LATEST_PER_QUESTION_SQL = (
-    "SELECT * FROM lesson_attempts WHERE id IN "
-    "(SELECT MAX(id) FROM lesson_attempts WHERE lesson_id = ? GROUP BY question_id) "
-    "ORDER BY id"
-)
-
 # The answer is the learner's own text (≤ 32 KiB). The panel shows enough of it
 # to recognise which answer a verdict judged; the whole of it stays in the DB,
 # the export and `attempts.jsonl` rather than in every /learn render.
 PANEL_ANSWER_CHARS = 400
 
+# One row per question — the newest by rowid, which is the insertion authority
+# the same way `seq` is for assessments (`created_at` can tie at microsecond
+# resolution, rowids cannot). The grouping seeks through
+# `idx_attempts_lesson_question`.
+#
+# The excerpt is cut in SQLite, not in Python: the number of questions a lesson
+# has ever been answered on is not bounded by the manifest (a durable id that
+# leaves it keeps its attempts), so selecting whole answer bodies would
+# materialize up to 32 KiB per question to show 400 characters of each.
+# `substr`/`length` count characters on TEXT, the same unit as the slice they
+# replaced.
+_LATEST_PER_QUESTION_SQL = (
+    "SELECT attempt_id, question_id, page_id, page_rev, stale, created_at, "
+    "       substr(answer, 1, ?) AS answer_excerpt, "
+    "       length(answer) AS answer_len "
+    "FROM lesson_attempts WHERE id IN "
+    "(SELECT MAX(id) FROM lesson_attempts WHERE lesson_id = ? GROUP BY question_id) "
+    "ORDER BY id"
+)
+
 
 def _panel_attempt_view(row: sqlite3.Row) -> dict:
-    answer = row["answer"]
-    excerpt = answer[:PANEL_ANSWER_CHARS]
     return {
         "attempt_id": row["attempt_id"],
         "question_id": row["question_id"],
         "page_id": row["page_id"],
         "page_rev": row["page_rev"],
-        "answer": excerpt,
-        "answer_truncated": len(answer) > len(excerpt),
+        "answer": row["answer_excerpt"],
+        "answer_truncated": row["answer_len"] > PANEL_ANSWER_CHARS,
         "stale": bool(row["stale"]),
         "created_at": row["created_at"],
     }
@@ -788,7 +796,10 @@ def lesson_attempt_summary(conn: sqlite3.Connection, lesson_id: int) -> dict:
         "SELECT COUNT(*) FROM lesson_attempts WHERE lesson_id = ?", (lesson_id,)
     ).fetchone()[0]
     latest = {}
-    for row in conn.execute(_LATEST_PER_QUESTION_SQL, (lesson_id,)).fetchall():
+    rows = conn.execute(
+        _LATEST_PER_QUESTION_SQL, (PANEL_ANSWER_CHARS, lesson_id)
+    ).fetchall()
+    for row in rows:
         latest[row["question_id"]] = _panel_attempt_view(row)
     return {"total": total, "latest_by_question": latest}
 

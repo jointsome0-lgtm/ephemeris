@@ -850,14 +850,18 @@ def active_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
     return fold_rows(active_rows(conn, lesson_id))
 
 
-# Every review ever written for the lesson, grouped by the attempt it judged.
-# `idx_assessments_lesson_kind` is (lesson_id, kind, id), so this seeks the
-# lesson's reviews instead of walking its history; the panel turns the totals
-# into the muted "(n earlier)" marker beside the review that is still active.
-_REVIEW_TOTALS_SQL = (
-    "SELECT attempt_id, COUNT(*) AS n FROM lesson_assessments "
+# Every review ever written for the lesson, by the attempt it judged and in
+# `seq` order. `idx_assessments_lesson_kind` is (lesson_id, kind, id), so this
+# seeks the lesson's reviews instead of walking its history.
+#
+# The seqs themselves, not a total: the active review is not always the newest
+# one written. Retract a review and the fold falls back to an EARLIER active
+# review, so a total-minus-one would count a later, retracted review among the
+# ones it replaced. The panel counts only the seqs below the review it shows.
+_REVIEW_SEQS_SQL = (
+    "SELECT attempt_id, id FROM lesson_assessments "
     "WHERE lesson_id = ? AND kind = 'review' AND attempt_id IS NOT NULL "
-    "GROUP BY attempt_id"
+    "ORDER BY id"
 )
 
 
@@ -865,18 +869,18 @@ def panel_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
     """Everything the s4 record panel folds out of the authority rows (D-S3-1).
 
     Read-only, and one pass over the active rows: the D-S1-2 fold, how many
-    active records stand behind it, and how many earlier reviews each attempt
-    accumulated. `active_count` counts records that carry state — a retraction
-    is an active row but says only that another record was wrong, so counting
-    it would inflate what the panel claims to know.
+    active records stand behind it, and when each attempt's reviews were
+    written. `active_count` counts records that carry state — a retraction is
+    an active row but says only that another record was wrong, so counting it
+    would inflate what the panel claims to know.
     """
     rows = active_rows(conn, lesson_id)
     state = fold_rows(rows)
     state["active_count"] = sum(1 for row in rows if row["kind"] != "retraction")
-    state["review_totals"] = {
-        row["attempt_id"]: row["n"]
-        for row in conn.execute(_REVIEW_TOTALS_SQL, (lesson_id,)).fetchall()
-    }
+    review_seqs: dict[str, list[int]] = {}
+    for row in conn.execute(_REVIEW_SEQS_SQL, (lesson_id,)).fetchall():
+        review_seqs.setdefault(row["attempt_id"], []).append(row["id"])
+    state["review_seqs"] = review_seqs
     return state
 
 

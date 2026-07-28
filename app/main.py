@@ -1096,25 +1096,53 @@ def _record_date(iso: str | None) -> str:
         return ""
 
 
+def _document_question_ids(read) -> set[str]:
+    """The question ids the manifest DOCUMENT names, valid or not.
+
+    Retirement is absence from the manifest (S-M7), and absence is a fact
+    about the document rather than about the typed model. Validation drops
+    entries the author never removed — a dangling page reference, an id that
+    fails the grammar, a `questions` value that is not a list at all, none of
+    which reject the read — so a question missing from `read.questions` may be
+    unreadable rather than retired. Presence is therefore read here and
+    everything shown still comes from the validated model.
+    """
+    raw = read.raw if isinstance(read.raw, dict) else {}
+    items = raw.get("questions")
+    if not isinstance(items, list):
+        return set()
+    return {
+        item["id"] for item in items
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+
+
 def _record_entry(state: dict, attempt: dict | None, *, label: str,
-                  question_id: str, page_id: str | None, retired: bool) -> dict:
+                  question_id: str, page_id: str | None, retired: bool,
+                  unvalidated: bool = False) -> dict:
     """One question row: its latest attempt and the verdict on THAT attempt.
 
     A review names the attempt it judged, so a verdict on a superseded answer
     stays with that answer instead of being re-attached to a newer one. Only
-    the latest ACTIVE review renders; the ones it replaced are a count."""
+    the latest ACTIVE review renders; the reviews written BEFORE it are a
+    count. Reviews written after it are not: if the fold shows this one, any
+    later review was retracted, and a retracted verdict is not an earlier
+    reading of the answer."""
     review = None
     earlier = 0
     if attempt is not None:
         review = state["reviews_by_attempt"].get(attempt["attempt_id"])
         if review is not None:
-            total = state["review_totals"].get(attempt["attempt_id"], 1)
-            earlier = max(total - 1, 0)
+            earlier = sum(
+                1 for seq in state["review_seqs"].get(attempt["attempt_id"], ())
+                if seq < review["seq"]
+            )
     return {
         "question_id": question_id,
         "label": label,
         "page_id": page_id,
         "retired": retired,
+        "unvalidated": unvalidated,
         "attempt": attempt,
         "attempt_date": _record_date(attempt["created_at"]) if attempt else "",
         "review": review,
@@ -1146,6 +1174,19 @@ def _record_panel(conn, lesson: dict) -> dict:
         for q in declared
     ]
     declared_ids = {q["id"] for q in declared}
+    document_ids = _document_question_ids(read) if declared_known else set()
+    # An answered question the manifest still names but the reader could not
+    # validate keeps its place in the list — unlabelled and marked, because a
+    # validation failure is not a retirement.
+    questions += [
+        _record_entry(
+            state, attempt,
+            label=question_id, question_id=question_id,
+            page_id=attempt["page_id"], retired=False, unvalidated=True,
+        )
+        for question_id, attempt in latest.items()
+        if question_id not in declared_ids and question_id in document_ids
+    ]
     # Attempts whose question left the manifest. Durable ids are retired
     # forever, so the reviewed history behind them must not vanish with them.
     retired = [
@@ -1155,7 +1196,7 @@ def _record_panel(conn, lesson: dict) -> dict:
             page_id=attempt["page_id"], retired=True,
         )
         for question_id, attempt in latest.items()
-        if question_id not in declared_ids
+        if question_id not in declared_ids and question_id not in document_ids
     ]
     if not declared_known:
         # Not retired — just unlabelled, because the manifest could not be read.

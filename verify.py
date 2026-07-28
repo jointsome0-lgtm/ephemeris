@@ -7611,6 +7611,79 @@ process.stdout.write(JSON.stringify([
     check("S4 a question label falls back to its durable id",
           _s4_by_q["q_s4beta0001"]["label"] == "q_s4beta0001")
 
+    # PR round 1. A review written AFTER the displayed one and then retracted
+    # is not an earlier reading of the answer: the fold falls back to the
+    # older active review, so counting every review minus one would report a
+    # later retracted verdict among the ones it replaced.
+    _s4_late = _s4_assess({
+        "kind": "review", "level": "incorrect", "attempt_id": _s4_a_new,
+        "note": "s4-late-review-then-retracted", "idempotency_key": "s4-12"})
+    _s4_assess({"kind": "retraction", "supersedes": _s4_late["assessment_id"],
+                "note": "s4-retracting-the-late-review", "idempotency_key": "s4-13"})
+    _s4_conn = get_conn()
+    try:
+        _s4_late_ctx = _s4_panel(_s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id))
+    finally:
+        _s4_conn.close()
+    _s4_late_q = {q["question_id"]: q for q in _s4_late_ctx["questions"]}
+    check("S4 only reviews written BEFORE the displayed verdict count as earlier",
+          _s4_late_q["q_s4alpha001"]["review"]["level"] == "partial"
+          and _s4_late_q["q_s4alpha001"]["earlier_reviews"] == 1
+          and "(2 earlier)" not in c.get(f"/learn?lesson={_s4_id}").text,
+          str(_s4_late_q["q_s4alpha001"]["earlier_reviews"]))
+
+    # PR round 1. The answer excerpt is cut by SQLite, so a long answer is
+    # never materialized whole to render 400 characters of it.
+    _s4_long = "".join(str(n % 10) for n in range(4000))
+    _s4_long_att = _s4_attempt("q_s4gamma001", _s4_long, "s4-long-1")
+    _s4_conn = get_conn()
+    try:
+        _s4_long_view = attempts_svc.lesson_attempt_summary(
+            _s4_conn, _s4_id)["latest_by_question"]["q_s4gamma001"]
+        _s4_short_view = attempts_svc.lesson_attempt_summary(
+            _s4_conn, _s4_id)["latest_by_question"]["q_s4beta0001"]
+    finally:
+        _s4_conn.close()
+    check("S4 the panel reads a bounded excerpt of the answer, flagged when cut",
+          _s4_long_view["attempt_id"] == _s4_long_att
+          and _s4_long_view["answer"] == _s4_long[:attempts_svc.PANEL_ANSWER_CHARS]
+          and _s4_long_view["answer_truncated"] is True
+          and _s4_short_view["answer"] == "s4-beta-answer"
+          and _s4_short_view["answer_truncated"] is False
+          and "substr(answer" in attempts_svc._LATEST_PER_QUESTION_SQL,
+          str(len(_s4_long_view["answer"])))
+
+    # PR round 1. `type-mismatch`, `dangling-ref` and `invalid-id` are DEGRADED,
+    # not rejecting: a manifest can drop a question from the typed list while
+    # still declaring it. Validation failure is not retirement.
+    _s4_degraded = json.loads((_s4_dir / "lesson.json").read_text(encoding="utf-8"))
+    _s4_degraded["questions"] = [
+        dict(q, page="pg_no_such_page0") if q["id"] == "q_s4alpha001" else q
+        for q in _s4_degraded["questions"]
+    ]
+    bschema.write_manifest(_s4_dir / "lesson.json", _s4_degraded)
+    _s4_conn = get_conn()
+    try:
+        _s4_deg_lesson = lessons_svc.get_lesson(_s4_conn, _s4_id)
+        _s4_deg_read = lessons_svc.read_bundle_readonly(_s4_deg_lesson)
+        _s4_deg_ctx = _s4_panel(_s4_conn, _s4_deg_lesson)
+    finally:
+        _s4_conn.close()
+    _s4_deg_html = c.get(f"/learn?lesson={_s4_id}").text.split(
+        '<details class="lesson-record"', 1)[-1]
+    _s4_deg_q = {q["question_id"]: q for q in _s4_deg_ctx["questions"]}
+    check("S4 a question dropped by validation is shown as unread, never retired",
+          "dangling-ref" in _s4_deg_read.codes() and not _s4_deg_read.rejected
+          and "q_s4alpha001" not in {q["id"] for q in _s4_deg_read.questions}
+          and [q["question_id"] for q in _s4_deg_ctx["retired"]] == ["q_s4retire01"]
+          and _s4_deg_q["q_s4alpha001"]["unvalidated"] is True
+          and _s4_deg_q["q_s4alpha001"]["retired"] is False
+          # its verdict survives the degraded read intact
+          and _s4_deg_q["q_s4alpha001"]["review"]["level"] == "partial"
+          and 'class="rec-tag rec-unvalidated"' in _s4_deg_html,
+          str([q["question_id"] for q in _s4_deg_ctx["retired"]]))
+    bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
+
     # The panel reads the manifest through the PURE reader (D-F1-2 binds phase
     # S too): a render may never create bundle state, and what it cannot read
     # it does not call retired.

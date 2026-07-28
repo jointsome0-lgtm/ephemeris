@@ -16,6 +16,7 @@
     <span class="rec-q-label">{{ q.label }}</span>
     {% if q.page_id %}<span class="rec-q-page">{{ q.page_id }}</span>{% endif %}
     {% if q.retired %}<span class="rec-tag rec-retired" title="No longer declared in the manifest">retired</span>{% endif %}
+    {% if q.unvalidated %}<span class="rec-tag rec-unvalidated" title="Still declared, but the manifest entry did not validate">unread</span>{% endif %}
   </div>
   {% if q.attempt %}
   <p class="rec-answer">{{ q.attempt.answer }}{% if q.attempt.answer_truncated %}…{% endif %}</p>
