@@ -1871,10 +1871,17 @@ process.stdout.write(JSON.stringify([
         _at_rec_ok2 = attempts_svc.reconcile_projection(_at_conn, _at)
     finally:
         _at_conn.close()
+    _at_rec_after = _at_proj.read_text(encoding="utf-8")
     check("reconcile_projection rebuilds from the authority and is idempotent",
           _at_rec_ok and _at_rec_ok2
-          and _at_rec_text == _at_proj.read_text(encoding="utf-8")
-          and len(_at_rec_text.splitlines()) == len(_at_rows()))
+          and _at_rec_text == _at_rec_after
+          and len(_at_rec_text.splitlines()) == len(_at_rows()),
+          # this one went red once on a merge commit whose tree had passed on
+          # its branch (CI 5ebdc78, green on rerun), and the composite hid
+          # which half moved: name it, so a second sighting is diagnosable
+          f"ok={_at_rec_ok} ok2={_at_rec_ok2} "
+          f"stable={_at_rec_text == _at_rec_after} "
+          f"lines={len(_at_rec_text.splitlines())} rows={len(_at_rows())}")
 
     # Issue #25: fcntl is imported at the point of use, so a platform without it
     # must read as an unavailable lock, not a crash. The attempt row is committed
