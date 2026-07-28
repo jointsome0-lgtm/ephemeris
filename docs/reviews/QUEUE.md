@@ -89,7 +89,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   verify_restore 28. Diagnosis-only drain 2026-07-28 →
   `2026-07-28-lesson-assessment-capability-brief-review.md`: one Low finding
   remains open; this entry stays Pending for a separate reviewed repair PR.
-  That repair is `fix/4-s3-assessments-read-bound` (PR #91) —
+  That repair is `b41b632` on `fix/4-s3-assessments-read-bound`, merged into
+  `main` as `52329cf` (PR #91); that merged tree is likewise byte-identical
+  to its reviewed branch head (both trees `f015d08`) —
   `app/services/lessons.py`, `docs/learn-bundle-spec.md`, `verify.py`. The
   record-reading bullet of `_AGENTS_TEMPLATE` no longer tells the agent to
   read `assessments.jsonl` whole and no longer calls the file small without
