@@ -2681,13 +2681,14 @@ process.stdout.write(JSON.stringify([
     finally:
         _as_schema_conn.close()
     check("schema v14 adds lesson_assessments with the D-S1-1 columns",
-          _as_user_version == 14 == SCHEMA_VERSION
+          _as_user_version == SCHEMA_VERSION >= 14
           and _as_cols == {
               "id", "assessment_id", "event_uuid", "lesson_id", "lesson_uid",
               "sitting_id", "mode", "idempotency_key", "fingerprint", "kind",
               "level", "basis", "attempt_id", "question_id", "concepts_json",
               "note", "next_action", "supersedes", "created_at"}
-          and "idx_assessments_lesson_kind" in _as_indexes)
+          and {"idx_assessments_lesson_kind",
+               "idx_assessments_lesson_seq"} <= _as_indexes)
 
     # The per-kind CHECKs are schema-level self-enforcement (S-M1): the typed
     # authority must stay structurally valid under restore tooling or a future
@@ -3393,6 +3394,8 @@ process.stdout.write(JSON.stringify([
         _s2_scale = lessons_svc.get_lesson(_s2_conn, _s2_scale_id)
         _s2_quiet_id = lessons_svc.create_lesson(_s2_conn, "Assessment Quiet Demo")
         _s2_quiet = lessons_svc.get_lesson(_s2_conn, _s2_quiet_id)
+        _s2_rep_id = lessons_svc.create_lesson(_s2_conn, "Assessment Replay Demo")
+        _s2_rep = lessons_svc.get_lesson(_s2_conn, _s2_rep_id)
     finally:
         _s2_conn.close()
     assess_svc._reset_rate_limit()
@@ -3507,7 +3510,10 @@ process.stdout.write(JSON.stringify([
         _s2_during_txn = (sorted(p.name for p in _s2_txn_dir.iterdir()),
                           _s2_path(_s2).read_bytes())
         _s2_txn_conn.rollback()
-        _s2_after_txn = assess_svc.reconcile_projection(_s2_txn_conn, _s2)
+        # forced: the second call must actually rewrite, and this process has
+        # already published this watermark
+        _s2_after_txn = assess_svc.reconcile_projection(
+            _s2_txn_conn, _s2, force=True)
     finally:
         _s2_txn_conn.close()
     check("reconcile refuses an active transaction and works once committed",
@@ -3597,7 +3603,8 @@ process.stdout.write(JSON.stringify([
     _s2_snap_conn = get_conn()
     try:
         with _mock.patch.object(assess_svc, "active_state", _s2_snap_state):
-            _s2_snap_ok = assess_svc.reconcile_projection(_s2_snap_conn, _s2_idm)
+            _s2_snap_ok = assess_svc.reconcile_projection(
+                _s2_snap_conn, _s2_idm, force=True)
     finally:
         _s2_snap_conn.close()
     _s2_snap_lines = _s2_lines(_s2_idm)
@@ -3658,6 +3665,95 @@ process.stdout.write(JSON.stringify([
           and _s2_replay["assessment_id"] == _s2_sum2["assessment_id"]
           and [line["assessment_id"] for line in _s2_lines(_s2)[1:]]
           == _s2_state_ids)
+    # ...but a replay that would republish identical bytes does no work at all.
+    # Replays are outside the rate budget by design (D-S1-3), so an unlimited
+    # loop of one duplicate key must not drive unlimited full rewrites. On its
+    # own lesson: this is about work done, not about what lands in the file.
+    _s2_rep_body = {"kind": "summary",
+                    "note": "Vera Example: the replay changes nothing."}
+    _s2_post(_s2_rep_id, _s2_rep_body, "s2-rep-1")
+    _s2_publishes = []
+    _s2_publish_real = assess_svc._publish
+
+    def _s2_counting_publish(lesson_view, data):
+        _s2_publishes.append(len(data))
+        return _s2_publish_real(lesson_view, data)
+
+    with _mock.patch.object(assess_svc, "_publish", _s2_counting_publish):
+        _s2_rep_a = _s2_post(_s2_rep_id, _s2_rep_body, "s2-rep-1")
+        _s2_rep_b = _s2_post(_s2_rep_id, _s2_rep_body, "s2-rep-1")
+        # a real write moves the watermark, so it must publish again
+        _s2_rep_new = _s2_post(_s2_rep_id, {
+            "kind": "evidence", "level": "passed", "basis": "mixed",
+            "concepts": ["ranges"],
+            "note": "Vera Example: ranges are clear now."}, "s2-rep-2")
+    check("repeated replays publish nothing; the next real write does",
+          _s2_rep_a["result"] == "duplicate" and _s2_rep_b["result"] == "duplicate"
+          and _s2_rep_a["projection"] == "projected"
+          and _s2_rep_b["projection"] == "projected"
+          and _s2_rep_new["projection"] == "projected"
+          and len(_s2_publishes) == 1
+          and len(_s2_lines(_s2_rep)) == 3,
+          f"publishes={_s2_publishes}")
+    # the skip is keyed on what THIS process published, so a projection it
+    # never wrote is still rewritten — the heal triggers keep working
+    _s2_path(_s2_rep).unlink()
+    assess_svc._reset_sweep_state()
+    _s2_rep_heal_conn = get_conn()
+    try:
+        _s2_rep_healed = assess_svc.reconcile_projection(
+            _s2_rep_heal_conn, _s2_rep)
+    finally:
+        _s2_rep_heal_conn.close()
+    check("a projection this process never published is not skipped",
+          _s2_rep_healed is True and len(_s2_lines(_s2_rep)) == 3)
+    # ...and the terminal open forces the rewrite at an unchanged watermark,
+    # because the agent may simply have deleted the file underneath us
+    _s2_path(_s2_rep).unlink()
+    _s2_rep_forced = lessons_svc.prepare_terminal_workspace(_s2_rep["slug"])
+    check("the terminal open forces a rewrite at an unchanged watermark",
+          _s2_rep_forced is not None and _s2_path(_s2_rep).exists()
+          and len(_s2_lines(_s2_rep)) == 3)
+    # the identity gate governs the skip too: at an unchanged watermark, a
+    # manifest that now names another lesson still answers pending (S-H7)
+    _s2_rep_mpath = Path(lessons_svc.LESSONS_DIR) / _s2_rep["slug"] / "lesson.json"
+    _s2_rep_manifest = json.loads(_s2_rep_mpath.read_text(encoding="utf-8"))
+    _s2_rep_before_swap = _s2_path(_s2_rep).read_bytes()
+    bschema.write_manifest(_s2_rep_mpath, dict(
+        _s2_rep_manifest, lesson_uid="0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60"))
+    # ...and it refuses WITHOUT folding: these replays are unmetered, so the
+    # refusal must not be linear in the lesson's active state either
+    _s2_rep_folds = []
+    _s2_fold_real = assess_svc.active_state
+
+    def _s2_counting_state(conn_, lesson_id_):
+        _s2_rep_folds.append(lesson_id_)
+        return _s2_fold_real(conn_, lesson_id_)
+
+    with _mock.patch.object(assess_svc, "active_state", _s2_counting_state):
+        _s2_rep_foreign = _s2_post(_s2_rep_id, _s2_rep_body, "s2-rep-1")
+    bschema.write_manifest(_s2_rep_mpath, _s2_rep_manifest)
+    _s2_rep_restored = _s2_post(_s2_rep_id, _s2_rep_body, "s2-rep-1")
+    check("a skip is refused while the manifest names another lesson",
+          _s2_rep_foreign["result"] == "duplicate"
+          and _s2_rep_foreign["projection"] == "pending"
+          and _s2_rep_folds == []
+          and _s2_rep_restored["projection"] == "projected"
+          and _s2_path(_s2_rep).read_bytes() == _s2_rep_before_swap,
+          f"folds={_s2_rep_folds}")
+    # ...and the watermark query itself seeks instead of walking the lesson's
+    # history: replays are unmetered, so it must not be linear in lifetime rows
+    _s2_plan_conn = get_conn()
+    try:
+        _s2_plan = [str(tuple(r)) for r in _s2_plan_conn.execute(
+            "EXPLAIN QUERY PLAN "
+            "SELECT MAX(id) FROM lesson_assessments WHERE lesson_id = ?",
+            (_s2_rep_id,)).fetchall()]
+    finally:
+        _s2_plan_conn.close()
+    check("the projection watermark is served by (lesson_id, id)",
+          any("idx_assessments_lesson_seq" in row for row in _s2_plan),
+          str(_s2_plan))
 
     # reconcile trigger (c): the first write per lesson per process sweeps even
     # when that write is REFUSED — a restart mid-pending heals on next contact

@@ -1332,13 +1332,17 @@ def _reconcile_assessment_projection(lesson: dict) -> None:
     terminal from opening, so nothing here can refuse the workspace; the
     service itself already answers False rather than raising. The import is
     deferred because the assessment service imports this module.
+
+    Forced: this is the one trigger that fires because the file may be gone —
+    the agent owns the bundle and can delete it — rather than because the
+    authority changed, so it must not be skipped as an identical republish.
     """
     try:
         from .assessments import reconcile_projection
 
         conn = get_conn()
         try:
-            reconcile_projection(conn, lesson)
+            reconcile_projection(conn, lesson, force=True)
         finally:
             conn.close()
     except (OSError, sqlite3.Error, ImportError):
