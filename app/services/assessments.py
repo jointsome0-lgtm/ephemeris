@@ -937,7 +937,12 @@ def _hydrate(conn: sqlite3.Connection, lesson_id: int, state: dict) -> dict:
     }
 
 
-def panel_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
+def panel_state(
+    conn: sqlite3.Connection,
+    lesson_id: int,
+    *,
+    review_attempt_ids: set[str] | None = None,
+) -> dict:
     """Everything the s4 record panel folds out of the authority rows (D-S3-1).
 
     Read-only: the D-S1-2 fold, how many active records stand behind it, and
@@ -948,22 +953,45 @@ def panel_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
 
     This runs on every `/learn` render, and the active fold has no cardinality
     ceiling (spec §6.5 calls the projection a compaction, not a cap), so the
-    walk is deliberately narrow: the fold decides on five small columns, and
-    only the rows it KEEPS — one per concept, one per attempt, one summary —
-    are read whole. An 8 KiB note is therefore paid for once per displayed
-    record instead of once per active row.
+    walk is deliberately narrow: the fold decides on five small columns;
+    evidence winners, the summary, and only review winners named by
+    `review_attempt_ids` are read whole. An 8 KiB note is therefore paid for
+    once per displayed record instead of once per active row or reviewed
+    historical attempt.
+
+    The helper owns a read snapshot when its caller does not already have one.
+    `_record_panel` starts the wider snapshot that also covers its attempt and
+    focus reads; direct callers still cannot mix fold/hydration/count versions.
     """
-    keys = [_fold_keys(row) for row
-            in conn.execute(ACTIVE_FOLD_KEYS_SQL, (lesson_id,)).fetchall()]
-    state = _hydrate(conn, lesson_id, fold_rows(keys))
-    state["active_count"] = sum(1 for row in keys if row["kind"] != "retraction")
-    state["earlier_review_counts"] = {
-        row["attempt_id"]: row["earlier_count"]
-        for row in conn.execute(
-            _EARLIER_REVIEW_COUNTS_SQL, (lesson_id, lesson_id)
-        ).fetchall()
-    }
-    return state
+    own_snapshot = not conn.in_transaction
+    if own_snapshot:
+        conn.execute("BEGIN")
+    try:
+        keys = [_fold_keys(row) for row
+                in conn.execute(ACTIVE_FOLD_KEYS_SQL, (lesson_id,)).fetchall()]
+        state = fold_rows(keys)
+        if review_attempt_ids is not None:
+            state["reviews_by_attempt"] = {
+                attempt_id: row
+                for attempt_id, row in state["reviews_by_attempt"].items()
+                if attempt_id in review_attempt_ids
+            }
+        state = _hydrate(conn, lesson_id, state)
+        state["active_count"] = sum(
+            1 for row in keys if row["kind"] != "retraction"
+        )
+        displayed_review_ids = state["reviews_by_attempt"].keys()
+        state["earlier_review_counts"] = {
+            row["attempt_id"]: row["earlier_count"]
+            for row in conn.execute(
+                _EARLIER_REVIEW_COUNTS_SQL, (lesson_id, lesson_id)
+            ).fetchall()
+            if row["attempt_id"] in displayed_review_ids
+        }
+        return state
+    finally:
+        if own_snapshot:
+            conn.rollback()
 
 
 # --- projection: `assessments.jsonl`, the active-state read model (D-S1-5) ---

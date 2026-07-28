@@ -7871,14 +7871,29 @@ process.stdout.write(JSON.stringify([
         def __init__(self, conn):
             self._conn, self.calls = conn, []
 
+        @property
+        def in_transaction(self):
+            return self._conn.in_transaction
+
         def execute(self, sql, params=()):
             self.calls.append((sql, params))
             return self._conn.execute(sql, params)
 
+        def rollback(self):
+            return self._conn.rollback()
+
     _s4_conn = get_conn()
     try:
         _s4_spy = _S4Spy(_s4_conn)
-        _s4_bounded = assess_svc.panel_state(_s4_spy, _s4_id)
+        _s4_latest_attempt_ids = {
+            attempt["attempt_id"]
+            for attempt in attempts_svc.lesson_attempt_summary(
+                _s4_conn, _s4_id
+            )["latest_by_question"].values()
+        }
+        _s4_bounded = assess_svc.panel_state(
+            _s4_spy, _s4_id, review_attempt_ids=_s4_latest_attempt_ids
+        )
         _s4_wide_fold = assess_svc.active_state(_s4_conn, _s4_id)
         _s4_active_n = len(assess_svc.active_rows(_s4_conn, _s4_id))
     finally:
@@ -7897,9 +7912,19 @@ process.stdout.write(JSON.stringify([
           and len(_s4_wide_calls[0][1]) == 1 + _s4_winners
           # and the narrow path folds to precisely what the wide one does
           and _s4_bounded["evidence_by_concept"] == _s4_wide_fold["evidence_by_concept"]
-          and _s4_bounded["reviews_by_attempt"] == _s4_wide_fold["reviews_by_attempt"]
+          and _s4_bounded["reviews_by_attempt"] == {
+              attempt_id: row
+              for attempt_id, row in _s4_wide_fold["reviews_by_attempt"].items()
+              if attempt_id in _s4_latest_attempt_ids
+          }
           and _s4_bounded["summary"] == _s4_wide_fold["summary"],
           f"{_s4_active_n} active, {_s4_winners} read whole")
+    check("S4 hydrates no review winner for a discarded historical attempt",
+          set(_s4_bounded["reviews_by_attempt"]) <= _s4_latest_attempt_ids
+          and set(_s4_wide_fold["reviews_by_attempt"])
+          - set(_s4_bounded["reviews_by_attempt"]),
+          str(len(_s4_wide_fold["reviews_by_attempt"])
+              - len(_s4_bounded["reviews_by_attempt"])))
     _s4_count_calls = [
         call for call in _s4_spy.calls
         if "earlier_count" in call[0]
@@ -7972,6 +7997,63 @@ process.stdout.write(JSON.stringify([
               )
           ),
           str([len(params) for _, params in _s4_hydrate_conn.calls]))
+
+    # PR round 8. The attempt read establishes the panel snapshot. A review
+    # committed by a sibling connection immediately afterwards must not leak
+    # into the assessment fold/count queries from a newer database version.
+    _s4_conn = get_conn()
+    try:
+        _s4_snapshot_before = _s4_panel(
+            _s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id)
+        )
+    finally:
+        _s4_conn.close()
+    _s4_snapshot_alpha = {
+        q["question_id"]: q for q in _s4_snapshot_before["questions"]
+    }["q_s4alpha001"]
+    _s4_panel_state_real = assess_svc.panel_state
+    _s4_snapshot_write = {}
+
+    def _s4_panel_state_racing(conn, lesson_id, **kwargs):
+        if not _s4_snapshot_write:
+            _s4_snapshot_write.update(_s4_assess({
+                "kind": "review", "level": "correct",
+                "attempt_id": _s4_snapshot_alpha["attempt"]["attempt_id"],
+                "note": "s4-snapshot-later-review",
+                "idempotency_key": "s4-snapshot-1",
+            }))
+        return _s4_panel_state_real(conn, lesson_id, **kwargs)
+
+    assess_svc.panel_state = _s4_panel_state_racing
+    _s4_conn = get_conn()
+    try:
+        _s4_snapshot_ctx = _s4_panel(
+            _s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id)
+        )
+    finally:
+        assess_svc.panel_state = _s4_panel_state_real
+        _s4_conn.close()
+    _s4_conn = get_conn()
+    try:
+        _s4_after_ctx = _s4_panel(
+            _s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id)
+        )
+    finally:
+        _s4_conn.close()
+    _s4_snapshot_q = {
+        q["question_id"]: q for q in _s4_snapshot_ctx["questions"]
+    }["q_s4alpha001"]
+    _s4_after_q = {
+        q["question_id"]: q for q in _s4_after_ctx["questions"]
+    }["q_s4alpha001"]
+    check("S4 concurrent assessment writes cannot mix panel DB versions",
+          _s4_snapshot_write
+          and _s4_snapshot_q["review"] == _s4_snapshot_alpha["review"]
+          and _s4_snapshot_q["earlier_reviews"]
+          == _s4_snapshot_alpha["earlier_reviews"]
+          and _s4_after_q["review"]["assessment_id"]
+          == _s4_snapshot_write["assessment_id"],
+          f'{_s4_snapshot_q["review"]} / {_s4_after_q["review"]}')
 
     # PR round 1 + re-check. The answer excerpt is bounded by SQLite, so a long
     # answer is never materialized whole to render 400 characters of it — and

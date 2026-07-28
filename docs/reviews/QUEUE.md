@@ -26,7 +26,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 - [ ] 2026-07-28 — `a0ae9dd`, `981400a`, `c91d002`, `18d4195`, `b8b3e02`,
   `5bcd585`, `89f0b77`, with queue-only bookkeeping through `ce2ad38` and the
-  PR-bot round-6 and round-7 repairs at the current
+  PR-bot round-6 through round-8 repairs at the current
   `fix/4-s4-record-panel` branch tip; the owner selected branch head `b8b3e02`
   for the drain of 2026-07-28, and the later code commits are NOT covered by
   that pass — the entry stays current with the branch, and the eventual merge
@@ -142,7 +142,16 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `retraction` remains excluded; only one aggregate per winner reaches Python.
   The round changes only GET-side declaration and assessment read helpers plus
   verifier coverage. Host verification at the round-7 branch state: verify
-  876, verify_restore 28; public hygiene clean.
+  876, verify_restore 28; public hygiene clean. PR-bot round 8 puts the
+  attempt summary, assessment fold/hydration/counts and focus total inside one
+  SQLite read snapshot, so a concurrent assessment commit cannot make one
+  panel mix database versions. `panel_state` also owns a snapshot for direct
+  callers that do not already have one. The latest attempt ids from that
+  snapshot now filter review winners before full-row hydration, so notes for
+  reviewed historical attempts the panel cannot display remain unread. The
+  active-row count, evidence fold, summary and settled earlier-review rule are
+  unchanged. Host verification at the round-8 branch state: verify 878,
+  verify_restore 28; public hygiene clean.
 
 ## Done
 
