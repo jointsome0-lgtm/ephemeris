@@ -19,7 +19,47 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
+- [ ] 2026-07-28 — `a05d5fc`, `f03ae5d` on
+  `fix/4-s2-assessments-projection` — the entry stays current with the
+  branch: any further branch commit, and the merge commit itself once the PR
+  lands, is appended here before any drain or restart —
+  `app/services/assessments.py`, `app/services/lessons.py`,
+  `app/services/bundle_schema.py`, `docs/learn-bundle-spec.md`,
+  `docs/lesson-assessments-api.md`, `verify.py`, `docs/reviews/QUEUE.md` —
+  issue #4 phase S slice s2 adds `assessments.jsonl`, an app-written file at
+  the lesson bundle root that the lesson-agent and lesson-learner sandboxes
+  can read. It holds one `assessments_meta` line (`v: 1`, `lesson_uid`,
+  `as_of_seq`, `generated_at`) followed by one line per active-fold row —
+  latest active evidence per concept, latest active review per attempt,
+  latest active summary — each the full `lesson_assessments` record echo
+  including `note` text, ascending `seq`; superseded, retracted and
+  retraction rows are not written. The whole file is rewritten after the
+  write transaction commits, never inside it: the entry point returns
+  without acting when the connection is in a transaction, then takes an
+  app-private per-lesson `flock` on `<DATA_DIR>/assessment-projections/
+  <lesson_uid>.lock` (a separate file from the attempts projection lock),
+  re-reads the committed fold, renders it, and publishes it through an
+  `O_EXCL` 0600 temporary file, `fsync`, and `os.replace` relative to one
+  bundle-root descriptor opened with `O_NOFOLLOW | O_DIRECTORY`. Before
+  publishing, a pure manifest read (no directory, skeleton or file creation)
+  compares the manifest's `lesson_uid` with the DB uid and refuses to
+  publish on a contradiction; missing, v1 and rejected manifests publish. A
+  lesson with no rows and no existing file is left without one. A directory,
+  symlink or multi-link file on the name is renamed to
+  `assessments.jsonl.collision-<hex>` — an empty directory is removed — and
+  its bytes are never read. Failure to publish leaves the response's
+  `projection` field at `pending` and never raises past the committed write;
+  a pending file is rewritten at the next lesson-agent terminal open
+  (`prepare_terminal_workspace`, after the briefs and unable to refuse the
+  workspace), at an idempotent replay, or at the first assessment call for
+  that lesson in the process. `bundle_schema.RESERVED_NAMES` and spec §2
+  gain `assessments.jsonl`, so the §4.1 path grammar refuses any page, block
+  file or artifact root claiming it; spec §6.5 and the §12 write-authority
+  row are new. `app/services/attempts.py`, its projection, cursor, seal and
+  lock files, `app/terminal.py`, the sandbox profiles, the bridge ABI, the
+  generated brief and the manifest schema readers beyond the reserved-name
+  list are unchanged, and no route or HTTP contract changed except the
+  `projection` field's value. Verify 816, verify_restore 28.
 
 ## Done
 
