@@ -817,18 +817,18 @@ def active_rows(conn: sqlite3.Connection, lesson_id: int) -> list[dict]:
     return [row_view(row) for row in rows]
 
 
-def active_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
-    """The current-state fold consumed by the s2 projection and the s4 panel:
-    the latest active evidence per concept, the latest active review per
-    attempt, and the latest active summary — all by `seq`.
+def fold_rows(rows: list[dict]) -> dict:
+    """The current-state fold over already-read ACTIVE rows, ascending `seq`.
 
+    Pure, so the two readers that need it — the s2 projection and the s4 panel
+    — share one definition of "current" instead of two that can drift.
     Retractions carry no state of their own: they only deactivate, so they
     never appear in the fold. Evidence spanning several concepts is the latest
     for each of them."""
     evidence_by_concept: dict[str, dict] = {}
     reviews_by_attempt: dict[str, dict] = {}
     summary: dict | None = None
-    for row in active_rows(conn, lesson_id):  # ascending seq: later rows win
+    for row in rows:  # ascending seq: later rows win
         if row["kind"] == "evidence":
             for concept in row["concepts"] or ():
                 evidence_by_concept[concept] = row
@@ -841,6 +841,43 @@ def active_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
         "reviews_by_attempt": reviews_by_attempt,
         "summary": summary,
     }
+
+
+def active_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
+    """The current-state fold consumed by the s2 projection and the s4 panel:
+    the latest active evidence per concept, the latest active review per
+    attempt, and the latest active summary — all by `seq`."""
+    return fold_rows(active_rows(conn, lesson_id))
+
+
+# Every review ever written for the lesson, grouped by the attempt it judged.
+# `idx_assessments_lesson_kind` is (lesson_id, kind, id), so this seeks the
+# lesson's reviews instead of walking its history; the panel turns the totals
+# into the muted "(n earlier)" marker beside the review that is still active.
+_REVIEW_TOTALS_SQL = (
+    "SELECT attempt_id, COUNT(*) AS n FROM lesson_assessments "
+    "WHERE lesson_id = ? AND kind = 'review' AND attempt_id IS NOT NULL "
+    "GROUP BY attempt_id"
+)
+
+
+def panel_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
+    """Everything the s4 record panel folds out of the authority rows (D-S3-1).
+
+    Read-only, and one pass over the active rows: the D-S1-2 fold, how many
+    active records stand behind it, and how many earlier reviews each attempt
+    accumulated. `active_count` counts records that carry state — a retraction
+    is an active row but says only that another record was wrong, so counting
+    it would inflate what the panel claims to know.
+    """
+    rows = active_rows(conn, lesson_id)
+    state = fold_rows(rows)
+    state["active_count"] = sum(1 for row in rows if row["kind"] != "retraction")
+    state["review_totals"] = {
+        row["attempt_id"]: row["n"]
+        for row in conn.execute(_REVIEW_TOTALS_SQL, (lesson_id,)).fetchall()
+    }
+    return state
 
 
 # --- projection: `assessments.jsonl`, the active-state read model (D-S1-5) ---

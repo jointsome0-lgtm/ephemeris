@@ -744,6 +744,55 @@ def _project_attempt_locked(
     return True
 
 
+# --- read model: what the s4 record panel joins against (D-S3-1) -------------
+#
+# Read-only, and deliberately outside everything above: no lock, no projection,
+# no transaction. The write path, its cursor/seal state and `attempts.jsonl`
+# are untouched by anything below.
+
+# One row per question — the newest by rowid, which is the insertion authority
+# the same way `seq` is for assessments (`created_at` can tie at microsecond
+# resolution, rowids cannot). The grouping seeks through
+# `idx_attempts_lesson_question`.
+_LATEST_PER_QUESTION_SQL = (
+    "SELECT * FROM lesson_attempts WHERE id IN "
+    "(SELECT MAX(id) FROM lesson_attempts WHERE lesson_id = ? GROUP BY question_id) "
+    "ORDER BY id"
+)
+
+# The answer is the learner's own text (≤ 32 KiB). The panel shows enough of it
+# to recognise which answer a verdict judged; the whole of it stays in the DB,
+# the export and `attempts.jsonl` rather than in every /learn render.
+PANEL_ANSWER_CHARS = 400
+
+
+def _panel_attempt_view(row: sqlite3.Row) -> dict:
+    answer = row["answer"]
+    excerpt = answer[:PANEL_ANSWER_CHARS]
+    return {
+        "attempt_id": row["attempt_id"],
+        "question_id": row["question_id"],
+        "page_id": row["page_id"],
+        "page_rev": row["page_rev"],
+        "answer": excerpt,
+        "answer_truncated": len(answer) > len(excerpt),
+        "stale": bool(row["stale"]),
+        "created_at": row["created_at"],
+    }
+
+
+def lesson_attempt_summary(conn: sqlite3.Connection, lesson_id: int) -> dict:
+    """How many attempts a lesson has recorded, and the latest attempt per
+    question — the join the record panel hangs verdicts on."""
+    total = conn.execute(
+        "SELECT COUNT(*) FROM lesson_attempts WHERE lesson_id = ?", (lesson_id,)
+    ).fetchone()[0]
+    latest = {}
+    for row in conn.execute(_LATEST_PER_QUESTION_SQL, (lesson_id,)).fetchall():
+        latest[row["question_id"]] = _panel_attempt_view(row)
+    return {"total": total, "latest_by_question": latest}
+
+
 def _replay_or_conflict(
     conn: sqlite3.Connection, lesson: dict, submission: dict
 ) -> dict | None:
