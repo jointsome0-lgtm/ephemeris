@@ -1761,6 +1761,10 @@ async def _record_assessment_request(
     the lesson-agent shell's origin-less request passes, the sandboxed lesson
     iframe's `Origin: null` never reaches here — the tutor writes verdicts, the
     lesson page must not."""
+    # The session write capability (s3), if the caller has one. It is read here
+    # and never from the body: the sitting and the lesson it names are the
+    # server's own facts about the caller.
+    capability_token = request.headers.get(assessments.CAPABILITY_HEADER)
     length = request.headers.get("content-length")
     if length is None:
         return _assessment_refusal("length-required", 411, "Content-Length is required")
@@ -1803,7 +1807,9 @@ async def _record_assessment_request(
                 raise assessments.AssessmentError(
                     "unknown-lesson", 404, "unknown lesson"
                 )
-            return assessments.record_assessment(conn, lesson, payload)
+            return assessments.record_assessment(
+                conn, lesson, payload, capability_token
+            )
         finally:
             conn.close()
 

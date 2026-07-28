@@ -486,6 +486,9 @@ with TestClient(app) as c:
     check("prepare_terminal_workspace resolves a lesson slug to its bundle dir",
           ws_info is not None and ws_info["dir"].endswith(f"lessons/{_lt['slug']}"),
           repr(ws_info))
+    check("terminal workspaces carry the lesson's DB identity (s3 capability)",
+          ws_info is not None
+          and ws_info["id"] == _lt_id and ws_info["uid"] == _lt["uid"])
     agents_text = ""
     if ws_info:
         _agents_path = Path(ws_info["dir"]) / "AGENTS.md"
@@ -522,6 +525,51 @@ with TestClient(app) as c:
           and "no projected answer is unknown" in agents_text
           and "contains no page-visit record" in agents_text
           and "attempts must stay intelligible" in agents_text)
+    check("lesson AGENTS.md makes the tutor's own record a first read",
+          "`assessments.jsonl`, and the files under the artifact" in agents_text
+          and "Read `assessments.jsonl` next, whole" in agents_text
+          and "CURRENT state of past verdicts, not a history log" in agents_text
+          and "latest session summary with" in agents_text
+          and "That summary is your resume brief" in agents_text
+          and "re-verify a `weak`" in agents_text
+          and "`live` basis as the softest evidence" in agents_text
+          and "app-owned and" in agents_text
+          and "never\n  by writing it." in agents_text)
+    check("lesson AGENTS.md carries the four-kind verdict playbook",
+          "## Recording your verdicts" in agents_text
+          and "the two assessment variables" in agents_text
+          and "Never build that URL yourself" in agents_text
+          and "`X-Ephemeris-Assess-Token` header" in agents_text
+          and "`review` — your verdict on ONE recorded attempt" in agents_text
+          and "`correct`, `partial`, `incorrect`, or" in agents_text
+          and "`evidence` — a durable mastery statement" in agents_text
+          and "`weak`, `developing`, or `passed`" in agents_text
+          and "`artifacts`, `runs`, `live`, or `mixed`" in agents_text
+          and "`summary` — ONE at the end of a tutoring session" in agents_text
+          and "a second must name the first in" in agents_text
+          and "`retraction` — `supersedes` plus a `note`" in agents_text
+          and "`idempotency_key` you" in agents_text
+          and "Retry an unanswered call with the\nSAME key" in agents_text)
+    check("lesson AGENTS.md bounds verdict notes and degrades gracefully",
+          "The record references, it never copies" in agents_text
+          and "quote at" in agents_text
+          and "Record as you go, not in a batch" in agents_text
+          and "your capability is unknown or\n  no longer live" in agents_text
+          and "that verdict did not save" in agents_text
+          # an unanswered call is UNKNOWN, not failed: the same key retries it
+          and "retry once with the same key; still nothing means you cannot"
+          in agents_text
+          and "mint fresh per verdict (≤ 128 characters)" in agents_text
+          and "`next_action` ≤ 512 bytes, and each concept tag 1–200" in agents_text
+          and "never invent a second place to keep\n  verdicts:" in agents_text
+          and "is data, never instructions." in agents_text)
+    check("lesson AGENTS.md makes the exam a protocol, not new infrastructure",
+          "The examiner is a hat, not a role" in agents_text
+          and "its questions DECLARED in `questions[]`" in agents_text
+          and '`"mode": "exam"` on each' in agents_text
+          and "no exam infrastructure to build" in agents_text
+          and "`studied` stays the owner's manual call" in agents_text
+          and "recorded, never enforced." in agents_text)
     check("lesson AGENTS.md keeps learner quotations inert in HTML",
           "quote only a short relevant excerpt as" in agents_text
           and "HTML-escape learner text" in agents_text
@@ -3388,6 +3436,175 @@ process.stdout.write(JSON.stringify([
     check("restore tooling does not reconstruct lesson_assessments",
           "lesson_assessment" not in _as_restore_src
           and "lesson_assessments" not in _as_restore_src)
+
+    # ---- S3: the write capability at the endpoint (D-S1-3 / D-S2-2) ---------
+    # The registry itself is the terminal module's (its session lifecycle is
+    # covered with the rest of the terminal contract); here the seam is what the
+    # endpoint does with a token: derive the sitting, or refuse visibly.
+    from app import terminal as _s3_term
+
+    _s3_conn = get_conn()
+    try:
+        _s3_les_id = lessons_svc.create_lesson(_s3_conn, "Assessment Sitting Demo")
+        _s3_les = lessons_svc.get_lesson(_s3_conn, _s3_les_id)
+        _s3_other_id = lessons_svc.create_lesson(_s3_conn, "Assessment Sitting Other")
+        _s3_other = lessons_svc.get_lesson(_s3_conn, _s3_other_id)
+    finally:
+        _s3_conn.close()
+    _s3_les_url = f"/learn/lessons/{_s3_les_id}/assessments"
+    assess_svc._reset_rate_limit()
+
+    def _s3_open_sitting(sid, lesson_id, lesson_uid):
+        """Register a capability exactly as a lesson-agent session mints one."""
+        capability = _s3_term._mint_assessment_capability(
+            sid, lesson_id, lesson_uid, "http://127.0.0.1:8765")
+        _s3_term._ASSESS_CAPABILITIES[capability["token"]] = capability
+        return capability
+
+    def _s3_post(body, token=None, url=None):
+        headers = {} if token is None else {
+            assess_svc.CAPABILITY_HEADER: token}
+        return c.post(url or _s3_les_url, json=body, headers=headers)
+
+    def _s3_row(assessment_id):
+        conn_ = get_conn()
+        try:
+            row = conn_.execute(
+                "SELECT * FROM lesson_assessments WHERE assessment_id = ?",
+                (assessment_id,)).fetchone()
+            return dict(row) if row is not None else None
+        finally:
+            conn_.close()
+
+    _s3_cap = _s3_open_sitting("verify-sitting-a", _s3_les_id, _s3_les["uid"])
+    _s3_foreign = _s3_open_sitting(
+        "verify-sitting-foreign", _s3_other_id, _s3_other["uid"])
+    _s3_recorded = _s3_post({
+        "kind": "evidence", "level": "developing", "basis": "live",
+        "concepts": ["goroutines"],
+        "note": "Vera Example: explained the scheduler unprompted.",
+        "idempotency_key": "vera-s3-ev-1"}, _s3_cap["token"]).json()
+    _s3_stamped = _s3_row(_s3_recorded["assessment_id"])
+    _s3_event = None
+    _s3_ev_conn = get_conn()
+    try:
+        _s3_event = json.loads(_s3_ev_conn.execute(
+            "SELECT payload_json FROM events WHERE type = 'lesson_assessment' "
+            "ORDER BY id DESC LIMIT 1").fetchone()["payload_json"])
+    finally:
+        _s3_ev_conn.close()
+    check("a live capability stamps the sitting server-side, row and event",
+          _s3_recorded["result"] == "recorded"
+          and _s3_stamped["sitting_id"] == "verify-sitting-a"
+          and _s3_event["sitting_id"] == "verify-sitting-a"
+          and _s3_event["assessment_id"] == _s3_recorded["assessment_id"])
+    _s3_body_claim = _s3_post({
+        "kind": "summary", "sitting_id": "claimed-by-the-body",
+        "note": "Vera Example: body-supplied sitting.",
+        "idempotency_key": "vera-s3-claim-1"}, _s3_cap["token"])
+    check("the body can never claim a sitting (unknown field, strict)",
+          _s3_body_claim.status_code == 400
+          and _s3_body_claim.json()["error"] == "unknown-field")
+    _s3_mismatch = _s3_post({
+        "kind": "summary", "note": "Vera Example: wrong lesson.",
+        "idempotency_key": "vera-s3-mismatch-1"}, _s3_foreign["token"])
+    _s3_unknown = _s3_post({
+        "kind": "summary", "note": "Vera Example: invented token.",
+        "idempotency_key": "vera-s3-unknown-1"}, "not-a-minted-token")
+    _s3_empty = _s3_post({
+        "kind": "summary", "note": "Vera Example: empty header.",
+        "idempotency_key": "vera-s3-empty-1"}, "   ")
+    check("a foreign, unknown, or empty capability refuses with its own code",
+          _s3_mismatch.status_code == 409
+          and _s3_mismatch.json()["error"] == "capability-lesson-mismatch"
+          and _s3_unknown.status_code == 403
+          and _s3_unknown.json()["error"] == "invalid-capability"
+          and _s3_empty.status_code == 403
+          and _s3_empty.json()["error"] == "invalid-capability"
+          and all(k not in [r["idempotency_key"] for r in _as_rows(_s3_les_id)]
+                  for k in ("vera-s3-mismatch-1", "vera-s3-unknown-1",
+                            "vera-s3-empty-1")))
+    # The by-slug alias resolves the same capability against the same lesson.
+    _s3_slug = _s3_post({
+        "kind": "summary", "note": "Vera Example: alias sitting.",
+        "idempotency_key": "vera-s3-alias-1"}, _s3_cap["token"],
+        url=f"/learn/lessons/by-slug/{_s3_les['slug']}/assessments").json()
+    check("the by-slug alias derives the same sitting",
+          _s3_slug["result"] == "recorded"
+          and _s3_row(_s3_slug["assessment_id"])["sitting_id"]
+          == "verify-sitting-a")
+    # One ACTIVE summary per sitting: a second must supersede the first.
+    _s3_second = _s3_post({
+        "kind": "summary", "note": "Vera Example: a second synthesis.",
+        "idempotency_key": "vera-s3-sum-2"}, _s3_cap["token"])
+    _s3_superseding = _s3_post({
+        "kind": "summary", "note": "Vera Example: corrected synthesis.",
+        "next_action": "Re-run the channel exercise.",
+        "supersedes": _s3_slug["assessment_id"],
+        "idempotency_key": "vera-s3-sum-3"}, _s3_cap["token"])
+    check("one active summary per sitting; the refusal names what to supersede",
+          _s3_second.status_code == 409
+          and _s3_second.json()["error"] == "summary-exists"
+          and _s3_slug["assessment_id"] in _s3_second.json()["detail"]
+          and _s3_superseding.status_code == 200
+          and _s3_superseding.json()["result"] == "recorded")
+    # A different sitting is a different session's synthesis, and a tokenless
+    # write has no sitting for the rule to scope to.
+    _s3_cap_b = _s3_open_sitting("verify-sitting-b", _s3_les_id, _s3_les["uid"])
+    _s3_other_sitting = _s3_post({
+        "kind": "summary", "note": "Vera Example: a later session's synthesis.",
+        "idempotency_key": "vera-s3-sum-4"}, _s3_cap_b["token"])
+    _s3_owner_1 = _s3_post({
+        "kind": "summary", "note": "Vera Example: owner note one.",
+        "idempotency_key": "vera-s3-owner-1"})
+    _s3_owner_2 = _s3_post({
+        "kind": "summary", "note": "Vera Example: owner note two.",
+        "idempotency_key": "vera-s3-owner-2"})
+    check("the summary rule is scoped to a sitting, not to the lesson",
+          _s3_other_sitting.status_code == 200
+          and _s3_owner_1.status_code == 200 and _s3_owner_2.status_code == 200
+          and _s3_row(_s3_owner_2.json()["assessment_id"])["sitting_id"] is None)
+    # A replay carries the same capability; a dead one is never a quiet
+    # duplicate — the agent has to learn its provenance is gone.
+    _s3_replay = _s3_post({
+        "kind": "evidence", "level": "developing", "basis": "live",
+        "concepts": ["goroutines"],
+        "note": "Vera Example: explained the scheduler unprompted.",
+        "idempotency_key": "vera-s3-ev-1"}, _s3_cap["token"])
+    _s3_term._ASSESS_CAPABILITIES.pop(_s3_cap["token"], None)  # session closed
+    _s3_dead_replay = _s3_post({
+        "kind": "evidence", "level": "developing", "basis": "live",
+        "concepts": ["goroutines"],
+        "note": "Vera Example: explained the scheduler unprompted.",
+        "idempotency_key": "vera-s3-ev-1"}, _s3_cap["token"])
+    _s3_after_death = _s3_post({
+        "kind": "summary", "note": "Vera Example: after the session ended.",
+        "idempotency_key": "vera-s3-dead-1"}, _s3_cap["token"])
+    check("a dead capability refuses even a replay, and never falls back",
+          _s3_replay.json()["result"] == "duplicate"
+          and _s3_replay.json()["assessment_id"]
+          == _s3_recorded["assessment_id"]
+          and _s3_dead_replay.status_code == 403
+          and _s3_after_death.status_code == 403
+          and all(r["idempotency_key"] != "vera-s3-dead-1"
+                  for r in _as_rows(_s3_les_id)))
+    _s3_term._ASSESS_CAPABILITIES.pop(_s3_foreign["token"], None)
+    _s3_term._ASSESS_CAPABILITIES.pop(_s3_cap_b["token"], None)
+    # The header is read by name: the same live token under any other header is
+    # not a capability, and the write lands as the anonymous owner path.
+    _s3_cap_c = _s3_open_sitting("verify-sitting-c", _s3_les_id, _s3_les["uid"])
+    _s3_wrong_header = c.post(_s3_les_url, json={
+        "kind": "summary", "note": "Vera Example: token under another header.",
+        "idempotency_key": "vera-s3-hdr-1"},
+        headers={"Authorization": f"Bearer {_s3_cap_c['token']}",
+                 "X-Assess-Token": _s3_cap_c["token"]})
+    _s3_term._ASSESS_CAPABILITIES.pop(_s3_cap_c["token"], None)
+    check("the endpoint reads the capability from its own header, not the body",
+          assess_svc.CAPABILITY_HEADER == "X-Ephemeris-Assess-Token"
+          and _s3_wrong_header.status_code == 200
+          and _s3_row(_s3_wrong_header.json()["assessment_id"])["sitting_id"]
+          is None
+          and "sitting_id" not in assess_svc._FIELDS)
 
     # ---- S2: assessments.jsonl — the active-state projection ----------------
     # (S-DESIGN D-S1-5/D-S1-6, docs/learn-bundle-spec.md §6.5)
@@ -6752,8 +6969,14 @@ process.stdout.write(JSON.stringify([
 
     # --- E2: lesson-agent is server-owned, sandboxed, immutable, fail-closed ---
     class _E2Sock:
-        def __init__(self, query):
+        def __init__(self, query, scope=None):
             self.query_params = query
+            # A real WebSocket always carries the ASGI scope; `server` is the
+            # local end of the accepted socket, which is where the s3 capability
+            # URL comes from (never the client's Host header).
+            self.scope = {"server": ("127.0.0.1", 8765), "scheme": "ws"}
+            if scope is not None:
+                self.scope = scope
             self.sent_text = []
             self.sent_bytes = []
             self.accepted = False
@@ -6963,6 +7186,250 @@ process.stdout.write(JSON.stringify([
           and _proxy_agent.get("HTTPS_PROXY") == "http://127.0.0.1:19091"
           and _proxy_learner == {}
           and _proxy_off == ({}, {}))
+    # A proxied child must still reach this app directly: the s3 capability URL
+    # is a loopback address, and an inherited proxy can arrive with no NO_PROXY
+    # at all (or one that never mentions loopback).
+    with _sandbox_mock.patch.dict(
+            os.environ, {"HTTP_PROXY": "http://proxy.invalid:3128"}, clear=True):
+        _proxy_inherited = _terminal._detect_proxy_env("lesson-agent")
+    with _sandbox_mock.patch.dict(
+            os.environ,
+            {"HTTP_PROXY": "http://proxy.invalid:3128",
+             # both spellings, deliberately different: neither list may be lost
+             "NO_PROXY": "example.invalid", "no_proxy": "lower.invalid"},
+            clear=True):
+        _proxy_kept = _terminal._detect_proxy_env("lesson-agent")
+    _proxy_none = _terminal._with_loopback_direct({})
+    check("an inherited proxy never swallows this app's own loopback address",
+          _proxy_inherited["HTTP_PROXY"] == "http://proxy.invalid:3128"
+          and set(_proxy_inherited["NO_PROXY"].split(","))
+              == {"localhost", "127.0.0.1", "::1"}
+          and _proxy_inherited["no_proxy"] == _proxy_inherited["NO_PROXY"]
+          # an existing exclusion list is extended, never replaced
+          and _proxy_kept["NO_PROXY"].split(",")
+              == ["example.invalid", "lower.invalid",
+                  "localhost", "127.0.0.1", "::1"]
+          and _proxy_kept["HTTP_PROXY"] == "http://proxy.invalid:3128"
+          # the composed sets already spell it out, and a proxy-less child is
+          # left exactly as it was
+          and _proxy_plain["NO_PROXY"] == _terminal._NO_PROXY
+          and _proxy_none == {})
+
+    # --- S3: the assessment write capability (S-DESIGN D-S1-3 / D-S2-2) ------
+    _S3_VARS = {"EPHEMERIS_ASSESS_URL", "EPHEMERIS_ASSESS_TOKEN"}
+
+    async def _s3_capability_contract():
+        results = {}
+        workspace = {
+            "dir": ws_info["dir"], "slug": _lt["slug"], "title": "demo",
+            "id": _lt_id, "uid": _lt["uid"],
+        }
+        proc = _types.SimpleNamespace(returncode=0)
+
+        async def _sandboxed(role_selector, base_url, prepare=True):
+            resolver = ("prepare_terminal_workspace" if prepare
+                        else "resolve_terminal_workspace")
+            with _sandbox_mock.patch.object(
+                    _terminal, resolver, return_value=workspace), \
+                    _sandbox_mock.patch.object(
+                        _terminal, "_detect_proxy_env", return_value={}), \
+                    _sandbox_mock.patch.object(
+                        _terminal, "spawn_sandboxed",
+                        new=_sandbox_mock.AsyncMock(return_value=proc)) as spawn, \
+                    _sandbox_mock.patch.object(_terminal._TermSession, "start"):
+                sess = await _terminal._create_session(
+                    _lt["slug"], role_selector, base_url=base_url)
+            return sess, spawn.call_args.kwargs["env"]
+
+        agent, agent_env = await _sandboxed(None, "http://127.0.0.1:8765")
+        token = agent_env.get("EPHEMERIS_ASSESS_TOKEN", "")
+        capability = _terminal.resolve_assessment_capability(token)
+        results["agent_capability"] = (
+            agent_env.get("EPHEMERIS_ASSESS_URL")
+            == f"http://127.0.0.1:8765/learn/lessons/{_lt_id}/assessments"
+            and len(token) >= 32
+            and capability is not None
+            and capability["lesson_id"] == _lt_id
+            and capability["lesson_uid"] == _lt["uid"]
+            and capability["sitting_id"] == agent.sid
+        )
+        # The accessor hands out a copy: a consumer cannot edit the registry.
+        capability["lesson_id"] = -1
+        results["registry_copy"] = (
+            _terminal.resolve_assessment_capability(token)["lesson_id"] == _lt_id
+        )
+        await agent.close()
+        results["revoked_with_session"] = (
+            _terminal.resolve_assessment_capability(token) is None
+            and token not in _terminal._ASSESS_CAPABILITIES
+        )
+
+        # A second agent session on the same lesson is a second sitting.
+        first, first_env = await _sandboxed(None, "http://127.0.0.1:8765")
+        second, second_env = await _sandboxed(None, "http://127.0.0.1:8765")
+        results["distinct_sittings"] = (
+            first_env["EPHEMERIS_ASSESS_TOKEN"]
+            != second_env["EPHEMERIS_ASSESS_TOKEN"]
+            and first_env["EPHEMERIS_ASSESS_URL"]
+            == second_env["EPHEMERIS_ASSESS_URL"]
+            and _terminal.resolve_assessment_capability(
+                first_env["EPHEMERIS_ASSESS_TOKEN"])["sitting_id"] == first.sid
+            and _terminal.resolve_assessment_capability(
+                second_env["EPHEMERIS_ASSESS_TOKEN"])["sitting_id"] == second.sid
+        )
+        # Closing one sitting leaves the other's capability alive.
+        await first.close()
+        results["revocation_is_per_session"] = (
+            _terminal.resolve_assessment_capability(
+                first_env["EPHEMERIS_ASSESS_TOKEN"]) is None
+            and _terminal.resolve_assessment_capability(
+                second_env["EPHEMERIS_ASSESS_TOKEN"]) is not None
+        )
+        await second.close()
+
+        learner, learner_env = await _sandboxed(
+            "lesson-learner", "http://127.0.0.1:8765", prepare=False)
+        results["learner_gets_nothing"] = not (_S3_VARS & set(learner_env))
+        await learner.close()
+
+        with _sandbox_mock.patch.object(
+                _terminal, "_detect_proxy_env", return_value={}), \
+                _sandbox_mock.patch.object(
+                    _terminal.asyncio, "create_subprocess_exec",
+                    new=_sandbox_mock.AsyncMock(return_value=proc)) as bare, \
+                _sandbox_mock.patch.object(_terminal._TermSession, "start"):
+            plain = await _terminal._create_session(
+                base_url="http://127.0.0.1:8765")
+        results["plain_gets_nothing"] = not (
+            _S3_VARS & set(bare.call_args.kwargs["env"]))
+        await plain.close()
+
+        # No spellable app address: neither variable, rather than a token the
+        # agent has no URL to use.
+        blind, blind_env = await _sandboxed(None, None)
+        results["no_url_no_token"] = (
+            not (_S3_VARS & set(blind_env))
+            and blind._assess_token is None
+            and _terminal._ASSESS_CAPABILITIES == {}
+        )
+        await blind.close()
+
+        # The child can reach the endpoint from a startup file, before this
+        # coroutine resumes: the capability must already resolve while the spawn
+        # is still in flight, or a young capability would read as a dead one.
+        _during = {}
+
+        async def _spawn_and_probe(*a, **kw):
+            _during["resolved"] = _terminal.resolve_assessment_capability(
+                kw["env"]["EPHEMERIS_ASSESS_TOKEN"])
+            return proc
+
+        with _sandbox_mock.patch.object(
+                _terminal, "prepare_terminal_workspace", return_value=workspace), \
+                _sandbox_mock.patch.object(
+                    _terminal, "_detect_proxy_env", return_value={}), \
+                _sandbox_mock.patch.object(
+                    _terminal, "spawn_sandboxed", new=_spawn_and_probe), \
+                _sandbox_mock.patch.object(_terminal._TermSession, "start"):
+            early = await _terminal._create_session(
+                _lt["slug"], None, base_url="http://127.0.0.1:8765")
+        results["live_during_spawn"] = (
+            _during.get("resolved") is not None
+            and _during["resolved"]["sitting_id"] == early.sid
+            and _during["resolved"]["lesson_id"] == _lt_id
+        )
+        await early.close()
+        results["live_during_spawn_revoked"] = (
+            _terminal._ASSESS_CAPABILITIES == {})
+
+        # Every other way a session ends revokes it too: the idle reaper's
+        # forced eviction and the lifespan shutdown both run close().
+        reaped, reaped_env = await _sandboxed(None, "http://127.0.0.1:8765")
+        reaped.detached_at = (
+            _terminal.time.monotonic() - (_terminal._SESSION_TTL + 60))
+        _terminal._reap_idle()
+        await _asyncio.sleep(0)  # close() is scheduled as a task
+        killed, killed_env = await _sandboxed(None, "http://127.0.0.1:8765")
+        await _terminal.shutdown_terminal()
+        results["revoked_on_reap_and_shutdown"] = (
+            _terminal.resolve_assessment_capability(
+                reaped_env["EPHEMERIS_ASSESS_TOKEN"]) is None
+            and _terminal.resolve_assessment_capability(
+                killed_env["EPHEMERIS_ASSESS_TOKEN"]) is None
+            and _terminal._ASSESS_CAPABILITIES == {}
+        )
+
+        # A failed spawn registers nothing: no session, no live token.
+        with _sandbox_mock.patch.object(
+                _terminal, "prepare_terminal_workspace", return_value=workspace), \
+                _sandbox_mock.patch.object(
+                    _terminal, "_detect_proxy_env", return_value={}), \
+                _sandbox_mock.patch.object(
+                    _terminal, "spawn_sandboxed",
+                    new=_sandbox_mock.AsyncMock(
+                        side_effect=_sandbox.SandboxSpawnError("denied"))):
+            try:
+                await _terminal._create_session(
+                    _lt["slug"], None, base_url="http://127.0.0.1:8765")
+            except _terminal._LessonSandboxError:
+                pass
+        results["failed_spawn_leaves_no_token"] = (
+            _terminal._ASSESS_CAPABILITIES == {}
+        )
+        return results
+
+    _s3 = _asyncio.run(_s3_capability_contract())
+    check("S3 a lesson-agent session carries the complete URL and a bound token",
+          _s3.get("agent_capability") and _s3.get("registry_copy"))
+    check("S3 the capability dies with its own terminal session",
+          _s3.get("revoked_with_session")
+          and _s3.get("revocation_is_per_session"))
+    check("S3 concurrent agent sessions on one lesson are distinct sittings",
+          _s3.get("distinct_sittings"))
+    check("S3 learner and plain shells receive neither capability variable",
+          _s3.get("learner_gets_nothing") and _s3.get("plain_gets_nothing"))
+    check("S3 no injection without a spellable app address, none on a failed spawn",
+          _s3.get("no_url_no_token") and _s3.get("failed_spawn_leaves_no_token"))
+    check("S3 the capability is live while the child is still being spawned",
+          _s3.get("live_during_spawn") and _s3.get("live_during_spawn_revoked"))
+    check("S3 the idle reaper and the lifespan shutdown revoke it too",
+          _s3.get("revoked_on_reap_and_shutdown"))
+    _s3_urls = [
+        _terminal._app_base_url(_E2Sock({}, {
+            "server": ("127.0.0.1", 8765), "scheme": "ws"})),
+        _terminal._app_base_url(_E2Sock({}, {
+            "server": ("0.0.0.0", 8000), "scheme": "ws"})),
+        _terminal._app_base_url(_E2Sock({}, {
+            "server": ("::1", 8765), "scheme": "wss"})),
+        _terminal._app_base_url(_E2Sock({}, {"server": None})),
+        _terminal._app_base_url(_E2Sock({}, {"server": ("127.0.0.1", None)})),
+        _terminal._app_base_url(_E2Sock({}, {})),
+    ]
+    check("S3 the capability URL is the app's own bound address, never Host",
+          _s3_urls == [
+              "http://127.0.0.1:8765", "http://127.0.0.1:8000",
+              "https://[::1]:8765", None, None, None]
+          # the derivation reads the ASGI scope only — the fake carries no
+          # headers at all, so a spoofed Host has no channel into the URL
+          and not hasattr(_E2Sock({}), "headers"))
+    _s3_role_bound = False
+    _s3_master, _s3_slave = _pty.openpty()
+    try:
+        _terminal._TermSession(
+            "verify-s3-role", _types.SimpleNamespace(returncode=0), _s3_master,
+            role="lesson-learner", workspace=ws_info["dir"],
+            sandbox_profile="lesson-learner", assess_token="never")
+    except ValueError:
+        _s3_role_bound = True
+    finally:
+        os.close(_s3_master)
+        os.close(_s3_slave)
+    with _sandbox_mock.patch.dict(os.environ, {
+            "EPHEMERIS_ASSESS_TOKEN": "leaked-from-the-service",
+            "EPHEMERIS_ASSESS_URL": "http://leaked.invalid/"}):
+        _s3_inherited = _terminal._child_env("lesson-agent")
+    check("S3 the two names are minted per session, never inherited or role-shared",
+          _s3_role_bound and not (_S3_VARS & set(_s3_inherited)))
 
     # --- E3: closed role selector + concurrent agent/learner integration -----
     check("E3 role enum is closed and absent selector preserves E2 semantics",

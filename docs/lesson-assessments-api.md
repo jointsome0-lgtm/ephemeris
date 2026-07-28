@@ -1,11 +1,12 @@
-# Lesson assessment endpoint (phase S, slices s1–s2)
+# Lesson assessment endpoint (phase S, slices s1–s3)
 
-Status: the authority layer (s1) plus its bundle projection (s2). This is the
+Status: the authority layer (s1), its bundle projection (s2), and the session
+write capability (s3). This is the
 HTTP contract
 for recording what the **tutor concluded** — the counterpart to
 [lesson-attempts-api.md](lesson-attempts-api.md), which records what the
-**learner did**. The design it implements is `S-DESIGN.md` D-S1-1 … D-S1-4
-(issue [#4](https://github.com/jointsome0-lgtm/ephemeris/issues/4)).
+**learner did**. The design it implements is `S-DESIGN.md` D-S1-1 … D-S1-4 and
+D-S2-2 (issue [#4](https://github.com/jointsome0-lgtm/ephemeris/issues/4)).
 
 The caller is the lesson-agent terminal session — `curl` or any HTTP-capable
 tool from inside the sandbox, which has host-loopback reach by design — or the
@@ -15,8 +16,8 @@ verdict-writing operation would let lesson content grade itself.
 
 Trust model: the client supplies no identity it does not own. `lesson_uid`
 comes from the DB row, `question_id` is copied from the referenced attempt row,
-`seq` is the authority rowid, and `sitting_id` is server-derived (slice s3 —
-NULL until then). A `question_id` or `sitting_id` in the request body is an
+`seq` is the authority rowid, and `sitting_id` is derived from the session write
+capability below. A `question_id` or `sitting_id` in the request body is an
 unknown field and is refused.
 
 ## Routes
@@ -38,6 +39,45 @@ manifest. The tutor's memory must work on every lesson, including the
 `legacy-display` bundles that can never record attempts — a `review` implies
 its attempt existed, and `evidence`/`summary` are exactly the kinds a tutor
 produces on a legacy lesson (terminal experiments, spoken answers).
+
+## Write capability (the sitting)
+
+When the app opens a **lesson-agent** terminal session it mints an opaque token
+bound in-process to that lesson and that session, and puts it — with the
+complete per-lesson endpoint URL — into the session environment as
+`EPHEMERIS_ASSESS_URL` and `EPHEMERIS_ASSESS_TOKEN`. Those two variables reach
+the lesson-agent role only: the learner and runner profiles have no network and
+receive neither, and no broad `EPHEMERIS_` prefix joins the child environment
+allowlist. The URL is built from the app's own bound address (the ASGI scope's
+`server`), never from a client-supplied `Host` header.
+
+The caller returns the token in the `X-Ephemeris-Assess-Token` header:
+
+| header | resolution | effect |
+|--------|-----------|--------|
+| absent | — | admitted; `sitting_id` is NULL (the owner/manual `curl` path) |
+| live token, this lesson | the session's SID | `sitting_id` is stamped server-side |
+| live token, another lesson | — | 409 `capability-lesson-mismatch` |
+| unknown, empty, or dead token | — | 403 `invalid-capability` |
+
+This is **provenance, not authentication**: it answers "which lesson and which
+sitting is this write from" without letting the request body claim either. The
+endpoint stays open to the tokenless owner path by design — the deployment is
+loopback, single-user, single-worker — and requiring a token would kill that
+path and the bootstrapping of legacy lessons for nothing inside that boundary.
+
+The registry is in-process only: no persistence, no TTL, no rotation. An entry
+is created with its terminal session, revoked when that session closes, and
+gone after an app restart. A token from a previous process therefore resolves
+to 403 rather than silently degrading to an anonymous write — the tutor must
+know its writes lost their provenance, and the generated brief tells it to say
+so and keep tutoring.
+
+`sitting_id` also carries one service rule: **one active `summary` per
+sitting** (D-S0-1). A tutoring session closes with one synthesis; a second
+summary in the same sitting must name the first in `supersedes`, or it is
+refused with 409 `summary-exists` naming the row to supersede. A summary
+written without a capability has no sitting and is not covered by the rule.
 
 ## Request body
 
@@ -122,7 +162,13 @@ The replay lookup precedes every mutable-state refusal — the archive check, th
 attempt/`supersedes` reference checks, and the rate limit included. A retry of
 an already-durable write returns its `assessment_id` even when the lesson has
 since been archived or the window is exhausted; the refusal table below governs
-only NEW writes.
+only NEW writes. Capability resolution is *not* a mutable-state refusal but a
+fact about the request, so it runs first, with validation: a retry presenting a
+dead token is refused rather than answered with a quiet duplicate.
+
+`sitting_id` is not part of the fingerprint (nothing client-supplied is
+missing from it, and the sitting is not client-supplied at all): provenance is
+recorded once, by the write that actually lands.
 
 ## Refusals
 
@@ -138,7 +184,10 @@ only NEW writes.
 | 400 | `note-too-large`, `next-action-too-large` | over 8 KiB / 512 UTF-8 bytes |
 | 400 | `invalid-idempotency-key` | absent, > 128 chars, or carrying control characters |
 | 400 | `invalid-json`, `invalid-request` | body is not a JSON object; malformed `Content-Length` |
+| 403 | `invalid-capability` | the `X-Ephemeris-Assess-Token` header is present but names no live session capability (never minted, its session ended, or the app restarted). Never a silent fallback to the tokenless path |
 | 404 | `unknown-lesson` | no such lesson id/slug |
+| 409 | `capability-lesson-mismatch` | the capability is live but belongs to another lesson than the URL's |
+| 409 | `summary-exists` | this sitting already has an active `summary` and the new one does not supersede it (the detail names the `assessment_id` to supersede) |
 | 409 | `lesson-archived` | the lesson is archived — the owner restores it first; assessments are never written into a lesson that has been put away |
 | 409 | `lesson-unavailable` | the lesson row carries no `uid` (unreachable after the schema-v11 backfill; fail-closed) |
 | 409 | `idempotency-conflict` | known key, different submission |
@@ -161,8 +210,7 @@ only NEW writes.
    The response's `projection` field reports the outcome; a `pending` file is
    reconciled at the next trigger: a lesson-agent terminal open, an idempotent
    replay, or the first assessment call for that lesson in a process.
-4. Nothing else. The `_AGENTS_TEMPLATE` playbook and the write capability are
-   slice s3; the record panel is s4.
+4. Nothing else. The record panel is slice s4.
 
 Rows are append-only: there is no update and no delete route, and none is
 planned. A wrong record is corrected by a later row — `supersedes` on a new
@@ -196,6 +244,7 @@ Deliberately separated (they are three contracts, not one):
 Everything above is designed for the documented deployment only: direct
 loopback (127.0.0.1:8765), single user, single worker, no auth layer. Wider or
 multi-user deployment is out of scope — with no auth, any local process that
-can reach the port can write assessments. Slice s3 adds a per-session write
-capability that binds a write to a lesson and a terminal sitting; the tokenless
-owner path stays admitted by design inside this boundary.
+can reach the port can write assessments. The per-session capability binds a
+write to a lesson and a terminal sitting where one is presented; it does not
+turn the endpoint into an authenticated surface, and the tokenless owner path
+stays admitted by design inside this boundary.
