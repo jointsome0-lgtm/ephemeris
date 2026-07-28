@@ -162,7 +162,7 @@ entry stays Pending until L1 is fixed and the exact closing tree is
 re-verified. Wider, proxy-adjacent, or multi-user deployment remains **NO**
 independently.
 
-## CLOSING ADDENDUM — cycle 1 of 10
+## CLOSING ADDENDUM — fix commit `9f177b6` (cycle 1 of 10)
 
 ### L1 — resolved
 
@@ -189,6 +189,9 @@ Cycle 1 validation:
 - Approved host `python verify.py` — **798 passed, 0 failed**, including the
   new two-alias raw-body regression.
 - Approved host `python verify_restore.py` — **28 passed, 0 failed**.
+- `python scripts/check_public_hygiene.py` — passed. Ignored-status inspection
+  showed only established local tool, virtual-environment, dependency, cache,
+  screenshot-reference, and review-work paths.
 
 ## Prior-condition reconciliation at the closing application tree
 

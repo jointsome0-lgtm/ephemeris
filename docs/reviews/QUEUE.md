@@ -19,7 +19,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-28 — `f614614` and `491f0e4` on
+_None._
+
+## Done
+
+- [x] 2026-07-28 — `f614614` and `491f0e4` on
   `fix/4-s1-assessments-authority`, merged into `main` as `5976697` (PR #85) —
   `app/db.py`,
   `app/services/assessments.py` (new), `app/main.py`,
@@ -56,9 +60,20 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   The independent correctness re-check over the same diff added no code change:
   its one Medium concerned SQL-level enforcement of the concepts array shape,
   rebutted in the PR body, and its five Low findings were verifier-strength
-  gaps, all closed by additional checks. verify 797, verify_restore 28.
-
-## Done
+  gaps, all closed by additional checks. `9f177b6` (drain cycle 1) makes
+  assessment refusal details UTF-8-safe at the response boundary, so an escaped
+  lone-surrogate unknown field returns the strict controlled 400 instead of
+  raising during JSON response encoding, and adds raw-body coverage for both
+  aliases. Verify 798, verify_restore 28. Drained 2026-07-28 →
+  `2026-07-28-lesson-assessment-authority-review.md`: one Low finding, resolved
+  in one cycle; no Critical, High, Medium, Low, Info, or open finding remains.
+  Central write-guard W1 and attempt A1/A2 remain resolved; D5 L1 remains
+  mitigated and D5 L2/L3 remain resolved; artifact, runner, bundle, lesson-role,
+  terminal, sandbox, platform-support, public-data, and recovery conditions
+  retain the report's explicit dispositions. Final verdict: SAFE TO MAKE LIVE
+  for the documented direct-loopback single-worker deployment; wider,
+  proxy-adjacent, or multi-user deployment NO. Live restart is owner-only and
+  was not performed.
 
 - [x] 2026-07-27 — `c159a2b`, `0d32ad` on
   `fix/terminal-copy-affordance`, landing after the drain of the terminal copy
