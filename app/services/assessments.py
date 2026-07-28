@@ -869,43 +869,37 @@ def active_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
     return fold_rows(active_rows(conn, lesson_id))
 
 
-# The number of earlier readings behind each active review winner. The winners
-# CTE has exactly the review-per-attempt semantics of `fold_rows`: among rows
-# not superseded by ANY later record, the greatest seq wins.
+# The number of earlier readings behind each DISPLAYED review winner. The
+# active fold has already selected exactly one standing winner per attempt, so
+# pass those `(attempt_id, winner_id)` pairs through a bounded VALUES CTE
+# instead of rediscovering winners for every historical attempt in the lesson.
 #
 # Only rows before that winner count. Reviews corrected by another review stay
 # in the count — replaced readings are exactly what the marker acknowledges —
-# while reviews struck by a retraction are excluded outright. SQL returns one
-# aggregate per nonzero winner rather than materializing every lifetime review
-# seq in Python. Both correlated lookups ride
-# `idx_assessments_lesson_supersedes`; the outer scans seek reviews through
-# `idx_assessments_lesson_kind`.
+# while reviews struck by a retraction are excluded outright, in either write
+# order. The correlated lookup rides `idx_assessments_lesson_supersedes`; the
+# join seeks reviews through `idx_assessments_lesson_kind`.
 _EARLIER_REVIEW_COUNTS_SQL = (
-    "WITH winners AS ("
-    "  SELECT r.attempt_id AS attempt_id, MAX(r.id) AS winner_id "
-    "  FROM lesson_assessments r "
-    "  WHERE r.lesson_id = ? AND r.kind = 'review' "
-    "    AND r.attempt_id IS NOT NULL "
-    "    AND NOT EXISTS (SELECT 1 FROM lesson_assessments s "
-    "                    WHERE s.lesson_id = r.lesson_id "
-    "                      AND s.supersedes = r.assessment_id) "
-    "  GROUP BY r.attempt_id"
-    ") "
-    "SELECT r.attempt_id AS attempt_id, COUNT(*) AS earlier_count "
-    "FROM lesson_assessments r "
-    "JOIN winners w ON w.attempt_id = r.attempt_id AND r.id < w.winner_id "
-    "WHERE r.lesson_id = ? AND r.kind = 'review' "
-    "  AND NOT EXISTS (SELECT 1 FROM lesson_assessments t "
-    "                  WHERE t.lesson_id = r.lesson_id "
-    "                    AND t.kind = 'retraction' "
-    "                    AND t.supersedes = r.assessment_id) "
-    "GROUP BY r.attempt_id"
+    "WITH winners(attempt_id, winner_id) AS (VALUES {winners}) "
+    "SELECT w.attempt_id AS attempt_id, COUNT(r.id) AS earlier_count "
+    "FROM winners w "
+    "LEFT JOIN lesson_assessments r "
+    "  ON r.lesson_id = ? AND r.kind = 'review' "
+    " AND r.attempt_id = w.attempt_id AND r.id < w.winner_id "
+    " AND NOT EXISTS (SELECT 1 FROM lesson_assessments t "
+    "                 WHERE t.lesson_id = r.lesson_id "
+    "                   AND t.kind = 'retraction' "
+    "                   AND t.supersedes = r.assessment_id) "
+    "GROUP BY w.attempt_id"
 )
 
 # Leave ample room below SQLite's traditional 999-variable default: each
 # hydration statement also binds the lesson id. The fold has no winner-count
 # ceiling, so this is a statement-size bound, not a record-view bound.
 _HYDRATE_IDS_PER_QUERY = 500
+# Two variables per displayed winner plus the lesson id. Keep the fixed batch
+# comfortably below SQLite's traditional 999-variable default.
+_REVIEW_COUNTS_PER_QUERY = 250
 
 
 def _hydrate(conn: sqlite3.Connection, lesson_id: int, state: dict) -> dict:
@@ -935,6 +929,31 @@ def _hydrate(conn: sqlite3.Connection, lesson_id: int, state: dict) -> dict:
                                in state["reviews_by_attempt"].items()},
         "summary": full[state["summary"]["seq"]] if state["summary"] else None,
     }
+
+
+def _earlier_review_counts(
+    conn: sqlite3.Connection,
+    lesson_id: int,
+    reviews_by_attempt: dict,
+) -> dict[str, int]:
+    """Count earlier, non-retracted readings for displayed review winners."""
+    winners = sorted(
+        (attempt_id, row["seq"])
+        for attempt_id, row in reviews_by_attempt.items()
+    )
+    counts: dict[str, int] = {}
+    for start in range(0, len(winners), _REVIEW_COUNTS_PER_QUERY):
+        chunk = winners[start:start + _REVIEW_COUNTS_PER_QUERY]
+        values = ",".join("(?, ?)" for _ in chunk)
+        params = tuple(value for pair in chunk for value in pair)
+        counts.update({
+            row["attempt_id"]: row["earlier_count"]
+            for row in conn.execute(
+                _EARLIER_REVIEW_COUNTS_SQL.format(winners=values),
+                (*params, lesson_id),
+            ).fetchall()
+        })
+    return counts
 
 
 def panel_state(
@@ -980,14 +999,9 @@ def panel_state(
         state["active_count"] = sum(
             1 for row in keys if row["kind"] != "retraction"
         )
-        displayed_review_ids = state["reviews_by_attempt"].keys()
-        state["earlier_review_counts"] = {
-            row["attempt_id"]: row["earlier_count"]
-            for row in conn.execute(
-                _EARLIER_REVIEW_COUNTS_SQL, (lesson_id, lesson_id)
-            ).fetchall()
-            if row["attempt_id"] in displayed_review_ids
-        }
+        state["earlier_review_counts"] = _earlier_review_counts(
+            conn, lesson_id, state["reviews_by_attempt"]
+        )
         return state
     finally:
         if own_snapshot:

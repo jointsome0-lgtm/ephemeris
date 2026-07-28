@@ -977,7 +977,9 @@ def get_learn(
                 selected_entry = entry
         if selected is None and rows:
             selected = rows[0]
-        selected = lessons.with_bundle_info(selected, entry=selected_entry)
+        selected, selected_manifest = lessons.with_bundle_info_read(
+            selected, entry=selected_entry
+        )
         # A rejected manifest has no selectable entry — show the placeholder
         # without persisting a selection. A stale v2 selection (§4.2) keeps
         # its stored/requested candidate too: persisting the fallback would
@@ -985,7 +987,9 @@ def get_learn(
         if selected and selected["entry"] and not selected["bundle"]["stale_selection"]:
             lessons.mark_opened(conn, selected["id"], selected["entry"])
         if selected:
-            selected["record"] = _record_panel(conn, selected)
+            selected["record"] = _record_panel(
+                conn, selected, manifest_read=selected_manifest
+            )
     finally:
         conn.close()
     selected_id = selected["id"] if selected else None
@@ -1210,12 +1214,16 @@ def _record_panel_db_state(conn, lesson_id: int) -> tuple[dict, dict, dict]:
             conn.rollback()
 
 
-def _record_panel(conn, lesson: dict) -> dict:
+def _record_panel(conn, lesson: dict, *, manifest_read=None) -> dict:
     state, attempt_state, focus_total = _record_panel_db_state(
         conn, lesson["id"]
     )
     latest = attempt_state["latest_by_question"]
-    read = lessons.read_bundle_readonly(lesson)
+    # `/learn` passes the exact read that built `selected["bundle"]`, so one
+    # GET cannot show metadata from one manifest version and question
+    # retirement/labels from another. Direct helper callers retain the pure
+    # read fallback.
+    read = manifest_read or lessons.read_bundle_readonly(lesson)
     # A manifest that does not yield a declaration list — rejected outright, or
     # carrying a `questions` value nothing can be read as absent from — knows
     # nothing about what the author still declares, so nothing is called

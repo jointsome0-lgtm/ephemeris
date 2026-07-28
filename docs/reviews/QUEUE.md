@@ -151,7 +151,22 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   reviewed historical attempts the panel cannot display remain unread. The
   active-row count, evidence fold, summary and settled earlier-review rule are
   unchanged. Host verification at the round-8 branch state: verify 878,
-  verify_restore 28; public hygiene clean.
+  verify_restore 28; public hygiene clean. PR-bot round 9 limits the
+  earlier-review aggregate to the review winners for attempts the panel
+  actually displays, passing those winner pairs through fixed-size SQL
+  batches rather than deriving winners for every historical attempt. The
+  settled count rule is unchanged: a review corrected by another review is
+  acknowledged, while a review targeted by a retraction is excluded in either
+  write order. The same round passes the exact manifest read used for the
+  selected lesson's bundle metadata into the record panel, so one GET cannot
+  mix labels or retirement from a second manifest version. A requested
+  `focus_sessions.lesson_id` index is declined under the repository's
+  concrete-failure rule: the deployed single-user table has two rows in a
+  217 KB database, the aggregate runs once per GET, and no measurable failure
+  exists; any index belongs to its own migration if growth makes it useful.
+  The focused-minutes count remains intact and no schema, template, escaping,
+  POST or write path changes in this round. Host verification at the round-9
+  worktree state: verify 880.
 
 ## Done
 

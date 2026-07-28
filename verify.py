@@ -7929,13 +7929,53 @@ process.stdout.write(JSON.stringify([
         call for call in _s4_spy.calls
         if "earlier_count" in call[0]
     ]
-    check("S4 earlier-review markers are SQL aggregates, not lifetime seq lists",
+    check("S4 earlier-review markers aggregate only displayed winners",
           len(_s4_count_calls) == 1
-          and "COUNT(*) AS earlier_count" in _s4_count_calls[0][0]
+          and "WITH winners(attempt_id, winner_id) AS (VALUES" in
+              _s4_count_calls[0][0]
+          and "COUNT(r.id) AS earlier_count" in _s4_count_calls[0][0]
+          and set(_s4_count_calls[0][1][:-1:2])
+              == set(_s4_bounded["reviews_by_attempt"])
           and "review_seqs" not in _s4_bounded
           and len(_s4_bounded["earlier_review_counts"])
           <= len(_s4_bounded["reviews_by_attempt"]),
           str(_s4_bounded["earlier_review_counts"]))
+
+    # PR round 9. Two variables per displayed winner are bounded independently
+    # of both lifetime review history and the number of active historical
+    # attempts that are not shown.
+    class _S4CountCursor:
+        def fetchall(self):
+            return []
+
+    class _S4CountConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params=()):
+            self.calls.append((sql, params))
+            return _S4CountCursor()
+
+    _s4_count_n = assess_svc._REVIEW_COUNTS_PER_QUERY + 1
+    _s4_count_winners = {
+        f"displayed-attempt-{n:04d}": {"seq": 2_000_000 + n}
+        for n in range(_s4_count_n)
+    }
+    _s4_count_conn = _S4CountConn()
+    assess_svc._earlier_review_counts(
+        _s4_count_conn, _s4_id, _s4_count_winners
+    )
+    _s4_bound_attempts = {
+        attempt_id
+        for _sql, params in _s4_count_conn.calls
+        for attempt_id in params[:-1:2]
+    }
+    check("S4 displayed-review aggregates use bounded SQL-variable batches",
+          len(_s4_count_conn.calls) == 2
+          and max(len(params) for _, params in _s4_count_conn.calls)
+              == assess_svc._REVIEW_COUNTS_PER_QUERY * 2 + 1
+          and _s4_bound_attempts == set(_s4_count_winners),
+          str([len(params) for _, params in _s4_count_conn.calls]))
 
     # PR round 6. Hydration has no winner-count ceiling, but each SQL statement
     # has to stay below a fixed variable budget.
@@ -8113,6 +8153,38 @@ process.stdout.write(JSON.stringify([
           "Nothing recorded yet" in c.get(
               f"/learn?lesson={_s4_ghost_id}").text.split(
                   '<details class="lesson-record"', 1)[-1])
+
+    # PR round 9. The selected lesson's bundle metadata and record questions
+    # must come from the same manifest read even if the file changes during a
+    # GET. Instrument both reader entry points: the route establishes one
+    # ensured read and the panel must not perform a second readonly read.
+    _s4_ensure_real = lessons_svc._ensure_bundle_manifest
+    _s4_readonly_real = lessons_svc.read_bundle_readonly
+    _s4_ensured_reads = []
+    _s4_readonly_reads = []
+
+    def _s4_ensure_once(lesson):
+        read = _s4_ensure_real(lesson)
+        _s4_ensured_reads.append(read)
+        return read
+
+    def _s4_readonly_unexpected(lesson):
+        _s4_readonly_reads.append(lesson["id"])
+        return _s4_readonly_real(lesson)
+
+    lessons_svc._ensure_bundle_manifest = _s4_ensure_once
+    lessons_svc.read_bundle_readonly = _s4_readonly_unexpected
+    try:
+        _s4_same_manifest = c.get(f"/learn?lesson={_s4_id}")
+    finally:
+        lessons_svc._ensure_bundle_manifest = _s4_ensure_real
+        lessons_svc.read_bundle_readonly = _s4_readonly_real
+    check("S4 one GET reuses the selected bundle's exact manifest read",
+          _s4_same_manifest.status_code == 200
+          and len(_s4_ensured_reads) == 1
+          and not _s4_readonly_reads,
+          f"ensured={len(_s4_ensured_reads)}, readonly={_s4_readonly_reads}")
+
     # The live process runs the OLD context until the owner's restart while
     # serving this template from the working tree: the guard must omit the
     # panel rather than half-draw it.
