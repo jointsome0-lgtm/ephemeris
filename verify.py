@@ -3392,6 +3392,165 @@ process.stdout.write(JSON.stringify([
           "lesson_assessment" not in _as_restore_src
           and "lesson_assessments" not in _as_restore_src)
 
+    # ---- S3: the write capability at the endpoint (D-S1-3 / D-S2-2) ---------
+    # The registry itself is the terminal module's (its session lifecycle is
+    # covered with the rest of the terminal contract); here the seam is what the
+    # endpoint does with a token: derive the sitting, or refuse visibly.
+    from app import terminal as _s3_term
+
+    _s3_conn = get_conn()
+    try:
+        _s3_les_id = lessons_svc.create_lesson(_s3_conn, "Assessment Sitting Demo")
+        _s3_les = lessons_svc.get_lesson(_s3_conn, _s3_les_id)
+        _s3_other_id = lessons_svc.create_lesson(_s3_conn, "Assessment Sitting Other")
+        _s3_other = lessons_svc.get_lesson(_s3_conn, _s3_other_id)
+    finally:
+        _s3_conn.close()
+    _s3_les_url = f"/learn/lessons/{_s3_les_id}/assessments"
+    assess_svc._reset_rate_limit()
+
+    def _s3_open_sitting(sid, lesson_id, lesson_uid):
+        """Register a capability exactly as a lesson-agent session mints one."""
+        capability = _s3_term._mint_assessment_capability(
+            sid, lesson_id, lesson_uid, "http://127.0.0.1:8765")
+        _s3_term._ASSESS_CAPABILITIES[capability["token"]] = capability
+        return capability
+
+    def _s3_post(body, token=None, url=None):
+        headers = {} if token is None else {
+            assess_svc.CAPABILITY_HEADER: token}
+        return c.post(url or _s3_les_url, json=body, headers=headers)
+
+    def _s3_row(assessment_id):
+        conn_ = get_conn()
+        try:
+            row = conn_.execute(
+                "SELECT * FROM lesson_assessments WHERE assessment_id = ?",
+                (assessment_id,)).fetchone()
+            return dict(row) if row is not None else None
+        finally:
+            conn_.close()
+
+    _s3_cap = _s3_open_sitting("verify-sitting-a", _s3_les_id, _s3_les["uid"])
+    _s3_foreign = _s3_open_sitting(
+        "verify-sitting-foreign", _s3_other_id, _s3_other["uid"])
+    _s3_recorded = _s3_post({
+        "kind": "evidence", "level": "developing", "basis": "live",
+        "concepts": ["goroutines"],
+        "note": "Vera Example: explained the scheduler unprompted.",
+        "idempotency_key": "vera-s3-ev-1"}, _s3_cap["token"]).json()
+    _s3_stamped = _s3_row(_s3_recorded["assessment_id"])
+    _s3_event = None
+    _s3_ev_conn = get_conn()
+    try:
+        _s3_event = json.loads(_s3_ev_conn.execute(
+            "SELECT payload_json FROM events WHERE type = 'lesson_assessment' "
+            "ORDER BY id DESC LIMIT 1").fetchone()["payload_json"])
+    finally:
+        _s3_ev_conn.close()
+    check("a live capability stamps the sitting server-side, row and event",
+          _s3_recorded["result"] == "recorded"
+          and _s3_stamped["sitting_id"] == "verify-sitting-a"
+          and _s3_event["sitting_id"] == "verify-sitting-a"
+          and _s3_event["assessment_id"] == _s3_recorded["assessment_id"])
+    _s3_body_claim = _s3_post({
+        "kind": "summary", "sitting_id": "claimed-by-the-body",
+        "note": "Vera Example: body-supplied sitting.",
+        "idempotency_key": "vera-s3-claim-1"}, _s3_cap["token"])
+    check("the body can never claim a sitting (unknown field, strict)",
+          _s3_body_claim.status_code == 400
+          and _s3_body_claim.json()["error"] == "unknown-field")
+    _s3_mismatch = _s3_post({
+        "kind": "summary", "note": "Vera Example: wrong lesson.",
+        "idempotency_key": "vera-s3-mismatch-1"}, _s3_foreign["token"])
+    _s3_unknown = _s3_post({
+        "kind": "summary", "note": "Vera Example: invented token.",
+        "idempotency_key": "vera-s3-unknown-1"}, "not-a-minted-token")
+    _s3_empty = _s3_post({
+        "kind": "summary", "note": "Vera Example: empty header.",
+        "idempotency_key": "vera-s3-empty-1"}, "   ")
+    check("a foreign, unknown, or empty capability refuses with its own code",
+          _s3_mismatch.status_code == 409
+          and _s3_mismatch.json()["error"] == "capability-lesson-mismatch"
+          and _s3_unknown.status_code == 403
+          and _s3_unknown.json()["error"] == "invalid-capability"
+          and _s3_empty.status_code == 403
+          and _s3_empty.json()["error"] == "invalid-capability"
+          and all(k not in [r["idempotency_key"] for r in _as_rows(_s3_les_id)]
+                  for k in ("vera-s3-mismatch-1", "vera-s3-unknown-1",
+                            "vera-s3-empty-1")))
+    # The by-slug alias resolves the same capability against the same lesson.
+    _s3_slug = _s3_post({
+        "kind": "summary", "note": "Vera Example: alias sitting.",
+        "idempotency_key": "vera-s3-alias-1"}, _s3_cap["token"],
+        url=f"/learn/lessons/by-slug/{_s3_les['slug']}/assessments").json()
+    check("the by-slug alias derives the same sitting",
+          _s3_slug["result"] == "recorded"
+          and _s3_row(_s3_slug["assessment_id"])["sitting_id"]
+          == "verify-sitting-a")
+    # One ACTIVE summary per sitting: a second must supersede the first.
+    _s3_second = _s3_post({
+        "kind": "summary", "note": "Vera Example: a second synthesis.",
+        "idempotency_key": "vera-s3-sum-2"}, _s3_cap["token"])
+    _s3_superseding = _s3_post({
+        "kind": "summary", "note": "Vera Example: corrected synthesis.",
+        "next_action": "Re-run the channel exercise.",
+        "supersedes": _s3_slug["assessment_id"],
+        "idempotency_key": "vera-s3-sum-3"}, _s3_cap["token"])
+    check("one active summary per sitting; the refusal names what to supersede",
+          _s3_second.status_code == 409
+          and _s3_second.json()["error"] == "summary-exists"
+          and _s3_slug["assessment_id"] in _s3_second.json()["detail"]
+          and _s3_superseding.status_code == 200
+          and _s3_superseding.json()["result"] == "recorded")
+    # A different sitting is a different session's synthesis, and a tokenless
+    # write has no sitting for the rule to scope to.
+    _s3_cap_b = _s3_open_sitting("verify-sitting-b", _s3_les_id, _s3_les["uid"])
+    _s3_other_sitting = _s3_post({
+        "kind": "summary", "note": "Vera Example: a later session's synthesis.",
+        "idempotency_key": "vera-s3-sum-4"}, _s3_cap_b["token"])
+    _s3_owner_1 = _s3_post({
+        "kind": "summary", "note": "Vera Example: owner note one.",
+        "idempotency_key": "vera-s3-owner-1"})
+    _s3_owner_2 = _s3_post({
+        "kind": "summary", "note": "Vera Example: owner note two.",
+        "idempotency_key": "vera-s3-owner-2"})
+    check("the summary rule is scoped to a sitting, not to the lesson",
+          _s3_other_sitting.status_code == 200
+          and _s3_owner_1.status_code == 200 and _s3_owner_2.status_code == 200
+          and _s3_row(_s3_owner_2.json()["assessment_id"])["sitting_id"] is None)
+    # A replay carries the same capability; a dead one is never a quiet
+    # duplicate — the agent has to learn its provenance is gone.
+    _s3_replay = _s3_post({
+        "kind": "evidence", "level": "developing", "basis": "live",
+        "concepts": ["goroutines"],
+        "note": "Vera Example: explained the scheduler unprompted.",
+        "idempotency_key": "vera-s3-ev-1"}, _s3_cap["token"])
+    _s3_term._ASSESS_CAPABILITIES.pop(_s3_cap["token"], None)  # session closed
+    _s3_dead_replay = _s3_post({
+        "kind": "evidence", "level": "developing", "basis": "live",
+        "concepts": ["goroutines"],
+        "note": "Vera Example: explained the scheduler unprompted.",
+        "idempotency_key": "vera-s3-ev-1"}, _s3_cap["token"])
+    _s3_after_death = _s3_post({
+        "kind": "summary", "note": "Vera Example: after the session ended.",
+        "idempotency_key": "vera-s3-dead-1"}, _s3_cap["token"])
+    check("a dead capability refuses even a replay, and never falls back",
+          _s3_replay.json()["result"] == "duplicate"
+          and _s3_replay.json()["assessment_id"]
+          == _s3_recorded["assessment_id"]
+          and _s3_dead_replay.status_code == 403
+          and _s3_after_death.status_code == 403
+          and all(r["idempotency_key"] != "vera-s3-dead-1"
+                  for r in _as_rows(_s3_les_id)))
+    _s3_term._ASSESS_CAPABILITIES.pop(_s3_foreign["token"], None)
+    _s3_term._ASSESS_CAPABILITIES.pop(_s3_cap_b["token"], None)
+    check("the endpoint reads the capability from its own header, not the body",
+          "CAPABILITY_HEADER" in (ROOT / "app" / "main.py").read_text(
+              encoding="utf-8")
+          and assess_svc.CAPABILITY_HEADER == "X-Ephemeris-Assess-Token"
+          and "sitting_id" not in assess_svc._FIELDS)
+
     # ---- S2: assessments.jsonl — the active-state projection ----------------
     # (S-DESIGN D-S1-5/D-S1-6, docs/learn-bundle-spec.md §6.5)
     _s2_conn = get_conn()

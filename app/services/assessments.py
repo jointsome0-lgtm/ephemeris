@@ -11,8 +11,10 @@ Trust model: the caller is the lesson-agent terminal session (curl or any
 HTTP-capable tool inside the sandbox), admitted by the app perimeter
 (`app/security.py`). It supplies no identity it does not own: `lesson_uid`
 comes from the DB row, `question_id` is copied from the referenced attempt row,
-`seq` is the rowid, and `sitting_id` stays NULL until the s3 write capability
-resolves it server-side.
+`seq` is the rowid, and `sitting_id` is resolved from the session's write
+capability (s3) — the token names the lesson and the sitting, the body never
+does. A request without a capability is the owner/manual path: still admitted
+inside the documented loopback perimeter, with no sitting recorded.
 
 Not bridge-gated, deliberately (D-S1-4): assessments require no interactive
 profile and read no manifest on the admission path. The tutor's memory must
@@ -86,6 +88,13 @@ META_VERSION = 1
 # damper, not a security boundary.
 RATE_WINDOW_SECONDS = 60.0
 RATE_MAX_PER_WINDOW = 30
+
+# The write capability (D-S1-3 / D-S2-2, slice s3). The lesson-agent terminal
+# session hands its token back in this header; the registry that answers for it
+# lives in `app/terminal.py` and dies with the session and the process. A
+# request without the header is the owner/manual path and is still admitted —
+# it simply records no sitting.
+CAPABILITY_HEADER = "X-Ephemeris-Assess-Token"
 
 _monotonic = time.monotonic  # separable for tests
 _rate_lock = threading.Lock()
@@ -417,6 +426,86 @@ def _replay_or_conflict(
     )
 
 
+def _capability_registry_lookup(token: str) -> dict | None:
+    """The narrow accessor into the terminal module's session registry.
+
+    Imported at the point of use: `app/terminal.py` imports this package's
+    lessons module, so a module-level import here would close a cycle. The
+    terminal is also optional at runtime — an app started without it simply has
+    no live capabilities, and every token then resolves to nothing.
+    """
+    from .. import terminal
+
+    return terminal.resolve_assessment_capability(token)
+
+
+def resolve_capability(lesson: dict, token: str | None) -> str | None:
+    """The sitting a write came from, derived SERVER-SIDE (D-S1-3).
+
+    No token → None: the owner/manual `curl` path stays admitted inside the
+    documented loopback single-user perimeter, and its rows simply carry no
+    sitting. This is a memo decision, not an oversight.
+
+    A token that resolves → the lesson-agent session's SID, plus a hard check
+    that the URL's lesson is the token's lesson. A token that does not resolve
+    (never minted, or its session ended — including every token from before an
+    app restart) → a visible 403. There is deliberately no silent fallback to
+    the tokenless path: an agent whose writes have quietly lost their
+    provenance would keep recording verdicts that no longer say where they came
+    from, and the brief tells it to degrade openly instead.
+    """
+    if token is None:
+        return None
+    capability = _capability_registry_lookup(token.strip())
+    if capability is None:
+        raise AssessmentError(
+            "invalid-capability", 403,
+            "the session write capability is unknown or no longer live",
+        )
+    if capability.get("lesson_id") != lesson["id"]:
+        raise AssessmentError(
+            "capability-lesson-mismatch", 409,
+            "this capability belongs to a different lesson",
+        )
+    return capability.get("sitting_id")
+
+
+def _require_summary_slot(
+    conn: sqlite3.Connection, lesson: dict, submission: dict, sitting_id: str | None
+) -> None:
+    """One ACTIVE summary per sitting (D-S0-1 / D-S1-2).
+
+    A tutoring session closes with ONE synthesis; a second one is either a
+    correction of the first — which says so in `supersedes` — or a mistake. The
+    refusal names the row to supersede, so the agent can comply without
+    querying anything.
+
+    The rule is scoped to a sitting because that is what it is about: with no
+    sitting (the owner path) there is nothing to be the second summary OF, and
+    a lesson accumulates one summary per tutoring session by design. Runs
+    inside the write transaction: the fold it reads must be the committed one
+    this insert is ordered against.
+    """
+    if submission["kind"] != "summary" or sitting_id is None:
+        return
+    row = conn.execute(
+        "SELECT a.assessment_id FROM lesson_assessments a "
+        "WHERE a.lesson_id = ? AND a.sitting_id = ? AND a.kind = 'summary' "
+        "AND NOT EXISTS (SELECT 1 FROM lesson_assessments s "
+        "                WHERE s.lesson_id = a.lesson_id "
+        "                  AND s.supersedes = a.assessment_id) "
+        "ORDER BY a.id DESC LIMIT 1",
+        (lesson["id"], sitting_id),
+    ).fetchone()
+    if row is None or submission["supersedes"] == row["assessment_id"]:
+        return
+    raise AssessmentError(
+        "summary-exists", 409,
+        "this sitting already has an active summary; supersede "
+        f"{row['assessment_id']} to replace it",
+    )
+
+
 def _resolve_attempt(
     conn: sqlite3.Connection, lesson: dict, attempt_id: str | None
 ) -> str | None:
@@ -457,8 +546,17 @@ def _require_supersedes(
         )
 
 
-def record_assessment(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dict:
+def record_assessment(
+    conn: sqlite3.Connection,
+    lesson: dict,
+    payload: dict,
+    capability_token: str | None = None,
+) -> dict:
     """Record one assessment for `lesson` (a lessons service view dict).
+
+    `capability_token` is the caller's session write capability, or None for the
+    owner/manual path; the sitting it names is resolved here and never read from
+    the request body.
 
     Returns the response body fields for the endpoint:
       recorded  -> {result, assessment_id, seq, projection}
@@ -466,6 +564,11 @@ def record_assessment(conn: sqlite3.Connection, lesson: dict, payload: dict) -> 
     Refusals raise AssessmentError with a distinct code per
     docs/lesson-assessments-api.md."""
     submission = _clean_submission(payload)
+    # Before any state work, like the rest of validation: a dead capability is a
+    # fact about the request, and answering it costs no filesystem or DB work.
+    # A replay is refused too — an agent retrying with a capability that has
+    # since died must learn that, not receive a quiet duplicate.
+    sitting_id = resolve_capability(lesson, capability_token)
     fingerprint = _fingerprint(submission)
 
     # Reconcile trigger (c) — first write per lesson per process (D-S1-5). The
@@ -527,7 +630,8 @@ def record_assessment(conn: sqlite3.Connection, lesson: dict, payload: dict) -> 
     try:
         with _lesson_lock(lesson["slug"]):
             return _record_locked(
-                conn, lesson, submission, fingerprint, question_id, rate_stamp
+                conn, lesson, submission, fingerprint, question_id, rate_stamp,
+                sitting_id,
             )
     except AssessmentError as exc:
         if exc.code == "idempotency-conflict":  # not a new write
@@ -542,6 +646,7 @@ def _record_locked(
     fingerprint: str,
     question_id: str | None,
     rate_stamp: float | None,
+    sitting_id: str | None,
 ) -> dict:
     """The lesson-locked write section of `record_assessment`."""
     # Re-check under the lock: another in-process writer may have landed the
@@ -585,6 +690,7 @@ def _record_locked(
                         "lesson-archived", 409,
                         "this lesson is archived; restore it before recording",
                     )
+                _require_summary_slot(conn, lesson, submission, sitting_id)
                 cursor = conn.execute(
                     "INSERT INTO lesson_assessments "
                     "(assessment_id, event_uuid, lesson_id, lesson_uid, "
@@ -594,11 +700,9 @@ def _record_locked(
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         assessment_id, event_uuid, lesson["id"], lesson["uid"],
-                        # sitting_id stays NULL in s1: the terminal session's
-                        # SID arrives with the s3 write capability, and it is
-                        # derived server-side from that token — never from the
-                        # request body.
-                        None,
+                        # The sitting comes from the write capability, resolved
+                        # server-side; NULL is the owner/manual path.
+                        sitting_id,
                         submission["mode"], submission["idempotency_key"],
                         fingerprint, submission["kind"], submission["level"],
                         submission["basis"], submission["attempt_id"],
@@ -619,7 +723,7 @@ def _record_locked(
                     "seq": seq,
                     "kind": submission["kind"],
                     "mode": submission["mode"],
-                    "sitting_id": None,
+                    "sitting_id": sitting_id,
                     "level": submission["level"],
                     "basis": submission["basis"],
                     "attempt_id": submission["attempt_id"],
