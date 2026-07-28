@@ -2829,11 +2829,11 @@ process.stdout.write(JSON.stringify([
     _as_r1 = c.post(_as_url, json=_as_review_body)
     _as_j1 = _as_r1.json()
     _as_row1 = _as_rows()[0]
-    check("review recorded: durable row, seq is the rowid, projection pending",
+    check("review recorded: durable row, seq is the rowid, state projected",
           _as_r1.status_code == 200 and _as_j1["result"] == "recorded"
           and _as_j1["assessment_id"] == _as_row1["assessment_id"]
           and _as_j1["seq"] == _as_row1["id"]
-          and _as_j1["projection"] == "pending"
+          and _as_j1["projection"] == "projected"
           and _as_row1["fingerprint"].startswith("sha256:")
           and _as_row1["mode"] == "tutoring"
           and _as_row1["created_at"].endswith("+00:00")
@@ -3380,6 +3380,344 @@ process.stdout.write(JSON.stringify([
     check("restore tooling does not reconstruct lesson_assessments",
           "lesson_assessment" not in _as_restore_src
           and "lesson_assessments" not in _as_restore_src)
+
+    # ---- S2: assessments.jsonl — the active-state projection ----------------
+    # (S-DESIGN D-S1-5/D-S1-6, docs/learn-bundle-spec.md §6.5)
+    _s2_conn = get_conn()
+    try:
+        _s2_id = lessons_svc.create_lesson(_s2_conn, "Assessment Projection Demo")
+        _s2 = lessons_svc.get_lesson(_s2_conn, _s2_id)
+        _s2_idm_id = lessons_svc.create_lesson(_s2_conn, "Assessment Identity Demo")
+        _s2_idm = lessons_svc.get_lesson(_s2_conn, _s2_idm_id)
+        _s2_scale_id = lessons_svc.create_lesson(_s2_conn, "Assessment Scale Demo")
+        _s2_scale = lessons_svc.get_lesson(_s2_conn, _s2_scale_id)
+        _s2_quiet_id = lessons_svc.create_lesson(_s2_conn, "Assessment Quiet Demo")
+        _s2_quiet = lessons_svc.get_lesson(_s2_conn, _s2_quiet_id)
+    finally:
+        _s2_conn.close()
+    assess_svc._reset_rate_limit()
+
+    def _s2_path(lesson_view):
+        return (Path(lessons_svc.LESSONS_DIR) / lesson_view["slug"]
+                / assess_svc.PROJECTION_NAME)
+
+    def _s2_lines(lesson_view):
+        text = _s2_path(lesson_view).read_text(encoding="utf-8")
+        return [json.loads(line) for line in text.splitlines() if line]
+
+    def _s2_post(lesson_id, body, key):
+        return c.post(f"/learn/lessons/{lesson_id}/assessments",
+                      json=dict(body, idempotency_key=key)).json()
+
+    def _s2_rows(lesson_id):
+        conn_ = get_conn()
+        try:
+            return [assess_svc.row_view(r) for r in conn_.execute(
+                "SELECT * FROM lesson_assessments WHERE lesson_id = ? ORDER BY id",
+                (lesson_id,)).fetchall()]
+        finally:
+            conn_.close()
+
+    # one evidence row covering TWO concepts: the fold indexes it per concept,
+    # the file must carry it exactly once
+    _s2_ev1 = _s2_post(_s2_id, {
+        "kind": "evidence", "level": "weak", "basis": "attempts",
+        "concepts": ["closures", "captures"],
+        "note": "Vera Example: rebinds the loop variable each iteration."},
+        "s2-1")
+    _s2_first_lines = _s2_lines(_s2)
+    check("first write publishes the projection: meta line + one record",
+          _s2_ev1["projection"] == "projected"
+          and len(_s2_first_lines) == 2
+          and _s2_first_lines[0] == {
+              "kind": assess_svc.META_KIND, "v": assess_svc.META_VERSION,
+              "lesson_uid": _s2["uid"], "as_of_seq": _s2_ev1["seq"],
+              "generated_at": _s2_first_lines[0]["generated_at"]}
+          and _s2_first_lines[0]["generated_at"].endswith("+00:00")
+          and _s2_first_lines[1]["assessment_id"] == _s2_ev1["assessment_id"],
+          str(_s2_first_lines))
+
+    _s2_sum1 = _s2_post(_s2_id, {
+        "kind": "summary",
+        "note": "Vera Example: covered closures, ran out of time."}, "s2-2")
+    _s2_ev2 = _s2_post(_s2_id, {
+        "kind": "evidence", "level": "passed", "basis": "live",
+        "concepts": ["closures"],
+        "note": "Vera Example: predicted the capture correctly, unprompted."},
+        "s2-3")
+    _s2_retract = _s2_post(_s2_id, {
+        "kind": "retraction", "supersedes": _s2_sum1["assessment_id"],
+        "note": "Vera Example: that summary described the wrong sitting."},
+        "s2-4")
+    _s2_sum2 = _s2_post(_s2_id, {
+        "kind": "summary", "note": "Vera Example: closures land; slices next.",
+        "next_action": "Open the slices page and predict the growth step."},
+        "s2-5")
+    _s2_state_lines = _s2_lines(_s2)
+    _s2_state_ids = [line["assessment_id"] for line in _s2_state_lines[1:]]
+    check("the file is the ACTIVE fold: superseded, retracted and retraction "
+          "rows never appear, ascending seq",
+          _s2_state_ids == [
+              _s2_ev1["assessment_id"], _s2_ev2["assessment_id"],
+              _s2_sum2["assessment_id"]]
+          and [line["seq"] for line in _s2_state_lines[1:]]
+          == sorted(line["seq"] for line in _s2_state_lines[1:])
+          # as_of_seq is the authority watermark, not the newest LINE: the
+          # retraction advanced history without leaving a record behind
+          and _s2_state_lines[0]["as_of_seq"] == _s2_sum2["seq"]
+          and _s2_sum1["assessment_id"] not in _s2_state_ids
+          and _s2_retract["assessment_id"] not in _s2_state_ids,
+          str(_s2_state_ids))
+    _s2_authority = {row["seq"]: row for row in _s2_rows(_s2_id)}
+    check("each line is the full authority record echo, verbatim",
+          all(line == _s2_authority[line["seq"]]
+              for line in _s2_state_lines[1:])
+          and _s2_state_lines[-1]["next_action"]
+          == "Open the slices page and predict the growth step."
+          and _s2_state_lines[1]["concepts"] == ["closures", "captures"]
+          and _s2_state_lines[1]["basis"] == "attempts")
+
+    # commit-then-project (S-H1): a transaction that rolls back leaves the
+    # published file byte-identical — no half-written state, no phantom record
+    _s2_before_fail = _s2_path(_s2).read_bytes()
+    with _mock.patch.object(assess_svc, "append_event", _as_failing_append):
+        try:
+            c.post(f"/learn/lessons/{_s2_id}/assessments", json={
+                "kind": "summary", "note": "Vera Example: event will fail.",
+                "idempotency_key": "s2-atomic"})
+        except sqlite3.OperationalError:
+            pass
+    check("a rolled-back write leaves the projection untouched",
+          _s2_path(_s2).read_bytes() == _s2_before_fail
+          and len(_s2_lines(_s2)) == 4
+          and all(row["idempotency_key"] != "s2-atomic"
+                  for row in _as_rows(_s2_id)))
+
+    # the projection entry point refuses an in-transaction connection: no
+    # filesystem work may run inside the write transaction
+    _s2_txn_conn = get_conn()
+    try:
+        _s2_txn_conn.execute("BEGIN IMMEDIATE")
+        _s2_in_txn = assess_svc.reconcile_projection(_s2_txn_conn, _s2)
+        _s2_txn_conn.rollback()
+        _s2_after_txn = assess_svc.reconcile_projection(_s2_txn_conn, _s2)
+    finally:
+        _s2_txn_conn.close()
+    check("reconcile refuses an active transaction and works once committed",
+          _s2_in_txn is False and _s2_after_txn is True
+          and _s2_path(_s2).read_bytes() != _s2_before_fail  # rewritten fresh
+          and len(_s2_lines(_s2)) == 4)
+
+    # identity gate (S-H7): a manifest claiming a DIFFERENT lesson blocks
+    # publication — the row still commits, the projection stays pending
+    _s2_idm_first = _s2_post(_s2_idm_id, {
+        "kind": "summary", "note": "Vera Example: recorded before the swap."},
+        "s2-idm-1")
+    _s2_idm_published = _s2_path(_s2_idm).read_bytes()
+    _s2_idm_manifest_path = Path(lessons_svc.LESSONS_DIR) / _s2_idm["slug"] / "lesson.json"
+    _s2_idm_manifest = json.loads(_s2_idm_manifest_path.read_text(encoding="utf-8"))
+    bschema.write_manifest(_s2_idm_manifest_path, dict(
+        _s2_idm_manifest, lesson_uid="0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60"))
+    _s2_idm_blocked = _s2_post(_s2_idm_id, {
+        "kind": "summary", "note": "Vera Example: written under a foreign uid."},
+        "s2-idm-2")
+    _s2_idm_still = _s2_path(_s2_idm).read_bytes()
+    bschema.write_manifest(_s2_idm_manifest_path, _s2_idm_manifest)
+    _s2_idm_conn = get_conn()
+    try:
+        _s2_idm_healed = assess_svc.reconcile_projection(_s2_idm_conn, _s2_idm)
+    finally:
+        _s2_idm_conn.close()
+    check("a manifest naming another lesson blocks publication, then heals",
+          _s2_idm_first["projection"] == "projected"
+          and _s2_idm_blocked["projection"] == "pending"
+          # the row is durable regardless: only the file waits
+          and len(_s2_rows(_s2_idm_id)) == 2
+          and _s2_idm_still == _s2_idm_published
+          and _s2_idm_healed is True
+          and [line["assessment_id"] for line in _s2_lines(_s2_idm)[1:]]
+          == [_s2_idm_blocked["assessment_id"]])
+    # missing / legacy / rejected manifests publish (D-S1-4): the tutor's
+    # memory must work on exactly the bundles that can never record attempts
+    _s2_legacy_conn = get_conn()
+    try:
+        _s2_v1 = lessons_svc.get_lesson(_s2_legacy_conn, _v1_id)
+        _s2_rej = lessons_svc.get_lesson(_s2_legacy_conn, _rej_id)
+    finally:
+        _s2_legacy_conn.close()
+    check("legacy and rejected-manifest bundles are projected, not gated",
+          _s2_path(_s2_v1).exists() and _s2_path(_s2_rej).exists()
+          and _s2_lines(_s2_v1)[0]["lesson_uid"] == _s2_v1["uid"]
+          and len(_s2_lines(_s2_rej)) == 2)
+
+    # reconcile trigger (a): the lesson-agent terminal open, where the next
+    # reader appears
+    _s2_path(_s2).unlink()
+    _s2_prepared = lessons_svc.prepare_terminal_workspace(_s2["slug"])
+    check("lesson-agent terminal open reconciles the projection",
+          _s2_prepared is not None
+          and [line["assessment_id"] for line in _s2_lines(_s2)[1:]]
+          == _s2_state_ids)
+    # ...and a lesson that never recorded anything gets no file at all
+    _s2_quiet_prepared = lessons_svc.prepare_terminal_workspace(_s2_quiet["slug"])
+    _s2_quiet_conn = get_conn()
+    try:
+        _s2_quiet_ok = assess_svc.reconcile_projection(_s2_quiet_conn, _s2_quiet)
+    finally:
+        _s2_quiet_conn.close()
+    check("a lesson with no assessments is left without a projection file",
+          _s2_quiet_prepared is not None and _s2_quiet_ok is True
+          and not _s2_path(_s2_quiet).exists())
+
+    # reconcile trigger (b): an idempotent replay heals a pending projection —
+    # a lost response must not leave the closing summary invisible
+    _s2_path(_s2).unlink()
+    _s2_replay = _s2_post(_s2_id, {
+        "kind": "summary", "note": "Vera Example: closures land; slices next.",
+        "next_action": "Open the slices page and predict the growth step."},
+        "s2-5")
+    check("an idempotent replay reprojects the whole active state",
+          _s2_replay["result"] == "duplicate"
+          and _s2_replay["projection"] == "projected"
+          and _s2_replay["assessment_id"] == _s2_sum2["assessment_id"]
+          and [line["assessment_id"] for line in _s2_lines(_s2)[1:]]
+          == _s2_state_ids)
+
+    # reconcile trigger (c): the first write per lesson per process sweeps even
+    # when that write is REFUSED — a restart mid-pending heals on next contact
+    _s2_path(_s2).unlink()
+    assess_svc._reset_sweep_state()
+    _s2_refused = c.post(f"/learn/lessons/{_s2_id}/assessments", json={
+        "kind": "retraction", "supersedes": str(_as_uuid4()),
+        "note": "Vera Example: retracts a record that does not exist.",
+        "idempotency_key": "s2-sweep"})
+    check("the first-write sweep heals a pending projection even on a refusal",
+          _s2_refused.status_code == 422
+          and _s2_refused.json()["error"] == "unknown-supersedes"
+          and [line["assessment_id"] for line in _s2_lines(_s2)[1:]]
+          == _s2_state_ids)
+
+    # collision (D-S1-5): a foreign object on the name is moved aside, never
+    # adopted and never written through
+    _s2_col_dir = _s2_path(_s2)
+    _s2_col_dir.unlink()
+    _s2_col_dir.mkdir()
+    (_s2_col_dir / "planted.txt").write_text("Vera Example: planted", encoding="utf-8")
+    _s2_col_conn = get_conn()
+    try:
+        _s2_col_dir_ok = assess_svc.reconcile_projection(_s2_col_conn, _s2)
+    finally:
+        _s2_col_conn.close()
+    _s2_bundle = Path(lessons_svc.LESSONS_DIR) / _s2["slug"]
+    _s2_aside = sorted(_s2_bundle.glob("assessments.jsonl.collision-*"))
+    check("a directory on the projection name is moved aside with its content",
+          _s2_col_dir_ok is True and _s2_path(_s2).is_file()
+          and len(_s2_aside) == 1 and _s2_aside[0].is_dir()
+          and (_s2_aside[0] / "planted.txt").read_text(encoding="utf-8")
+          == "Vera Example: planted"
+          and [line["assessment_id"] for line in _s2_lines(_s2)[1:]]
+          == _s2_state_ids)
+    # a symlink is moved aside, and its target keeps its own bytes
+    _s2_outside = _s2_bundle / "not-the-projection.txt"
+    _s2_outside.write_text("Vera Example: unrelated file\n", encoding="utf-8")
+    _s2_path(_s2).unlink()
+    _s2_path(_s2).symlink_to(_s2_outside)
+    _s2_sym_conn = get_conn()
+    try:
+        _s2_sym_ok = assess_svc.reconcile_projection(_s2_sym_conn, _s2)
+    finally:
+        _s2_sym_conn.close()
+    check("a symlink on the projection name is replaced, target untouched",
+          _s2_sym_ok is True
+          and not _s2_path(_s2).is_symlink() and _s2_path(_s2).is_file()
+          and _s2_outside.read_text(encoding="utf-8")
+          == "Vera Example: unrelated file\n"
+          and len(_s2_lines(_s2)) == 4)
+    # a hard link never receives the new bytes through its other name
+    _s2_other_name = _s2_bundle / "assessments-hardlink.jsonl"
+    _os.link(_s2_path(_s2), _s2_other_name)
+    _s2_before_link = _s2_other_name.read_bytes()
+    _s2_link_conn = get_conn()
+    try:
+        _s2_link_ok = assess_svc.reconcile_projection(_s2_link_conn, _s2)
+    finally:
+        _s2_link_conn.close()
+    check("a multi-link projection name is replaced, the other name is frozen",
+          _s2_link_ok is True
+          and _s2_other_name.read_bytes() == _s2_before_link
+          and _s2_path(_s2).stat().st_nlink == 1
+          and len(_s2_lines(_s2)) == 4)
+
+    # a busy cross-process lock is an honest pending, and the next write heals
+    with assess_svc._projection_file_lock(_s2):
+        _s2_busy = _s2_post(_s2_id, {
+            "kind": "evidence", "level": "developing", "basis": "mixed",
+            "concepts": ["slices"],
+            "note": "Vera Example: written while the lock is held."}, "s2-busy")
+    _s2_busy_heal = _s2_post(_s2_id, {
+        "kind": "summary", "note": "Vera Example: the lock is free again."},
+        "s2-busy-2")
+    check("a busy projection lock returns pending; the next write heals",
+          _s2_busy["projection"] == "pending"
+          and _s2_busy_heal["projection"] == "projected"
+          and _s2_busy["assessment_id"] in [
+              line["assessment_id"] for line in _s2_lines(_s2)[1:]])
+
+    # the rewrite is bounded by CURRENT state, so it must stay correct at the
+    # few hundred active rows a long-running lesson accumulates
+    _s2_scale_conn = get_conn()
+    try:
+        with _s2_scale_conn:
+            for _s2_i in range(300):
+                _s2_scale_conn.execute(
+                    "INSERT INTO lesson_assessments ("
+                    "assessment_id, event_uuid, lesson_id, lesson_uid, mode, "
+                    "idempotency_key, fingerprint, kind, level, basis, "
+                    "concepts_json, note, created_at) VALUES "
+                    "(?, ?, ?, ?, 'tutoring', ?, ?, 'evidence', 'seen', "
+                    " 'live', ?, ?, ?)",
+                    (str(_as_uuid4()), str(_as_uuid4()), _s2_scale_id,
+                     _s2_scale["uid"], f"s2-scale-{_s2_i}",
+                     "sha256:" + "0" * 64, json.dumps([f"concept-{_s2_i}"]),
+                     f"Vera Example: scale row {_s2_i}.",
+                     f"2030-01-01T00:00:{_s2_i % 60:02d}.000000+00:00"))
+        _s2_scale_ok = assess_svc.reconcile_projection(_s2_scale_conn, _s2_scale)
+    finally:
+        _s2_scale_conn.close()
+    _s2_scale_lines = _s2_lines(_s2_scale)
+    check("a few hundred active rows project in one bounded rewrite",
+          _s2_scale_ok is True and len(_s2_scale_lines) == 301
+          and _s2_scale_lines[0]["kind"] == assess_svc.META_KIND
+          and [line["seq"] for line in _s2_scale_lines[1:]]
+          == sorted(line["seq"] for line in _s2_scale_lines[1:])
+          and len({line["assessment_id"] for line in _s2_scale_lines[1:]}) == 300,
+          f"lines={len(_s2_scale_lines)}")
+
+    # D-S1-6: the reserved name is enforced by the §4.1 path grammar, so no
+    # page, block file, or artifact root can claim the projection
+    _s2_reserved_read = bschema.read_manifest_text(json.dumps({
+        "schema_version": 2,
+        "lesson_uid": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
+        "entry": "index.html",
+        "pages": [
+            {"id": "pg_s2reserved1", "path": "index.html"},
+            {"id": "pg_s2reserved2", "path": "assessments.jsonl"},
+        ],
+        "artifact_roots": ["attempts", "assessments.jsonl"],
+    }))
+    check("assessments.jsonl is a reserved bundle name (§2/§4.1)",
+          "assessments.jsonl" in bschema.RESERVED_NAMES
+          and not bschema.valid_v2_path("assessments.jsonl")
+          and not bschema.valid_v2_path("assessments.jsonl/notes.html")
+          and "invalid-path" in _s2_reserved_read.codes()
+          and "assessments.jsonl" not in _s2_reserved_read.page_paths()
+          and "assessments.jsonl" not in _s2_reserved_read.artifact_roots)
+    _s2_spec = (ROOT / "docs" / "learn-bundle-spec.md").read_text(encoding="utf-8")
+    check("the bundle spec records the assessments projection (§2/§6.5/§12)",
+          "assessments.jsonl   app-owned projection" in _s2_spec
+          and "### 6.5 Assessments" in _s2_spec
+          and "| `assessments.jsonl` | owns (projection + reconcile)"
+          in _s2_spec)
 
     # ---- F1: pure artifact reads + conflict-safe editor backend ------------
     from app.services import artifacts as artifacts_svc

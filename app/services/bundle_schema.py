@@ -30,7 +30,10 @@ SCHEMA_V2 = 2
 
 DEFAULT_ENTRY = "index.html"
 DEFAULT_ARTIFACT_ROOT = "attempts"
-RESERVED_NAMES = ("lesson.json", "attempts.jsonl", "AGENTS.md", "CLAUDE.md")
+RESERVED_NAMES = (
+    "lesson.json", "attempts.jsonl", "assessments.jsonl", "AGENTS.md",
+    "CLAUDE.md",
+)
 
 MAX_MANIFEST_BYTES = 256 * 1024
 MAX_PAGES = 200
