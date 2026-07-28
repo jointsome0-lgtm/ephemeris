@@ -7796,6 +7796,52 @@ process.stdout.write(JSON.stringify([
           and _s4_ret_q["q_s4alpha001"]["earlier_reviews"] == 1,
           str(_s4_ret_q["q_s4gamma001"]["earlier_reviews"]))
 
+    # PR round 5. The fold has to VISIT every active row, but it keeps one per
+    # concept, one per attempt and one summary — and this runs on every /learn
+    # render. So the walk carries no `note` (8 KiB a row, no cardinality
+    # ceiling) and only the rows the fold keeps are read whole.
+    _s4_bulk_att = _s4_attempt("q_s4beta0001", "s4-bulk-answer", "s4-bulk-a")
+    for _s4_n in range(4):
+        _s4_assess({"kind": "review", "level": "partial", "attempt_id": _s4_bulk_att,
+                    "note": f"s4-bulk-note-{_s4_n} " * 400,
+                    "idempotency_key": f"s4-bulk-{_s4_n}"})
+
+    class _S4Spy:
+        """Only what panel_state uses, so every read it makes is recorded."""
+
+        def __init__(self, conn):
+            self._conn, self.calls = conn, []
+
+        def execute(self, sql, params=()):
+            self.calls.append((sql, params))
+            return self._conn.execute(sql, params)
+
+    _s4_conn = get_conn()
+    try:
+        _s4_spy = _S4Spy(_s4_conn)
+        _s4_bounded = assess_svc.panel_state(_s4_spy, _s4_id)
+        _s4_wide_fold = assess_svc.active_state(_s4_conn, _s4_id)
+        _s4_active_n = len(assess_svc.active_rows(_s4_conn, _s4_id))
+    finally:
+        _s4_conn.close()
+    _s4_wide_calls = [call for call in _s4_spy.calls if "SELECT *" in call[0]]
+    _s4_winners = (len(_s4_bounded["evidence_by_concept"])
+                   + len(_s4_bounded["reviews_by_attempt"])
+                   + (1 if _s4_bounded["summary"] else 0))
+    check("S4 the panel's fold walks narrow rows and reads only its winners whole",
+          # the four extra active reviews of one attempt are visited, not read
+          _s4_active_n >= _s4_winners + 4
+          and "note" not in assess_svc.ACTIVE_FOLD_KEYS_SQL
+          and "next_action" not in assess_svc.ACTIVE_FOLD_KEYS_SQL
+          and len(_s4_wide_calls) == 1
+          # lesson_id + exactly one id per displayed record
+          and len(_s4_wide_calls[0][1]) == 1 + _s4_winners
+          # and the narrow path folds to precisely what the wide one does
+          and _s4_bounded["evidence_by_concept"] == _s4_wide_fold["evidence_by_concept"]
+          and _s4_bounded["reviews_by_attempt"] == _s4_wide_fold["reviews_by_attempt"]
+          and _s4_bounded["summary"] == _s4_wide_fold["summary"],
+          f"{_s4_active_n} active, {_s4_winners} read whole")
+
     # PR round 1 + re-check. The answer excerpt is bounded by SQLite, so a long
     # answer is never materialized whole to render 400 characters of it — and
     # the bound is over BLOB bytes, because SQLite's TEXT `substr`/`length` stop

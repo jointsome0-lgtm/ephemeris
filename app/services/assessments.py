@@ -761,13 +761,16 @@ def _record_locked(
 # --- read model: the active-state fold (D-S1-2) ------------------------------
 
 
-def row_view(row: sqlite3.Row | dict) -> dict:
-    """One authority row as the record shape its consumers read: the s2
-    projection line, the s4 panel, and the verifier. `seq` is the rowid;
-    `concepts` is decoded back into a list (a stored value that no longer
-    parses reads as no concepts rather than raising — the column is written
-    only by this module, so that is a corrupt-database guard, not a
-    contract)."""
+# The columns `fold_rows` decides on, and nothing else. The fold has to visit
+# every active row, but it KEEPS at most one per concept, one per attempt and
+# one summary — so a reader that only wants the fold's winners can walk the
+# lesson on these five columns and pay for `note` (8 KiB a row) once per row it
+# will actually show. `row_view` builds on the same keys so the two shapes
+# cannot drift.
+FOLD_KEYS_COLUMNS = "a.id, a.assessment_id, a.kind, a.attempt_id, a.concepts_json"
+
+
+def _fold_keys(row: sqlite3.Row | dict) -> dict:
     concepts = row["concepts_json"]
     if isinstance(concepts, str):
         try:
@@ -778,16 +781,28 @@ def row_view(row: sqlite3.Row | dict) -> dict:
     return {
         "seq": row["id"],
         "assessment_id": row["assessment_id"],
+        "kind": row["kind"],
+        "attempt_id": row["attempt_id"],
+        "concepts": concepts,
+    }
+
+
+def row_view(row: sqlite3.Row | dict) -> dict:
+    """One authority row as the record shape its consumers read: the s2
+    projection line, the s4 panel, and the verifier. `seq` is the rowid;
+    `concepts` is decoded back into a list (a stored value that no longer
+    parses reads as no concepts rather than raising — the column is written
+    only by this module, so that is a corrupt-database guard, not a
+    contract)."""
+    return {
+        **_fold_keys(row),
         "event_uuid": row["event_uuid"],
         "lesson_uid": row["lesson_uid"],
         "sitting_id": row["sitting_id"],
         "mode": row["mode"],
-        "kind": row["kind"],
         "level": row["level"],
         "basis": row["basis"],
-        "attempt_id": row["attempt_id"],
         "question_id": row["question_id"],
-        "concepts": concepts,
         "note": row["note"],
         "next_action": row["next_action"],
         "supersedes": row["supersedes"],
@@ -798,13 +813,17 @@ def row_view(row: sqlite3.Row | dict) -> dict:
 # The deactivation lookup is correlated, so it needs `idx_assessments_lesson_
 # supersedes` to stay bounded — without that index it rescans the lesson's whole
 # history per row and the fold goes quadratic. verify asserts the query plan.
-ACTIVE_ROWS_SQL = (
-    "SELECT * FROM lesson_assessments a WHERE a.lesson_id = ? "
+_ACTIVE_SQL = (
+    "SELECT {columns} FROM lesson_assessments a WHERE a.lesson_id = ? "
     "AND NOT EXISTS (SELECT 1 FROM lesson_assessments s "
     "                WHERE s.lesson_id = a.lesson_id "
     "                  AND s.supersedes = a.assessment_id) "
     "ORDER BY a.id"
 )
+# One definition of "active", two column lists: whoever reads narrow rows reads
+# exactly the rows the wide query would have returned.
+ACTIVE_ROWS_SQL = _ACTIVE_SQL.format(columns="*")
+ACTIVE_FOLD_KEYS_SQL = _ACTIVE_SQL.format(columns=FOLD_KEYS_COLUMNS)
 
 
 def active_rows(conn: sqlite3.Connection, lesson_id: int) -> list[dict]:
@@ -874,18 +893,51 @@ _REVIEW_SEQS_SQL = (
 )
 
 
+def _hydrate(conn: sqlite3.Connection, lesson_id: int, state: dict) -> dict:
+    """Re-read the fold's winners whole, in one statement, and put them back
+    where the narrow rows were. Same connection and no write between the two
+    reads, so the second sees the state the first folded."""
+    wanted = {row["seq"] for row in state["evidence_by_concept"].values()}
+    wanted |= {row["seq"] for row in state["reviews_by_attempt"].values()}
+    if state["summary"] is not None:
+        wanted.add(state["summary"]["seq"])
+    if not wanted:
+        return state
+    marks = ",".join("?" * len(wanted))
+    full = {
+        row["id"]: row_view(row) for row in conn.execute(
+            "SELECT * FROM lesson_assessments WHERE lesson_id = ? "
+            f"AND id IN ({marks})", (lesson_id, *sorted(wanted))).fetchall()
+    }
+    return {
+        "evidence_by_concept": {concept: full[row["seq"]] for concept, row
+                                in state["evidence_by_concept"].items()},
+        "reviews_by_attempt": {attempt: full[row["seq"]] for attempt, row
+                               in state["reviews_by_attempt"].items()},
+        "summary": full[state["summary"]["seq"]] if state["summary"] else None,
+    }
+
+
 def panel_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
     """Everything the s4 record panel folds out of the authority rows (D-S3-1).
 
-    Read-only, and one pass over the active rows: the D-S1-2 fold, how many
-    active records stand behind it, and when each attempt's reviews were
-    written. `active_count` counts records that carry state — a retraction is
-    an active row but says only that another record was wrong, so counting it
-    would inflate what the panel claims to know.
+    Read-only: the D-S1-2 fold, how many active records stand behind it, and
+    when each attempt's reviews were written. `active_count` counts records
+    that carry state — a retraction is an active row but says only that
+    another record was wrong, so counting it would inflate what the panel
+    claims to know.
+
+    This runs on every `/learn` render, and the active fold has no cardinality
+    ceiling (spec §6.5 calls the projection a compaction, not a cap), so the
+    walk is deliberately narrow: the fold decides on five small columns, and
+    only the rows it KEEPS — one per concept, one per attempt, one summary —
+    are read whole. An 8 KiB note is therefore paid for once per displayed
+    record instead of once per active row.
     """
-    rows = active_rows(conn, lesson_id)
-    state = fold_rows(rows)
-    state["active_count"] = sum(1 for row in rows if row["kind"] != "retraction")
+    keys = [_fold_keys(row) for row
+            in conn.execute(ACTIVE_FOLD_KEYS_SQL, (lesson_id,)).fetchall()]
+    state = _hydrate(conn, lesson_id, fold_rows(keys))
+    state["active_count"] = sum(1 for row in keys if row["kind"] != "retraction")
     review_seqs: dict[str, list[int]] = {}
     for row in conn.execute(_REVIEW_SEQS_SQL, (lesson_id,)).fetchall():
         review_seqs.setdefault(row["attempt_id"], []).append(row["id"])
