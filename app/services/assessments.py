@@ -850,18 +850,27 @@ def active_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
     return fold_rows(active_rows(conn, lesson_id))
 
 
-# Every review ever written for the lesson, by the attempt it judged and in
-# `seq` order. `idx_assessments_lesson_kind` is (lesson_id, kind, id), so this
-# seeks the lesson's reviews instead of walking its history.
+# The reviews that can stand behind a displayed verdict, by the attempt they
+# judged and in `seq` order. `idx_assessments_lesson_kind` is (lesson_id, kind,
+# id), so this seeks the lesson's reviews instead of walking its history, and
+# the correlated lookup rides `idx_assessments_lesson_supersedes`.
 #
 # The seqs themselves, not a total: the active review is not always the newest
 # one written. Retract a review and the fold falls back to an EARLIER active
 # review, so a total-minus-one would count a later, retracted review among the
 # ones it replaced. The panel counts only the seqs below the review it shows.
+#
+# Retracted reviews are excluded outright, in either direction. A review that a
+# later review corrected still counts — replaced readings are exactly what the
+# marker is for — but a retraction says its target should not stand at all, and
+# a struck verdict is not an earlier reading of the answer.
 _REVIEW_SEQS_SQL = (
-    "SELECT attempt_id, id FROM lesson_assessments "
-    "WHERE lesson_id = ? AND kind = 'review' AND attempt_id IS NOT NULL "
-    "ORDER BY id"
+    "SELECT r.attempt_id AS attempt_id, r.id AS id FROM lesson_assessments r "
+    "WHERE r.lesson_id = ? AND r.kind = 'review' AND r.attempt_id IS NOT NULL "
+    "AND NOT EXISTS (SELECT 1 FROM lesson_assessments t "
+    "                WHERE t.lesson_id = r.lesson_id AND t.kind = 'retraction' "
+    "                  AND t.supersedes = r.assessment_id) "
+    "ORDER BY r.id"
 )
 
 

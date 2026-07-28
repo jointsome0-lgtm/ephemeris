@@ -7523,9 +7523,12 @@ process.stdout.write(JSON.stringify([
         "kind": "evidence", "level": "passed", "basis": "attempts",
         "concepts": ["channels & <select>"], "note": "s4-evidence-superseded",
         "idempotency_key": "s4-7"})
+    # the note lands in a title="" attribute as well as in body text, so it
+    # carries a quote and angle brackets: an escaping regression on either
+    # surface has to show up somewhere in the assertions below.
+    _s4_ev_note = 'Says "a mutex" where <a channel> fits & stalls.'
     _s4_assess({"kind": "evidence", "level": "weak", "basis": "live",
-                "concepts": ["channels & <select>"],
-                "note": "Reaches for a mutex where a channel fits.",
+                "concepts": ["channels & <select>"], "note": _s4_ev_note,
                 "supersedes": _s4_ev1["assessment_id"], "idempotency_key": "s4-8"})
     _s4_assess({"kind": "evidence", "level": "passed", "basis": "runs",
                 "concepts": ["goroutines"], "mode": "exam",
@@ -7607,7 +7610,12 @@ process.stdout.write(JSON.stringify([
           and "Covered fan-in &amp; &lt;select&gt;." in _s4_body
           and "Label &lt;q_s4alpha001&gt; &amp; more" in _s4_body
           and "<b>closes</b>" not in _s4_body and "<select>" not in _s4_body
-          and "<iterations>" not in _s4_body)
+          and "<iterations>" not in _s4_body
+          # the same note inside the chip's title="" attribute: a dropped
+          # escape there would close the attribute on the quote
+          and 'Says &#34;a mutex&#34; where &lt;a channel&gt; fits &amp; stalls.'
+              in _s4_body
+          and _s4_ev_note not in _s4_body)
     check("S4 a question label falls back to its durable id",
           _s4_by_q["q_s4beta0001"]["label"] == "q_s4beta0001")
 
@@ -7631,27 +7639,6 @@ process.stdout.write(JSON.stringify([
           and _s4_late_q["q_s4alpha001"]["earlier_reviews"] == 1
           and "(2 earlier)" not in c.get(f"/learn?lesson={_s4_id}").text,
           str(_s4_late_q["q_s4alpha001"]["earlier_reviews"]))
-
-    # PR round 1. The answer excerpt is cut by SQLite, so a long answer is
-    # never materialized whole to render 400 characters of it.
-    _s4_long = "".join(str(n % 10) for n in range(4000))
-    _s4_long_att = _s4_attempt("q_s4gamma001", _s4_long, "s4-long-1")
-    _s4_conn = get_conn()
-    try:
-        _s4_long_view = attempts_svc.lesson_attempt_summary(
-            _s4_conn, _s4_id)["latest_by_question"]["q_s4gamma001"]
-        _s4_short_view = attempts_svc.lesson_attempt_summary(
-            _s4_conn, _s4_id)["latest_by_question"]["q_s4beta0001"]
-    finally:
-        _s4_conn.close()
-    check("S4 the panel reads a bounded excerpt of the answer, flagged when cut",
-          _s4_long_view["attempt_id"] == _s4_long_att
-          and _s4_long_view["answer"] == _s4_long[:attempts_svc.PANEL_ANSWER_CHARS]
-          and _s4_long_view["answer_truncated"] is True
-          and _s4_short_view["answer"] == "s4-beta-answer"
-          and _s4_short_view["answer_truncated"] is False
-          and "substr(answer" in attempts_svc._LATEST_PER_QUESTION_SQL,
-          str(len(_s4_long_view["answer"])))
 
     # PR round 1. `type-mismatch`, `dangling-ref` and `invalid-id` are DEGRADED,
     # not rejecting: a manifest can drop a question from the typed list while
@@ -7683,6 +7670,72 @@ process.stdout.write(JSON.stringify([
           and 'class="rec-tag rec-unvalidated"' in _s4_deg_html,
           str([q["question_id"] for q in _s4_deg_ctx["retired"]]))
     bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
+
+    # Re-check finding. The mirror of the round-1 case, and the one it missed:
+    # a review RETRACTED before the displayed one is not an earlier reading of
+    # the answer either — the retraction says it should not stand at all. A
+    # review a later review CORRECTED still counts, which is what the marker is
+    # for, so the alpha case above must keep its one.
+    _s4_g_att = _s4_attempt("q_s4gamma001", "s4-gamma-answer", "s4-g1")
+    _s4_g1 = _s4_assess({
+        "kind": "review", "level": "unclear", "attempt_id": _s4_g_att,
+        "note": "s4-gamma-review-retracted", "idempotency_key": "s4-14"})
+    _s4_assess({"kind": "retraction", "supersedes": _s4_g1["assessment_id"],
+                "note": "s4-gamma-retraction", "idempotency_key": "s4-15"})
+    _s4_g2 = _s4_assess({
+        "kind": "review", "level": "correct", "attempt_id": _s4_g_att,
+        "note": "s4-gamma-standing-verdict", "idempotency_key": "s4-16"})
+    _s4_conn = get_conn()
+    try:
+        _s4_ret_ctx = _s4_panel(_s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id))
+    finally:
+        _s4_conn.close()
+    _s4_ret_q = {q["question_id"]: q for q in _s4_ret_ctx["questions"]}
+    check("S4 a retracted review is not counted as an earlier reading either",
+          _s4_ret_q["q_s4gamma001"]["review"]["assessment_id"]
+          == _s4_g2["assessment_id"]
+          and _s4_ret_q["q_s4gamma001"]["earlier_reviews"] == 0
+          and "s4-gamma-review-retracted" not in c.get(f"/learn?lesson={_s4_id}").text
+          # the corrected-by-a-review case is untouched
+          and _s4_ret_q["q_s4alpha001"]["earlier_reviews"] == 1,
+          str(_s4_ret_q["q_s4gamma001"]["earlier_reviews"]))
+
+    # PR round 1 + re-check. The answer excerpt is bounded by SQLite, so a long
+    # answer is never materialized whole to render 400 characters of it — and
+    # the bound is over BLOB bytes, because SQLite's TEXT `substr`/`length` stop
+    # at the first NUL and an attempt answer is not rejected for holding one.
+    _s4_long = "".join(str(n % 10) for n in range(4000))
+    _s4_long_att = _s4_attempt("q_s4gamma001", _s4_long, "s4-long-1")
+    _s4_nul = "abc\x00def" + "é" * 3000
+    _s4_nul_att = _s4_attempt("q_s4beta0001", _s4_nul, "s4-nul-1")
+    _s4_wide = "é" * (attempts_svc.PANEL_ANSWER_CHARS - 1)
+    _s4_wide_att = _s4_attempt("q_s4alpha001", _s4_wide, "s4-wide-1")
+    _s4_conn = get_conn()
+    try:
+        _s4_views = attempts_svc.lesson_attempt_summary(
+            _s4_conn, _s4_id)["latest_by_question"]
+    finally:
+        _s4_conn.close()
+    _s4_long_view = _s4_views["q_s4gamma001"]
+    _s4_nul_view = _s4_views["q_s4beta0001"]
+    _s4_wide_view = _s4_views["q_s4alpha001"]
+    check("S4 the panel reads a bounded excerpt of the answer, flagged when cut",
+          _s4_long_view["attempt_id"] == _s4_long_att
+          and _s4_long_view["answer"] == _s4_long[:attempts_svc.PANEL_ANSWER_CHARS]
+          and _s4_long_view["answer_truncated"] is True
+          # a whole answer shorter than the bound is neither cut nor flagged,
+          # multi-byte characters included
+          and _s4_wide_view["attempt_id"] == _s4_wide_att
+          and _s4_wide_view["answer"] == _s4_wide
+          and _s4_wide_view["answer_truncated"] is False,
+          str(len(_s4_long_view["answer"])))
+    check("S4 an embedded NUL neither swallows the answer nor hides the cut",
+          _s4_nul_view["attempt_id"] == _s4_nul_att
+          and _s4_nul_view["answer"] == _s4_nul[:attempts_svc.PANEL_ANSWER_CHARS]
+          and len(_s4_nul_view["answer"]) == attempts_svc.PANEL_ANSWER_CHARS
+          and _s4_nul_view["answer_truncated"] is True
+          and "CAST(answer AS BLOB)" in attempts_svc._LATEST_PER_QUESTION_SQL,
+          repr(_s4_nul_view["answer"][:20]))
 
     # The panel reads the manifest through the PURE reader (D-F1-2 binds phase
     # S too): a render may never create bundle state, and what it cannot read
@@ -7729,12 +7782,19 @@ process.stdout.write(JSON.stringify([
           and "lesson-record" not in _s4_stale and "lesson-frame" in _s4_stale)
     _s4_all = _s4_rows(_s4_id)
     _s4_superseded = {r["supersedes"] for r in _s4_all if r["supersedes"]}
+    _s4_conn = get_conn()
+    try:
+        _s4_final = _s4_panel(_s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id))
+    finally:
+        _s4_conn.close()
     check("S4 the fold helpers are shared, and retractions are not counted as state",
           assess_svc.fold_rows([]) == {"evidence_by_concept": {},
                                        "reviews_by_attempt": {}, "summary": None}
-          and _s4_ctx["counts"]["assessments"] == len(
+          and _s4_final["counts"]["assessments"] == len(
               [r for r in _s4_all if r["kind"] != "retraction"
-               and r["assessment_id"] not in _s4_superseded]))
+               and r["assessment_id"] not in _s4_superseded])
+          # the whole lesson's writes are in this count, not just the first fold
+          and _s4_final["counts"]["assessments"] > _s4_ctx["counts"]["assessments"])
 
     # --- E3: closed role selector + concurrent agent/learner integration -----
     check("E3 role enum is closed and absent selector preserves E2 semantics",
