@@ -19,7 +19,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-28 — `a05d5fc`, `f03ae5d`, `49ae440`, `d18f755` on
+_None._
+
+## Done
+
+- [x] 2026-07-28 — `a05d5fc`, `f03ae5d`, `49ae440`, `d18f755` on
   `fix/4-s2-assessments-projection`, merged into `main` as `876b879`
   (PR #88) —
   `app/services/assessments.py`, `app/services/lessons.py`,
@@ -62,12 +66,29 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   lock files, `app/terminal.py`, the sandbox profiles, the bridge ABI, the
   generated brief and the manifest schema readers beyond the reserved-name
   list are unchanged, and no route or HTTP contract changed except the
-  `projection` field's value. Verify 819, verify_restore 28.
-  → `2026-07-28-lesson-assessments-projection-review.md` (one Low, L1: the
-  active fold has no cardinality bound and the replay path, which is outside
-  the rate budget, drove a full rewrite per duplicate).
+  `projection` field's value. Verify 819, verify_restore 28. The initial
+  review raised one Low (L1): the active fold had no cardinality bound and
+  the replay path, which is outside the rate budget, drove a full rewrite per
+  duplicate. The PR #89 entry below supplies its merged follow-up and was
+  reviewed together with this entry as one owner-selected combined scope.
+  `39fc478` (combined drain cycle 1) closes the remaining unmetered
+  terminal-open rewrite and false cached-file identity: the production
+  terminal hook uses the ordinary skip, while the cached seal now includes
+  device and ctime beside watermark/inode/size/mtime; regression coverage
+  proves intact repeated terminal opens do no fold/publish, deleted files
+  still heal, and a same-inode/same-size/restored-mtime mutation reprojects.
+  Verify 826, verify_restore 28. Drained together with PR #89 on 2026-07-28
+  → `2026-07-28-lesson-assessments-projection-review.md`: two Low findings,
+  both resolved in one combined cycle; no Critical, High, Medium, Low, Info,
+  or open finding remains. Central write-guard W1 and attempt A1/A2 remain
+  resolved; D5 L1 remains mitigated and D5 L2/L3 remain resolved; bundle,
+  publication, lesson-role, terminal, sandbox, artifact, runner,
+  platform-support, public-data, and recovery conditions retain the report's
+  explicit dispositions. Final verdict: SAFE TO MAKE LIVE for the documented
+  direct-loopback single-worker deployment; wider, proxy-adjacent, or
+  multi-user deployment NO. Live restart is owner-only and was not performed.
 
-- [ ] 2026-07-28 — `7161e08`, `5ca48f2`, `95b78d9` on
+- [x] 2026-07-28 — `7161e08`, `5ca48f2`, `95b78d9` on
   `fix/4-s2-projection-replay-budget`, merged into `main` as `5ebdc78`
   (PR #89) —
   `app/services/assessments.py`, `app/services/lessons.py`, `app/db.py`,
@@ -91,9 +112,23 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   when the file may be gone rather than when state changed. Spec §6.5 and the
   module header now state that the size is a compaction, not a cap. No change
   to the rate limit, the fold, the file format, the response contract, the
-  lock, or the publication path. Verify 824, verify_restore 28.
-
-## Done
+  lock, or the publication path. Verify 824, verify_restore 28. Reviewed
+  together with the PR #88 entry above as one owner-selected combined scope.
+  `39fc478` (combined drain cycle 1) closes two Low findings in the summed
+  state: terminal creation no longer bypasses the unchanged-projection skip,
+  and the cached metadata identity gains device and ctime so an in-place
+  same-size edit with restored mtime cannot produce a false `projected`
+  response. Missing or changed files still take the full heal path. Verify
+  826, verify_restore 28. Drained together with PR #88 on 2026-07-28 →
+  `2026-07-28-lesson-assessments-projection-review.md`: two Low findings,
+  both resolved in one combined cycle; no Critical, High, Medium, Low, Info,
+  or open finding remains. Historical projection L1 is resolved under the
+  explicit compaction-without-a-fixed-cap contract; W1 and attempt A1/A2
+  remain resolved; D5 L1 remains mitigated and D5 L2/L3 remain resolved; all
+  other named prior conditions retain the report's explicit dispositions.
+  Final verdict: SAFE TO MAKE LIVE for the documented direct-loopback
+  single-worker deployment; wider, proxy-adjacent, or multi-user deployment
+  NO. Live restart is owner-only and was not performed.
 
 - [x] 2026-07-28 — `f614614` and `491f0e4` on
   `fix/4-s1-assessments-authority`, merged into `main` as `5976697` (PR #85) —
