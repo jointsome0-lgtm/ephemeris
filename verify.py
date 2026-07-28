@@ -527,7 +527,7 @@ with TestClient(app) as c:
           and "attempts must stay intelligible" in agents_text)
     check("lesson AGENTS.md makes the tutor's own record a first read",
           "`assessments.jsonl`, and the files under the artifact" in agents_text
-          and "Read `assessments.jsonl` next, whole" in agents_text
+          and "Read `assessments.jsonl` next:" in agents_text
           and "CURRENT state of past verdicts, not a history log" in agents_text
           and "latest session summary with" in agents_text
           and "That summary is your resume brief" in agents_text
@@ -535,6 +535,16 @@ with TestClient(app) as c:
           and "`live` basis as the softest evidence" in agents_text
           and "app-owned and" in agents_text
           and "never\n  by writing it." in agents_text)
+    check("lesson AGENTS.md bounds the assessments read and owns the omission",
+          "Read it whole while it fits in 2 MiB" in agents_text
+          and "guard, not a window" in agents_text
+          and "has no fixed ceiling" in agents_text
+          and "the newest complete lines within 2 MiB" in agents_text
+          and "current judgments went unread" in agents_text
+          and "omitted, not absent" in agents_text
+          # the projection is a compaction, not a cap (spec §6.5): the brief
+          # must not promise a ceiling the app never enforces.
+          and "it stays small" not in agents_text)
     check("lesson AGENTS.md carries the four-kind verdict playbook",
           "## Recording your verdicts" in agents_text
           and "the two assessment variables" in agents_text

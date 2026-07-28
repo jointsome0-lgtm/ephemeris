@@ -959,11 +959,19 @@ This is what turns you from a page generator into a tutor:
   Skim the learner's files under every artifact root. Compare the visible
   records against the manifest's `questions[]`: what was answered and
   what the projected answers show was misunderstood.
-- Read `assessments.jsonl` next, whole: it is your own memory — the app's
+- Read `assessments.jsonl` next: it is your own memory — the app's
   projection of the CURRENT state of past verdicts, not a history log, so
-  it stays small. It holds the active evidence level per concept, the
+  it is usually small. It holds the active evidence level per concept, the
   latest verdict per reviewed attempt, and the latest session summary with
-  its next step. That summary is your resume brief: start from where the
+  its next step. Read it whole while it fits in 2 MiB. That bound is a
+  guard, not a window: the file carries one line per active concept and
+  reviewed attempt and has no fixed ceiling, so a long lesson can outgrow
+  your context. If it is bigger, read its first line — the meta line, which
+  carries `as_of_seq` — then the newest complete lines within 2 MiB, and
+  say plainly, to the learner and in your session summary, that older
+  current judgments went unread. They are omitted, not absent: never
+  conclude from that gap that a concept was never assessed.
+  That summary is your resume brief: start from where the
   last session left off instead of re-deriving it. Do not re-explain what
   the record already concludes was understood — but re-verify a `weak`
   before you trust it is still weak, and treat any judgment recorded on a

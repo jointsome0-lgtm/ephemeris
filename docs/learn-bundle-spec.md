@@ -446,7 +446,11 @@ only what the bundle contains.
   so the file has no fixed ceiling and the rewrite is linear in the active
   fold. Deliberate — a truncated resume artifact would be a worse lie than a
   large one — and the reason a reconcile that would republish identical bytes
-  does nothing instead.
+  does nothing instead. The absent ceiling is the reader's problem to carry,
+  so the generated tutor brief states the guard on the consuming side: read
+  the file whole while it fits in 2 MiB, otherwise read the meta line plus
+  the newest complete lines within 2 MiB and declare the omission. The writer
+  never truncates.
 - **Active state**: rows not targeted by any later `supersedes`, folded by
   `seq` (the row id, the sole recency authority): the latest active evidence
   per concept, the latest active review per attempt, and the latest active

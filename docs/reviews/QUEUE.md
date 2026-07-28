@@ -89,6 +89,21 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   verify_restore 28. Diagnosis-only drain 2026-07-28 →
   `2026-07-28-lesson-assessment-capability-brief-review.md`: one Low finding
   remains open; this entry stays Pending for a separate reviewed repair PR.
+  That repair is `fix/4-s3-assessments-read-bound` (PR #91) —
+  `app/services/lessons.py`, `docs/learn-bundle-spec.md`, `verify.py`. The
+  record-reading bullet of `_AGENTS_TEMPLATE` no longer tells the agent to
+  read `assessments.jsonl` whole and no longer calls the file small without
+  qualification. It now states that the file has one line per active concept
+  and reviewed attempt and no fixed ceiling, directs a whole read only while
+  the file fits in 2 MiB, and otherwise directs a read of the meta line plus
+  the newest complete lines within 2 MiB together with a statement of the
+  omission to the learner and in the session summary, and it names the
+  unread remainder omitted rather than absent. Nothing else in the constant
+  changes, and the anchors for the surrounding text are unchanged except the
+  one sentence that rewrapped. Spec §6.5 gains a sentence placing the bound
+  on the reading side and restating that the writer never truncates; the
+  projection code, the endpoint, the capability registry and the sandbox
+  surfaces are untouched. Verify 850, verify_restore 28.
 
 ## Done
 
