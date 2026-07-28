@@ -977,25 +977,25 @@ def get_learn(
                 selected_entry = entry
         if selected is None and rows:
             selected = rows[0]
-        selected, _selected_manifest = lessons.with_bundle_info_read(
-            selected, entry=selected_entry
-        )
-        # A rejected manifest has no selectable entry — show the placeholder
-        # without persisting a selection. A stale v2 selection (§4.2) keeps
-        # its stored/requested candidate too: persisting the fallback would
-        # make the very next read report `ok` and erase the finding.
-        if selected and selected["entry"] and not selected["bundle"]["stale_selection"]:
-            lessons.mark_opened(conn, selected["id"], selected["entry"])
         if selected:
             # Lesson agents write the manifest before they can POST an attempt
             # against its question. Capture the DB state first, then take the
-            # FINAL manifest read used by both bundle metadata and the record:
+            # single FINAL manifest read used by bundle metadata, selection
+            # persistence, and the record:
             # a newly committed attempt can therefore never be classified
-            # against the older declaration set read at the top of this GET.
+            # against an older declaration set.
             record_db_state = _record_panel_db_state(conn, selected["id"])
             selected, selected_manifest = lessons.with_bundle_info_read(
                 selected, entry=selected_entry
             )
+            # A rejected manifest has no selectable entry — show the
+            # placeholder without persisting a selection. A stale v2
+            # selection (§4.2) keeps its stored/requested candidate too:
+            # persisting the fallback would make the very next read report
+            # `ok` and erase the finding.
+            if (selected["entry"]
+                    and not selected["bundle"]["stale_selection"]):
+                lessons.mark_opened(conn, selected["id"], selected["entry"])
             selected["record"] = _record_panel(
                 conn, selected, manifest_read=selected_manifest,
                 db_state=record_db_state,

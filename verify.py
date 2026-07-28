@@ -8158,19 +8158,43 @@ process.stdout.write(JSON.stringify([
               f"/learn?lesson={_s4_ghost_id}").text.split(
                   '<details class="lesson-record"', 1)[-1])
 
-    # PR rounds 9-10. The selected lesson's bundle metadata and record
-    # questions come from the same FINAL manifest read, taken after the DB
-    # state. The preliminary read is still needed to decide whether the
-    # selected entry may be persisted. Instrument the order and both readers.
+    # Drain follow-up. Start the request with a valid selected page, then
+    # atomically remove it after the DB state is captured but before the one
+    # final manifest read. That read must be the single authority for bundle
+    # metadata, selection persistence, and the record: the response falls
+    # back visibly and the removed page is never stored as current_entry.
     _s4_main = sys.modules["app.main"]
     _s4_ensure_real = lessons_svc._ensure_bundle_manifest
     _s4_readonly_real = lessons_svc.read_bundle_readonly
+    _s4_mark_opened_real = lessons_svc.mark_opened
     _s4_db_state_real = _s4_main._record_panel_db_state
     _s4_panel_real = _s4_main._record_panel
     _s4_read_order = []
     _s4_ensured_reads = []
     _s4_readonly_reads = []
     _s4_panel_reads = []
+    _s4_mark_opened_calls = []
+    _s4_swap_path = "s4-swap-removed.html"
+    _s4_swap_manifest = dict(
+        _s4_manifest,
+        pages=_s4_manifest["pages"] + [
+            dict(
+                _s4_manifest["pages"][0],
+                id="pg_s4swap00001",
+                path=_s4_swap_path,
+                title="Invented swap page",
+            )
+        ],
+    )
+    (_s4_dir / _s4_swap_path).write_text(
+        "<html>Invented swap page</html>", encoding="utf-8"
+    )
+    bschema.write_manifest(_s4_dir / "lesson.json", _s4_swap_manifest)
+    _s4_conn = get_conn()
+    try:
+        lessons_svc.mark_opened(_s4_conn, _s4_id, "index.html")
+    finally:
+        _s4_conn.close()
 
     def _s4_ensure_once(lesson):
         read = _s4_ensure_real(lesson)
@@ -8182,9 +8206,16 @@ process.stdout.write(JSON.stringify([
         _s4_readonly_reads.append(lesson["id"])
         return _s4_readonly_real(lesson)
 
+    def _s4_mark_opened_spy(conn, lesson_id, entry):
+        _s4_mark_opened_calls.append((lesson_id, entry))
+        return _s4_mark_opened_real(conn, lesson_id, entry)
+
     def _s4_db_before_manifest(conn, lesson_id):
         _s4_read_order.append("db")
-        return _s4_db_state_real(conn, lesson_id)
+        state = _s4_db_state_real(conn, lesson_id)
+        bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
+        _s4_read_order.append("manifest-swap")
+        return state
 
     def _s4_panel_same_read(conn, lesson, **kwargs):
         _s4_read_order.append("panel")
@@ -8193,22 +8224,40 @@ process.stdout.write(JSON.stringify([
 
     lessons_svc._ensure_bundle_manifest = _s4_ensure_once
     lessons_svc.read_bundle_readonly = _s4_readonly_unexpected
+    lessons_svc.mark_opened = _s4_mark_opened_spy
     _s4_main._record_panel_db_state = _s4_db_before_manifest
     _s4_main._record_panel = _s4_panel_same_read
     try:
-        _s4_same_manifest = c.get(f"/learn?lesson={_s4_id}")
+        _s4_same_manifest = c.get(
+            f"/learn?lesson={_s4_id}&entry={_s4_swap_path}"
+        )
     finally:
+        bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
         lessons_svc._ensure_bundle_manifest = _s4_ensure_real
         lessons_svc.read_bundle_readonly = _s4_readonly_real
+        lessons_svc.mark_opened = _s4_mark_opened_real
         _s4_main._record_panel_db_state = _s4_db_state_real
         _s4_main._record_panel = _s4_panel_real
-    check("S4 DB state precedes and reuses the final manifest read",
+    _s4_conn = get_conn()
+    try:
+        _s4_entry_after_swap = lessons_svc.get_lesson(
+            _s4_conn, _s4_id
+        )["current_entry"]
+    finally:
+        _s4_conn.close()
+    _s4_swap_html = _s4_same_manifest.text
+    check("S4 a page removed before the final manifest read is not persisted",
           _s4_same_manifest.status_code == 200
-          and _s4_read_order == ["manifest", "db", "manifest", "panel"]
-          and len(_s4_ensured_reads) == 2
+          and _s4_read_order
+              == ["db", "manifest-swap", "manifest", "panel"]
+          and len(_s4_ensured_reads) == 1
           and _s4_panel_reads == [_s4_ensured_reads[-1]]
-          and not _s4_readonly_reads,
-          f"order={_s4_read_order}, readonly={_s4_readonly_reads}")
+          and not _s4_readonly_reads
+          and not _s4_mark_opened_calls
+          and _s4_entry_after_swap == "index.html"
+          and f"/files/index.html" in _s4_swap_html
+          and f"preview-meta?entry={_s4_swap_path}" in _s4_swap_html,
+          f"order={_s4_read_order}, current_entry={_s4_entry_after_swap}")
 
     # The live process runs the OLD context until the owner's restart while
     # serving this template from the working tree: the guard must omit the

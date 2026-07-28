@@ -188,7 +188,17 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   renders the final manifest's fallback and stale-selection finding. The
   repair must make page-selection persistence use the same final manifest
   authority as the response and add a deterministic manifest-swap regression.
-  No application code, merge, or restart was performed by the drain.
+  No application code, merge, or restart was performed by the drain. The
+  follow-up repair at the current branch tip removes the preliminary manifest
+  read: `_record_panel_db_state` runs first, one final
+  `with_bundle_info_read` supplies bundle metadata, selection persistence and
+  the record, and `mark_opened` remains gated by that read's
+  `stale_selection`. A deterministic verifier swap removes a valid requested
+  page after DB-state capture and proves the same response falls back without
+  persisting the removed page. The DB-state-before-final-manifest invariant,
+  autoescape, stale-process guard and no-JS posture remain unchanged. Host
+  verification at the repair worktree state: verify 880. The entry remains
+  Pending for the owner's re-drain; no merge or restart was performed.
 
 ## Done
 
