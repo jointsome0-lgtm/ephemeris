@@ -24,10 +24,10 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-28 — `f40bc2f`, `76b2021`, `3706562` on
-  `fix/4-s3-capability-brief` (the entry stays current with the branch: any
-  further branch commit, and the merge commit once the PR lands, is appended
-  here before the drain) — `app/terminal.py`, `app/services/assessments.py`,
+- [ ] 2026-07-28 — `f40bc2f`, `76b2021`, `3706562`, `419ccbc`, `2cef3b4` on
+  `fix/4-s3-capability-brief`, merged into `main` as `42eabf4` (PR #90); the
+  merged tree is byte-identical to the reviewed branch head `2cef3b4` (both
+  trees `b953ef1`) — `app/terminal.py`, `app/services/assessments.py`,
   `app/services/lessons.py`, `app/main.py`,
   `docs/lesson-assessments-api.md`, `verify.py`, `docs/reviews/QUEUE.md` —
   issue #4 phase S slice s3 adds the assessment write capability and the
