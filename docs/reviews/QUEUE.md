@@ -24,7 +24,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-28 — `a0ae9dd`, `981400a` on `fix/4-s4-record-panel` —
+- [ ] 2026-07-28 — `a0ae9dd`, `981400a`, `c91d002`, `18d4195` on
+  `fix/4-s4-record-panel`; the entry stays current with the branch, and the
+  merge commit itself is appended here before any drain or restart —
   `app/main.py`, `app/services/assessments.py`, `app/services/attempts.py`,
   `app/services/focus.py`, `app/templates/learn.html`, `app/static/style.css`,
   `verify.py`, `docs/reviews/QUEUE.md` — issue #4 phase S slice s4 renders the
@@ -53,7 +55,25 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   the existing 860px media query. No POST route, write path, projection,
   service write function, schema, event, capability, brief, sandbox surface,
   terminal file or bridge ABI is touched, and no other template changed.
-  Verify 863, verify_restore 28.
+  `c91d002` (PR-bot round 1) replaces the earlier-review marker's
+  total-minus-one arithmetic with a count of the review ids preceding the
+  displayed one, narrows the per-question attempt query from `SELECT *` to the
+  displayed columns with the excerpt bound applied in SQL, and splits attempted
+  questions three ways instead of two: a question the manifest read dropped
+  under a DEGRADED finding but the raw document still declares is rendered as
+  a question of unknown validity rather than as retired, so only a question
+  absent from the document reaches the retired block. `18d4195` (independent
+  correctness re-check) excludes a `retraction`-struck review from that count
+  regardless of the order the two rows were written in, and takes both the
+  excerpt bound and the truncation comparison over `CAST(answer AS BLOB)` —
+  SQLite's TEXT `substr`/`length` stop at an embedded NUL, which attempt
+  validation admits, so an answer containing one was previously cut to the
+  bytes before it with no truncation marker; the byte budget is the character
+  bound times four plus three, and Python decodes with `errors="ignore"` and
+  cuts to the character bound. The same commit puts a double quote and angle
+  brackets into the escaping fixture's note text, which the chip renders into a
+  `title` attribute, and asserts the escaped attribute form. Verify 868,
+  verify_restore 28.
 
 - [ ] 2026-07-28 — `f40bc2f`, `76b2021`, `3706562`, `419ccbc`, `2cef3b4` on
   `fix/4-s3-capability-brief`, merged into `main` as `42eabf4` (PR #90); the
