@@ -24,6 +24,37 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
+- [ ] 2026-07-28 — `a0ae9dd`, `981400a` on `fix/4-s4-record-panel` —
+  `app/main.py`, `app/services/assessments.py`, `app/services/attempts.py`,
+  `app/services/focus.py`, `app/templates/learn.html`, `app/static/style.css`,
+  `verify.py`, `docs/reviews/QUEUE.md` — issue #4 phase S slice s4 renders the
+  recorded assessments on `/learn`. `GET /learn` computes one additional
+  context object for the selected lesson: evidence per concept, the latest
+  summary with its `next_action`, one entry per declared question carrying its
+  latest attempt and the latest active review of that attempt, an entry per
+  attempted question absent from the manifest, and a counts line. The values
+  come from four reads — `assessments.panel_state` (the existing active-rows
+  query, the fold, a count of active non-`retraction` rows, and a new
+  `GROUP BY attempt_id` count of every `review` row),
+  `attempts.lesson_attempt_summary` (a `COUNT(*)` and one row per question at
+  `MAX(id)`), `focus.lesson_total` (`SUM(seconds)` over
+  `focus_sessions.lesson_id`), and `lessons.read_bundle_readonly` for the
+  declared question list. `active_state`'s body moved unchanged into a pure
+  `fold_rows` that both it and `panel_state` call. A rejected manifest read
+  yields no declared list, no retired entries, and the attempted questions
+  under their durable ids. The learner's answer is cut to its first 400
+  characters for display; notes, `next_action`, labels, concept refs and page
+  ids are passed through whole. The template renders every one of those values
+  through `{{ }}` with Jinja autoescape on, adds no `|safe`, no markdown, no
+  script and no new JS file, and wraps the block in
+  `{% if selected.record is defined %}`. Concept refs, levels, modes and the
+  `stale` flag also reach `class` and `title` attributes. `style.css` gains the
+  `.lesson-record` / `.rec-*` rules inside the Learn block plus three lines in
+  the existing 860px media query. No POST route, write path, projection,
+  service write function, schema, event, capability, brief, sandbox surface,
+  terminal file or bridge ABI is touched, and no other template changed.
+  Verify 863, verify_restore 28.
+
 - [ ] 2026-07-28 — `f40bc2f`, `76b2021`, `3706562`, `419ccbc`, `2cef3b4` on
   `fix/4-s3-capability-brief`, merged into `main` as `42eabf4` (PR #90); the
   merged tree is byte-identical to the reviewed branch head `2cef3b4` (both
