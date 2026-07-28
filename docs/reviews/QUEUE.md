@@ -40,14 +40,18 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   <lesson_uid>.lock` (a separate file from the attempts projection lock),
   re-reads the committed fold, renders it, and publishes it through an
   `O_EXCL` 0600 temporary file, `fsync`, and `os.replace` relative to one
-  bundle-root descriptor opened with `O_NOFOLLOW | O_DIRECTORY`. Before
+  bundle-root descriptor opened with `O_NOFOLLOW | O_DIRECTORY`. The staged
+  descriptor stays open until after the replace and is `fstat`ed immediately
+  before it: a temporary file whose link count is no longer 1 is discarded
+  unpublished. Before
   publishing, a pure manifest read (no directory, skeleton or file creation)
   compares the manifest's `lesson_uid` with the DB uid and refuses to
   publish on a contradiction; missing, v1 and rejected manifests publish. A
   lesson with no rows and no existing file is left without one. A directory,
   symlink or multi-link file on the name is renamed to
   `assessments.jsonl.collision-<hex>` — an empty directory is removed — and
-  its bytes are never read. Failure to publish leaves the response's
+  its bytes are never read. Failure to publish — every exception raised
+  anywhere below the entry point is caught — leaves the response's
   `projection` field at `pending` and never raises past the committed write;
   a pending file is rewritten at the next lesson-agent terminal open
   (`prepare_terminal_workspace`, after the briefs and unable to refuse the
@@ -59,7 +63,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   lock files, `app/terminal.py`, the sandbox profiles, the bridge ABI, the
   generated brief and the manifest schema readers beyond the reserved-name
   list are unchanged, and no route or HTTP contract changed except the
-  `projection` field's value. Verify 816, verify_restore 28.
+  `projection` field's value. Verify 819, verify_restore 28.
 
 ## Done
 

@@ -848,8 +848,25 @@ def _fold_records(conn: sqlite3.Connection, lesson_id: int) -> tuple[int, list[d
 
     `as_of_seq` is the newest rowid of the lesson's whole history, not of the
     fold: it is the authority watermark the rendered state was taken at, so a
-    retraction (which removes a line) still advances it."""
-    state = active_state(conn, lesson_id)
+    retraction (which removes a line) still advances it.
+
+    Both reads share ONE snapshot. A sibling process — the documented
+    rolling-restart overlap — can commit between two autocommit statements,
+    and the file would then advertise a watermark it does not contain: the
+    fold would miss the new row while `as_of_seq` named it, and the sibling's
+    own write would report `pending` after losing the non-blocking lock, so
+    the inconsistency could outlive the request. The transaction is a
+    read-only snapshot (WAL: it blocks no writer) and is closed before any
+    filesystem work begins."""
+    conn.execute("BEGIN")
+    try:
+        state = active_state(conn, lesson_id)
+        as_of_seq = conn.execute(
+            "SELECT MAX(id) FROM lesson_assessments WHERE lesson_id = ?",
+            (lesson_id,),
+        ).fetchone()[0]
+    finally:
+        conn.rollback()  # nothing was written; just release the snapshot
     by_seq: dict[int, dict] = {}
     for row in state["evidence_by_concept"].values():
         by_seq[row["seq"]] = row
@@ -857,9 +874,6 @@ def _fold_records(conn: sqlite3.Connection, lesson_id: int) -> tuple[int, list[d
         by_seq[row["seq"]] = row
     if state["summary"] is not None:
         by_seq[state["summary"]["seq"]] = state["summary"]
-    as_of_seq = conn.execute(
-        "SELECT MAX(id) FROM lesson_assessments WHERE lesson_id = ?", (lesson_id,)
-    ).fetchone()[0]
     return int(as_of_seq or 0), [by_seq[seq] for seq in sorted(by_seq)]
 
 
@@ -891,8 +905,18 @@ def _identity_contradicts(lesson: dict) -> bool:
     manifest does NOT block — the slug directory is the DB's own mapping, and
     demanding a valid v2 manifest would silence exactly the legacy lessons the
     assessment channel exists for (D-S1-4). The read is the PURE one (D-F1-2):
-    projecting never creates a directory, a skeleton manifest, or a file."""
+    projecting never creates a directory, a skeleton manifest, or a file.
+
+    A rejected read carries no trusted identity, so it never gates. The
+    reader can assign `lesson_uid` and only afterwards accumulate a rejecting
+    finding — an empty `pages` list, a duplicate id — and honouring that
+    half-parsed value would block the projection permanently on exactly the
+    broken manifests the rule above says must publish. This is the
+    `effective_profile` idiom (§9.2): consumers read nothing but findings out
+    of a rejected manifest."""
     read = lessons.read_bundle_readonly(lesson)
+    if read.rejected:
+        return False
     uid = read.lesson_uid
     return isinstance(uid, str) and bool(uid) and uid != lesson.get("uid")
 
@@ -933,10 +957,12 @@ def _clear_collision(dir_fd: int) -> str | None:
     return aside
 
 
-def _stage_temp(dir_fd: int, data: bytes) -> str:
+def _stage_temp(dir_fd: int, data: bytes) -> tuple[str, int]:
     """Write the rendered bytes to a fresh 0600 temp file in the bundle and
-    fsync it. `O_EXCL` means an attacker-planted name is never opened, and a
-    failed close is never retried — it counts as not-written."""
+    fsync it. `O_EXCL` means an attacker-planted name is never opened.
+
+    Returns the name and the still-open descriptor: the caller publishes under
+    it, so it must be able to ask the staged inode what it has become."""
     for _ in range(20):
         name = f".assessments-{uuid4().hex}.tmp"
         try:
@@ -951,20 +977,17 @@ def _stage_temp(dir_fd: int, data: bytes) -> str:
         try:
             _write_all(fd, data)
             os.fsync(fd)
-            closing_fd, fd = fd, -1
-            os.close(closing_fd)
         except BaseException:
-            if fd >= 0:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
             try:
                 os.unlink(name, dir_fd=dir_fd)
             except OSError:
                 pass
             raise
-        return name
+        return name, fd
     raise OSError("could not allocate an assessment projection temp file")
 
 
@@ -979,13 +1002,27 @@ def _publish(lesson: dict, data: bytes) -> None:
     try:
         # Stage first, clear second: a failure while rendering must not leave
         # the reader with the published file already moved out of the way.
-        temp_name = _stage_temp(dir_fd, data)
+        temp_name, temp_fd = _stage_temp(dir_fd, data)
         try:
+            # The temp carries a visible name in a directory the lesson agent
+            # can write, so a link planted there would survive the rename and
+            # publish a multiply-linked projection — exactly the shape
+            # `_clear_collision` refuses to accept on the way in. The staged
+            # descriptor is still open, so ask the inode itself.
+            if os.fstat(temp_fd).st_nlink != 1:
+                raise OSError("the staged assessment projection gained a link")
             _clear_collision(dir_fd)
             os.replace(
                 temp_name, PROJECTION_NAME, src_dir_fd=dir_fd, dst_dir_fd=dir_fd
             )
+            closing_fd, temp_fd = temp_fd, -1
+            os.close(closing_fd)
         except BaseException:
+            if temp_fd >= 0:
+                try:
+                    os.close(temp_fd)
+                except OSError:
+                    pass
             try:
                 os.unlink(temp_name, dir_fd=dir_fd)
             except OSError:
@@ -1034,10 +1071,13 @@ def reconcile_projection(conn: sqlite3.Connection, lesson: dict) -> bool:
         with _lesson_lock(lesson["slug"]):
             with _projection_file_lock(lesson):
                 return _rewrite_locked(conn, lesson)
-    except (OSError, sqlite3.Error, ValueError, KeyError, lessons.LessonError):
-        # ValueError also covers UnicodeEncodeError: a row that cannot be
-        # encoded (only reachable by a writer other than this module) leaves
-        # the projection pending instead of raising over a committed write.
+    except Exception:
+        # Deliberately every exception, not a curated list. The projection is
+        # derived and best-effort; the durable write it follows has already
+        # committed. Any failure here — a filesystem error, an unencodable row
+        # written by something other than this module, a bug in the renderer —
+        # must degrade to `pending` and heal at the next trigger, never turn a
+        # successful write into a 500.
         return False
 
 

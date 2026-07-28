@@ -3496,15 +3496,23 @@ process.stdout.write(JSON.stringify([
     # the projection entry point refuses an in-transaction connection: no
     # filesystem work may run inside the write transaction
     _s2_txn_conn = get_conn()
+    _s2_txn_dir = Path(lessons_svc.LESSONS_DIR) / _s2["slug"]
+    _s2_before_txn = sorted(p.name for p in _s2_txn_dir.iterdir())
     try:
         _s2_txn_conn.execute("BEGIN IMMEDIATE")
         _s2_in_txn = assess_svc.reconcile_projection(_s2_txn_conn, _s2)
+        # observed BEFORE the rollback: a refusal that still staged, cleared or
+        # published would leave a trace here that the second, legitimate call
+        # would then paper over
+        _s2_during_txn = (sorted(p.name for p in _s2_txn_dir.iterdir()),
+                          _s2_path(_s2).read_bytes())
         _s2_txn_conn.rollback()
         _s2_after_txn = assess_svc.reconcile_projection(_s2_txn_conn, _s2)
     finally:
         _s2_txn_conn.close()
     check("reconcile refuses an active transaction and works once committed",
           _s2_in_txn is False and _s2_after_txn is True
+          and _s2_during_txn == (_s2_before_txn, _s2_before_fail)
           and _s2_path(_s2).read_bytes() != _s2_before_fail  # rewritten fresh
           and len(_s2_lines(_s2)) == 4)
 
@@ -3537,6 +3545,74 @@ process.stdout.write(JSON.stringify([
           and _s2_idm_healed is True
           and [line["assessment_id"] for line in _s2_lines(_s2_idm)[1:]]
           == [_s2_idm_blocked["assessment_id"]])
+    # PR #88 round 1: a REJECTED read carries no trusted identity. The reader
+    # assigns lesson_uid before a later finding rejects the manifest, so a
+    # foreign uid on a broken manifest must not gate — that would block the
+    # projection permanently on exactly the bundles that must publish.
+    bschema.write_manifest(_s2_idm_manifest_path, dict(
+        _s2_idm_manifest, lesson_uid="0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
+        pages=[]))
+    _s2_idm_broken_read = lessons_svc.read_bundle_readonly(_s2_idm)
+    _s2_idm_broken = _s2_post(_s2_idm_id, {
+        "kind": "summary", "note": "Vera Example: foreign uid, broken manifest."},
+        "s2-idm-3")
+    bschema.write_manifest(_s2_idm_manifest_path, _s2_idm_manifest)
+    check("a rejected manifest never gates the projection, foreign uid or not",
+          _s2_idm_broken_read.rejected
+          and _s2_idm_broken_read.lesson_uid
+          == "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60"
+          and _s2_idm_broken["projection"] == "projected"
+          and [line["assessment_id"] for line in _s2_lines(_s2_idm)[1:]]
+          == [_s2_idm_broken["assessment_id"]],
+          str(_s2_idm_broken_read.codes()))
+
+    # PR #88 round 1: the fold and the watermark come from ONE snapshot. A
+    # sibling process committing between two autocommit reads would otherwise
+    # publish a file advertising an `as_of_seq` whose row it does not carry.
+    _s2_snap_real = assess_svc.active_state
+    _s2_snap_injected = {}
+
+    def _s2_snap_state(conn_, lesson_id_):
+        state = _s2_snap_real(conn_, lesson_id_)
+        if not _s2_snap_injected:
+            sibling = get_conn()
+            try:
+                with sibling:
+                    cur = sibling.execute(
+                        "INSERT INTO lesson_assessments ("
+                        "assessment_id, event_uuid, lesson_id, lesson_uid, mode,"
+                        " idempotency_key, fingerprint, kind, level, basis,"
+                        " concepts_json, note, created_at) VALUES "
+                        "(?, ?, ?, ?, 'tutoring', 's2-sibling', ?, 'evidence',"
+                        " 'seen', 'live', ?, ?, ?)",
+                        (str(_as_uuid4()), str(_as_uuid4()), _s2_idm_id, _s2_idm["uid"],
+                         "sha256:" + "0" * 64, json.dumps(["sibling-concept"]),
+                         "Vera Example: committed by a sibling process.",
+                         "2030-02-02T00:00:00.000000+00:00"))
+                    _s2_snap_injected["seq"] = cur.lastrowid
+            finally:
+                sibling.close()
+        return state
+
+    _s2_snap_conn = get_conn()
+    try:
+        with _mock.patch.object(assess_svc, "active_state", _s2_snap_state):
+            _s2_snap_ok = assess_svc.reconcile_projection(_s2_snap_conn, _s2_idm)
+    finally:
+        _s2_snap_conn.close()
+    _s2_snap_lines = _s2_lines(_s2_idm)
+    check("the fold and its watermark are read from one snapshot",
+          _s2_snap_ok is True and "seq" in _s2_snap_injected
+          # the sibling row landed after the snapshot opened: it is in neither
+          # the lines nor the watermark, so the file stays self-consistent
+          and _s2_snap_lines[0]["as_of_seq"] < _s2_snap_injected["seq"]
+          and _s2_snap_lines[0]["as_of_seq"]
+          == max(line["seq"] for line in _s2_snap_lines[1:])
+          and all(line["seq"] != _s2_snap_injected["seq"]
+                  for line in _s2_snap_lines[1:]),
+          f"as_of={_s2_snap_lines[0]['as_of_seq']} "
+          f"sibling={_s2_snap_injected.get('seq')}")
+
     # missing / legacy / rejected manifests publish (D-S1-4): the tutor's
     # memory must work on exactly the bundles that can never record attempts
     _s2_legacy_conn = get_conn()
@@ -3647,6 +3723,28 @@ process.stdout.write(JSON.stringify([
           and _s2_other_name.read_bytes() == _s2_before_link
           and _s2_path(_s2).stat().st_nlink == 1
           and len(_s2_lines(_s2)) == 4)
+    # ...and the same holds for a link planted on the STAGED temp: publishing it
+    # would hand the bundle a second, writable name for the live projection
+    _s2_stage_real = assess_svc._stage_temp
+
+    def _s2_linking_stage(dir_fd, data):
+        name, fd = _s2_stage_real(dir_fd, data)
+        _os.link(name, name + ".alias", src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        return name, fd
+
+    _s2_staged_before = _s2_path(_s2).read_bytes()
+    with _mock.patch.object(assess_svc, "_stage_temp", _s2_linking_stage):
+        _s2_staged = _s2_post(_s2_id, {
+            "kind": "summary",
+            "note": "Vera Example: staged while a link was planted."},
+            "s2-stage-link")
+    check("a link planted on the staged temp keeps it from being published",
+          _s2_staged["result"] == "recorded"
+          and _s2_staged["projection"] == "pending"
+          and _s2_path(_s2).read_bytes() == _s2_staged_before
+          and _s2_path(_s2).stat().st_nlink == 1
+          and len(sorted(_s2_bundle.glob(".assessments-*.tmp.alias"))) == 1
+          and not sorted(_s2_bundle.glob(".assessments-*.tmp")))
 
     # a busy cross-process lock is an honest pending, and the next write heals
     with assess_svc._projection_file_lock(_s2):
