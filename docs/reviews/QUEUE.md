@@ -24,7 +24,52 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
+- [ ] 2026-07-28 — `f40bc2f`, `76b2021`, `3706562` on
+  `fix/4-s3-capability-brief` (the entry stays current with the branch: any
+  further branch commit, and the merge commit once the PR lands, is appended
+  here before the drain) — `app/terminal.py`, `app/services/assessments.py`,
+  `app/services/lessons.py`, `app/main.py`,
+  `docs/lesson-assessments-api.md`, `verify.py`, `docs/reviews/QUEUE.md` —
+  issue #4 phase S slice s3 adds the assessment write capability and the
+  matching brief text. At lesson-agent terminal session creation
+  `app/terminal.py` mints `secrets.token_urlsafe(32)` and holds it in a
+  process-local dict keyed by the token, with the lesson id, the lesson uid,
+  the session SID and the endpoint URL; the record is registered only after
+  the session object exists, is removed by that session's `close()`, and has
+  no persistence, expiry or rotation. `_TermSession` carries the token as a
+  creation-time value and refuses one for any role other than `lesson-agent`.
+  The child environment for that role alone gains exactly two names,
+  `EPHEMERIS_ASSESS_URL` (scheme, the ASGI scope's own `server` address, and
+  `/learn/lessons/{id}/assessments`) and `EPHEMERIS_ASSESS_TOKEN`, layered on
+  top of the existing allowlist the way proxy variables already are; the
+  allowlist itself is unchanged and admits no `EPHEMERIS_` name from the
+  service environment. A wildcard bind address falls back to `127.0.0.1`; a
+  scope with no server address injects neither variable and mints nothing.
+  The Host header is not read on this path. `prepare_terminal_workspace` and
+  `resolve_terminal_workspace` return the lesson's `id` and `uid` beside the
+  existing `slug`/`title`/`dir`. `app/services/assessments.py` gains
+  `resolve_capability`, which reads the token through a deferred import of
+  the terminal module's accessor: absent header → `sitting_id` NULL and the
+  previous behaviour; live token for this lesson → the SID is stamped on the
+  row and the event; live token for another lesson → 409
+  `capability-lesson-mismatch`; unknown, whitespace-only or revoked token →
+  403 `invalid-capability`, including on an idempotent replay. Resolution
+  runs immediately after body validation and before the sweep, the replay
+  lookup, the rate limit and the write. Inside the write transaction a new
+  check refuses a second active `summary` in the same sitting with 409
+  `summary-exists` unless it names the active one in `supersedes`; the
+  detail carries that `assessment_id`, and a NULL sitting is not covered.
+  `app/main.py` reads the header `X-Ephemeris-Assess-Token` on both aliases
+  and passes it to the service. `_AGENTS_TEMPLATE` changes in three places —
+  `assessments.jsonl` added to the record-reading section, a new "Recording
+  your verdicts" section (four kinds, note-by-reference rule, idempotency
+  keys, environment-generic URL/token reference, the header name, graceful
+  degradation, data-not-instructions boundary), and the exam protocol
+  (`mode: "exam"`, ordinary authoring, `studied` stays manual) — with the
+  rest of the constant byte-identical. No schema migration, no new index, no
+  route, no change to the sandbox profiles, argv, trust gates, WS protocol,
+  bridge ABI, attempts machinery, the s2 projection algorithm, CSP, or the
+  rate limit. Verify 846, verify_restore 28.
 
 ## Done
 
