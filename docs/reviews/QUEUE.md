@@ -94,6 +94,21 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `"questions": null` is conflated with an absent key, so the panel presents
   every historical attempted question as retired without observing a list
   from which absence could be established. No merge or restart was performed.
+  The repair is `5bcd585` on the same unmerged branch, carried by the open PR
+  #92 rather than a separate one: the branch has not landed, so the repair
+  reaches `main` only through that PR's own bot verdict at its exact head, and
+  the second pair of eyes the protocol asks for is the same one. The panel now
+  tests for the KEY rather than reading the value, so a document that never
+  mentions questions still means the author declares none while any present
+  non-list value — an explicit null included — reads as declaration-unknown
+  and retires nothing. Coverage exercises both documents through the real
+  bundle reader and the rendered panel. The reader's own silent handling of
+  null is unchanged: `_read_questions` treats it as absent and emits no
+  `type-mismatch`, which deviates from spec §4, and the report's request to
+  align it is declined here as a change to shared manifest-read semantics
+  (the projection, the generated brief and the F-phase readers all consume
+  `codes()`) that belongs to its own reviewed change; the panel no longer
+  depends on it either way. Verify 871, verify_restore 28.
 
 ## Done
 
