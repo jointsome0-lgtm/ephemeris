@@ -1,6 +1,7 @@
-# Lesson assessment endpoint (phase S, slice s1)
+# Lesson assessment endpoint (phase S, slices s1–s2)
 
-Status: the authority layer, landed with slice s1. This is the HTTP contract
+Status: the authority layer (s1) plus its bundle projection (s2). This is the
+HTTP contract
 for recording what the **tutor concluded** — the counterpart to
 [lesson-attempts-api.md](lesson-attempts-api.md), which records what the
 **learner did**. The design it implements is `S-DESIGN.md` D-S1-1 … D-S1-4
@@ -85,7 +86,7 @@ produces on a legacy lesson (terminal experiments, spoken answers).
 
 ```json
 {"ok": true, "result": "recorded", "assessment_id": "…uuid…",
- "seq": 41, "projection": "pending"}
+ "seq": 41, "projection": "projected"}
 ```
 
 - `result`: `recorded` (row + `lesson_assessment` ledger event committed in one
@@ -94,10 +95,12 @@ produces on a legacy lesson (terminal experiments, spoken answers).
 - `seq`: the authority rowid. It is **the** recency/ordering authority — the
   active-state fold below is by `seq`, and `created_at` (UTC ISO-8601 with
   microseconds) is display metadata.
-- `projection`: **`pending` for every response in slice s1** — the interim
-  state. The bundle projection `assessments.jsonl` lands in slice s2; until
-  then nothing projects and the field says so rather than claiming otherwise.
-  The authoritative row is durable regardless.
+- `projection`: `projected` when the bundle's `assessments.jsonl` now reflects
+  the committed state, `pending` when it does not — a busy or unavailable
+  lock, a bundle root that cannot be opened safely, a manifest whose identity
+  contradicts the lesson, or any filesystem failure. The authoritative row is
+  durable either way; a pending file heals at the next reconcile trigger.
+  Format and mechanics: `docs/learn-bundle-spec.md` §6.5.
 
 ## Idempotency
 
@@ -152,8 +155,14 @@ only NEW writes.
    `slug`, `assessment_id`, `seq`, `kind`, `mode`, `sitting_id`, `level`,
    `basis`, `attempt_id`, `question_id`, `concepts`, `note`, `next_action`,
    `supersedes`, `created_at` — so the synthesis rides the JSONL export.
-3. Nothing else. `assessments.jsonl`, the reconcile triggers and the
-   `_AGENTS_TEMPLATE` playbook are slices s2/s3; the record panel is s4.
+3. After that transaction commits — never inside it — the bundle's
+   `assessments.jsonl` is rewritten from the freshly re-read committed active
+   state under an app-private per-lesson lock outside the bundle (spec §6.5).
+   The response's `projection` field reports the outcome; a `pending` file is
+   reconciled at the next trigger: a lesson-agent terminal open, an idempotent
+   replay, or the first assessment call for that lesson in a process.
+4. Nothing else. The `_AGENTS_TEMPLATE` playbook and the write capability are
+   slice s3; the record panel is s4.
 
 Rows are append-only: there is no update and no delete route, and none is
 planned. A wrong record is corrected by a later row — `supersedes` on a new

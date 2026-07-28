@@ -49,12 +49,14 @@ data/lessons/<slug>/
   assets/          images/data referenced by pages (relative paths)
   attempts/        learner-authored work (default artifact root)
   attempts.jsonl   app-owned projection of recorded attempts (§6)
+  assessments.jsonl   app-owned projection of the tutor's active record (§6.5)
   AGENTS.md        app-generated agent brief — regenerated, never authored
   CLAUDE.md        app-generated shim for AGENTS.md — regenerated
 ```
 
 Reserved names, which no page, block file, or artifact root may claim:
-`lesson.json`, `attempts.jsonl`, `AGENTS.md`, `CLAUDE.md`.
+`lesson.json`, `attempts.jsonl`, `assessments.jsonl`, `AGENTS.md`,
+`CLAUDE.md`.
 
 Symlink policy (whole bundle, all consumers): symlinks are never followed —
 not for the bundle directory itself, not for any file inside it. A path that
@@ -424,6 +426,68 @@ rejected with a distinct response.
 | question not declared (removed, retired, or meaning-changed → new id) | rejected — distinct unknown-question response (D4), nothing written |
 | page file missing or unreadable at record time | recorded, `stale: true` (current revision unknowable — conservative flag) |
 
+### 6.5 Assessments (`assessments.jsonl`)
+
+Attempts record what the LEARNER did; assessments record what the TUTOR
+concluded. Endpoint semantics live in
+[lesson-assessments-api.md](lesson-assessments-api.md); this section fixes
+only what the bundle contains.
+
+- **Authority**: the `lesson_assessments` SQLite table. Each row and its
+  `lesson_assessment` ledger event are written in ONE transaction, the same
+  idiom as §6.1. Rows are append-only: a wrong record is corrected by a later
+  row naming it in `supersedes`, or retracted by a `retraction` row.
+- **Projection**: `assessments.jsonl` at the bundle root is the **active
+  state**, not the history — the next tutor's resume artifact. Its size is
+  bounded by current state (concepts + reviewed attempts + 1), never by
+  lifetime writes; full history stays in SQLite and rides the JSONL export.
+- **Active state**: rows not targeted by any later `supersedes`, folded by
+  `seq` (the row id, the sole recency authority): the latest active evidence
+  per concept, the latest active review per attempt, and the latest active
+  summary. Superseded, retracted, and retraction rows never appear. A record
+  covering several concepts is written once.
+- **Format**: one meta line, then one line per active record, ascending `seq`:
+
+```json
+{"kind": "assessments_meta", "v": 1,
+ "lesson_uid": "7f2a4c88-9d3b-4e21-8b5a-6c0d1e9f3a72",
+ "as_of_seq": 41, "generated_at": "2026-07-28T12:00:00.000000+00:00"}
+{"seq": 41, "assessment_id": "…", "event_uuid": "…", "lesson_uid": "…",
+ "sitting_id": null, "mode": "tutoring", "kind": "evidence",
+ "level": "weak", "basis": "attempts", "attempt_id": null,
+ "question_id": null, "concepts": ["closures"],
+ "note": "Vera Example: rebinds the loop variable each iteration.",
+ "next_action": null, "supersedes": null,
+ "created_at": "2026-07-28T11:59:12.004311+00:00"}
+```
+
+- `v` versions the meta/record shape; `as_of_seq` is the authority watermark
+  the state was rendered at (a retraction advances it while removing a line).
+  Record lines are the full authority record — the same field set the ledger
+  event echoes. Readers skip unknown kinds, unknown versions, and malformed
+  lines, never crash; like §6.2 these are out-of-band conditions, not §9.2
+  manifest findings.
+- **Write mechanics**: the app rewrites the file in full AFTER the
+  transaction commits — never inside it — under an app-private per-lesson
+  lock that lives outside the bundle, rendering the committed state freshly
+  under that lock and publishing via a temporary file plus atomic rename. A
+  projection failure never fails the durable write: the response says
+  `projected` or `pending`, and a pending file is reconciled at the next
+  trigger (a lesson-agent terminal open, an idempotent replay, or the first
+  assessment call for that lesson in a process). A foreign object on the name
+  — a directory, a symlink, a multi-link file — is moved aside
+  deterministically, never adopted or written through.
+- **Identity gate**: the app never publishes into a bundle whose manifest
+  carries a `lesson_uid` contradicting the DB lesson; that projection stays
+  pending until the contradiction is resolved. A missing, v1, or rejected
+  manifest does not block publication — the slug directory is the DB's own
+  mapping, and the tutor's memory must work on bundles that can never record
+  attempts.
+- The manifest does NOT list assessments, and a lesson with no assessments
+  has no file. The projection is app-owned and read-only for everyone else;
+  the study agent records verdicts THROUGH the endpoint, never by writing
+  this file.
+
 ## 7. Artifact roots and deterministic discovery
 
 `artifact_roots` (default `["attempts"]`) bounds where learner-authored work
@@ -694,11 +758,13 @@ stability, and current-entry head-insertion (§10).
 | `updated_by_agent_at` | — | ✎ sets on edits | preserved | — |
 | lesson pages / `assets/` | creation placeholder | ✎ authors | byte-preserved | — |
 | `attempts.jsonl` | owns (projection + reconcile) | read-only | — | read-only |
+| `assessments.jsonl` | owns (projection + reconcile) | read-only; records verdicts through the endpoint (§6.5) | — | read-only |
 | `attempts/` files | editor save endpoint (F1) | read (SHOULD not edit learner work — #35) | — | ✎ via terminal/editor |
 | `AGENTS.md`, `CLAUDE.md` | regenerates (B1 writer) | overwritten | — | — |
 
 The agent MUST NOT: change `lesson_uid` or `schema_version`, reuse retired
-ids, write `attempts.jsonl`, or put commands into the manifest (§4.4).
+ids, write `attempts.jsonl` or `assessments.jsonl`, or put commands into the
+manifest (§4.4).
 Agent-caused violations degrade or reject visibly per §9.2 — the app never
 silently rewrites an agent's manifest to "fix" it.
 
