@@ -72,8 +72,21 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   bound times four plus three, and Python decodes with `errors="ignore"` and
   cuts to the character bound. The same commit puts a double quote and angle
   brackets into the escaping fixture's note text, which the chip renders into a
-  `title` attribute, and asserts the escaped attribute form. Verify 868,
-  verify_restore 28.
+  `title` attribute, and asserts the escaped attribute form. PR-bot round 3
+  adds two more read-side distinctions. A manifest whose `questions` value is
+  not a list is DEGRADED rather than rejecting and yields an empty typed list,
+  which the previous split read as "the author declares none": every attempted
+  question was marked retired. The document reader now answers `None` for a
+  wrong-typed value and for a non-object manifest, an absent `questions` key
+  still answers the empty set, and the panel treats `None` exactly as it
+  treats a rejected read. Separately, a declared question's row took its page
+  from the manifest's current binding while showing an answer recorded against
+  whatever page held the question then; a question may move pages and the
+  stored `stale` flag was decided at record time, so the row now shows the
+  attempt's own `page_id` and carries the current binding beside it as a
+  `moved` marker, with `page_id=None` passed for the retired and unvalidated
+  rows that have no readable current binding. `style.css` gains one
+  `.rec-moved` rule. Verify 870, verify_restore 28.
 
 - [ ] 2026-07-28 — `f40bc2f`, `76b2021`, `3706562`, `419ccbc`, `2cef3b4` on
   `fix/4-s3-capability-brief`, merged into `main` as `42eabf4` (PR #90); the

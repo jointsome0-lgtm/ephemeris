@@ -7671,6 +7671,67 @@ process.stdout.write(JSON.stringify([
           str([q["question_id"] for q in _s4_deg_ctx["retired"]]))
     bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
 
+    # PR round 3. A `questions` value of the wrong type is DEGRADED too, and it
+    # leaves the typed list empty — so reading absence from it would retire
+    # every attempted question at once. Nothing can be observed absent from a
+    # list that is not there, so the whole declaration reads as unknown.
+    (_s4_dir / "lesson.json").write_text(
+        json.dumps(dict(_s4_manifest, questions={"q_s4alpha001": "moved?"})),
+        encoding="utf-8")
+    _s4_conn = get_conn()
+    try:
+        _s4_bad_lesson = lessons_svc.get_lesson(_s4_conn, _s4_id)
+        _s4_bad_read = lessons_svc.read_bundle_readonly(_s4_bad_lesson)
+        _s4_bad_ctx = _s4_panel(_s4_conn, _s4_bad_lesson)
+    finally:
+        _s4_conn.close()
+    check("S4 a question list of the wrong type retires nothing",
+          "type-mismatch" in _s4_bad_read.codes() and not _s4_bad_read.rejected
+          and _s4_bad_read.questions == []
+          and _s4_bad_ctx["declared_known"] is False
+          and _s4_bad_ctx["retired"] == []
+          and {q["question_id"] for q in _s4_bad_ctx["questions"]}
+          >= {"q_s4alpha001", "q_s4retire01"}
+          and "no longer declared" not in c.get(f"/learn?lesson={_s4_id}").text,
+          str([q["question_id"] for q in _s4_bad_ctx["retired"]]))
+    bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
+
+    # PR round 3. A question may move pages, and `stale` was decided when the
+    # answer was recorded — a move afterwards leaves no mark on it. So the row
+    # shows the page the answer was WRITTEN on and names the new binding
+    # beside it; adopting the manifest's current page would attribute an old
+    # answer to a page it never came from, silently.
+    _s4_moved_page = "pg_s4moved0001"
+    _s4_moved = dict(
+        _s4_manifest,
+        pages=_s4_manifest["pages"] + [dict(_s4_manifest["pages"][0],
+                                            id=_s4_moved_page,
+                                            path="s4-moved.html")],
+        questions=[dict(q, page=_s4_moved_page) if q["id"] == "q_s4alpha001" else q
+                   for q in _s4_manifest["questions"]],
+    )
+    (_s4_dir / "s4-moved.html").write_text("<html>moved</html>", encoding="utf-8")
+    bschema.write_manifest(_s4_dir / "lesson.json", _s4_moved)
+    _s4_conn = get_conn()
+    try:
+        _s4_mv_ctx = _s4_panel(_s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id))
+    finally:
+        _s4_conn.close()
+    _s4_mv = {q["question_id"]: q for q in _s4_mv_ctx["questions"]}
+    _s4_mv_html = c.get(f"/learn?lesson={_s4_id}").text.split(
+        '<details class="lesson-record"', 1)[-1]
+    check("S4 an answer keeps the page it was written on when its question moves",
+          _s4_mv["q_s4alpha001"]["attempt"]["attempt_id"] == _s4_a_new
+          and _s4_mv["q_s4alpha001"]["page_id"] == _s4_page
+          and _s4_mv["q_s4alpha001"]["moved_to"] == _s4_moved_page
+          and _s4_mv["q_s4beta0001"]["moved_to"] is None
+          and 'class="rec-tag rec-moved"' in _s4_mv_html
+          and f">{_s4_page}<" in _s4_mv_html,
+          f'{_s4_mv["q_s4alpha001"]["page_id"]} / '
+          f'{_s4_mv["q_s4alpha001"]["moved_to"]}')
+    bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
+    (_s4_dir / "s4-moved.html").unlink()
+
     # Re-check finding. The mirror of the round-1 case, and the one it missed:
     # a review RETRACTED before the displayed one is not an earlier reading of
     # the answer either — the retraction says it should not stand at all. A

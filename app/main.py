@@ -1096,21 +1096,31 @@ def _record_date(iso: str | None) -> str:
         return ""
 
 
-def _document_question_ids(read) -> set[str]:
-    """The question ids the manifest DOCUMENT names, valid or not.
+def _document_question_ids(read) -> set[str] | None:
+    """The question ids the manifest DOCUMENT names, valid or not, or None
+    when the document does not answer the question.
 
     Retirement is absence from the manifest (S-M7), and absence is a fact
     about the document rather than about the typed model. Validation drops
     entries the author never removed — a dangling page reference, an id that
-    fails the grammar, a `questions` value that is not a list at all, none of
-    which reject the read — so a question missing from `read.questions` may be
-    unreadable rather than retired. Presence is therefore read here and
-    everything shown still comes from the validated model.
+    fails the grammar — neither of which rejects the read, so a question
+    missing from `read.questions` may be unreadable rather than retired.
+    Presence is therefore read here and everything shown still comes from the
+    validated model.
+
+    A missing `questions` key is an answer: the author declares none, and an
+    attempted question really has left. A `questions` value of the wrong type
+    is not — nothing can be observed absent from a list that is not there —
+    so it reads as unknown, like a rejected manifest.
     """
-    raw = read.raw if isinstance(read.raw, dict) else {}
+    raw = read.raw if isinstance(read.raw, dict) else None
+    if raw is None:
+        return None
     items = raw.get("questions")
-    if not isinstance(items, list):
+    if items is None:
         return set()
+    if not isinstance(items, list):
+        return None
     return {
         item["id"] for item in items
         if isinstance(item, dict) and isinstance(item.get("id"), str)
@@ -1127,7 +1137,14 @@ def _record_entry(state: dict, attempt: dict | None, *, label: str,
     the latest ACTIVE review renders; the reviews written BEFORE it are a
     count. Reviews written after it are not: if the fold shows this one, any
     later review was retracted, and a retracted verdict is not an earlier
-    reading of the answer."""
+    reading of the answer.
+
+    `page_id` is where the manifest declares the question NOW; the attempt
+    carries where it was answered. A question may move pages, and the stored
+    `stale` flag was decided at record time, so a move after the answer leaves
+    no mark on it — the row therefore shows the page the answer was written on
+    and names the current binding beside it rather than silently adopting it.
+    """
     review = None
     earlier = 0
     if attempt is not None:
@@ -1137,10 +1154,13 @@ def _record_entry(state: dict, attempt: dict | None, *, label: str,
                 1 for seq in state["review_seqs"].get(attempt["attempt_id"], ())
                 if seq < review["seq"]
             )
+    recorded_page = attempt["page_id"] if attempt is not None else None
     return {
         "question_id": question_id,
         "label": label,
-        "page_id": page_id,
+        "page_id": recorded_page or page_id,
+        "moved_to": page_id if (recorded_page and page_id
+                                and page_id != recorded_page) else None,
         "retired": retired,
         "unvalidated": unvalidated,
         "attempt": attempt,
@@ -1157,12 +1177,14 @@ def _record_panel(conn, lesson: dict) -> dict:
     attempt_state = attempts.lesson_attempt_summary(conn, lesson["id"])
     latest = attempt_state["latest_by_question"]
     read = lessons.read_bundle_readonly(lesson)
-    # A rejected read knows nothing about what the author still declares, so
-    # nothing is called retired on its word (S-M7 retires by ABSENCE from the
-    # manifest — absence has to be observed, not assumed). The attempted
-    # questions then render under their durable ids and the retired block is
-    # omitted entirely.
-    declared_known = not read.rejected
+    # A manifest that does not yield a declaration list — rejected outright, or
+    # carrying a `questions` value nothing can be read as absent from — knows
+    # nothing about what the author still declares, so nothing is called
+    # retired on its word (S-M7 retires by ABSENCE from the manifest, and
+    # absence has to be observed, not assumed). The attempted questions then
+    # render under their durable ids and the retired block is omitted entirely.
+    document_ids = None if read.rejected else _document_question_ids(read)
+    declared_known = document_ids is not None
     declared = read.questions if declared_known else []
 
     questions = [
@@ -1174,18 +1196,19 @@ def _record_panel(conn, lesson: dict) -> dict:
         for q in declared
     ]
     declared_ids = {q["id"] for q in declared}
-    document_ids = _document_question_ids(read) if declared_known else set()
+    named = document_ids if declared_known else set()
     # An answered question the manifest still names but the reader could not
     # validate keeps its place in the list — unlabelled and marked, because a
-    # validation failure is not a retirement.
+    # validation failure is not a retirement. It has no readable current page,
+    # so the row falls back to the page its answer was written on.
     questions += [
         _record_entry(
             state, attempt,
             label=question_id, question_id=question_id,
-            page_id=attempt["page_id"], retired=False, unvalidated=True,
+            page_id=None, retired=False, unvalidated=True,
         )
         for question_id, attempt in latest.items()
-        if question_id not in declared_ids and question_id in document_ids
+        if question_id not in declared_ids and question_id in named
     ]
     # Attempts whose question left the manifest. Durable ids are retired
     # forever, so the reviewed history behind them must not vanish with them.
@@ -1193,10 +1216,10 @@ def _record_panel(conn, lesson: dict) -> dict:
         _record_entry(
             state, attempt,
             label=question_id, question_id=question_id,
-            page_id=attempt["page_id"], retired=True,
+            page_id=None, retired=True,
         )
         for question_id, attempt in latest.items()
-        if question_id not in declared_ids and question_id not in document_ids
+        if question_id not in declared_ids and question_id not in named
     ]
     if not declared_known:
         # Not retired — just unlabelled, because the manifest could not be read.

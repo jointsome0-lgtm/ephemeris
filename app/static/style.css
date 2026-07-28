@@ -679,6 +679,7 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
 .rec-exam { background: var(--primary-soft); color: var(--primary); }
 .rec-stale { background: rgba(245, 158, 11, .14); color: var(--prio-medium); }
 .rec-retired { background: var(--hover); color: var(--muted); }
+.rec-moved { background: var(--hover); color: var(--muted); }
 .rec-unvalidated { background: rgba(245, 158, 11, .14); color: var(--prio-medium); }
 .rec-q-retired { opacity: .82; }
 .rec-block-retired .rec-q { background: var(--panel); }
