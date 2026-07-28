@@ -11,7 +11,9 @@ How it works:
   Entries stay neutral: facts only, no threat analysis.
 - Draining an entry = applying `docs/reviews/review-prompt.md` (the standing
   brief) to it and writing a report next to this file. The brief is handed to
-  the reviewer by file reference, never restated inline.
+  the reviewer by file reference, never restated inline. Entries drain in one
+  batch before the restart that would carry them, not one pass per merge;
+  entries over the same surface share a scope and a report.
 - Deploy gate: the live service does not restart with code whose entries are
   still Pending (AGENTS.md → Public-Safety Check).
 

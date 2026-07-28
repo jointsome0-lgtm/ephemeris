@@ -23,7 +23,7 @@ Even composing a security-framed plan or subagent prompt in Claude's own output 
 
 - When a change touches a sensitive surface, append one neutral line to `docs/reviews/QUEUE.md` (date, commits, paths, what changed). Facts only — no threat analysis in the entry.
 - To drain the queue, hand Codex the standing brief **by file reference** — "apply `docs/reviews/review-prompt.md` to the Pending entries" — without restating its contents. A second independent pass (an Opus-model subagent pointed at the same file) is welcome per `use-codex-as-second-reviewer`; Claude converges the results in its correctness voice.
-- Drain at task boundaries (a turn or session of its own), never mid-task — so if a fallback still fires, it has nothing to drop.
+- Drain in one batch before the restart, at a task boundary (a turn or session of its own), never mid-task — so if a fallback still fires, it has nothing to drop. `xhigh` when the batch holds terminal, sandbox or listener code; `high` otherwise.
 - The deploy gate is mechanical: no live restart while the touched surface has Pending entries (AGENTS.md → Public-Safety Check).
 
 ## Picking the right models for workflows and subagents
