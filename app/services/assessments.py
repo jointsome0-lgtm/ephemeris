@@ -892,23 +892,32 @@ _REVIEW_SEQS_SQL = (
     "ORDER BY r.id"
 )
 
+# Leave ample room below SQLite's traditional 999-variable default: each
+# hydration statement also binds the lesson id. The fold has no winner-count
+# ceiling, so this is a statement-size bound, not a record-view bound.
+_HYDRATE_IDS_PER_QUERY = 500
+
 
 def _hydrate(conn: sqlite3.Connection, lesson_id: int, state: dict) -> dict:
-    """Re-read the fold's winners whole, in one statement, and put them back
-    where the narrow rows were. Same connection and no write between the two
-    reads, so the second sees the state the first folded."""
+    """Re-read the fold's winners whole in bounded statements, then put them
+    back where the narrow rows were. Same connection and no write between the
+    reads, so they see the state the first query folded."""
     wanted = {row["seq"] for row in state["evidence_by_concept"].values()}
     wanted |= {row["seq"] for row in state["reviews_by_attempt"].values()}
     if state["summary"] is not None:
         wanted.add(state["summary"]["seq"])
     if not wanted:
         return state
-    marks = ",".join("?" * len(wanted))
-    full = {
-        row["id"]: row_view(row) for row in conn.execute(
-            "SELECT * FROM lesson_assessments WHERE lesson_id = ? "
-            f"AND id IN ({marks})", (lesson_id, *sorted(wanted))).fetchall()
-    }
+    wanted_ordered = sorted(wanted)
+    full: dict[int, dict] = {}
+    for start in range(0, len(wanted_ordered), _HYDRATE_IDS_PER_QUERY):
+        chunk = wanted_ordered[start:start + _HYDRATE_IDS_PER_QUERY]
+        marks = ",".join("?" for _ in chunk)
+        full.update({
+            row["id"]: row_view(row) for row in conn.execute(
+                "SELECT * FROM lesson_assessments WHERE lesson_id = ? "
+                f"AND id IN ({marks})", (lesson_id, *chunk)).fetchall()
+        })
     return {
         "evidence_by_concept": {concept: full[row["seq"]] for concept, row
                                 in state["evidence_by_concept"].items()},

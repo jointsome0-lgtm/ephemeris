@@ -7731,6 +7731,41 @@ process.stdout.write(JSON.stringify([
           f'{_s4_null_ctx["declared_known"]} / {_s4_gone_ctx["declared_known"]}')
     bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
 
+    # PR round 6. `identity-mismatch` is DEGRADED so the copied bundle can
+    # still render, but its declarations belong to another lesson. They
+    # observe nothing about this lesson's question retirement.
+    _s4_foreign_q = "q_s4foreign01"
+    bschema.write_manifest(
+        _s4_dir / "lesson.json",
+        dict(_s4_manifest, lesson_uid=str(_uuid4()), questions=[{
+            "id": _s4_foreign_q, "page": _s4_page,
+            "kind": "prediction", "label": "Foreign lesson question",
+        }]),
+    )
+    _s4_conn = get_conn()
+    try:
+        _s4_foreign_lesson = lessons_svc.get_lesson(_s4_conn, _s4_id)
+        _s4_foreign_read = lessons_svc.read_bundle_readonly(_s4_foreign_lesson)
+        _s4_foreign_ctx = _s4_panel(_s4_conn, _s4_foreign_lesson)
+    finally:
+        _s4_conn.close()
+    _s4_foreign_html = c.get(f"/learn?lesson={_s4_id}").text.split(
+        '<details class="lesson-record"', 1)[-1]
+    check("S4 a foreign-identity declaration retires and declares nothing",
+          "identity-mismatch" in _s4_foreign_read.codes()
+          and not _s4_foreign_read.rejected
+          and _s4_foreign_ctx["declared_known"] is False
+          and _s4_foreign_ctx["retired"] == []
+          and _s4_foreign_q not in {
+              q["question_id"] for q in _s4_foreign_ctx["questions"]
+          }
+          and {q["question_id"] for q in _s4_foreign_ctx["questions"]}
+          >= {"q_s4alpha001", "q_s4retire01"}
+          and "Foreign lesson question" not in _s4_foreign_html
+          and "no longer declared" not in _s4_foreign_html,
+          str([q["question_id"] for q in _s4_foreign_ctx["questions"]]))
+    bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
+
     # PR round 3. A question may move pages, and `stale` was decided when the
     # answer was recorded — a move afterwards leaves no mark on it. So the row
     # shows the page the answer was WRITTEN on and names the new binding
@@ -7841,6 +7876,67 @@ process.stdout.write(JSON.stringify([
           and _s4_bounded["reviews_by_attempt"] == _s4_wide_fold["reviews_by_attempt"]
           and _s4_bounded["summary"] == _s4_wide_fold["summary"],
           f"{_s4_active_n} active, {_s4_winners} read whole")
+
+    # PR round 6. Hydration has no winner-count ceiling, but each SQL statement
+    # has to stay below a fixed variable budget.
+    class _S4HydrateCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class _S4HydrateConn:
+        def __init__(self, rows):
+            self._rows, self.calls = rows, []
+
+        def execute(self, sql, params=()):
+            self.calls.append((sql, params))
+            return _S4HydrateCursor([
+                self._rows[row_id] for row_id in params[1:]
+            ])
+
+    _s4_conn = get_conn()
+    try:
+        _s4_hydrate_template = dict(_s4_conn.execute(
+            "SELECT * FROM lesson_assessments "
+            "WHERE lesson_id = ? AND kind = 'evidence' ORDER BY id LIMIT 1",
+            (_s4_id,),
+        ).fetchone())
+    finally:
+        _s4_conn.close()
+    _s4_hydrate_n = assess_svc._HYDRATE_IDS_PER_QUERY + 1
+    _s4_hydrate_rows = {}
+    _s4_hydrate_narrow = {}
+    for _s4_n in range(_s4_hydrate_n):
+        _s4_seq = 1_000_000 + _s4_n
+        _s4_concept = f"bulk-concept-{_s4_n}"
+        _s4_full = dict(
+            _s4_hydrate_template,
+            id=_s4_seq,
+            assessment_id=f"00000000-0000-4000-8000-{_s4_seq:012d}",
+            concepts_json=json.dumps([_s4_concept]),
+        )
+        _s4_hydrate_rows[_s4_seq] = _s4_full
+        _s4_hydrate_narrow[_s4_concept] = assess_svc._fold_keys(_s4_full)
+    _s4_hydrate_conn = _S4HydrateConn(_s4_hydrate_rows)
+    _s4_hydrated = assess_svc._hydrate(_s4_hydrate_conn, _s4_id, {
+        "evidence_by_concept": _s4_hydrate_narrow,
+        "reviews_by_attempt": {},
+        "summary": None,
+    })
+    check("S4 winner hydration uses bounded SQL-variable batches",
+          len(_s4_hydrate_conn.calls) == 2
+          and max(len(params) for _, params in _s4_hydrate_conn.calls)
+          == assess_svc._HYDRATE_IDS_PER_QUERY + 1
+          and len(_s4_hydrated["evidence_by_concept"]) == _s4_hydrate_n
+          and all(
+              row["seq"] == 1_000_000 + n
+              for n, row in enumerate(
+                  _s4_hydrated["evidence_by_concept"].values()
+              )
+          ),
+          str([len(params) for _, params in _s4_hydrate_conn.calls]))
 
     # PR round 1 + re-check. The answer excerpt is bounded by SQLite, so a long
     # answer is never materialized whole to render 400 characters of it — and

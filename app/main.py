@@ -1114,7 +1114,14 @@ def _document_question_ids(read) -> set[str] | None:
     observed absent from a list that is not there, so it reads as unknown,
     like a rejected manifest. Presence is tested on the key rather than on the
     value, because `raw.get` cannot tell the two documents apart.
+
+    A rejected read cannot answer for the document. Neither can an
+    identity-mismatched one: its declaration belongs to a different lesson,
+    even though the shared reader keeps that condition DEGRADED so the foreign
+    bundle can still render under the legacy profile.
     """
+    if read.rejected or "identity-mismatch" in read.codes():
+        return None
     raw = read.raw if isinstance(read.raw, dict) else None
     if raw is None:
         return None
@@ -1185,7 +1192,7 @@ def _record_panel(conn, lesson: dict) -> dict:
     # retired on its word (S-M7 retires by ABSENCE from the manifest, and
     # absence has to be observed, not assumed). The attempted questions then
     # render under their durable ids and the retired block is omitted entirely.
-    document_ids = None if read.rejected else _document_question_ids(read)
+    document_ids = _document_question_ids(read)
     declared_known = document_ids is not None
     declared = read.questions if declared_known else []
 

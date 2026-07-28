@@ -25,10 +25,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 ## Pending
 
 - [ ] 2026-07-28 — `a0ae9dd`, `981400a`, `c91d002`, `18d4195`, `b8b3e02`,
-  `5bcd585`, `89f0b77` on `fix/4-s4-record-panel`; the owner selected branch
-  head `b8b3e02` for the drain of 2026-07-28, and the two commits after it are
-  NOT covered by that pass — the entry stays current with the branch, and the
-  eventual merge commit is appended before any restart —
+  `5bcd585`, `89f0b77`, with queue-only bookkeeping through `ce2ad38` and the
+  PR-bot round-6 repair at the current `fix/4-s4-record-panel` branch tip; the
+  owner selected branch head `b8b3e02` for the drain of 2026-07-28, and the
+  two code commits after it are NOT covered by that pass — the entry stays
+  current with the branch, and the eventual merge commit is appended before
+  any restart —
   `app/main.py`, `app/services/assessments.py`, `app/services/attempts.py`,
   `app/services/focus.py`, `app/templates/learn.html`, `app/static/style.css`,
   `verify.py`, `docs/reviews/QUEUE.md` — issue #4 phase S slice s4 renders the
@@ -117,13 +119,21 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   attempt and one summary. `row_view`'s first five keys moved into a shared
   `_fold_keys`, both queries are now formatted from one `_ACTIVE_SQL` so the
   narrow walk returns exactly the rows the wide one would, and the fold's
-  winners are re-read whole by id in one further statement on the same
-  connection with no write in between. The fold's inputs, outputs and
+  winners are re-read whole by id in statements of at most 500 winner ids on
+  the same connection with no write in between. The fold's inputs, outputs and
   `active_count` are unchanged, `active_rows`/`active_state` and the s2
   projection still read whole rows, and the verifier asserts the narrow
-  columns carry no `note`, that one wide read is issued with exactly one id
-  per displayed record, and that the narrow fold equals the wide one.
-  Verify 872, verify_restore 28.
+  columns carry no `note`, that only winner ids are hydrated, that 501 winners
+  split into two variable-bounded statements, and that the narrow fold equals
+  the wide one. PR-bot round 6 also treats a DEGRADED `identity-mismatch` as
+  declaration-unknown for this panel: the foreign manifest's question list is
+  ignored, attempted questions render under this lesson's durable ids, and
+  none is marked retired. The bundle reader's shared DEGRADED and
+  legacy-profile behaviour is unchanged. The round changes only the GET-side
+  declaration helper, winner hydration and verifier; it does not change a
+  POST path, write path, projection, template, static asset or escaping rule.
+  Host verification at the round-6 branch state: verify 874, verify_restore
+  28; public hygiene clean.
 
 ## Done
 
