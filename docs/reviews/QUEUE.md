@@ -199,6 +199,18 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   autoescape, stale-process guard and no-JS posture remain unchanged. Host
   verification at the repair worktree state: verify 880. The entry remains
   Pending for the owner's re-drain; no merge or restart was performed.
+  Diagnosis-only resolution re-drain 2026-07-29 →
+  `2026-07-29-lesson-record-panel-review.md`: zero new findings. The
+  superseding section at the top of that report reviews exact branch head
+  `167df06` / tree `cecc0a4`; the July 29 page-selection Low is resolved
+  because one final manifest read now owns response metadata, record
+  classification and selection persistence, and the July 28 false-retirement
+  Low remains resolved. The separate shared-reader null diagnostic remains an
+  open bundle-contract follow-up outside s4. The exact reviewed s4 tree is
+  safe only for the documented direct-loopback, single-worker,
+  unauthenticated single-user posture once landed. This entry keeps its
+  Pending box for owner closure; no application code, merge or restart was
+  performed by the re-drain.
 
 ## Done
 

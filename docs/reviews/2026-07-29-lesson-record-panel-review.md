@@ -1,3 +1,214 @@
+# Lesson record panel resolution re-drain — adversarial security review
+
+## Resolution-review parameters — current branch tip
+
+**Scope:** the sole Pending entry in `docs/reviews/QUEUE.md`: issue #4 phase-S
+slice s4 on `fix/4-s4-record-panel`, from application commits `a0ae9dd` and
+`981400a` through the review rounds, the first repair `5bcd585`, rounds 5–10,
+and the current follow-up repair `167df06`, together with their queue-only
+bookkeeping. The listed surface is `app/main.py`,
+`app/services/assessments.py`, `app/services/attempts.py`,
+`app/services/focus.py`, `app/templates/learn.html`, `app/static/style.css`,
+`verify.py`, and `docs/reviews/QUEUE.md`; direct callers include the lesson
+bundle read/selection model, assessment and attempt SQLite authority and
+indexes, focus aggregate, Jinja environment, and Learn request/render path.
+
+**Starting HEAD:** `167df06ecc2edb7827644e5259ecc315b19317aa` on
+`fix/4-s4-record-panel`, matching
+`origin/fix/4-s4-record-panel`. `git status --short --branch` showed only
+`## fix/4-s4-record-panel...origin/fix/4-s4-record-panel`; the starting
+worktree was clean.
+
+**Reviewed tree:** every commit named by the entry is an ancestor of the
+starting HEAD, including bookkeeping through `ce2ad38`, the July 28 repair
+`5bcd585`, rounds 5–10, the July 29 report commit `64fbc7b`, and repair
+`167df06`. The reviewed tree is
+`cecc0a43293c7e55ebe75e957b303bf67189208f`. The branch is 20 commits ahead
+of `main` / `origin/main` at `29bbe85`; no entry commit is out of scope, no
+merge commit exists yet, and no GitHub preview hash was used.
+
+**Report file:** `docs/reviews/2026-07-29-lesson-record-panel-review.md`.
+Today's date and the entry's lesson-record-panel subject derive the same path
+as the immediately preceding diagnosis. This superseding resolution section
+is therefore at the top of that report, with the original diagnosis preserved
+below rather than overwritten or split into a second same-topic file.
+
+**Prior reports to reconcile:** every existing
+`docs/reviews/*-review.md` closing verdict was rescanned. The immediately
+binding report is the original July 29 diagnosis preserved below. It requires
+the preliminary/final manifest split to be removed, selection persistence to
+share the response's final manifest authority, and a deterministic
+manifest-swap regression. The July 28 false-retirement finding and the
+inherited conditions named by both reports also remain binding:
+
+- assessment authority, central write-guard W1, active-fold semantics,
+  projection publication/cache/replay protections, and bounded tutor
+  consumption;
+- attempt A1/A2, streaming admission, record-time identity, replay, and
+  projection-cost protections;
+- bundle degraded/rejected behavior, page-selection authority, retirement
+  truth, and pure phase-F reads;
+- bridge-runtime D5 L1 mitigation, D5 L2/L3 resolution, terminal/sandbox
+  isolation, public-data hygiene, and recovery posture.
+
+The shared bundle reader's silent treatment of explicit
+`"questions": null` remains a separately named bundle-contract diagnostic.
+The panel no longer relies on that behavior. The closing reconciliation below
+states whether every condition is resolved, mitigated, open/accepted, or
+unchanged for this tree.
+
+**Validation baseline:** approved host runs at the clean starting HEAD passed:
+`python verify.py` — **880 passed, 0 failed**; `python verify_restore.py` —
+**28 passed, 0 failed**. The initial sandboxed attempts stalled silently at
+the known TestClient/bubblewrap boundary and were interrupted without being
+counted; the host runs above are the baseline.
+
+## Context and method
+
+The deployment decision assumes the documented unauthenticated,
+direct-loopback `127.0.0.1:8765`, single-user, single-worker app. This review
+did not merge or open a PR, restart or signal a service, or read or write the
+live data directory. The verifier used only its invented throwaway data.
+
+The complete branch diff from `a0ae9dd^` through `167df06`, each changed
+production helper, the current template and styles, the s4 verifier section,
+and their direct callers were read. The final repair was traced through DB
+snapshot capture, manifest resolution, selection persistence, bundle
+metadata, record classification, and response URLs. The wider pass covered
+manifest degraded/rejected/version/identity states, question retirement,
+assessment folding and winner hydration, review-count batching, bounded
+attempt excerpts, focus totals, Jinja autoescaping, GET side effects, and the
+stale-process template guard. Tests, queue prose, commit messages, and prior
+reports were treated as claims and checked against the current source.
+
+## Findings
+
+**No new Critical, High, Medium, Low, Info, or other finding was established
+against the reviewed tree.**
+
+## Prior findings and repair disposition
+
+- **July 29 L1 — RESOLVED by `167df06`.** `get_learn()` captures the complete
+  SQLite panel state first, performs one final `with_bundle_info_read()`, gates
+  `mark_opened()` on that exact read's `stale_selection`, and passes the same
+  `ManifestRead` into `_record_panel()` (`app/main.py:980-1002`). There is no
+  preliminary manifest read left. A page removed before the final read
+  therefore produces the final manifest's visible fallback and stale
+  candidate without persisting the removed page.
+- **July 28 L1 false retirement — REMAINS RESOLVED.**
+  `_document_question_ids()` distinguishes key absence from every present
+  non-list value, including explicit null; v1, rejected, non-object, and
+  identity-mismatched reads assert no retirement (`app/main.py:1113-1152`).
+- **Shared bundle-reader null diagnostic — STILL OPEN outside s4.**
+  `_read_questions()` still treats explicit null like an absent optional key
+  and emits no spec-§4 `type-mismatch`. The panel inspects document key
+  presence independently, so this does not reopen either record-panel finding.
+  Aligning the shared reader remains its own contract-scoped change, not an s4
+  repair invented by this diagnosis-only run.
+
+## Confirmed protections and rebutted candidates
+
+- The deterministic regression starts with a valid selected page, removes it
+  after DB-state capture, observes exactly one final manifest read, proves
+  `mark_opened()` is not called, verifies the stored entry remains the prior
+  valid page, and checks that the same response renders the fallback while
+  polling the stale candidate (`verify.py:8161-8260`). The full approved host
+  run executed that path at the reviewed HEAD.
+- Attempt, assessment, and focus inputs still come from one SQLite snapshot.
+  The assessment fold walks narrow keys, hydrates only displayed winners in
+  fixed-size batches, and aggregates earlier readings only for displayed
+  review winners. No write, projection, capability, route, listener, terminal,
+  sandbox, bridge, or service-lifecycle path was added.
+- The latest attempt per durable question still selects only displayed
+  metadata and a BLOB-byte-bounded answer head. Embedded NUL and wide UTF-8
+  answers neither hide truncation nor force whole-answer materialization.
+- Rejected, non-object, v1, and identity-mismatched manifests assert no
+  retirement. A dropped-but-still-named question remains unvalidated, and a
+  moved question retains the attempt's recorded page while naming the current
+  binding separately.
+- Agent- and learner-authored labels, ids, answers, notes, next actions, and
+  concept refs still render through ordinary autoescaped Jinja expressions
+  (`app/templates/learn.html:7-45,205-270`). No `safe` filter, markdown,
+  string-built HTML, URL construction from record text, or new script reaches
+  the parent page. Class suffixes remain closed database vocabularies.
+- The requested `focus_sessions.lesson_id` index remains rebutted under the
+  repository's concrete-failure rule. The review established no deployed
+  failure from the one aggregate per selected lesson, and the repair changes
+  neither that query nor the schema.
+
+## Verification
+
+- Branch proof — starting
+  `fix/4-s4-record-panel == origin/fix/4-s4-record-panel` at
+  `167df06ecc2edb7827644e5259ecc315b19317aa`.
+- Reachability/tree proof — all entry commits are ancestors of the starting
+  HEAD; its reviewed tree is
+  `cecc0a43293c7e55ebe75e957b303bf67189208f`.
+- `git diff --check main...HEAD` — passed.
+- Starting-head approved host `python verify.py` — **880 passed, 0 failed**.
+- Starting-head approved host `python verify_restore.py` — **28 passed,
+  0 failed**.
+- Exact repair regression — the full verifier confirmed DB state precedes the
+  manifest swap; one final read supplies bundle metadata and the record; the
+  removed requested page is not persisted; and the response retains the
+  visible stale-selection finding.
+- No application, test, specification, service, or live runtime file was
+  changed by this diagnosis-only resolution drain.
+
+## Prior-condition reconciliation at the reviewed branch head
+
+- **Prior record-panel false-retirement L1 — REMAINS RESOLVED.**
+- **Prior record-panel page-selection L1 — RESOLVED by `167df06`.** One final
+  manifest read now owns response metadata, record classification, and
+  selection persistence.
+- **Shared bundle-reader null diagnostic — STILL OPEN outside s4.** It is
+  isolated from this panel and does not make an s4 lifecycle claim false.
+- **Assessment authority, active fold, central write-guard W1, projection
+  publication/cache/replay guards, and s3 capability/session provenance —
+  REMAIN RESOLVED.** Origin-less non-browser access and direct/no-forwarded-
+  header assumptions remain **OPEN/ACCEPTED only for the documented
+  direct-loopback deployment**.
+- **Assessment compaction without a fixed cap and the same-user publication
+  window — REMAIN UNCHANGED/ACCEPTED.** Hydration and SQL-variable work stay
+  bounded per statement, and generated tutor consumption remains bounded to
+  2 MiB with honest omission.
+- **Attempt A1/A2, streaming admission, record-time identity, and private
+  projection cost — REMAIN RESOLVED.**
+- **Bridge-runtime D5 L1 — REMAINS MITIGATED; D5 L2/L3 — REMAIN RESOLVED.**
+  Iframe/CSP, bridge identity, artifact/editor/run authority, terminal,
+  sandbox, and runner paths are unchanged.
+- **Terminal-opt-in T1 — REMAINS OPEN/ACCEPTED only for the deliberately
+  plain owner shell.** Lesson-agent and lesson-learner isolation and
+  server-owned role selection remain resolved.
+- **Public-data and recovery posture — REMAIN RESOLVED/UNCHANGED.** No real
+  lesson, assessment, attempt, focus row, export, screenshot, credential,
+  browser state, or private-instance path was read or written. Typed recovery
+  still requires a consistent SQLite backup.
+
+## Final superseding verdict
+
+**SAFE TO MAKE LIVE for the exact phase-S s4 tree
+`cecc0a43293c7e55ebe75e957b303bf67189208f` under the documented
+direct-loopback `127.0.0.1:8765`, single-worker, unauthenticated single-user
+deployment, once that exact tree is landed and the owner closes the queue
+entry.** This resolution re-drain found **0 Critical, 0 High, 0 Medium, 0 Low,
+and 0 Info** new findings. Both record-panel Lows are resolved; database reads
+remain snapshot-consistent, displayed bodies and SQL statements remain
+bounded, and parent-page output remains autoescaped.
+
+The queue entry stays **Pending** and points to this report, as required for a
+diagnosis-only drain; the owner closes a clean entry after landing. The
+existing repair branch/PR already carries the required s4 code at the exact
+reviewed head `167df06`; this review requires no additional repair code, only
+preservation of the **880 / 28** baselines and eventual merge-commit
+bookkeeping. The separate shared-reader null diagnostic remains an explicit
+bundle-contract follow-up, not an s4 blocker. Wider, proxy-adjacent, or
+multi-user deployment remains **NO**. While the entry is Pending and the
+branch unmerged, the live-service restart gate remains closed. No merge or
+restart was performed; restart remains the owner's action.
+
+---
+
 # Lesson record panel follow-up — adversarial security review
 
 **Scope:** the sole Pending entry in `docs/reviews/QUEUE.md`: issue #4 phase-S
