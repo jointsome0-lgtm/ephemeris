@@ -483,8 +483,10 @@ def record_assessment(conn: sqlite3.Connection, lesson: dict, payload: dict) -> 
     # included. The original write is already durable, so a client retry must
     # learn its assessment_id even if the lesson was archived meanwhile or the
     # retry lands with the window exhausted; the refusals below govern only NEW
-    # writes. Replays and conflicts consume no budget: the unmetered work is
-    # one indexed SELECT.
+    # writes. Replays and conflicts consume no budget, so the work they can
+    # repeat has to stay cheap: one indexed SELECT here, and a reconcile that
+    # returns after reading a watermark unless the state actually moved since
+    # this process last published (see `_published`).
     with _lesson_lock(lesson["slug"]):
         replay = _replay_or_conflict(conn, lesson, submission, fingerprint)
     if replay is not None:
@@ -741,10 +743,15 @@ def active_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
 #
 # Purpose (spec §6.5): the file is the next tutor's RESUME ARTIFACT — the
 # current state, not the history. Full history stays in SQLite and rides the
-# JSONL export. Its size is therefore bounded by current state (concepts +
-# reviewed attempts + 1), not by lifetime writes, which is why this is a plain
-# full rewrite: no append fast path, no cursor, no seal, no prefix
-# verification, and none of the #58 attempts machinery.
+# JSONL export. Its size therefore tracks current state (concepts + reviewed
+# attempts + 1), not lifetime writes, which is why this is a plain full
+# rewrite: no append fast path, no cursor, no seal, no prefix verification,
+# and none of the #58 attempts machinery.
+#
+# That is a compaction, not a cap (spec §6.5): a lesson that keeps naming new
+# concepts and attempts keeps growing, and the rewrite is linear in the active
+# fold. Repeating identical work is what has to be avoided, not the size — see
+# `_published` below.
 #
 # Ordering invariant (S-H1): commit first, project after. The transaction is
 # short and touches no filesystem; the entry point below refuses an
@@ -766,11 +773,45 @@ _DIRECTORY_FLAGS = (
 _swept_lock = threading.Lock()
 _swept: set[int] = set()
 
+# What this process last PUBLISHED, per lesson uid: the watermark it rendered
+# and the identity of the file it left behind (inode, size, mtime). It exists
+# to keep a reconcile that would republish identical bytes from doing the
+# work — an idempotent replay is deliberately outside the rate budget (D-S1-3:
+# a retry must learn its assessment_id even when the window is exhausted), so
+# without this a client looping one duplicate key would drive an unlimited
+# number of full rewrites and fsyncs of a file that grows with the lesson's
+# active state.
+#
+# The skip is verified, not assumed, because the replay heal (D-S1-3) has to
+# keep healing: only a watermark this process published itself counts (one
+# left `pending`, or written before a restart, is never skipped), and the
+# published file must still be there, the same inode, the same size, the same
+# mtime. The agent owns the bundle and can delete or replace the file; that
+# is a rewrite, not a skip. Metadata only — the file's bytes are never read
+# here or anywhere else in this module.
+_published_lock = threading.Lock()
+_published: dict[str, tuple[int, int, int, int]] = {}
+
+
+def _projection_unchanged(lesson: dict, stamp: tuple[int, int, int, int]) -> bool:
+    """Is the published file still exactly the one this process left?"""
+    try:
+        st = os.lstat(lessons._lesson_dir(lesson["slug"]) / PROJECTION_NAME)
+    except OSError:
+        return False
+    return (
+        stat_module.S_ISREG(st.st_mode)
+        and st.st_nlink == 1
+        and (st.st_ino, st.st_size, st.st_mtime_ns) == stamp[1:]
+    )
+
 
 def _reset_sweep_state() -> None:
-    """Test hook: forget which lessons this process has swept."""
+    """Test hook: forget which lessons this process has swept or published."""
     with _swept_lock:
         _swept.clear()
+    with _published_lock:
+        _published.clear()
 
 
 def _lock_path(lesson: dict) -> Path:
@@ -837,7 +878,9 @@ def _write_all(fd: int, data: bytes) -> None:
         view = view[count:]
 
 
-def _fold_records(conn: sqlite3.Connection, lesson_id: int) -> tuple[int, list[dict]]:
+def _fold_records(
+    conn: sqlite3.Connection, lesson_id: int, already_seq: int | None = None
+) -> tuple[int, list[dict] | None]:
     """The lines the file projects: the active-state fold, deduplicated by
     `seq` and ascending.
 
@@ -857,14 +900,22 @@ def _fold_records(conn: sqlite3.Connection, lesson_id: int) -> tuple[int, list[d
     own write would report `pending` after losing the non-blocking lock, so
     the inconsistency could outlive the request. The transaction is a
     read-only snapshot (WAL: it blocks no writer) and is closed before any
-    filesystem work begins."""
+    filesystem work begins.
+
+    `already_seq` short-circuits inside that snapshot: the watermark is read
+    first, and when it matches what this process last published the fold is
+    never materialized at all. Rows are insert-only, so the watermark is an
+    exact version stamp of the fold — an unchanged `MAX(id)` cannot hide a
+    changed active state."""
     conn.execute("BEGIN")
     try:
-        state = active_state(conn, lesson_id)
         as_of_seq = conn.execute(
             "SELECT MAX(id) FROM lesson_assessments WHERE lesson_id = ?",
             (lesson_id,),
         ).fetchone()[0]
+        if already_seq is not None and int(as_of_seq or 0) == already_seq:
+            return already_seq, None
+        state = active_state(conn, lesson_id)
     finally:
         conn.rollback()  # nothing was written; just release the snapshot
     by_seq: dict[int, dict] = {}
@@ -991,8 +1042,9 @@ def _stage_temp(dir_fd: int, data: bytes) -> tuple[str, int]:
     raise OSError("could not allocate an assessment projection temp file")
 
 
-def _publish(lesson: dict, data: bytes) -> None:
-    """Atomically replace the projection over the verified bundle root.
+def _publish(lesson: dict, data: bytes) -> os.stat_result:
+    """Atomically replace the projection over the verified bundle root,
+    and report the identity of the file left behind.
 
     The bundle directory is opened once with `O_NOFOLLOW | O_DIRECTORY` — a
     symlinked or non-directory bundle root refuses here rather than being
@@ -1015,6 +1067,9 @@ def _publish(lesson: dict, data: bytes) -> None:
             os.replace(
                 temp_name, PROJECTION_NAME, src_dir_fd=dir_fd, dst_dir_fd=dir_fd
             )
+            # the descriptor now names the published file: its identity is
+            # what a later skip decision is checked against
+            published = os.fstat(temp_fd)
             closing_fd, temp_fd = temp_fd, -1
             os.close(closing_fd)
         except BaseException:
@@ -1031,11 +1086,25 @@ def _publish(lesson: dict, data: bytes) -> None:
         os.fsync(dir_fd)
     finally:
         os.close(dir_fd)
+    return published
 
 
-def _rewrite_locked(conn: sqlite3.Connection, lesson: dict) -> bool:
+def _rewrite_locked(
+    conn: sqlite3.Connection, lesson: dict, force: bool = False
+) -> bool:
     """Render the committed state and publish it. Runs under the flock."""
-    as_of_seq, records = _fold_records(conn, lesson["id"])
+    uid = lesson.get("uid")
+    already_seq = None
+    if not force and isinstance(uid, str) and uid:
+        with _published_lock:
+            stamp = _published.get(uid)
+        if stamp is not None and _projection_unchanged(lesson, stamp):
+            already_seq = stamp[0]
+    as_of_seq, records = _fold_records(conn, lesson["id"], already_seq)
+    if records is None:
+        # Same watermark as the bytes this process published: republishing
+        # would produce the same file but for the meta line's `generated_at`.
+        return True
     if as_of_seq == 0 and not _projection_exists(lesson):
         # Nothing was ever recorded for this lesson and nothing occupies the
         # name: the absent file already IS the state. Reconcile runs at every
@@ -1044,17 +1113,28 @@ def _rewrite_locked(conn: sqlite3.Connection, lesson: dict) -> bool:
         return True
     if _identity_contradicts(lesson):
         return False
-    _publish(lesson, _render(lesson, as_of_seq, records))
+    st = _publish(lesson, _render(lesson, as_of_seq, records))
+    if isinstance(uid, str) and uid:
+        with _published_lock:
+            _published[uid] = (as_of_seq, st.st_ino, st.st_size, st.st_mtime_ns)
     return True
 
 
-def reconcile_projection(conn: sqlite3.Connection, lesson: dict) -> bool:
+def reconcile_projection(
+    conn: sqlite3.Connection, lesson: dict, force: bool = False
+) -> bool:
     """Rewrite `assessments.jsonl` from the committed authority.
 
     The single projection entry point: the write path, the replay heal, the
     first-write sweep, and the lesson-agent terminal open all land here.
     Idempotent by construction — it renders current state, so running it twice
     publishes the same bytes but for the meta line's `generated_at`.
+
+    A reconcile that would republish exactly what this process last published
+    does nothing instead (it does not even materialize the fold). `force`
+    turns that off for the one caller that reconciles because the file may
+    have been removed underneath it rather than because state changed — the
+    lesson-agent terminal open.
 
     Returns True when the bundle now reflects the authority, False when it does
     not: an active transaction (filesystem work must never run inside one), an
@@ -1070,7 +1150,7 @@ def reconcile_projection(conn: sqlite3.Connection, lesson: dict) -> bool:
         # worker queue instead of losing the non-blocking flock to each other.
         with _lesson_lock(lesson["slug"]):
             with _projection_file_lock(lesson):
-                return _rewrite_locked(conn, lesson)
+                return _rewrite_locked(conn, lesson, force)
     except Exception:
         # Deliberately every exception, not a curated list. The projection is
         # derived and best-effort; the durable write it follows has already

@@ -438,9 +438,15 @@ only what the bundle contains.
   idiom as §6.1. Rows are append-only: a wrong record is corrected by a later
   row naming it in `supersedes`, or retracted by a `retraction` row.
 - **Projection**: `assessments.jsonl` at the bundle root is the **active
-  state**, not the history — the next tutor's resume artifact. Its size is
-  bounded by current state (concepts + reviewed attempts + 1), never by
-  lifetime writes; full history stays in SQLite and rides the JSONL export.
+  state**, not the history — the next tutor's resume artifact. Its size
+  tracks current state (concepts + reviewed attempts + 1), not lifetime
+  writes; full history stays in SQLite and rides the JSONL export. That is a
+  compaction, not a cap: repeated evidence about one concept collapses to one
+  line, but a lesson that keeps naming NEW concepts or attempts keeps growing,
+  so the file has no fixed ceiling and the rewrite is linear in the active
+  fold. Deliberate — a truncated resume artifact would be a worse lie than a
+  large one — and the reason a reconcile that would republish identical bytes
+  does nothing instead.
 - **Active state**: rows not targeted by any later `supersedes`, folded by
   `seq` (the row id, the sole recency authority): the latest active evidence
   per concept, the latest active review per attempt, and the latest active

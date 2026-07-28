@@ -3393,6 +3393,8 @@ process.stdout.write(JSON.stringify([
         _s2_scale = lessons_svc.get_lesson(_s2_conn, _s2_scale_id)
         _s2_quiet_id = lessons_svc.create_lesson(_s2_conn, "Assessment Quiet Demo")
         _s2_quiet = lessons_svc.get_lesson(_s2_conn, _s2_quiet_id)
+        _s2_rep_id = lessons_svc.create_lesson(_s2_conn, "Assessment Replay Demo")
+        _s2_rep = lessons_svc.get_lesson(_s2_conn, _s2_rep_id)
     finally:
         _s2_conn.close()
     assess_svc._reset_rate_limit()
@@ -3507,7 +3509,10 @@ process.stdout.write(JSON.stringify([
         _s2_during_txn = (sorted(p.name for p in _s2_txn_dir.iterdir()),
                           _s2_path(_s2).read_bytes())
         _s2_txn_conn.rollback()
-        _s2_after_txn = assess_svc.reconcile_projection(_s2_txn_conn, _s2)
+        # forced: the second call must actually rewrite, and this process has
+        # already published this watermark
+        _s2_after_txn = assess_svc.reconcile_projection(
+            _s2_txn_conn, _s2, force=True)
     finally:
         _s2_txn_conn.close()
     check("reconcile refuses an active transaction and works once committed",
@@ -3597,7 +3602,8 @@ process.stdout.write(JSON.stringify([
     _s2_snap_conn = get_conn()
     try:
         with _mock.patch.object(assess_svc, "active_state", _s2_snap_state):
-            _s2_snap_ok = assess_svc.reconcile_projection(_s2_snap_conn, _s2_idm)
+            _s2_snap_ok = assess_svc.reconcile_projection(
+                _s2_snap_conn, _s2_idm, force=True)
     finally:
         _s2_snap_conn.close()
     _s2_snap_lines = _s2_lines(_s2_idm)
@@ -3658,6 +3664,55 @@ process.stdout.write(JSON.stringify([
           and _s2_replay["assessment_id"] == _s2_sum2["assessment_id"]
           and [line["assessment_id"] for line in _s2_lines(_s2)[1:]]
           == _s2_state_ids)
+    # ...but a replay that would republish identical bytes does no work at all.
+    # Replays are outside the rate budget by design (D-S1-3), so an unlimited
+    # loop of one duplicate key must not drive unlimited full rewrites. On its
+    # own lesson: this is about work done, not about what lands in the file.
+    _s2_rep_body = {"kind": "summary",
+                    "note": "Vera Example: the replay changes nothing."}
+    _s2_post(_s2_rep_id, _s2_rep_body, "s2-rep-1")
+    _s2_publishes = []
+    _s2_publish_real = assess_svc._publish
+
+    def _s2_counting_publish(lesson_view, data):
+        _s2_publishes.append(len(data))
+        return _s2_publish_real(lesson_view, data)
+
+    with _mock.patch.object(assess_svc, "_publish", _s2_counting_publish):
+        _s2_rep_a = _s2_post(_s2_rep_id, _s2_rep_body, "s2-rep-1")
+        _s2_rep_b = _s2_post(_s2_rep_id, _s2_rep_body, "s2-rep-1")
+        # a real write moves the watermark, so it must publish again
+        _s2_rep_new = _s2_post(_s2_rep_id, {
+            "kind": "evidence", "level": "passed", "basis": "mixed",
+            "concepts": ["ranges"],
+            "note": "Vera Example: ranges are clear now."}, "s2-rep-2")
+    check("repeated replays publish nothing; the next real write does",
+          _s2_rep_a["result"] == "duplicate" and _s2_rep_b["result"] == "duplicate"
+          and _s2_rep_a["projection"] == "projected"
+          and _s2_rep_b["projection"] == "projected"
+          and _s2_rep_new["projection"] == "projected"
+          and len(_s2_publishes) == 1
+          and len(_s2_lines(_s2_rep)) == 3,
+          f"publishes={_s2_publishes}")
+    # the skip is keyed on what THIS process published, so a projection it
+    # never wrote is still rewritten — the heal triggers keep working
+    _s2_path(_s2_rep).unlink()
+    assess_svc._reset_sweep_state()
+    _s2_rep_heal_conn = get_conn()
+    try:
+        _s2_rep_healed = assess_svc.reconcile_projection(
+            _s2_rep_heal_conn, _s2_rep)
+    finally:
+        _s2_rep_heal_conn.close()
+    check("a projection this process never published is not skipped",
+          _s2_rep_healed is True and len(_s2_lines(_s2_rep)) == 3)
+    # ...and the terminal open forces the rewrite at an unchanged watermark,
+    # because the agent may simply have deleted the file underneath us
+    _s2_path(_s2_rep).unlink()
+    _s2_rep_forced = lessons_svc.prepare_terminal_workspace(_s2_rep["slug"])
+    check("the terminal open forces a rewrite at an unchanged watermark",
+          _s2_rep_forced is not None and _s2_path(_s2_rep).exists()
+          and len(_s2_lines(_s2_rep)) == 3)
 
     # reconcile trigger (c): the first write per lesson per process sweeps even
     # when that write is REFUSED — a restart mid-pending heals on next contact
