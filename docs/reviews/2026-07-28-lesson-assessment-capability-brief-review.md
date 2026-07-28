@@ -1,5 +1,41 @@
 # Lesson assessment capability and tutor brief — adversarial security review
 
+## Resolution-review parameters — 2026-07-28 batch
+
+**Scope:** the owner selected the s3 capability/brief Pending entry first in a
+two-entry batch and required it to stay separate from the s4 record-panel
+surface. This resolution review covers the original s3 commits `f40bc2f`,
+`76b2021`, `3706562`, `419ccbc`, and `2cef3b4`; merge `42eabf4`; the original
+diagnosis below; and its separate repair `b41b632`, merged as `52329cf`
+(PR #91). The s4 commits reachable from the checkout are outside this report.
+
+**Starting HEAD:** `b8b3e02a01021f27e3222c4d02bcd8ed4d9aae3a` on the clean
+`fix/4-s4-record-panel` checkout, matching
+`origin/fix/4-s4-record-panel`.
+
+**Reviewed tree:** every original s3 commit, both merge commits, and repair
+head `b41b632` are ancestors of the starting HEAD. `42eabf4^{tree}` equals
+`2cef3b4^{tree}` at `b953ef19bbc09fb3e9d091761fc6358cd24767e2`;
+`52329cf^{tree}` equals `b41b632^{tree}` at
+`f015d0894b218ca98c93ae94e9921dea657c8034`. The verdict below concerns the
+s3-and-repair portion of the tree actually read; the unmerged s4 delta is
+reviewed separately.
+
+**Report file:**
+`docs/reviews/2026-07-28-lesson-assessment-capability-brief-review.md`.
+
+**Prior reports to reconcile:** every existing closing verdict was rescanned.
+The original binding authority, projection, brief, terminal, sandbox, attempt,
+bridge, bundle, public-data, and recovery conditions remain those named below.
+The one added condition is this report's own L1; the resolution addendum states
+its current disposition explicitly.
+
+**Validation baseline:** approved host runs at the clean starting HEAD passed:
+`python verify.py` — **870 passed, 0 failed**; `python verify_restore.py` —
+**28 passed, 0 failed**.
+
+## Original diagnosis
+
 **Scope:** exactly one Pending entry was present at review start: the
 2026-07-28 issue-#4 phase-S s3 entry for `f40bc2f`, `76b2021`, `3706562`,
 `419ccbc`, and `2cef3b4` on `fix/4-s3-capability-brief`, landed by ordinary
@@ -261,3 +297,86 @@ of `assessments.jsonl` without silently reversing the owner-approved
 no-truncation projection contract; it must preserve or grow the **849 / 28**
 validation baselines. Wider, proxy-adjacent, or multi-user deployment remains
 **NO** independently. A live restart remains owner-only and was not performed.
+
+## Superseding resolution addendum — `b41b632` / merge `52329cf`
+
+The separate ordinary repair PR landed exactly the fix direction above.
+`app/services/lessons.py:962-980` no longer promises that the active projection
+stays small or directs an unconditional whole-file read. It now:
+
+- reads the file whole only while it fits in **2 MiB**;
+- states that the file has one line per active concept and reviewed attempt
+  and has no fixed ceiling;
+- retains the first metadata line carrying `as_of_seq`, then reads only the
+  newest complete lines within 2 MiB when over the bound;
+- requires the tutor to tell the learner and the session summary that older
+  current judgments went unread; and
+- calls that remainder omitted rather than absent, forbidding a false
+  “never assessed” inference.
+
+`docs/learn-bundle-spec.md:446-453` places the bound on the consumer while
+preserving the owner-approved writer contract: the projection itself is never
+truncated. `verify.py:535-547` pins the byte bound, complete-line behavior,
+absence of a fixed ceiling, honest omission wording, and removal of the false
+“it stays small” claim. The repair changes no capability registry, token,
+terminal lifecycle, endpoint, assessment writer, projection writer, sandbox,
+bridge, route, listener, or service behavior.
+
+Fresh review of the repair and its current callers found no new Critical, High,
+Medium, Low, Info, or other finding. The original s3 protection analysis
+remains valid: the token is server-minted and role-bound, the app URL comes
+from the accepted socket rather than Host, loopback bypasses configured
+proxies, spawn failures revoke prepublished capabilities, session closure
+revokes owned capabilities, and capability resolution precedes replay/rate/
+write work.
+
+## Resolution verification
+
+- Reachability/tree proof — all original commits, `42eabf4`, repair
+  `b41b632`, and merge `52329cf` are ancestors of starting
+  `b8b3e02`; both merge trees equal their reviewed branch-head trees at the
+  hashes recorded above.
+- Repair scope — the application/spec/test repair is limited to
+  `app/services/lessons.py`, `docs/learn-bundle-spec.md`, and `verify.py`; the
+  other differences are this report and queue bookkeeping.
+- Starting-head approved host `python verify.py` — **870 passed, 0 failed**.
+- Starting-head approved host `python verify_restore.py` — **28 passed,
+  0 failed**.
+- `git diff --check origin/main..b8b3e02` — passed.
+- No application, test, specification, service, or live runtime file was
+  changed by this resolution review.
+
+## Final prior-condition reconciliation
+
+- **Original L1 — RESOLVED.** Tutor consumption is bounded and omissions are
+  explicit without truncating the app-owned projection.
+- **Assessment authority, active fold, central write-guard W1, projection
+  publication/cache/replay guards, and s3 capability/session provenance —
+  REMAIN RESOLVED.**
+- **Generated-brief data authority, path/no-symlink rules, bounded discovery,
+  unknown-field preservation, and atomic publication — REMAIN RESOLVED.**
+- **Terminal F1-F4, terminal-tab L1, opt-in wiring, PTY/fd ownership,
+  attach/reaper serialization, platform startup, and E1/E2/E3 sandbox
+  separation — REMAIN RESOLVED.** Terminal-opt-in T1 remains
+  **OPEN/ACCEPTED only for the deliberately plain owner shell**; the trusted
+  lesson-agent network/credential posture remains **UNCHANGED/ACCEPTED for
+  that role only**.
+- **Attempt A1/A2 — REMAIN RESOLVED. Bridge-runtime D5 L1 — REMAINS
+  MITIGATED; D5 L2/L3 — REMAIN RESOLVED.**
+- **Bundle, public-data, and recovery posture — REMAIN
+  RESOLVED/UNCHANGED.** Wider, proxy-adjacent, or multi-user deployment
+  remains unsupported.
+
+## Final superseding verdict
+
+**SAFE TO MAKE LIVE for the phase-S s3 assessment-capability and tutor-brief
+surface under the documented direct-loopback `127.0.0.1:8765`,
+single-worker, unauthenticated single-user deployment.** The diagnosis raised
+**1 Low, 0 Critical, 0 High, 0 Medium, and 0 Info** findings; that Low was
+resolved by the separate reviewed repair, and no open s3 finding remains.
+
+The s3 queue entry may move to **Done** with this report as its diagnosis and
+resolution record. Wider, proxy-adjacent, or multi-user deployment remains
+**NO**. The separate s4 record-panel entry remains Pending and independently
+blocks a live restart. No merge or restart was performed; restart remains the
+owner's action after the complete queue gate closes.

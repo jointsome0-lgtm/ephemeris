@@ -231,6 +231,24 @@ def lesson_totals(conn: sqlite3.Connection, days: int | None = None,
     } for r in rows]
 
 
+def lesson_total(conn: sqlite3.Connection, lesson_id: int) -> dict:
+    """All focused time recorded against ONE lesson (schema v8's
+    `focus_sessions.lesson_id`) — the Focus link the Learn record panel
+    surfaces read-only, without ranking the lesson against the others."""
+    row = conn.execute(
+        "SELECT COALESCE(SUM(seconds),0) AS sec, COUNT(*) AS n "
+        "FROM focus_sessions WHERE lesson_id = ?",
+        (lesson_id,),
+    ).fetchone()
+    seconds = row["sec"]
+    return {
+        "seconds": seconds,
+        "minutes": seconds // 60,
+        "sessions": row["n"],
+        "label": _dur_label(seconds),
+    }
+
+
 def focus_day_streak(daily: list[dict]) -> int:
     """Consecutive days with any focus, counting back from the last entry
     (today). Pure — operates on a daily_totals() list."""

@@ -744,6 +744,83 @@ def _project_attempt_locked(
     return True
 
 
+# --- read model: what the s4 record panel joins against (D-S3-1) -------------
+#
+# Read-only, and deliberately outside everything above: no lock, no projection,
+# no transaction. The write path, its cursor/seal state and `attempts.jsonl`
+# are untouched by anything below.
+
+# The answer is the learner's own text (≤ 32 KiB). The panel shows enough of it
+# to recognise which answer a verdict judged; the whole of it stays in the DB,
+# the export and `attempts.jsonl` rather than in every /learn render.
+PANEL_ANSWER_CHARS = 400
+
+# One row per question — the newest by rowid, which is the insertion authority
+# the same way `seq` is for assessments (`created_at` can tie at microsecond
+# resolution, rowids cannot). The grouping seeks through
+# `idx_attempts_lesson_question`.
+#
+# The excerpt is bounded in SQLite, not in Python: the number of questions a
+# lesson has ever been answered on is not bounded by the manifest (a durable id
+# that leaves it keeps its attempts), so selecting whole answer bodies would
+# materialize up to 32 KiB per question to show 400 characters of each.
+#
+# Bounded in BYTES, through a BLOB cast, because SQLite's TEXT string functions
+# are NUL-terminated: `length(answer)` counts only up to the first U+0000 and
+# `substr(answer, ...)` returns only the run before it. An answer is validated
+# as UTF-8 within a byte cap and nothing rejects a NUL inside it, so a
+# character-wise excerpt would silently render such an answer as its first few
+# characters, with no truncation marker. The BLOB functions are byte-exact and
+# NUL-blind; the budget covers the widest UTF-8 encoding of the character bound
+# so the requested characters are always present, and Python does the decoding
+# and the character-wise cut.
+PANEL_ANSWER_BYTES = PANEL_ANSWER_CHARS * 4 + 3
+
+_LATEST_PER_QUESTION_SQL = (
+    "SELECT attempt_id, question_id, page_id, page_rev, stale, created_at, "
+    "       substr(CAST(answer AS BLOB), 1, ?) AS answer_head, "
+    "       length(CAST(answer AS BLOB)) AS answer_bytes "
+    "FROM lesson_attempts WHERE id IN "
+    "(SELECT MAX(id) FROM lesson_attempts WHERE lesson_id = ? GROUP BY question_id) "
+    "ORDER BY id"
+)
+
+
+def _panel_attempt_view(row: sqlite3.Row) -> dict:
+    head = row["answer_head"]
+    # 'ignore' drops the partial character the byte bound may have split; the
+    # bound is wide enough that a whole character is never lost from the cut.
+    text = head.decode("utf-8", "ignore") if isinstance(head, bytes) else str(head)
+    excerpt = text[:PANEL_ANSWER_CHARS]
+    return {
+        "attempt_id": row["attempt_id"],
+        "question_id": row["question_id"],
+        "page_id": row["page_id"],
+        "page_rev": row["page_rev"],
+        "answer": excerpt,
+        "answer_truncated": (
+            len(excerpt) < len(text) or row["answer_bytes"] > len(head or b"")
+        ),
+        "stale": bool(row["stale"]),
+        "created_at": row["created_at"],
+    }
+
+
+def lesson_attempt_summary(conn: sqlite3.Connection, lesson_id: int) -> dict:
+    """How many attempts a lesson has recorded, and the latest attempt per
+    question — the join the record panel hangs verdicts on."""
+    total = conn.execute(
+        "SELECT COUNT(*) FROM lesson_attempts WHERE lesson_id = ?", (lesson_id,)
+    ).fetchone()[0]
+    latest = {}
+    rows = conn.execute(
+        _LATEST_PER_QUESTION_SQL, (PANEL_ANSWER_BYTES, lesson_id)
+    ).fetchall()
+    for row in rows:
+        latest[row["question_id"]] = _panel_attempt_view(row)
+    return {"total": total, "latest_by_question": latest}
+
+
 def _replay_or_conflict(
     conn: sqlite3.Connection, lesson: dict, submission: dict
 ) -> dict | None:

@@ -761,13 +761,16 @@ def _record_locked(
 # --- read model: the active-state fold (D-S1-2) ------------------------------
 
 
-def row_view(row: sqlite3.Row | dict) -> dict:
-    """One authority row as the record shape its consumers read: the s2
-    projection line, the s4 panel, and the verifier. `seq` is the rowid;
-    `concepts` is decoded back into a list (a stored value that no longer
-    parses reads as no concepts rather than raising — the column is written
-    only by this module, so that is a corrupt-database guard, not a
-    contract)."""
+# The columns `fold_rows` decides on, and nothing else. The fold has to visit
+# every active row, but it KEEPS at most one per concept, one per attempt and
+# one summary — so a reader that only wants the fold's winners can walk the
+# lesson on these five columns and pay for `note` (8 KiB a row) once per row it
+# will actually show. `row_view` builds on the same keys so the two shapes
+# cannot drift.
+FOLD_KEYS_COLUMNS = "a.id, a.assessment_id, a.kind, a.attempt_id, a.concepts_json"
+
+
+def _fold_keys(row: sqlite3.Row | dict) -> dict:
     concepts = row["concepts_json"]
     if isinstance(concepts, str):
         try:
@@ -778,16 +781,28 @@ def row_view(row: sqlite3.Row | dict) -> dict:
     return {
         "seq": row["id"],
         "assessment_id": row["assessment_id"],
+        "kind": row["kind"],
+        "attempt_id": row["attempt_id"],
+        "concepts": concepts,
+    }
+
+
+def row_view(row: sqlite3.Row | dict) -> dict:
+    """One authority row as the record shape its consumers read: the s2
+    projection line, the s4 panel, and the verifier. `seq` is the rowid;
+    `concepts` is decoded back into a list (a stored value that no longer
+    parses reads as no concepts rather than raising — the column is written
+    only by this module, so that is a corrupt-database guard, not a
+    contract)."""
+    return {
+        **_fold_keys(row),
         "event_uuid": row["event_uuid"],
         "lesson_uid": row["lesson_uid"],
         "sitting_id": row["sitting_id"],
         "mode": row["mode"],
-        "kind": row["kind"],
         "level": row["level"],
         "basis": row["basis"],
-        "attempt_id": row["attempt_id"],
         "question_id": row["question_id"],
-        "concepts": concepts,
         "note": row["note"],
         "next_action": row["next_action"],
         "supersedes": row["supersedes"],
@@ -798,13 +813,17 @@ def row_view(row: sqlite3.Row | dict) -> dict:
 # The deactivation lookup is correlated, so it needs `idx_assessments_lesson_
 # supersedes` to stay bounded — without that index it rescans the lesson's whole
 # history per row and the fold goes quadratic. verify asserts the query plan.
-ACTIVE_ROWS_SQL = (
-    "SELECT * FROM lesson_assessments a WHERE a.lesson_id = ? "
+_ACTIVE_SQL = (
+    "SELECT {columns} FROM lesson_assessments a WHERE a.lesson_id = ? "
     "AND NOT EXISTS (SELECT 1 FROM lesson_assessments s "
     "                WHERE s.lesson_id = a.lesson_id "
     "                  AND s.supersedes = a.assessment_id) "
     "ORDER BY a.id"
 )
+# One definition of "active", two column lists: whoever reads narrow rows reads
+# exactly the rows the wide query would have returned.
+ACTIVE_ROWS_SQL = _ACTIVE_SQL.format(columns="*")
+ACTIVE_FOLD_KEYS_SQL = _ACTIVE_SQL.format(columns=FOLD_KEYS_COLUMNS)
 
 
 def active_rows(conn: sqlite3.Connection, lesson_id: int) -> list[dict]:
@@ -817,18 +836,18 @@ def active_rows(conn: sqlite3.Connection, lesson_id: int) -> list[dict]:
     return [row_view(row) for row in rows]
 
 
-def active_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
-    """The current-state fold consumed by the s2 projection and the s4 panel:
-    the latest active evidence per concept, the latest active review per
-    attempt, and the latest active summary — all by `seq`.
+def fold_rows(rows: list[dict]) -> dict:
+    """The current-state fold over already-read ACTIVE rows, ascending `seq`.
 
+    Pure, so the two readers that need it — the s2 projection and the s4 panel
+    — share one definition of "current" instead of two that can drift.
     Retractions carry no state of their own: they only deactivate, so they
     never appear in the fold. Evidence spanning several concepts is the latest
     for each of them."""
     evidence_by_concept: dict[str, dict] = {}
     reviews_by_attempt: dict[str, dict] = {}
     summary: dict | None = None
-    for row in active_rows(conn, lesson_id):  # ascending seq: later rows win
+    for row in rows:  # ascending seq: later rows win
         if row["kind"] == "evidence":
             for concept in row["concepts"] or ():
                 evidence_by_concept[concept] = row
@@ -841,6 +860,152 @@ def active_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
         "reviews_by_attempt": reviews_by_attempt,
         "summary": summary,
     }
+
+
+def active_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
+    """The current-state fold consumed by the s2 projection and the s4 panel:
+    the latest active evidence per concept, the latest active review per
+    attempt, and the latest active summary — all by `seq`."""
+    return fold_rows(active_rows(conn, lesson_id))
+
+
+# The number of earlier readings behind each DISPLAYED review winner. The
+# active fold has already selected exactly one standing winner per attempt, so
+# pass those `(attempt_id, winner_id)` pairs through a bounded VALUES CTE
+# instead of rediscovering winners for every historical attempt in the lesson.
+#
+# Only rows before that winner count. Reviews corrected by another review stay
+# in the count — replaced readings are exactly what the marker acknowledges —
+# while reviews struck by a retraction are excluded outright, in either write
+# order. The correlated lookup rides `idx_assessments_lesson_supersedes`; the
+# join seeks reviews through `idx_assessments_lesson_kind`.
+_EARLIER_REVIEW_COUNTS_SQL = (
+    "WITH winners(attempt_id, winner_id) AS (VALUES {winners}) "
+    "SELECT w.attempt_id AS attempt_id, COUNT(r.id) AS earlier_count "
+    "FROM winners w "
+    "LEFT JOIN lesson_assessments r "
+    "  ON r.lesson_id = ? AND r.kind = 'review' "
+    " AND r.attempt_id = w.attempt_id AND r.id < w.winner_id "
+    " AND NOT EXISTS (SELECT 1 FROM lesson_assessments t "
+    "                 WHERE t.lesson_id = r.lesson_id "
+    "                   AND t.kind = 'retraction' "
+    "                   AND t.supersedes = r.assessment_id) "
+    "GROUP BY w.attempt_id"
+)
+
+# Leave ample room below SQLite's traditional 999-variable default: each
+# hydration statement also binds the lesson id. The fold has no winner-count
+# ceiling, so this is a statement-size bound, not a record-view bound.
+_HYDRATE_IDS_PER_QUERY = 500
+# Two variables per displayed winner plus the lesson id. Keep the fixed batch
+# comfortably below SQLite's traditional 999-variable default.
+_REVIEW_COUNTS_PER_QUERY = 250
+
+
+def _hydrate(conn: sqlite3.Connection, lesson_id: int, state: dict) -> dict:
+    """Re-read the fold's winners whole in bounded statements, then put them
+    back where the narrow rows were. Same connection and no write between the
+    reads, so they see the state the first query folded."""
+    wanted = {row["seq"] for row in state["evidence_by_concept"].values()}
+    wanted |= {row["seq"] for row in state["reviews_by_attempt"].values()}
+    if state["summary"] is not None:
+        wanted.add(state["summary"]["seq"])
+    if not wanted:
+        return state
+    wanted_ordered = sorted(wanted)
+    full: dict[int, dict] = {}
+    for start in range(0, len(wanted_ordered), _HYDRATE_IDS_PER_QUERY):
+        chunk = wanted_ordered[start:start + _HYDRATE_IDS_PER_QUERY]
+        marks = ",".join("?" for _ in chunk)
+        full.update({
+            row["id"]: row_view(row) for row in conn.execute(
+                "SELECT * FROM lesson_assessments WHERE lesson_id = ? "
+                f"AND id IN ({marks})", (lesson_id, *chunk)).fetchall()
+        })
+    return {
+        "evidence_by_concept": {concept: full[row["seq"]] for concept, row
+                                in state["evidence_by_concept"].items()},
+        "reviews_by_attempt": {attempt: full[row["seq"]] for attempt, row
+                               in state["reviews_by_attempt"].items()},
+        "summary": full[state["summary"]["seq"]] if state["summary"] else None,
+    }
+
+
+def _earlier_review_counts(
+    conn: sqlite3.Connection,
+    lesson_id: int,
+    reviews_by_attempt: dict,
+) -> dict[str, int]:
+    """Count earlier, non-retracted readings for displayed review winners."""
+    winners = sorted(
+        (attempt_id, row["seq"])
+        for attempt_id, row in reviews_by_attempt.items()
+    )
+    counts: dict[str, int] = {}
+    for start in range(0, len(winners), _REVIEW_COUNTS_PER_QUERY):
+        chunk = winners[start:start + _REVIEW_COUNTS_PER_QUERY]
+        values = ",".join("(?, ?)" for _ in chunk)
+        params = tuple(value for pair in chunk for value in pair)
+        counts.update({
+            row["attempt_id"]: row["earlier_count"]
+            for row in conn.execute(
+                _EARLIER_REVIEW_COUNTS_SQL.format(winners=values),
+                (*params, lesson_id),
+            ).fetchall()
+        })
+    return counts
+
+
+def panel_state(
+    conn: sqlite3.Connection,
+    lesson_id: int,
+    *,
+    review_attempt_ids: set[str] | None = None,
+) -> dict:
+    """Everything the s4 record panel folds out of the authority rows (D-S3-1).
+
+    Read-only: the D-S1-2 fold, how many active records stand behind it, and
+    when each attempt's reviews were written. `active_count` counts records
+    that carry state — a retraction is an active row but says only that
+    another record was wrong, so counting it would inflate what the panel
+    claims to know.
+
+    This runs on every `/learn` render, and the active fold has no cardinality
+    ceiling (spec §6.5 calls the projection a compaction, not a cap), so the
+    walk is deliberately narrow: the fold decides on five small columns;
+    evidence winners, the summary, and only review winners named by
+    `review_attempt_ids` are read whole. An 8 KiB note is therefore paid for
+    once per displayed record instead of once per active row or reviewed
+    historical attempt.
+
+    The helper owns a read snapshot when its caller does not already have one.
+    `_record_panel` starts the wider snapshot that also covers its attempt and
+    focus reads; direct callers still cannot mix fold/hydration/count versions.
+    """
+    own_snapshot = not conn.in_transaction
+    if own_snapshot:
+        conn.execute("BEGIN")
+    try:
+        keys = [_fold_keys(row) for row
+                in conn.execute(ACTIVE_FOLD_KEYS_SQL, (lesson_id,)).fetchall()]
+        state = fold_rows(keys)
+        if review_attempt_ids is not None:
+            state["reviews_by_attempt"] = {
+                attempt_id: row
+                for attempt_id, row in state["reviews_by_attempt"].items()
+                if attempt_id in review_attempt_ids
+            }
+        state = _hydrate(conn, lesson_id, state)
+        state["active_count"] = sum(
+            1 for row in keys if row["kind"] != "retraction"
+        )
+        state["earlier_review_counts"] = _earlier_review_counts(
+            conn, lesson_id, state["reviews_by_attempt"]
+        )
+        return state
+    finally:
+        if own_snapshot:
+            conn.rollback()
 
 
 # --- projection: `assessments.jsonl`, the active-state read model (D-S1-5) ---

@@ -15,7 +15,7 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
-from datetime import date as _date, timedelta
+from datetime import date as _date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -977,13 +977,29 @@ def get_learn(
                 selected_entry = entry
         if selected is None and rows:
             selected = rows[0]
-        selected = lessons.with_bundle_info(selected, entry=selected_entry)
-        # A rejected manifest has no selectable entry — show the placeholder
-        # without persisting a selection. A stale v2 selection (§4.2) keeps
-        # its stored/requested candidate too: persisting the fallback would
-        # make the very next read report `ok` and erase the finding.
-        if selected and selected["entry"] and not selected["bundle"]["stale_selection"]:
-            lessons.mark_opened(conn, selected["id"], selected["entry"])
+        if selected:
+            # Lesson agents write the manifest before they can POST an attempt
+            # against its question. Capture the DB state first, then take the
+            # single FINAL manifest read used by bundle metadata, selection
+            # persistence, and the record:
+            # a newly committed attempt can therefore never be classified
+            # against an older declaration set.
+            record_db_state = _record_panel_db_state(conn, selected["id"])
+            selected, selected_manifest = lessons.with_bundle_info_read(
+                selected, entry=selected_entry
+            )
+            # A rejected manifest has no selectable entry — show the
+            # placeholder without persisting a selection. A stale v2
+            # selection (§4.2) keeps its stored/requested candidate too:
+            # persisting the fallback would make the very next read report
+            # `ok` and erase the finding.
+            if (selected["entry"]
+                    and not selected["bundle"]["stale_selection"]):
+                lessons.mark_opened(conn, selected["id"], selected["entry"])
+            selected["record"] = _record_panel(
+                conn, selected, manifest_read=selected_manifest,
+                db_state=record_db_state,
+            )
     finally:
         conn.close()
     selected_id = selected["id"] if selected else None
@@ -1062,6 +1078,255 @@ def _learn_url(
     if entry:
         query.append(("entry", entry))
     return "/learn" + (f"?{urlencode(query)}" if query else "")
+
+
+# --- the record panel (#4 phase S, D-S3-1) -----------------------------------
+#
+# What the tutor concluded, rendered beside the lesson: evidence per concept,
+# where the last session left off, and the verdict on each question's latest
+# answer. Server-rendered on GET like the rest of the MPA — no JS, and every
+# agent- and learner-authored string reaches the template as plain text that
+# Jinja escapes (learn.html renders no markdown: the lesson iframe's
+# protections do not extend to the parent page).
+#
+# The whole builder is a pure read. The manifest comes from the READONLY
+# reader: D-F1-2 binds phase S too, so rendering a page never creates bundle
+# state. The assessment side is the D-S1-2 active fold, so a retracted or
+# superseded record never reaches the panel.
+
+# Chip order: the actionable state first, then alphabetically so the block is
+# stable between renders. Unknown levels cannot occur (closed vocabulary,
+# CHECK-enforced) but sort last rather than crashing the page.
+_EVIDENCE_ORDER = {"weak": 0, "developing": 1, "seen": 2, "passed": 3}
+
+
+def _record_date(iso: str | None) -> str:
+    """Local calendar date of a UTC authority stamp. The column is written
+    only by the app, so an unparseable value is a corrupt-row guard rather
+    than a contract — it renders as no date instead of failing the page."""
+    try:
+        return pretty_date(datetime.fromisoformat(iso).astimezone().date())
+    except (TypeError, ValueError):
+        return ""
+
+
+def _document_question_ids(read) -> set[str] | None:
+    """The question ids the manifest DOCUMENT names, valid or not, or None
+    when the document does not answer the question.
+
+    Retirement is absence from the manifest (S-M7), and absence is a fact
+    about the document rather than about the typed model. Validation drops
+    entries the author never removed — a dangling page reference, an id that
+    fails the grammar — neither of which rejects the read, so a question
+    missing from `read.questions` may be unreadable rather than retired.
+    Presence is therefore read here and everything shown still comes from the
+    validated model.
+
+    A missing `questions` key is an answer: the author declares none, and an
+    attempted question really has left. Any value PRESENT under that key and
+    not a list — an explicit null included — is not an answer: nothing can be
+    observed absent from a list that is not there, so it reads as unknown,
+    like a rejected manifest. Presence is tested on the key rather than on the
+    value, because `raw.get` cannot tell the two documents apart.
+
+    A rejected read cannot answer for the document. A v1 read cannot either:
+    that schema has no question declaration at all. Nor can an
+    identity-mismatched v2 read, whose declaration belongs to a different
+    lesson even though the shared reader keeps that condition DEGRADED so the
+    foreign bundle can still render under the legacy profile.
+    """
+    if (read.rejected or read.version != bundle_schema.SCHEMA_V2
+            or "identity-mismatch" in read.codes()):
+        return None
+    raw = read.raw if isinstance(read.raw, dict) else None
+    if raw is None:
+        return None
+    if "questions" not in raw:
+        return set()
+    if not isinstance(raw["questions"], list):
+        return None
+    items = raw["questions"]
+    return {
+        item["id"] for item in items
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+
+
+def _record_entry(state: dict, attempt: dict | None, *, label: str,
+                  question_id: str, page_id: str | None, retired: bool,
+                  unvalidated: bool = False) -> dict:
+    """One question row: its latest attempt and the verdict on THAT attempt.
+
+    A review names the attempt it judged, so a verdict on a superseded answer
+    stays with that answer instead of being re-attached to a newer one. Only
+    the latest ACTIVE review renders; the reviews written BEFORE it are a
+    count. Reviews written after it are not: if the fold shows this one, any
+    later review was retracted, and a retracted verdict is not an earlier
+    reading of the answer.
+
+    `page_id` is where the manifest declares the question NOW; the attempt
+    carries where it was answered. A question may move pages, and the stored
+    `stale` flag was decided at record time, so a move after the answer leaves
+    no mark on it — the row therefore shows the page the answer was written on
+    and names the current binding beside it rather than silently adopting it.
+    """
+    review = None
+    earlier = 0
+    if attempt is not None:
+        review = state["reviews_by_attempt"].get(attempt["attempt_id"])
+        if review is not None:
+            earlier = state["earlier_review_counts"].get(
+                attempt["attempt_id"], 0
+            )
+    recorded_page = attempt["page_id"] if attempt is not None else None
+    return {
+        "question_id": question_id,
+        "label": label,
+        "page_id": recorded_page or page_id,
+        "moved_to": page_id if (recorded_page and page_id
+                                and page_id != recorded_page) else None,
+        "retired": retired,
+        "unvalidated": unvalidated,
+        "attempt": attempt,
+        "attempt_date": _record_date(attempt["created_at"]) if attempt else "",
+        "review": review,
+        "review_date": _record_date(review["created_at"]) if review else "",
+        "review_exam": bool(review and review["mode"] == "exam"),
+        "earlier_reviews": earlier,
+    }
+
+
+def _record_panel_db_state(conn, lesson_id: int) -> tuple[dict, dict, dict]:
+    """Read every SQLite-backed panel input from one snapshot.
+
+    FastAPI can run a GET and an assessment POST concurrently even with one
+    worker. A deferred read transaction establishes its snapshot on the
+    attempt query, then keeps the assessment fold/hydration/counts and focus
+    total on that same committed version. Reuse a caller transaction when one
+    exists; otherwise roll back our read-only transaction on exit.
+    """
+    own_snapshot = not conn.in_transaction
+    if own_snapshot:
+        conn.execute("BEGIN")
+    try:
+        attempt_state = attempts.lesson_attempt_summary(conn, lesson_id)
+        review_attempt_ids = {
+            attempt["attempt_id"]
+            for attempt in attempt_state["latest_by_question"].values()
+        }
+        state = assessments.panel_state(
+            conn, lesson_id, review_attempt_ids=review_attempt_ids
+        )
+        focus_total = focus.lesson_total(conn, lesson_id)
+        return state, attempt_state, focus_total
+    finally:
+        if own_snapshot:
+            conn.rollback()
+
+
+def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> dict:
+    state, attempt_state, focus_total = (
+        db_state if db_state is not None
+        else _record_panel_db_state(conn, lesson["id"])
+    )
+    latest = attempt_state["latest_by_question"]
+    # `/learn` passes the exact read that built `selected["bundle"]`, so one
+    # GET cannot show metadata from one manifest version and question
+    # retirement/labels from another. Direct helper callers retain the pure
+    # read fallback.
+    read = (
+        manifest_read if manifest_read is not None
+        else lessons.read_bundle_readonly(lesson)
+    )
+    # A manifest that does not yield a declaration list — rejected outright, or
+    # carrying a `questions` value nothing can be read as absent from — knows
+    # nothing about what the author still declares, so nothing is called
+    # retired on its word (S-M7 retires by ABSENCE from the manifest, and
+    # absence has to be observed, not assumed). The attempted questions then
+    # render under their durable ids and the retired block is omitted entirely.
+    document_ids = _document_question_ids(read)
+    declared_known = document_ids is not None
+    declared = read.questions if declared_known else []
+
+    questions = [
+        _record_entry(
+            state, latest.get(q["id"]),
+            label=q["label"] or q["id"], question_id=q["id"],
+            page_id=q["page"], retired=False,
+        )
+        for q in declared
+    ]
+    declared_ids = {q["id"] for q in declared}
+    named = document_ids if declared_known else set()
+    # An answered question the manifest still names but the reader could not
+    # validate keeps its place in the list — unlabelled and marked, because a
+    # validation failure is not a retirement. It has no readable current page,
+    # so the row falls back to the page its answer was written on.
+    questions += [
+        _record_entry(
+            state, attempt,
+            label=question_id, question_id=question_id,
+            page_id=None, retired=False, unvalidated=True,
+        )
+        for question_id, attempt in latest.items()
+        if question_id not in declared_ids and question_id in named
+    ]
+    # Attempts whose question left the manifest. Durable ids are retired
+    # forever, so the reviewed history behind them must not vanish with them.
+    retired = [
+        _record_entry(
+            state, attempt,
+            label=question_id, question_id=question_id,
+            page_id=None, retired=True,
+        )
+        for question_id, attempt in latest.items()
+        if question_id not in declared_ids and question_id not in named
+    ]
+    if not declared_known:
+        # Not retired — just unlabelled, because the manifest could not be read.
+        questions = [dict(row, retired=False) for row in retired]
+        retired = []
+
+    evidence = sorted(
+        (
+            {
+                "concept": concept,
+                "level": row["level"],
+                "basis": row["basis"],
+                "note": row["note"],
+                "date": _record_date(row["created_at"]),
+                "exam": row["mode"] == "exam",
+            }
+            for concept, row in state["evidence_by_concept"].items()
+        ),
+        key=lambda chip: (_EVIDENCE_ORDER.get(chip["level"], 9), chip["concept"]),
+    )
+
+    summary = state["summary"]
+    return {
+        "evidence": evidence,
+        "summary": {
+            "note": summary["note"],
+            "next_action": summary["next_action"],
+            "date": _record_date(summary["created_at"]),
+            "exam": summary["mode"] == "exam",
+        } if summary else None,
+        "questions": questions,
+        "retired": retired,
+        "declared_known": declared_known,
+        "counts": {
+            "attempts": attempt_state["total"],
+            "assessments": state["active_count"],
+            # `_dur_label` spells nothing as "0s"; the counts line is a row of
+            # magnitudes, so an empty one keeps the minutes unit of the rest.
+            "focus": focus_total["label"] if focus_total["seconds"] else "0m",
+            "focus_seconds": focus_total["seconds"],
+        },
+        "empty": not (
+            evidence or summary or questions or retired
+            or attempt_state["total"] or focus_total["seconds"]
+        ),
+    }
 
 
 # Preview CSP is selected by the manifest's runtime profile

@@ -24,7 +24,197 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-28 — `f40bc2f`, `76b2021`, `3706562`, `419ccbc`, `2cef3b4` on
+- [ ] 2026-07-28 — `a0ae9dd`, `981400a`, `c91d002`, `18d4195`, `b8b3e02`,
+  `5bcd585`, `89f0b77`, with queue-only bookkeeping through `ce2ad38` and the
+  PR-bot round-6 through round-8 repairs at the current
+  `fix/4-s4-record-panel` branch tip; the owner selected branch head `b8b3e02`
+  for the drain of 2026-07-28, and the later code commits are NOT covered by
+  that pass — the entry stays current with the branch, and the eventual merge
+  commit is appended before any restart —
+  `app/main.py`, `app/services/assessments.py`, `app/services/attempts.py`,
+  `app/services/focus.py`, `app/templates/learn.html`, `app/static/style.css`,
+  `verify.py`, `docs/reviews/QUEUE.md` — issue #4 phase S slice s4 renders the
+  recorded assessments on `/learn`. `GET /learn` computes one additional
+  context object for the selected lesson: evidence per concept, the latest
+  summary with its `next_action`, one entry per declared question carrying its
+  latest attempt and the latest active review of that attempt, an entry per
+  attempted question absent from the manifest, and a counts line. The values
+  come from four reads — `assessments.panel_state` (the existing active-rows
+  query, the fold, a count of active non-`retraction` rows, and a new
+  `GROUP BY attempt_id` count of every `review` row),
+  `attempts.lesson_attempt_summary` (a `COUNT(*)` and one row per question at
+  `MAX(id)`), `focus.lesson_total` (`SUM(seconds)` over
+  `focus_sessions.lesson_id`), and `lessons.read_bundle_readonly` for the
+  declared question list. `active_state`'s body moved unchanged into a pure
+  `fold_rows` that both it and `panel_state` call. A rejected manifest read
+  yields no declared list, no retired entries, and the attempted questions
+  under their durable ids. The learner's answer is cut to its first 400
+  characters for display; notes, `next_action`, labels, concept refs and page
+  ids are passed through whole. The template renders every one of those values
+  through `{{ }}` with Jinja autoescape on, adds no `|safe`, no markdown, no
+  script and no new JS file, and wraps the block in
+  `{% if selected.record is defined %}`. Concept refs, levels, modes and the
+  `stale` flag also reach `class` and `title` attributes. `style.css` gains the
+  `.lesson-record` / `.rec-*` rules inside the Learn block plus three lines in
+  the existing 860px media query. No POST route, write path, projection,
+  service write function, schema, event, capability, brief, sandbox surface,
+  terminal file or bridge ABI is touched, and no other template changed.
+  `c91d002` (PR-bot round 1) replaces the earlier-review marker's
+  total-minus-one arithmetic with a count of the review ids preceding the
+  displayed one, narrows the per-question attempt query from `SELECT *` to the
+  displayed columns with the excerpt bound applied in SQL, and splits attempted
+  questions three ways instead of two: a question the manifest read dropped
+  under a DEGRADED finding but the raw document still declares is rendered as
+  a question of unknown validity rather than as retired, so only a question
+  absent from the document reaches the retired block. `18d4195` (independent
+  correctness re-check) excludes a `retraction`-struck review from that count
+  regardless of the order the two rows were written in, and takes both the
+  excerpt bound and the truncation comparison over `CAST(answer AS BLOB)` —
+  SQLite's TEXT `substr`/`length` stop at an embedded NUL, which attempt
+  validation admits, so an answer containing one was previously cut to the
+  bytes before it with no truncation marker; the byte budget is the character
+  bound times four plus three, and Python decodes with `errors="ignore"` and
+  cuts to the character bound. The same commit puts a double quote and angle
+  brackets into the escaping fixture's note text, which the chip renders into a
+  `title` attribute, and asserts the escaped attribute form. PR-bot round 3
+  adds two more read-side distinctions. A manifest whose `questions` value is
+  not a list is DEGRADED rather than rejecting and yields an empty typed list,
+  which the previous split read as "the author declares none": every attempted
+  question was marked retired. The document reader now answers `None` for a
+  wrong-typed value and for a non-object manifest, an absent `questions` key
+  still answers the empty set, and the panel treats `None` exactly as it
+  treats a rejected read. Separately, a declared question's row took its page
+  from the manifest's current binding while showing an answer recorded against
+  whatever page held the question then; a question may move pages and the
+  stored `stale` flag was decided at record time, so the row now shows the
+  attempt's own `page_id` and carries the current binding beside it as a
+  `moved` marker, with `page_id=None` passed for the retired and unvalidated
+  rows that have no readable current binding. `style.css` gains one
+  `.rec-moved` rule. Verify 870, verify_restore 28.
+  Diagnosis-only drain 2026-07-28 →
+  `2026-07-28-lesson-record-panel-review.md`: one Low finding remains open;
+  this entry stays Pending for a separate reviewed repair PR. The finding is
+  the explicit-null spelling of the wrong-typed declaration case:
+  `"questions": null` is conflated with an absent key, so the panel presents
+  every historical attempted question as retired without observing a list
+  from which absence could be established. No merge or restart was performed.
+  The repair is `5bcd585` on the same unmerged branch, carried by the open PR
+  #92 rather than a separate one: the branch has not landed, so the repair
+  reaches `main` only through that PR's own bot verdict at its exact head, and
+  the second pair of eyes the protocol asks for is the same one. The panel now
+  tests for the KEY rather than reading the value, so a document that never
+  mentions questions still means the author declares none while any present
+  non-list value — an explicit null included — reads as declaration-unknown
+  and retires nothing. Coverage exercises both documents through the real
+  bundle reader and the rendered panel. The reader's own silent handling of
+  null is unchanged: `_read_questions` treats it as absent and emits no
+  `type-mismatch`, which deviates from spec §4, and the report's request to
+  align it is declined here as a change to shared manifest-read semantics
+  (the projection, the generated brief and the F-phase readers all consume
+  `codes()`) that belongs to its own reviewed change; the panel no longer
+  depends on it either way. PR-bot round 5 narrows the panel's own read:
+  `panel_state` walked the active rows with `SELECT *`, materializing every
+  active `note` (bounded at 8 KiB each, with no ceiling on how many rows stand
+  active) on every `/learn` render, to keep one row per concept, one per
+  attempt and one summary. `row_view`'s first five keys moved into a shared
+  `_fold_keys`, both queries are now formatted from one `_ACTIVE_SQL` so the
+  narrow walk returns exactly the rows the wide one would, and the fold's
+  winners are re-read whole by id in statements of at most 500 winner ids on
+  the same connection with no write in between. The fold's inputs, outputs and
+  `active_count` are unchanged, `active_rows`/`active_state` and the s2
+  projection still read whole rows, and the verifier asserts the narrow
+  columns carry no `note`, that only winner ids are hydrated, that 501 winners
+  split into two variable-bounded statements, and that the narrow fold equals
+  the wide one. PR-bot round 6 also treats a DEGRADED `identity-mismatch` as
+  declaration-unknown for this panel: the foreign manifest's question list is
+  ignored, attempted questions render under this lesson's durable ids, and
+  none is marked retired. The bundle reader's shared DEGRADED and
+  legacy-profile behaviour is unchanged. The round changes only the GET-side
+  declaration helper, winner hydration and verifier; it does not change a
+  POST path, write path, projection, template, static asset or escaping rule.
+  Host verification at the round-6 branch state: verify 874, verify_restore
+  28; public hygiene clean. PR-bot round 7 makes a supported v1 manifest
+  declaration-unknown for the panel because v1 has no question declaration:
+  recorded v2 attempts render under durable ids and none is called retired.
+  It also replaces the Python lists of every non-retracted historical review
+  seq with SQL `COUNT` aggregates preceding each active review winner.
+  Superseded readings remain counted, while any review struck by a
+  `retraction` remains excluded; only one aggregate per winner reaches Python.
+  The round changes only GET-side declaration and assessment read helpers plus
+  verifier coverage. Host verification at the round-7 branch state: verify
+  876, verify_restore 28; public hygiene clean. PR-bot round 8 puts the
+  attempt summary, assessment fold/hydration/counts and focus total inside one
+  SQLite read snapshot, so a concurrent assessment commit cannot make one
+  panel mix database versions. `panel_state` also owns a snapshot for direct
+  callers that do not already have one. The latest attempt ids from that
+  snapshot now filter review winners before full-row hydration, so notes for
+  reviewed historical attempts the panel cannot display remain unread. The
+  active-row count, evidence fold, summary and settled earlier-review rule are
+  unchanged. Host verification at the round-8 branch state: verify 878,
+  verify_restore 28; public hygiene clean. PR-bot round 9 limits the
+  earlier-review aggregate to the review winners for attempts the panel
+  actually displays, passing those winner pairs through fixed-size SQL
+  batches rather than deriving winners for every historical attempt. The
+  settled count rule is unchanged: a review corrected by another review is
+  acknowledged, while a review targeted by a retraction is excluded in either
+  write order. The same round passes the exact manifest read used for the
+  selected lesson's bundle metadata into the record panel, so one GET cannot
+  mix labels or retirement from a second manifest version. A requested
+  `focus_sessions.lesson_id` index is declined under the repository's
+  concrete-failure rule: the deployed single-user table has two rows in a
+  217 KB database, the aggregate runs once per GET, and no measurable failure
+  exists; any index belongs to its own migration if growth makes it useful.
+  The focused-minutes count remains intact and no schema, template, escaping,
+  POST or write path changes in this round. Host verification at the round-9
+  worktree state: verify 880. PR-bot round 10 orders the selected lesson's
+  final cross-store reads as database state first and manifest second. The
+  preliminary manifest read remains only to validate entry persistence; after
+  the DB state is captured, one final manifest read supplies both bundle
+  metadata and the record's labels and retirement decisions. This respects
+  the lesson-agent write order (manifest declaration before attempt POST), so
+  a newly committed attempt cannot be classified against the older
+  declaration set. The declaration-unknown annotation is also neutral now:
+  it says question declarations are unavailable rather than calling readable
+  v1 and identity-mismatched manifests unreadable. Autoescape, the stale-
+  process guard and the no-JS posture are unchanged. Host verification at the
+  round-10 worktree state: verify 880. Diagnosis-only follow-up drain
+  2026-07-29 →
+  `2026-07-29-lesson-record-panel-review.md`: one Low finding remains open, so
+  this entry stays Pending for a separate reviewed repair PR. Round 10
+  persists the selected entry from its preliminary manifest read, then uses a
+  second final read for the response's bundle metadata and record. An
+  invented-data interleaving confirmed that a page removed between those
+  reads remains stored as `current_entry` even while the same 200 response
+  renders the final manifest's fallback and stale-selection finding. The
+  repair must make page-selection persistence use the same final manifest
+  authority as the response and add a deterministic manifest-swap regression.
+  No application code, merge, or restart was performed by the drain. The
+  follow-up repair at the current branch tip removes the preliminary manifest
+  read: `_record_panel_db_state` runs first, one final
+  `with_bundle_info_read` supplies bundle metadata, selection persistence and
+  the record, and `mark_opened` remains gated by that read's
+  `stale_selection`. A deterministic verifier swap removes a valid requested
+  page after DB-state capture and proves the same response falls back without
+  persisting the removed page. The DB-state-before-final-manifest invariant,
+  autoescape, stale-process guard and no-JS posture remain unchanged. Host
+  verification at the repair worktree state: verify 880. The entry remains
+  Pending for the owner's re-drain; no merge or restart was performed.
+  Diagnosis-only resolution re-drain 2026-07-29 →
+  `2026-07-29-lesson-record-panel-review.md`: zero new findings. The
+  superseding section at the top of that report reviews exact branch head
+  `167df06` / tree `cecc0a4`; the July 29 page-selection Low is resolved
+  because one final manifest read now owns response metadata, record
+  classification and selection persistence, and the July 28 false-retirement
+  Low remains resolved. The separate shared-reader null diagnostic remains an
+  open bundle-contract follow-up outside s4. The exact reviewed s4 tree is
+  safe only for the documented direct-loopback, single-worker,
+  unauthenticated single-user posture once landed. This entry keeps its
+  Pending box for owner closure; no application code, merge or restart was
+  performed by the re-drain.
+
+## Done
+
+- [x] 2026-07-28 — `f40bc2f`, `76b2021`, `3706562`, `419ccbc`, `2cef3b4` on
   `fix/4-s3-capability-brief`, merged into `main` as `42eabf4` (PR #90); the
   merged tree is byte-identical to the reviewed branch head `2cef3b4` (both
   trees `b953ef1`) — `app/terminal.py`, `app/services/assessments.py`,
@@ -106,8 +296,15 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   on the reading side and restating that the writer never truncates; the
   projection code, the endpoint, the capability registry and the sandbox
   surfaces are untouched. Verify 850, verify_restore 28.
-
-## Done
+  Resolution review 2026-07-28 →
+  `2026-07-28-lesson-assessment-capability-brief-review.md`: the one Low
+  finding is resolved by the separate reviewed repair; no Critical, High,
+  Medium, Low, Info, or open s3 finding remains. Final host verification on
+  the batch starting head: verify 870, verify_restore 28. Final verdict:
+  SAFE TO MAKE LIVE for the documented direct-loopback single-worker
+  deployment; wider, proxy-adjacent, or multi-user deployment NO. The
+  separate s4 entry remains Pending and keeps the repository restart gate
+  closed. No merge or restart was performed.
 
 - [x] 2026-07-28 — `a05d5fc`, `f03ae5d`, `49ae440`, `d18f755` on
   `fix/4-s2-assessments-projection`, merged into `main` as `876b879`

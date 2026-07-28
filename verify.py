@@ -7441,6 +7441,862 @@ process.stdout.write(JSON.stringify([
     check("S3 the two names are minted per session, never inherited or role-shared",
           _s3_role_bound and not (_S3_VARS & set(_s3_inherited)))
 
+    # --- S4: the Learn record panel (S-DESIGN D-S3-1) ------------------------
+    # The panel is a pure read over the s1 authority rows: the active fold, the
+    # retired-question split, and escaped agent/learner text. Everything below
+    # asserts what /learn RENDERS, plus the context builder directly where the
+    # page cannot show it (the pure-manifest rule, the stale-process guard).
+    import shutil as _s4_shutil
+
+    from starlette.requests import Request as _s4_Request
+
+    from app.main import _record_panel as _s4_panel, templates as _s4_templates
+    from app.services import focus as _s4_focus
+
+    def _s4_rows(lesson_id):
+        conn_ = get_conn()
+        try:
+            return [dict(r) for r in conn_.execute(
+                "SELECT * FROM lesson_assessments WHERE lesson_id = ? ORDER BY id",
+                (lesson_id,)).fetchall()]
+        finally:
+            conn_.close()
+
+    _s4_conn = get_conn()
+    try:
+        _s4_id = lessons_svc.create_lesson(_s4_conn, "Record Panel Fixture")
+        _s4 = lessons_svc.get_lesson(_s4_conn, _s4_id)
+        _s4_focus.record_session(_s4_conn, "pomo", 25 * 60, None, _s4_id)
+    finally:
+        _s4_conn.close()
+    _s4_dir = Path(lessons_svc.LESSONS_DIR) / _s4["slug"]
+    _s4_manifest = json.loads((_s4_dir / "lesson.json").read_text(encoding="utf-8"))
+    _s4_page = _s4_manifest["pages"][0]["id"]
+    _s4_qs = ["q_s4alpha001", "q_s4beta0001", "q_s4gamma001", "q_s4retire01"]
+    _s4_manifest["questions"] = [
+        {"id": qid, "page": _s4_page, "kind": "prediction",
+         "label": None if qid == "q_s4beta0001" else f"Label <{qid}> & more"}
+        for qid in _s4_qs
+    ]
+    bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
+    (_s4_dir / "index.html").write_text(
+        "<html>Vera Example record page</html>", encoding="utf-8")
+    _s4_rev = "sha256:" + hashlib.sha256(
+        (_s4_dir / "index.html").read_bytes()).hexdigest()
+    _s4_url = f"/learn/lessons/{_s4_id}/assessments"
+    attempts_svc._reset_rate_limit()
+    assess_svc._reset_rate_limit()
+
+    def _s4_attempt(question_id, answer, key):
+        return c.post(f"/learn/lessons/{_s4_id}/attempts", json={
+            "question_id": question_id, "page_id": _s4_page,
+            "page_rev": _s4_rev, "answer": answer,
+            "idempotency_key": key}).json()["attempt_id"]
+
+    def _s4_assess(body):
+        return c.post(_s4_url, json=body).json()
+
+    # alpha is answered twice: only the LATEST answer and the verdict on THAT
+    # answer may render — a verdict must never migrate onto a newer attempt.
+    _s4_a_old = _s4_attempt("q_s4alpha001", "s4-superseded-answer", "s4-a0")
+    _s4_a_new = _s4_attempt(
+        "q_s4alpha001", "Vera Example: <b>closes</b> the channel & waits.", "s4-a1")
+    _s4_b = _s4_attempt("q_s4beta0001", "s4-beta-answer", "s4-b1")
+    _s4_ret = _s4_attempt("q_s4retire01", "s4-retired-answer", "s4-r1")
+
+    _s4_assess({"kind": "review", "level": "correct", "attempt_id": _s4_a_old,
+                "note": "s4-verdict-on-the-old-answer", "idempotency_key": "s4-1"})
+    _s4_rev1 = _s4_assess({
+        "kind": "review", "level": "unclear", "attempt_id": _s4_a_new,
+        "note": "s4-first-reading-of-the-answer", "idempotency_key": "s4-2"})
+    _s4_assess({"kind": "review", "level": "partial", "attempt_id": _s4_a_new,
+                "note": "Counts the edges, not the <iterations> & stops.",
+                "supersedes": _s4_rev1["assessment_id"], "idempotency_key": "s4-3"})
+    _s4_rev_beta = _s4_assess({
+        "kind": "review", "level": "incorrect", "attempt_id": _s4_b,
+        "note": "s4-review-that-gets-retracted", "idempotency_key": "s4-4"})
+    _s4_assess({"kind": "retraction", "supersedes": _s4_rev_beta["assessment_id"],
+                "note": "s4-wrong-attempt-judged", "idempotency_key": "s4-5"})
+    _s4_assess({"kind": "review", "level": "correct", "attempt_id": _s4_ret,
+                "note": "s4-verdict-kept-after-retirement", "idempotency_key": "s4-6"})
+    _s4_ev1 = _s4_assess({
+        "kind": "evidence", "level": "passed", "basis": "attempts",
+        "concepts": ["channels & <select>"], "note": "s4-evidence-superseded",
+        "idempotency_key": "s4-7"})
+    # the note lands in a title="" attribute as well as in body text, so it
+    # carries a quote and angle brackets: an escaping regression on either
+    # surface has to show up somewhere in the assertions below.
+    _s4_ev_note = 'Says "a mutex" where <a channel> fits & stalls.'
+    _s4_assess({"kind": "evidence", "level": "weak", "basis": "live",
+                "concepts": ["channels & <select>"], "note": _s4_ev_note,
+                "supersedes": _s4_ev1["assessment_id"], "idempotency_key": "s4-8"})
+    _s4_assess({"kind": "evidence", "level": "passed", "basis": "runs",
+                "concepts": ["goroutines"], "mode": "exam",
+                "note": "s4-exam-evidence", "idempotency_key": "s4-9"})
+    _s4_sum1 = _s4_assess({"kind": "summary", "note": "s4-summary-superseded",
+                           "idempotency_key": "s4-10"})
+    _s4_assess({"kind": "summary", "note": "Covered fan-in & <select>.",
+                "next_action": "Read the select page, then retry q_s4beta0001.",
+                "supersedes": _s4_sum1["assessment_id"], "idempotency_key": "s4-11"})
+
+    # q_s4retire01 leaves the manifest: its durable id is retired forever, and
+    # the attempt and verdict behind it must not vanish with it (S-M7).
+    _s4_manifest["questions"] = [
+        q for q in _s4_manifest["questions"] if q["id"] != "q_s4retire01"]
+    bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
+
+    _s4_conn = get_conn()
+    try:
+        _s4_ctx = _s4_panel(_s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id))
+    finally:
+        _s4_conn.close()
+    _s4_html = c.get(f"/learn?lesson={_s4_id}").text
+    _s4_body = _s4_html.split('<details class="lesson-record"', 1)[-1]
+
+    check("S4 panel renders on the selected lesson with its counts line",
+          '<details class="lesson-record"' in _s4_html
+          and _s4_ctx["counts"] == {"attempts": 4, "assessments": 6,
+                                    "focus": "25m", "focus_seconds": 1500}
+          and "4 attempts" in _s4_body and "6 active" in _s4_body
+          and "25m focused" in _s4_body,
+          str(_s4_ctx["counts"]))
+    check("S4 evidence chips fold to the latest ACTIVE row per concept, weak first",
+          [(chip["concept"], chip["level"], chip["exam"])
+           for chip in _s4_ctx["evidence"]]
+          == [("channels & <select>", "weak", False), ("goroutines", "passed", True)]
+          and "s4-evidence-superseded" not in _s4_html
+          and 'class="rec-chip rec-lv-weak"' in _s4_body,
+          str(_s4_ctx["evidence"]))
+    check("S4 latest active summary renders with its next_action line",
+          _s4_ctx["summary"]["note"] == "Covered fan-in & <select>."
+          and "Read the select page, then retry q_s4beta0001." in _s4_body
+          and 'class="rec-next"' in _s4_body
+          and "s4-summary-superseded" not in _s4_html)
+    _s4_by_q = {q["question_id"]: q for q in _s4_ctx["questions"]}
+    check("S4 each question carries its LATEST attempt only",
+          [q["question_id"] for q in _s4_ctx["questions"]] == _s4_qs[:3]
+          and _s4_by_q["q_s4alpha001"]["attempt"]["attempt_id"] == _s4_a_new
+          and "s4-superseded-answer" not in _s4_html
+          and _s4_by_q["q_s4gamma001"]["attempt"] is None
+          and "Not attempted." in _s4_body,
+          str([q["question_id"] for q in _s4_ctx["questions"]]))
+    check("S4 verdict is the latest ACTIVE review of that attempt, earlier ones a count",
+          _s4_by_q["q_s4alpha001"]["review"]["level"] == "partial"
+          and _s4_by_q["q_s4alpha001"]["earlier_reviews"] == 1
+          and "(1 earlier)" in _s4_body
+          and "s4-first-reading-of-the-answer" not in _s4_html
+          # the verdict on the OLD attempt never migrates to the new one
+          and "s4-verdict-on-the-old-answer" not in _s4_html)
+    check("S4 a retracted review leaves the question unreviewed, not mis-reviewed",
+          _s4_by_q["q_s4beta0001"]["review"] is None
+          and "s4-review-that-gets-retracted" not in _s4_html
+          and "s4-wrong-attempt-judged" not in _s4_html
+          and "No verdict yet." in _s4_body)
+    check("S4 an undeclared question's attempt and verdict move to the retired block",
+          [q["question_id"] for q in _s4_ctx["retired"]] == ["q_s4retire01"]
+          and _s4_ctx["retired"][0]["review"]["level"] == "correct"
+          and _s4_ctx["retired"][0]["retired"] is True
+          and "s4-verdict-kept-after-retirement" in _s4_body
+          and 'class="rec-tag rec-retired"' in _s4_body
+          and 'rec-block rec-block-retired' in _s4_body,
+          str([q["question_id"] for q in _s4_ctx["retired"]]))
+    # Agent- and learner-authored text is the panel's whole content, so nothing
+    # it carries may reach the parent document as markup (no markdown either).
+    check("S4 agent/learner text renders as escaped text, never markup",
+          "Counts the edges, not the &lt;iterations&gt; &amp; stops." in _s4_body
+          and "Vera Example: &lt;b&gt;closes&lt;/b&gt; the channel &amp; waits."
+              in _s4_body
+          and "channels &amp; &lt;select&gt;" in _s4_body
+          and "Covered fan-in &amp; &lt;select&gt;." in _s4_body
+          and "Label &lt;q_s4alpha001&gt; &amp; more" in _s4_body
+          and "<b>closes</b>" not in _s4_body and "<select>" not in _s4_body
+          and "<iterations>" not in _s4_body
+          # the same note inside the chip's title="" attribute: a dropped
+          # escape there would close the attribute on the quote
+          and 'Says &#34;a mutex&#34; where &lt;a channel&gt; fits &amp; stalls.'
+              in _s4_body
+          and _s4_ev_note not in _s4_body)
+    check("S4 a question label falls back to its durable id",
+          _s4_by_q["q_s4beta0001"]["label"] == "q_s4beta0001")
+
+    # PR round 1. A review written AFTER the displayed one and then retracted
+    # is not an earlier reading of the answer: the fold falls back to the
+    # older active review, so counting every review minus one would report a
+    # later retracted verdict among the ones it replaced.
+    _s4_late = _s4_assess({
+        "kind": "review", "level": "incorrect", "attempt_id": _s4_a_new,
+        "note": "s4-late-review-then-retracted", "idempotency_key": "s4-12"})
+    _s4_assess({"kind": "retraction", "supersedes": _s4_late["assessment_id"],
+                "note": "s4-retracting-the-late-review", "idempotency_key": "s4-13"})
+    _s4_conn = get_conn()
+    try:
+        _s4_late_ctx = _s4_panel(_s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id))
+    finally:
+        _s4_conn.close()
+    _s4_late_q = {q["question_id"]: q for q in _s4_late_ctx["questions"]}
+    check("S4 only reviews written BEFORE the displayed verdict count as earlier",
+          _s4_late_q["q_s4alpha001"]["review"]["level"] == "partial"
+          and _s4_late_q["q_s4alpha001"]["earlier_reviews"] == 1
+          and "(2 earlier)" not in c.get(f"/learn?lesson={_s4_id}").text,
+          str(_s4_late_q["q_s4alpha001"]["earlier_reviews"]))
+
+    # PR round 1. `type-mismatch`, `dangling-ref` and `invalid-id` are DEGRADED,
+    # not rejecting: a manifest can drop a question from the typed list while
+    # still declaring it. Validation failure is not retirement.
+    _s4_degraded = json.loads((_s4_dir / "lesson.json").read_text(encoding="utf-8"))
+    _s4_degraded["questions"] = [
+        dict(q, page="pg_no_such_page0") if q["id"] == "q_s4alpha001" else q
+        for q in _s4_degraded["questions"]
+    ]
+    bschema.write_manifest(_s4_dir / "lesson.json", _s4_degraded)
+    _s4_conn = get_conn()
+    try:
+        _s4_deg_lesson = lessons_svc.get_lesson(_s4_conn, _s4_id)
+        _s4_deg_read = lessons_svc.read_bundle_readonly(_s4_deg_lesson)
+        _s4_deg_ctx = _s4_panel(_s4_conn, _s4_deg_lesson)
+    finally:
+        _s4_conn.close()
+    _s4_deg_html = c.get(f"/learn?lesson={_s4_id}").text.split(
+        '<details class="lesson-record"', 1)[-1]
+    _s4_deg_q = {q["question_id"]: q for q in _s4_deg_ctx["questions"]}
+    check("S4 a question dropped by validation is shown as unread, never retired",
+          "dangling-ref" in _s4_deg_read.codes() and not _s4_deg_read.rejected
+          and "q_s4alpha001" not in {q["id"] for q in _s4_deg_read.questions}
+          and [q["question_id"] for q in _s4_deg_ctx["retired"]] == ["q_s4retire01"]
+          and _s4_deg_q["q_s4alpha001"]["unvalidated"] is True
+          and _s4_deg_q["q_s4alpha001"]["retired"] is False
+          # its verdict survives the degraded read intact
+          and _s4_deg_q["q_s4alpha001"]["review"]["level"] == "partial"
+          and 'class="rec-tag rec-unvalidated"' in _s4_deg_html,
+          str([q["question_id"] for q in _s4_deg_ctx["retired"]]))
+    bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
+
+    # PR round 3. A `questions` value of the wrong type is DEGRADED too, and it
+    # leaves the typed list empty — so reading absence from it would retire
+    # every attempted question at once. Nothing can be observed absent from a
+    # list that is not there, so the whole declaration reads as unknown.
+    (_s4_dir / "lesson.json").write_text(
+        json.dumps(dict(_s4_manifest, questions={"q_s4alpha001": "moved?"})),
+        encoding="utf-8")
+    _s4_conn = get_conn()
+    try:
+        _s4_bad_lesson = lessons_svc.get_lesson(_s4_conn, _s4_id)
+        _s4_bad_read = lessons_svc.read_bundle_readonly(_s4_bad_lesson)
+        _s4_bad_ctx = _s4_panel(_s4_conn, _s4_bad_lesson)
+    finally:
+        _s4_conn.close()
+    check("S4 a question list of the wrong type retires nothing",
+          "type-mismatch" in _s4_bad_read.codes() and not _s4_bad_read.rejected
+          and _s4_bad_read.questions == []
+          and _s4_bad_ctx["declared_known"] is False
+          and _s4_bad_ctx["retired"] == []
+          and {q["question_id"] for q in _s4_bad_ctx["questions"]}
+          >= {"q_s4alpha001", "q_s4retire01"}
+          and "no longer declared" not in c.get(f"/learn?lesson={_s4_id}").text,
+          str([q["question_id"] for q in _s4_bad_ctx["retired"]]))
+
+    # Drain L1. An explicit null is the same document as `{}` for this purpose
+    # — a value is present and it is not a list — but `raw.get` cannot tell it
+    # from a MISSING key, which does mean the author declares none. The bundle
+    # reader passes null through as absent and says nothing about it, so the
+    # panel has to read the key itself.
+    (_s4_dir / "lesson.json").write_text(
+        json.dumps(dict(_s4_manifest, questions=None)), encoding="utf-8")
+    _s4_conn = get_conn()
+    try:
+        _s4_null_lesson = lessons_svc.get_lesson(_s4_conn, _s4_id)
+        _s4_null_read = lessons_svc.read_bundle_readonly(_s4_null_lesson)
+        _s4_null_ctx = _s4_panel(_s4_conn, _s4_null_lesson)
+    finally:
+        _s4_conn.close()
+    _s4_dropped = json.loads(json.dumps(_s4_manifest))
+    _s4_dropped.pop("questions")
+    (_s4_dir / "lesson.json").write_text(json.dumps(_s4_dropped), encoding="utf-8")
+    _s4_conn = get_conn()
+    try:
+        _s4_gone_ctx = _s4_panel(_s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id))
+    finally:
+        _s4_conn.close()
+    check("S4 an explicit null question list retires nothing; a missing key does",
+          not _s4_null_read.rejected and _s4_null_read.questions == []
+          and _s4_null_ctx["declared_known"] is False
+          and _s4_null_ctx["retired"] == []
+          and {q["question_id"] for q in _s4_null_ctx["questions"]}
+          >= {"q_s4alpha001", "q_s4retire01"}
+          # the key genuinely absent IS an answer: everything attempted has left
+          and _s4_gone_ctx["declared_known"] is True
+          and _s4_gone_ctx["questions"] == []
+          and {q["question_id"] for q in _s4_gone_ctx["retired"]}
+          >= {"q_s4alpha001", "q_s4retire01"},
+          f'{_s4_null_ctx["declared_known"]} / {_s4_gone_ctx["declared_known"]}')
+    bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
+
+    # PR round 6. `identity-mismatch` is DEGRADED so the copied bundle can
+    # still render, but its declarations belong to another lesson. They
+    # observe nothing about this lesson's question retirement.
+    _s4_foreign_q = "q_s4foreign01"
+    bschema.write_manifest(
+        _s4_dir / "lesson.json",
+        dict(_s4_manifest, lesson_uid=str(_uuid4()), questions=[{
+            "id": _s4_foreign_q, "page": _s4_page,
+            "kind": "prediction", "label": "Foreign lesson question",
+        }]),
+    )
+    _s4_conn = get_conn()
+    try:
+        _s4_foreign_lesson = lessons_svc.get_lesson(_s4_conn, _s4_id)
+        _s4_foreign_read = lessons_svc.read_bundle_readonly(_s4_foreign_lesson)
+        _s4_foreign_ctx = _s4_panel(_s4_conn, _s4_foreign_lesson)
+    finally:
+        _s4_conn.close()
+    _s4_foreign_html = c.get(f"/learn?lesson={_s4_id}").text.split(
+        '<details class="lesson-record"', 1)[-1]
+    check("S4 a foreign-identity declaration retires and declares nothing",
+          "identity-mismatch" in _s4_foreign_read.codes()
+          and not _s4_foreign_read.rejected
+          and _s4_foreign_ctx["declared_known"] is False
+          and _s4_foreign_ctx["retired"] == []
+          and _s4_foreign_q not in {
+              q["question_id"] for q in _s4_foreign_ctx["questions"]
+          }
+          and {q["question_id"] for q in _s4_foreign_ctx["questions"]}
+          >= {"q_s4alpha001", "q_s4retire01"}
+          and "Foreign lesson question" not in _s4_foreign_html
+          and "question declarations unavailable" in _s4_foreign_html
+          and "manifest unreadable" not in _s4_foreign_html
+          and "no longer declared" not in _s4_foreign_html,
+          str([q["question_id"] for q in _s4_foreign_ctx["questions"]]))
+    bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
+
+    # PR round 7. v1 has no question declaration, so its missing `questions`
+    # key says nothing about the recorded v2 questions still existing.
+    (_s4_dir / "lesson.json").write_text(
+        json.dumps({"entry": "index.html"}), encoding="utf-8")
+    _s4_conn = get_conn()
+    try:
+        _s4_v1_lesson = lessons_svc.get_lesson(_s4_conn, _s4_id)
+        _s4_v1_read = lessons_svc.read_bundle_readonly(_s4_v1_lesson)
+        _s4_v1_ctx = _s4_panel(_s4_conn, _s4_v1_lesson)
+    finally:
+        _s4_conn.close()
+    _s4_v1_html = c.get(f"/learn?lesson={_s4_id}").text.split(
+        '<details class="lesson-record"', 1)[-1]
+    check("S4 a v1 manifest asserts no question retirement",
+          _s4_v1_read.version == bschema.SCHEMA_V1
+          and not _s4_v1_read.rejected
+          and _s4_v1_ctx["declared_known"] is False
+          and _s4_v1_ctx["retired"] == []
+          and {q["question_id"] for q in _s4_v1_ctx["questions"]}
+          >= {"q_s4alpha001", "q_s4retire01"}
+          and "question declarations unavailable" in _s4_v1_html
+          and "manifest unreadable" not in _s4_v1_html
+          and "no longer declared" not in _s4_v1_html,
+          str([q["question_id"] for q in _s4_v1_ctx["questions"]]))
+    bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
+
+    # PR round 3. A question may move pages, and `stale` was decided when the
+    # answer was recorded — a move afterwards leaves no mark on it. So the row
+    # shows the page the answer was WRITTEN on and names the new binding
+    # beside it; adopting the manifest's current page would attribute an old
+    # answer to a page it never came from, silently.
+    _s4_moved_page = "pg_s4moved0001"
+    _s4_moved = dict(
+        _s4_manifest,
+        pages=_s4_manifest["pages"] + [dict(_s4_manifest["pages"][0],
+                                            id=_s4_moved_page,
+                                            path="s4-moved.html")],
+        questions=[dict(q, page=_s4_moved_page) if q["id"] == "q_s4alpha001" else q
+                   for q in _s4_manifest["questions"]],
+    )
+    (_s4_dir / "s4-moved.html").write_text("<html>moved</html>", encoding="utf-8")
+    bschema.write_manifest(_s4_dir / "lesson.json", _s4_moved)
+    _s4_conn = get_conn()
+    try:
+        _s4_mv_ctx = _s4_panel(_s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id))
+    finally:
+        _s4_conn.close()
+    _s4_mv = {q["question_id"]: q for q in _s4_mv_ctx["questions"]}
+    _s4_mv_html = c.get(f"/learn?lesson={_s4_id}").text.split(
+        '<details class="lesson-record"', 1)[-1]
+    check("S4 an answer keeps the page it was written on when its question moves",
+          _s4_mv["q_s4alpha001"]["attempt"]["attempt_id"] == _s4_a_new
+          and _s4_mv["q_s4alpha001"]["page_id"] == _s4_page
+          and _s4_mv["q_s4alpha001"]["moved_to"] == _s4_moved_page
+          and _s4_mv["q_s4beta0001"]["moved_to"] is None
+          and 'class="rec-tag rec-moved"' in _s4_mv_html
+          and f">{_s4_page}<" in _s4_mv_html,
+          f'{_s4_mv["q_s4alpha001"]["page_id"]} / '
+          f'{_s4_mv["q_s4alpha001"]["moved_to"]}')
+    bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
+    (_s4_dir / "s4-moved.html").unlink()
+
+    # Re-check finding. The mirror of the round-1 case, and the one it missed:
+    # a review RETRACTED before the displayed one is not an earlier reading of
+    # the answer either — the retraction says it should not stand at all. A
+    # review a later review CORRECTED still counts, which is what the marker is
+    # for, so the alpha case above must keep its one.
+    _s4_g_att = _s4_attempt("q_s4gamma001", "s4-gamma-answer", "s4-g1")
+    _s4_g1 = _s4_assess({
+        "kind": "review", "level": "unclear", "attempt_id": _s4_g_att,
+        "note": "s4-gamma-review-retracted", "idempotency_key": "s4-14"})
+    _s4_assess({"kind": "retraction", "supersedes": _s4_g1["assessment_id"],
+                "note": "s4-gamma-retraction", "idempotency_key": "s4-15"})
+    _s4_g2 = _s4_assess({
+        "kind": "review", "level": "correct", "attempt_id": _s4_g_att,
+        "note": "s4-gamma-standing-verdict", "idempotency_key": "s4-16"})
+    _s4_conn = get_conn()
+    try:
+        _s4_ret_ctx = _s4_panel(_s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id))
+    finally:
+        _s4_conn.close()
+    _s4_ret_q = {q["question_id"]: q for q in _s4_ret_ctx["questions"]}
+    check("S4 a retracted review is not counted as an earlier reading either",
+          _s4_ret_q["q_s4gamma001"]["review"]["assessment_id"]
+          == _s4_g2["assessment_id"]
+          and _s4_ret_q["q_s4gamma001"]["earlier_reviews"] == 0
+          and "s4-gamma-review-retracted" not in c.get(f"/learn?lesson={_s4_id}").text
+          # the corrected-by-a-review case is untouched
+          and _s4_ret_q["q_s4alpha001"]["earlier_reviews"] == 1,
+          str(_s4_ret_q["q_s4gamma001"]["earlier_reviews"]))
+
+    # PR round 5. The fold has to VISIT every active row, but it keeps one per
+    # concept, one per attempt and one summary — and this runs on every /learn
+    # render. So the walk carries no `note` (8 KiB a row, no cardinality
+    # ceiling) and only the rows the fold keeps are read whole.
+    _s4_bulk_att = _s4_attempt("q_s4beta0001", "s4-bulk-answer", "s4-bulk-a")
+    for _s4_n in range(4):
+        _s4_assess({"kind": "review", "level": "partial", "attempt_id": _s4_bulk_att,
+                    "note": f"s4-bulk-note-{_s4_n} " * 400,
+                    "idempotency_key": f"s4-bulk-{_s4_n}"})
+
+    class _S4Spy:
+        """Only what panel_state uses, so every read it makes is recorded."""
+
+        def __init__(self, conn):
+            self._conn, self.calls = conn, []
+
+        @property
+        def in_transaction(self):
+            return self._conn.in_transaction
+
+        def execute(self, sql, params=()):
+            self.calls.append((sql, params))
+            return self._conn.execute(sql, params)
+
+        def rollback(self):
+            return self._conn.rollback()
+
+    _s4_conn = get_conn()
+    try:
+        _s4_spy = _S4Spy(_s4_conn)
+        _s4_latest_attempt_ids = {
+            attempt["attempt_id"]
+            for attempt in attempts_svc.lesson_attempt_summary(
+                _s4_conn, _s4_id
+            )["latest_by_question"].values()
+        }
+        _s4_bounded = assess_svc.panel_state(
+            _s4_spy, _s4_id, review_attempt_ids=_s4_latest_attempt_ids
+        )
+        _s4_wide_fold = assess_svc.active_state(_s4_conn, _s4_id)
+        _s4_active_n = len(assess_svc.active_rows(_s4_conn, _s4_id))
+    finally:
+        _s4_conn.close()
+    _s4_wide_calls = [call for call in _s4_spy.calls if "SELECT *" in call[0]]
+    _s4_winners = (len(_s4_bounded["evidence_by_concept"])
+                   + len(_s4_bounded["reviews_by_attempt"])
+                   + (1 if _s4_bounded["summary"] else 0))
+    check("S4 the panel's fold walks narrow rows and reads only its winners whole",
+          # the four extra active reviews of one attempt are visited, not read
+          _s4_active_n >= _s4_winners + 4
+          and "note" not in assess_svc.ACTIVE_FOLD_KEYS_SQL
+          and "next_action" not in assess_svc.ACTIVE_FOLD_KEYS_SQL
+          and len(_s4_wide_calls) == 1
+          # lesson_id + exactly one id per displayed record
+          and len(_s4_wide_calls[0][1]) == 1 + _s4_winners
+          # and the narrow path folds to precisely what the wide one does
+          and _s4_bounded["evidence_by_concept"] == _s4_wide_fold["evidence_by_concept"]
+          and _s4_bounded["reviews_by_attempt"] == {
+              attempt_id: row
+              for attempt_id, row in _s4_wide_fold["reviews_by_attempt"].items()
+              if attempt_id in _s4_latest_attempt_ids
+          }
+          and _s4_bounded["summary"] == _s4_wide_fold["summary"],
+          f"{_s4_active_n} active, {_s4_winners} read whole")
+    check("S4 hydrates no review winner for a discarded historical attempt",
+          set(_s4_bounded["reviews_by_attempt"]) <= _s4_latest_attempt_ids
+          and set(_s4_wide_fold["reviews_by_attempt"])
+          - set(_s4_bounded["reviews_by_attempt"]),
+          str(len(_s4_wide_fold["reviews_by_attempt"])
+              - len(_s4_bounded["reviews_by_attempt"])))
+    _s4_count_calls = [
+        call for call in _s4_spy.calls
+        if "earlier_count" in call[0]
+    ]
+    check("S4 earlier-review markers aggregate only displayed winners",
+          len(_s4_count_calls) == 1
+          and "WITH winners(attempt_id, winner_id) AS (VALUES" in
+              _s4_count_calls[0][0]
+          and "COUNT(r.id) AS earlier_count" in _s4_count_calls[0][0]
+          and set(_s4_count_calls[0][1][:-1:2])
+              == set(_s4_bounded["reviews_by_attempt"])
+          and "review_seqs" not in _s4_bounded
+          and len(_s4_bounded["earlier_review_counts"])
+          <= len(_s4_bounded["reviews_by_attempt"]),
+          str(_s4_bounded["earlier_review_counts"]))
+
+    # PR round 9. Two variables per displayed winner are bounded independently
+    # of both lifetime review history and the number of active historical
+    # attempts that are not shown.
+    class _S4CountCursor:
+        def fetchall(self):
+            return []
+
+    class _S4CountConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params=()):
+            self.calls.append((sql, params))
+            return _S4CountCursor()
+
+    _s4_count_n = assess_svc._REVIEW_COUNTS_PER_QUERY + 1
+    _s4_count_winners = {
+        f"displayed-attempt-{n:04d}": {"seq": 2_000_000 + n}
+        for n in range(_s4_count_n)
+    }
+    _s4_count_conn = _S4CountConn()
+    assess_svc._earlier_review_counts(
+        _s4_count_conn, _s4_id, _s4_count_winners
+    )
+    _s4_bound_attempts = {
+        attempt_id
+        for _sql, params in _s4_count_conn.calls
+        for attempt_id in params[:-1:2]
+    }
+    check("S4 displayed-review aggregates use bounded SQL-variable batches",
+          len(_s4_count_conn.calls) == 2
+          and max(len(params) for _, params in _s4_count_conn.calls)
+              == assess_svc._REVIEW_COUNTS_PER_QUERY * 2 + 1
+          and _s4_bound_attempts == set(_s4_count_winners),
+          str([len(params) for _, params in _s4_count_conn.calls]))
+
+    # PR round 6. Hydration has no winner-count ceiling, but each SQL statement
+    # has to stay below a fixed variable budget.
+    class _S4HydrateCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class _S4HydrateConn:
+        def __init__(self, rows):
+            self._rows, self.calls = rows, []
+
+        def execute(self, sql, params=()):
+            self.calls.append((sql, params))
+            return _S4HydrateCursor([
+                self._rows[row_id] for row_id in params[1:]
+            ])
+
+    _s4_conn = get_conn()
+    try:
+        _s4_hydrate_template = dict(_s4_conn.execute(
+            "SELECT * FROM lesson_assessments "
+            "WHERE lesson_id = ? AND kind = 'evidence' ORDER BY id LIMIT 1",
+            (_s4_id,),
+        ).fetchone())
+    finally:
+        _s4_conn.close()
+    _s4_hydrate_n = assess_svc._HYDRATE_IDS_PER_QUERY + 1
+    _s4_hydrate_rows = {}
+    _s4_hydrate_narrow = {}
+    for _s4_n in range(_s4_hydrate_n):
+        _s4_seq = 1_000_000 + _s4_n
+        _s4_concept = f"bulk-concept-{_s4_n}"
+        _s4_full = dict(
+            _s4_hydrate_template,
+            id=_s4_seq,
+            assessment_id=f"00000000-0000-4000-8000-{_s4_seq:012d}",
+            concepts_json=json.dumps([_s4_concept]),
+        )
+        _s4_hydrate_rows[_s4_seq] = _s4_full
+        _s4_hydrate_narrow[_s4_concept] = assess_svc._fold_keys(_s4_full)
+    _s4_hydrate_conn = _S4HydrateConn(_s4_hydrate_rows)
+    _s4_hydrated = assess_svc._hydrate(_s4_hydrate_conn, _s4_id, {
+        "evidence_by_concept": _s4_hydrate_narrow,
+        "reviews_by_attempt": {},
+        "summary": None,
+    })
+    check("S4 winner hydration uses bounded SQL-variable batches",
+          len(_s4_hydrate_conn.calls) == 2
+          and max(len(params) for _, params in _s4_hydrate_conn.calls)
+          == assess_svc._HYDRATE_IDS_PER_QUERY + 1
+          and len(_s4_hydrated["evidence_by_concept"]) == _s4_hydrate_n
+          and all(
+              row["seq"] == 1_000_000 + n
+              for n, row in enumerate(
+                  _s4_hydrated["evidence_by_concept"].values()
+              )
+          ),
+          str([len(params) for _, params in _s4_hydrate_conn.calls]))
+
+    # PR round 8. The attempt read establishes the panel snapshot. A review
+    # committed by a sibling connection immediately afterwards must not leak
+    # into the assessment fold/count queries from a newer database version.
+    _s4_conn = get_conn()
+    try:
+        _s4_snapshot_before = _s4_panel(
+            _s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id)
+        )
+    finally:
+        _s4_conn.close()
+    _s4_snapshot_alpha = {
+        q["question_id"]: q for q in _s4_snapshot_before["questions"]
+    }["q_s4alpha001"]
+    _s4_panel_state_real = assess_svc.panel_state
+    _s4_snapshot_write = {}
+
+    def _s4_panel_state_racing(conn, lesson_id, **kwargs):
+        if not _s4_snapshot_write:
+            _s4_snapshot_write.update(_s4_assess({
+                "kind": "review", "level": "correct",
+                "attempt_id": _s4_snapshot_alpha["attempt"]["attempt_id"],
+                "note": "s4-snapshot-later-review",
+                "idempotency_key": "s4-snapshot-1",
+            }))
+        return _s4_panel_state_real(conn, lesson_id, **kwargs)
+
+    assess_svc.panel_state = _s4_panel_state_racing
+    _s4_conn = get_conn()
+    try:
+        _s4_snapshot_ctx = _s4_panel(
+            _s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id)
+        )
+    finally:
+        assess_svc.panel_state = _s4_panel_state_real
+        _s4_conn.close()
+    _s4_conn = get_conn()
+    try:
+        _s4_after_ctx = _s4_panel(
+            _s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id)
+        )
+    finally:
+        _s4_conn.close()
+    _s4_snapshot_q = {
+        q["question_id"]: q for q in _s4_snapshot_ctx["questions"]
+    }["q_s4alpha001"]
+    _s4_after_q = {
+        q["question_id"]: q for q in _s4_after_ctx["questions"]
+    }["q_s4alpha001"]
+    check("S4 concurrent assessment writes cannot mix panel DB versions",
+          _s4_snapshot_write
+          and _s4_snapshot_q["review"] == _s4_snapshot_alpha["review"]
+          and _s4_snapshot_q["earlier_reviews"]
+          == _s4_snapshot_alpha["earlier_reviews"]
+          and _s4_after_q["review"]["assessment_id"]
+          == _s4_snapshot_write["assessment_id"],
+          f'{_s4_snapshot_q["review"]} / {_s4_after_q["review"]}')
+
+    # PR round 1 + re-check. The answer excerpt is bounded by SQLite, so a long
+    # answer is never materialized whole to render 400 characters of it — and
+    # the bound is over BLOB bytes, because SQLite's TEXT `substr`/`length` stop
+    # at the first NUL and an attempt answer is not rejected for holding one.
+    _s4_long = "".join(str(n % 10) for n in range(4000))
+    _s4_long_att = _s4_attempt("q_s4gamma001", _s4_long, "s4-long-1")
+    _s4_nul = "abc\x00def" + "é" * 3000
+    _s4_nul_att = _s4_attempt("q_s4beta0001", _s4_nul, "s4-nul-1")
+    _s4_wide = "é" * (attempts_svc.PANEL_ANSWER_CHARS - 1)
+    _s4_wide_att = _s4_attempt("q_s4alpha001", _s4_wide, "s4-wide-1")
+    _s4_conn = get_conn()
+    try:
+        _s4_views = attempts_svc.lesson_attempt_summary(
+            _s4_conn, _s4_id)["latest_by_question"]
+    finally:
+        _s4_conn.close()
+    _s4_long_view = _s4_views["q_s4gamma001"]
+    _s4_nul_view = _s4_views["q_s4beta0001"]
+    _s4_wide_view = _s4_views["q_s4alpha001"]
+    check("S4 the panel reads a bounded excerpt of the answer, flagged when cut",
+          _s4_long_view["attempt_id"] == _s4_long_att
+          and _s4_long_view["answer"] == _s4_long[:attempts_svc.PANEL_ANSWER_CHARS]
+          and _s4_long_view["answer_truncated"] is True
+          # a whole answer shorter than the bound is neither cut nor flagged,
+          # multi-byte characters included
+          and _s4_wide_view["attempt_id"] == _s4_wide_att
+          and _s4_wide_view["answer"] == _s4_wide
+          and _s4_wide_view["answer_truncated"] is False,
+          str(len(_s4_long_view["answer"])))
+    check("S4 an embedded NUL neither swallows the answer nor hides the cut",
+          _s4_nul_view["attempt_id"] == _s4_nul_att
+          and _s4_nul_view["answer"] == _s4_nul[:attempts_svc.PANEL_ANSWER_CHARS]
+          and len(_s4_nul_view["answer"]) == attempts_svc.PANEL_ANSWER_CHARS
+          and _s4_nul_view["answer_truncated"] is True
+          and "CAST(answer AS BLOB)" in attempts_svc._LATEST_PER_QUESTION_SQL,
+          repr(_s4_nul_view["answer"][:20]))
+
+    # The panel reads the manifest through the PURE reader (D-F1-2 binds phase
+    # S too): a render may never create bundle state, and what it cannot read
+    # it does not call retired.
+    _s4_conn = get_conn()
+    try:
+        _s4_ghost_id = lessons_svc.create_lesson(_s4_conn, "Record Panel Unread")
+        _s4_ghost = lessons_svc.get_lesson(_s4_conn, _s4_ghost_id)
+        _s4_ghost_dir = Path(lessons_svc.LESSONS_DIR) / _s4_ghost["slug"]
+        _s4_shutil.rmtree(_s4_ghost_dir)
+        _s4_ghost_ctx = _s4_panel(_s4_conn, _s4_ghost)
+    finally:
+        _s4_conn.close()
+    check("S4 the panel's manifest read creates nothing and asserts no retirement",
+          not _s4_ghost_dir.exists()
+          and _s4_ghost_ctx["declared_known"] is False
+          and _s4_ghost_ctx["questions"] == [] and _s4_ghost_ctx["retired"] == []
+          and _s4_ghost_ctx["empty"] is True)
+    check("S4 an empty record still renders the panel with its invitation",
+          "Nothing recorded yet" in c.get(
+              f"/learn?lesson={_s4_ghost_id}").text.split(
+                  '<details class="lesson-record"', 1)[-1])
+
+    # Drain follow-up. Start the request with a valid selected page, then
+    # atomically remove it after the DB state is captured but before the one
+    # final manifest read. That read must be the single authority for bundle
+    # metadata, selection persistence, and the record: the response falls
+    # back visibly and the removed page is never stored as current_entry.
+    _s4_main = sys.modules["app.main"]
+    _s4_ensure_real = lessons_svc._ensure_bundle_manifest
+    _s4_readonly_real = lessons_svc.read_bundle_readonly
+    _s4_mark_opened_real = lessons_svc.mark_opened
+    _s4_db_state_real = _s4_main._record_panel_db_state
+    _s4_panel_real = _s4_main._record_panel
+    _s4_read_order = []
+    _s4_ensured_reads = []
+    _s4_readonly_reads = []
+    _s4_panel_reads = []
+    _s4_mark_opened_calls = []
+    _s4_swap_path = "s4-swap-removed.html"
+    _s4_swap_manifest = dict(
+        _s4_manifest,
+        pages=_s4_manifest["pages"] + [
+            dict(
+                _s4_manifest["pages"][0],
+                id="pg_s4swap00001",
+                path=_s4_swap_path,
+                title="Invented swap page",
+            )
+        ],
+    )
+    (_s4_dir / _s4_swap_path).write_text(
+        "<html>Invented swap page</html>", encoding="utf-8"
+    )
+    bschema.write_manifest(_s4_dir / "lesson.json", _s4_swap_manifest)
+    _s4_conn = get_conn()
+    try:
+        lessons_svc.mark_opened(_s4_conn, _s4_id, "index.html")
+    finally:
+        _s4_conn.close()
+
+    def _s4_ensure_once(lesson):
+        read = _s4_ensure_real(lesson)
+        _s4_read_order.append("manifest")
+        _s4_ensured_reads.append(read)
+        return read
+
+    def _s4_readonly_unexpected(lesson):
+        _s4_readonly_reads.append(lesson["id"])
+        return _s4_readonly_real(lesson)
+
+    def _s4_mark_opened_spy(conn, lesson_id, entry):
+        _s4_mark_opened_calls.append((lesson_id, entry))
+        return _s4_mark_opened_real(conn, lesson_id, entry)
+
+    def _s4_db_before_manifest(conn, lesson_id):
+        _s4_read_order.append("db")
+        state = _s4_db_state_real(conn, lesson_id)
+        bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
+        _s4_read_order.append("manifest-swap")
+        return state
+
+    def _s4_panel_same_read(conn, lesson, **kwargs):
+        _s4_read_order.append("panel")
+        _s4_panel_reads.append(kwargs.get("manifest_read"))
+        return _s4_panel_real(conn, lesson, **kwargs)
+
+    lessons_svc._ensure_bundle_manifest = _s4_ensure_once
+    lessons_svc.read_bundle_readonly = _s4_readonly_unexpected
+    lessons_svc.mark_opened = _s4_mark_opened_spy
+    _s4_main._record_panel_db_state = _s4_db_before_manifest
+    _s4_main._record_panel = _s4_panel_same_read
+    try:
+        _s4_same_manifest = c.get(
+            f"/learn?lesson={_s4_id}&entry={_s4_swap_path}"
+        )
+    finally:
+        bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
+        lessons_svc._ensure_bundle_manifest = _s4_ensure_real
+        lessons_svc.read_bundle_readonly = _s4_readonly_real
+        lessons_svc.mark_opened = _s4_mark_opened_real
+        _s4_main._record_panel_db_state = _s4_db_state_real
+        _s4_main._record_panel = _s4_panel_real
+    _s4_conn = get_conn()
+    try:
+        _s4_entry_after_swap = lessons_svc.get_lesson(
+            _s4_conn, _s4_id
+        )["current_entry"]
+    finally:
+        _s4_conn.close()
+    _s4_swap_html = _s4_same_manifest.text
+    check("S4 a page removed before the final manifest read is not persisted",
+          _s4_same_manifest.status_code == 200
+          and _s4_read_order
+              == ["db", "manifest-swap", "manifest", "panel"]
+          and len(_s4_ensured_reads) == 1
+          and _s4_panel_reads == [_s4_ensured_reads[-1]]
+          and not _s4_readonly_reads
+          and not _s4_mark_opened_calls
+          and _s4_entry_after_swap == "index.html"
+          and f"/files/index.html" in _s4_swap_html
+          and f"preview-meta?entry={_s4_swap_path}" in _s4_swap_html,
+          f"order={_s4_read_order}, current_entry={_s4_entry_after_swap}")
+
+    # The live process runs the OLD context until the owner's restart while
+    # serving this template from the working tree: the guard must omit the
+    # panel rather than half-draw it.
+    _s4_stale_selected = {
+        k: v for k, v in dict(
+            lessons_svc.with_bundle_info(_s4),
+            file_url="", preview_url="", preview_meta_url="",
+            sandbox="allow-scripts", record=None,
+        ).items() if k != "record"
+    }
+    _s4_stale = _s4_templates.get_template("learn.html").render(
+        request=_s4_Request({"type": "http", "client": ("127.0.0.1", 50000),
+                             "headers": [], "method": "GET", "path": "/learn",
+                             "query_string": b"", "scheme": "http",
+                             "server": ("testserver", 80)}),
+        rows=[], counts={"all": 0, "archived": 0,
+                         **{k: 0 for k in lessons_svc.STATUSES}},
+        status_tabs=[], status_filter=None, show_archived=False, flash=None,
+        self_url="/learn", selected=_s4_stale_selected)
+    check("S4 the template guard omits the panel when the context lacks it",
+          "record" not in _s4_stale_selected
+          and "lesson-record" not in _s4_stale and "lesson-frame" in _s4_stale)
+    _s4_all = _s4_rows(_s4_id)
+    _s4_superseded = {r["supersedes"] for r in _s4_all if r["supersedes"]}
+    _s4_conn = get_conn()
+    try:
+        _s4_final = _s4_panel(_s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id))
+    finally:
+        _s4_conn.close()
+    check("S4 the fold helpers are shared, and retractions are not counted as state",
+          assess_svc.fold_rows([]) == {"evidence_by_concept": {},
+                                       "reviews_by_attempt": {}, "summary": None}
+          and _s4_final["counts"]["assessments"] == len(
+              [r for r in _s4_all if r["kind"] != "retraction"
+               and r["assessment_id"] not in _s4_superseded])
+          # the whole lesson's writes are in this count, not just the first fold
+          and _s4_final["counts"]["assessments"] > _s4_ctx["counts"]["assessments"])
+
     # --- E3: closed role selector + concurrent agent/learner integration -----
     check("E3 role enum is closed and absent selector preserves E2 semantics",
           _terminal._TERMINAL_ROLES == (

@@ -759,9 +759,12 @@ def bundle_resource_info(lesson: dict, ref: str) -> dict:
     }
 
 
-def bundle_info(lesson: dict, entry: str | None = None) -> dict:
-    """Agent-facing file bundle plus the app's current entry selection."""
-    read = _ensure_bundle_manifest(lesson)
+def _bundle_info(
+    lesson: dict,
+    read: bundle_schema.ManifestRead,
+    entry: str | None = None,
+) -> dict:
+    """Render bundle metadata from one already-established manifest read."""
     base = {
         "manifest": read.raw,
         "manifest_path": str(_manifest_path(lesson["slug"])),
@@ -825,14 +828,29 @@ def bundle_info(lesson: dict, entry: str | None = None) -> dict:
     }
 
 
-def with_bundle_info(lesson: dict | None, entry: str | None = None) -> dict | None:
+def bundle_info(lesson: dict, entry: str | None = None) -> dict:
+    """Agent-facing file bundle plus the app's current entry selection."""
+    return _bundle_info(lesson, _ensure_bundle_manifest(lesson), entry)
+
+
+def with_bundle_info_read(
+    lesson: dict | None,
+    entry: str | None = None,
+) -> tuple[dict | None, bundle_schema.ManifestRead | None]:
+    """Add bundle metadata and return the exact manifest read behind it."""
     if lesson is None:
-        return None
+        return None, None
     lesson = dict(lesson)
-    lesson["bundle"] = bundle_info(lesson, entry)
+    read = _ensure_bundle_manifest(lesson)
+    lesson["bundle"] = _bundle_info(lesson, read, entry)
     lesson["entry"] = lesson["bundle"]["entry"]
     lesson["file"] = lesson["bundle"]["file"]
     lesson["pages"] = lesson["bundle"]["pages"]
+    return lesson, read
+
+
+def with_bundle_info(lesson: dict | None, entry: str | None = None) -> dict | None:
+    lesson, _read = with_bundle_info_read(lesson, entry)
     return lesson
 
 
