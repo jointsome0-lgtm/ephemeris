@@ -1333,16 +1333,17 @@ def _reconcile_assessment_projection(lesson: dict) -> None:
     service itself already answers False rather than raising. The import is
     deferred because the assessment service imports this module.
 
-    Forced: this is the one trigger that fires because the file may be gone —
-    the agent owns the bundle and can delete it — rather than because the
-    authority changed, so it must not be skipped as an identical republish.
+    The ordinary reconcile seal distinguishes an intact projection from a
+    missing or changed one. An intact file needs no fold or rewrite merely
+    because another terminal was opened; deletion or mutation falls through to
+    the same full repair.
     """
     try:
         from .assessments import reconcile_projection
 
         conn = get_conn()
         try:
-            reconcile_projection(conn, lesson, force=True)
+            reconcile_projection(conn, lesson)
         finally:
             conn.close()
     except (OSError, sqlite3.Error, ImportError):

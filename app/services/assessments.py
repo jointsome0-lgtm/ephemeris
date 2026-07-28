@@ -774,7 +774,8 @@ _swept_lock = threading.Lock()
 _swept: set[int] = set()
 
 # What this process last PUBLISHED, per lesson uid: the watermark it rendered
-# and the identity of the file it left behind (inode, size, mtime). It exists
+# and the identity of the file it left behind (device, inode, size, mtime,
+# ctime). It exists
 # to keep a reconcile that would republish identical bytes from doing the
 # work — an idempotent replay is deliberately outside the rate budget (D-S1-3:
 # a retry must learn its assessment_id even when the window is exhausted), so
@@ -785,15 +786,19 @@ _swept: set[int] = set()
 # The skip is verified, not assumed, because the replay heal (D-S1-3) has to
 # keep healing: only a watermark this process published itself counts (one
 # left `pending`, or written before a restart, is never skipped), and the
-# published file must still be there, the same inode, the same size, the same
-# mtime. The agent owns the bundle and can delete or replace the file; that
-# is a rewrite, not a skip. Metadata only — the file's bytes are never read
-# here or anywhere else in this module.
+# published file must still be there with its full metadata seal. Device and
+# ctime are load-bearing: a same-size in-place edit can preserve inode and
+# restore mtime, but cannot restore the kernel change time. The agent owns the
+# bundle and can delete or replace the file; that is a rewrite, not a skip.
+# Metadata only — the file's bytes are never read here or anywhere else in
+# this module.
 _published_lock = threading.Lock()
-_published: dict[str, tuple[int, int, int, int]] = {}
+_published: dict[str, tuple[int, int, int, int, int, int]] = {}
 
 
-def _projection_unchanged(lesson: dict, stamp: tuple[int, int, int, int]) -> bool:
+def _projection_unchanged(
+    lesson: dict, stamp: tuple[int, int, int, int, int, int]
+) -> bool:
     """Is the published file still exactly the one this process left?"""
     try:
         st = os.lstat(lessons._lesson_dir(lesson["slug"]) / PROJECTION_NAME)
@@ -802,7 +807,13 @@ def _projection_unchanged(lesson: dict, stamp: tuple[int, int, int, int]) -> boo
     return (
         stat_module.S_ISREG(st.st_mode)
         and st.st_nlink == 1
-        and (st.st_ino, st.st_size, st.st_mtime_ns) == stamp[1:]
+        and (
+            st.st_dev,
+            st.st_ino,
+            st.st_size,
+            st.st_mtime_ns,
+            st.st_ctime_ns,
+        ) == stamp[1:]
     )
 
 
@@ -1128,7 +1139,14 @@ def _rewrite_locked(
     st = _publish(lesson, _render(lesson, as_of_seq, records))
     if isinstance(uid, str) and uid:
         with _published_lock:
-            _published[uid] = (as_of_seq, st.st_ino, st.st_size, st.st_mtime_ns)
+            _published[uid] = (
+                as_of_seq,
+                st.st_dev,
+                st.st_ino,
+                st.st_size,
+                st.st_mtime_ns,
+                st.st_ctime_ns,
+            )
     return True
 
 
@@ -1144,9 +1162,9 @@ def reconcile_projection(
 
     A reconcile that would republish exactly what this process last published
     does nothing instead (it does not even materialize the fold). `force`
-    turns that off for the one caller that reconciles because the file may
-    have been removed underneath it rather than because state changed — the
-    lesson-agent terminal open.
+    remains available to focused integrity probes that deliberately require a
+    fresh render; production callers rely on the metadata seal to detect a
+    missing or changed file.
 
     Returns True when the bundle now reflects the authority, False when it does
     not: an active transaction (filesystem work must never run inside one), an

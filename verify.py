@@ -3695,6 +3695,65 @@ process.stdout.write(JSON.stringify([
           and len(_s2_publishes) == 1
           and len(_s2_lines(_s2_rep)) == 3,
           f"publishes={_s2_publishes}")
+    # The cached identity is a full metadata seal, not only inode/size/mtime.
+    # A bundle writer can edit in place and restore mtime, but ctime still
+    # changes; a replay must detect that and heal instead of falsely reporting
+    # the altered bytes as projected.
+    _s2_rep_canonical = _s2_path(_s2_rep).read_bytes()
+    _s2_rep_before_tamper = _s2_path(_s2_rep).stat()
+    _s2_rep_tampered = _s2_rep_canonical.replace(
+        b"Vera Example", b"Fera Example", 1)
+    _s2_path(_s2_rep).write_bytes(_s2_rep_tampered)
+    os.utime(
+        _s2_path(_s2_rep),
+        ns=(_s2_rep_before_tamper.st_atime_ns,
+            _s2_rep_before_tamper.st_mtime_ns),
+    )
+    _s2_rep_after_tamper = _s2_path(_s2_rep).stat()
+    _s2_publishes.clear()
+    with _mock.patch.object(assess_svc, "_publish", _s2_counting_publish):
+        _s2_rep_repaired = _s2_post(
+            _s2_rep_id, _s2_rep_body, "s2-rep-1")
+    check("same-inode same-size restored-mtime mutation is reprojected",
+          _s2_rep_tampered != _s2_rep_canonical
+          and _s2_rep_before_tamper.st_ino == _s2_rep_after_tamper.st_ino
+          and _s2_rep_before_tamper.st_size == _s2_rep_after_tamper.st_size
+          and _s2_rep_before_tamper.st_mtime_ns
+          == _s2_rep_after_tamper.st_mtime_ns
+          and _s2_rep_before_tamper.st_ctime_ns
+          != _s2_rep_after_tamper.st_ctime_ns
+          and _s2_rep_repaired["result"] == "duplicate"
+          and _s2_rep_repaired["projection"] == "projected"
+          and len(_s2_publishes) == 1
+          and _s2_path(_s2_rep).read_bytes() != _s2_rep_tampered
+          and len(_s2_lines(_s2_rep)) == 3,
+          f"publishes={_s2_publishes}")
+    # Terminal creation is another unmetered reconcile trigger. The ordinary
+    # seal already detects a missing or changed file, so repeated opens over
+    # an intact projection must neither fold nor publish.
+    _s2_terminal_publishes = []
+    _s2_terminal_folds = []
+    _s2_terminal_state_real = assess_svc.active_state
+
+    def _s2_terminal_publish(lesson_view, data):
+        _s2_terminal_publishes.append(len(data))
+        return _s2_publish_real(lesson_view, data)
+
+    def _s2_terminal_state(conn_, lesson_id_):
+        _s2_terminal_folds.append(lesson_id_)
+        return _s2_terminal_state_real(conn_, lesson_id_)
+
+    with _mock.patch.object(
+            assess_svc, "_publish", _s2_terminal_publish), \
+         _mock.patch.object(
+            assess_svc, "active_state", _s2_terminal_state):
+        _s2_rep_open_a = lessons_svc.prepare_terminal_workspace(_s2_rep["slug"])
+        _s2_rep_open_b = lessons_svc.prepare_terminal_workspace(_s2_rep["slug"])
+    check("repeated terminal opens skip an intact projection",
+          _s2_rep_open_a is not None and _s2_rep_open_b is not None
+          and _s2_terminal_publishes == [] and _s2_terminal_folds == []
+          and len(_s2_lines(_s2_rep)) == 3,
+          f"publishes={_s2_terminal_publishes} folds={_s2_terminal_folds}")
     # the skip is keyed on what THIS process published, so a projection it
     # never wrote is still rewritten — the heal triggers keep working
     _s2_path(_s2_rep).unlink()
@@ -3707,12 +3766,13 @@ process.stdout.write(JSON.stringify([
         _s2_rep_heal_conn.close()
     check("a projection this process never published is not skipped",
           _s2_rep_healed is True and len(_s2_lines(_s2_rep)) == 3)
-    # ...and the terminal open forces the rewrite at an unchanged watermark,
-    # because the agent may simply have deleted the file underneath us
+    # ...and the terminal open heals a deleted file at an unchanged watermark:
+    # the ordinary metadata seal sees the missing name, no force bypass needed
     _s2_path(_s2_rep).unlink()
-    _s2_rep_forced = lessons_svc.prepare_terminal_workspace(_s2_rep["slug"])
-    check("the terminal open forces a rewrite at an unchanged watermark",
-          _s2_rep_forced is not None and _s2_path(_s2_rep).exists()
+    _s2_rep_terminal_healed = lessons_svc.prepare_terminal_workspace(
+        _s2_rep["slug"])
+    check("the terminal open heals a missing file at an unchanged watermark",
+          _s2_rep_terminal_healed is not None and _s2_path(_s2_rep).exists()
           and len(_s2_lines(_s2_rep)) == 3)
     # the identity gate governs the skip too: at an unchanged watermark, a
     # manifest that now names another lesson still answers pending (S-H7)
