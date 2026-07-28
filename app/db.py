@@ -151,7 +151,7 @@ def get_conn() -> sqlite3.Connection:
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -643,6 +643,23 @@ def _migrate_to_14(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA_V14)
 
 
+# v15 — the assessment projection's watermark (s2 L1). Deciding whether a
+# reconcile can skip its rewrite costs one `MAX(id)` per lesson, and a replay
+# can ask for it without limit (replays are outside the rate budget by
+# design). The v14 indexes all order a lesson's entries by something other
+# than the row id, so that query iterated the lesson's whole history; with
+# `(lesson_id, id)` SQLite seeks straight to the last entry. Same index shape
+# and same reason as v13's `idx_attempts_lesson_cursor`.
+_SCHEMA_V15 = """
+CREATE INDEX IF NOT EXISTS idx_assessments_lesson_seq
+  ON lesson_assessments(lesson_id, id);
+"""
+
+
+def _migrate_to_15(conn: sqlite3.Connection) -> None:
+    conn.executescript(_SCHEMA_V15)
+
+
 # Ordered, idempotent steps. A schema change must NEVER require deleting the
 # ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
 _MIGRATIONS = [
@@ -660,6 +677,7 @@ _MIGRATIONS = [
     (12, _migrate_to_12),
     (13, _migrate_to_13),
     (14, _migrate_to_14),
+    (15, _migrate_to_15),
 ]
 
 

@@ -2681,13 +2681,14 @@ process.stdout.write(JSON.stringify([
     finally:
         _as_schema_conn.close()
     check("schema v14 adds lesson_assessments with the D-S1-1 columns",
-          _as_user_version == 14 == SCHEMA_VERSION
+          _as_user_version == SCHEMA_VERSION >= 14
           and _as_cols == {
               "id", "assessment_id", "event_uuid", "lesson_id", "lesson_uid",
               "sitting_id", "mode", "idempotency_key", "fingerprint", "kind",
               "level", "basis", "attempt_id", "question_id", "concepts_json",
               "note", "next_action", "supersedes", "created_at"}
-          and "idx_assessments_lesson_kind" in _as_indexes)
+          and {"idx_assessments_lesson_kind",
+               "idx_assessments_lesson_seq"} <= _as_indexes)
 
     # The per-kind CHECKs are schema-level self-enforcement (S-M1): the typed
     # authority must stay structurally valid under restore tooling or a future
@@ -3713,6 +3714,34 @@ process.stdout.write(JSON.stringify([
     check("the terminal open forces a rewrite at an unchanged watermark",
           _s2_rep_forced is not None and _s2_path(_s2_rep).exists()
           and len(_s2_lines(_s2_rep)) == 3)
+    # the identity gate governs the skip too: at an unchanged watermark, a
+    # manifest that now names another lesson still answers pending (S-H7)
+    _s2_rep_mpath = Path(lessons_svc.LESSONS_DIR) / _s2_rep["slug"] / "lesson.json"
+    _s2_rep_manifest = json.loads(_s2_rep_mpath.read_text(encoding="utf-8"))
+    _s2_rep_before_swap = _s2_path(_s2_rep).read_bytes()
+    bschema.write_manifest(_s2_rep_mpath, dict(
+        _s2_rep_manifest, lesson_uid="0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60"))
+    _s2_rep_foreign = _s2_post(_s2_rep_id, _s2_rep_body, "s2-rep-1")
+    bschema.write_manifest(_s2_rep_mpath, _s2_rep_manifest)
+    _s2_rep_restored = _s2_post(_s2_rep_id, _s2_rep_body, "s2-rep-1")
+    check("a skip is refused while the manifest names another lesson",
+          _s2_rep_foreign["result"] == "duplicate"
+          and _s2_rep_foreign["projection"] == "pending"
+          and _s2_rep_restored["projection"] == "projected"
+          and _s2_path(_s2_rep).read_bytes() == _s2_rep_before_swap)
+    # ...and the watermark query itself seeks instead of walking the lesson's
+    # history: replays are unmetered, so it must not be linear in lifetime rows
+    _s2_plan_conn = get_conn()
+    try:
+        _s2_plan = [str(tuple(r)) for r in _s2_plan_conn.execute(
+            "EXPLAIN QUERY PLAN "
+            "SELECT MAX(id) FROM lesson_assessments WHERE lesson_id = ?",
+            (_s2_rep_id,)).fetchall()]
+    finally:
+        _s2_plan_conn.close()
+    check("the projection watermark is served by (lesson_id, id)",
+          any("idx_assessments_lesson_seq" in row for row in _s2_plan),
+          str(_s2_plan))
 
     # reconcile trigger (c): the first write per lesson per process sweeps even
     # when that write is REFUSED — a restart mid-pending heals on next contact

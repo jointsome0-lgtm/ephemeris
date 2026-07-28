@@ -1098,7 +1098,14 @@ def _rewrite_locked(
     if not force and isinstance(uid, str) and uid:
         with _published_lock:
             stamp = _published.get(uid)
-        if stamp is not None and _projection_unchanged(lesson, stamp):
+        # The identity gate runs on the skip path too. The manifest can be
+        # rewritten between two calls at the same watermark, and S-H7 governs
+        # what the RESPONSE may claim, not only what gets written: a bundle
+        # that now names another lesson is `pending` whether or not this
+        # process would have had bytes to publish. One small manifest read is
+        # still nothing against the rewrite it replaces.
+        if (stamp is not None and _projection_unchanged(lesson, stamp)
+                and not _identity_contradicts(lesson)):
             already_seq = stamp[0]
     as_of_seq, records = _fold_records(conn, lesson["id"], already_seq)
     if records is None:

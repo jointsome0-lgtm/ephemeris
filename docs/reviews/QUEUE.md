@@ -67,8 +67,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   active fold has no cardinality bound and the replay path, which is outside
   the rate budget, drove a full rewrite per duplicate).
 
-- [ ] 2026-07-28 — `fix/4-s2-projection-replay-budget` (PR pending) —
-  `app/services/assessments.py`, `app/services/lessons.py`,
+- [ ] 2026-07-28 — `fix/4-s2-projection-replay-budget` (PR #89) —
+  `app/services/assessments.py`, `app/services/lessons.py`, `app/db.py`,
   `docs/learn-bundle-spec.md`, `verify.py`, `docs/reviews/QUEUE.md` —
   L1 follow-up. `reconcile_projection` gained a `force` flag and the module a
   process-local map of what it last published per lesson uid: the watermark
@@ -77,14 +77,19 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   inode — a regular single-link file, metadata only, bytes never read — the
   reconcile returns without materializing the fold, rendering, or touching
   the filesystem; the watermark is read first inside the same read snapshot,
-  so the skip decision costs one indexed query. Anything else rewrites: a
-  watermark this process never published (pending, or from before a restart),
-  a file that was deleted, resized, replaced or hard-linked, and the
-  lesson-agent terminal open, which passes `force=True` because it fires when
-  the file may be gone rather than when state changed. Spec §6.5 and the
+  and schema v15 adds `idx_assessments_lesson_seq (lesson_id, id)` so that
+  `MAX(id)` seeks to the lesson's last row instead of walking its history
+  (measured 9.3 ms → 2.2 µs at 200k rows; same index shape and reason as
+  v13's `idx_attempts_lesson_cursor`). The identity gate runs on the skip
+  path too: a manifest that now names another lesson answers `pending` at an
+  unchanged watermark, as it does on the write path. Anything else rewrites:
+  a watermark this process never published (pending, or from before a
+  restart), a file that was deleted, resized, replaced or hard-linked, and
+  the lesson-agent terminal open, which passes `force=True` because it fires
+  when the file may be gone rather than when state changed. Spec §6.5 and the
   module header now state that the size is a compaction, not a cap. No change
   to the rate limit, the fold, the file format, the response contract, the
-  lock, or the publication path. Verify 822, verify_restore 28.
+  lock, or the publication path. Verify 824, verify_restore 28.
 
 ## Done
 
