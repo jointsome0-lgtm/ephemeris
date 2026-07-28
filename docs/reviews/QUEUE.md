@@ -67,7 +67,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   active fold has no cardinality bound and the replay path, which is outside
   the rate budget, drove a full rewrite per duplicate).
 
-- [ ] 2026-07-28 — `fix/4-s2-projection-replay-budget` (PR #89) —
+- [ ] 2026-07-28 — `7161e08`, `5ca48f2`, `95b78d9` on
+  `fix/4-s2-projection-replay-budget`, merged into `main` as `5ebdc78`
+  (PR #89) —
   `app/services/assessments.py`, `app/services/lessons.py`, `app/db.py`,
   `docs/learn-bundle-spec.md`, `verify.py`, `docs/reviews/QUEUE.md` —
   L1 follow-up. `reconcile_projection` gained a `force` flag and the module a
