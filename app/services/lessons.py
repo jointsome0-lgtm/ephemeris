@@ -1304,6 +1304,23 @@ def _resolve_terminal_lesson(
     return slug, lesson, lesson_dir
 
 
+def _workspace_view(slug: str, lesson: dict, lesson_dir: Path) -> dict:
+    """What a PTY role learns about the lesson it opens on.
+
+    `id` and `uid` are the DB's own identity for the bundle: the terminal binds
+    the lesson-agent session's assessment capability to them (S-DESIGN D-S2-2),
+    which is why they travel with the workspace rather than being re-resolved
+    from the slug on the websocket path.
+    """
+    return {
+        "slug": slug,
+        "title": lesson["title"],
+        "dir": str(lesson_dir),
+        "id": lesson["id"],
+        "uid": lesson["uid"],
+    }
+
+
 def resolve_terminal_workspace(slug: str | None) -> dict | None:
     """Resolve an existing lesson bundle for a no-regeneration PTY role.
 
@@ -1321,7 +1338,7 @@ def resolve_terminal_workspace(slug: str | None) -> dict | None:
             return None
     except (OSError, sqlite3.Error, LessonError):
         return None
-    return {"slug": slug, "title": lesson["title"], "dir": str(lesson_dir)}
+    return _workspace_view(slug, lesson, lesson_dir)
 
 
 def _reconcile_assessment_projection(lesson: dict) -> None:
@@ -1372,7 +1389,7 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
     # After the briefs: the workspace is ready either way, and a projection
     # hiccup may not cost the agent its regenerated contract.
     _reconcile_assessment_projection(lesson)
-    return {"slug": slug, "title": lesson["title"], "dir": str(lesson_dir)}
+    return _workspace_view(slug, lesson, lesson_dir)
 
 
 def create_lesson(conn: sqlite3.Connection, title: str, source_url: str | None = None) -> int:

@@ -486,6 +486,9 @@ with TestClient(app) as c:
     check("prepare_terminal_workspace resolves a lesson slug to its bundle dir",
           ws_info is not None and ws_info["dir"].endswith(f"lessons/{_lt['slug']}"),
           repr(ws_info))
+    check("terminal workspaces carry the lesson's DB identity (s3 capability)",
+          ws_info is not None
+          and ws_info["id"] == _lt_id and ws_info["uid"] == _lt["uid"])
     agents_text = ""
     if ws_info:
         _agents_path = Path(ws_info["dir"]) / "AGENTS.md"
@@ -6752,8 +6755,14 @@ process.stdout.write(JSON.stringify([
 
     # --- E2: lesson-agent is server-owned, sandboxed, immutable, fail-closed ---
     class _E2Sock:
-        def __init__(self, query):
+        def __init__(self, query, scope=None):
             self.query_params = query
+            # A real WebSocket always carries the ASGI scope; `server` is the
+            # local end of the accepted socket, which is where the s3 capability
+            # URL comes from (never the client's Host header).
+            self.scope = {"server": ("127.0.0.1", 8765), "scheme": "ws"}
+            if scope is not None:
+                self.scope = scope
             self.sent_text = []
             self.sent_bytes = []
             self.accepted = False
@@ -6963,6 +6972,173 @@ process.stdout.write(JSON.stringify([
           and _proxy_agent.get("HTTPS_PROXY") == "http://127.0.0.1:19091"
           and _proxy_learner == {}
           and _proxy_off == ({}, {}))
+
+    # --- S3: the assessment write capability (S-DESIGN D-S1-3 / D-S2-2) ------
+    _S3_VARS = {"EPHEMERIS_ASSESS_URL", "EPHEMERIS_ASSESS_TOKEN"}
+
+    async def _s3_capability_contract():
+        results = {}
+        workspace = {
+            "dir": ws_info["dir"], "slug": _lt["slug"], "title": "demo",
+            "id": _lt_id, "uid": _lt["uid"],
+        }
+        proc = _types.SimpleNamespace(returncode=0)
+
+        async def _sandboxed(role_selector, base_url, prepare=True):
+            resolver = ("prepare_terminal_workspace" if prepare
+                        else "resolve_terminal_workspace")
+            with _sandbox_mock.patch.object(
+                    _terminal, resolver, return_value=workspace), \
+                    _sandbox_mock.patch.object(
+                        _terminal, "_detect_proxy_env", return_value={}), \
+                    _sandbox_mock.patch.object(
+                        _terminal, "spawn_sandboxed",
+                        new=_sandbox_mock.AsyncMock(return_value=proc)) as spawn, \
+                    _sandbox_mock.patch.object(_terminal._TermSession, "start"):
+                sess = await _terminal._create_session(
+                    _lt["slug"], role_selector, base_url=base_url)
+            return sess, spawn.call_args.kwargs["env"]
+
+        agent, agent_env = await _sandboxed(None, "http://127.0.0.1:8765")
+        token = agent_env.get("EPHEMERIS_ASSESS_TOKEN", "")
+        capability = _terminal.resolve_assessment_capability(token)
+        results["agent_capability"] = (
+            agent_env.get("EPHEMERIS_ASSESS_URL")
+            == f"http://127.0.0.1:8765/learn/lessons/{_lt_id}/assessments"
+            and len(token) >= 32
+            and capability is not None
+            and capability["lesson_id"] == _lt_id
+            and capability["lesson_uid"] == _lt["uid"]
+            and capability["sitting_id"] == agent.sid
+        )
+        # The accessor hands out a copy: a consumer cannot edit the registry.
+        capability["lesson_id"] = -1
+        results["registry_copy"] = (
+            _terminal.resolve_assessment_capability(token)["lesson_id"] == _lt_id
+        )
+        await agent.close()
+        results["revoked_with_session"] = (
+            _terminal.resolve_assessment_capability(token) is None
+            and token not in _terminal._ASSESS_CAPABILITIES
+        )
+
+        # A second agent session on the same lesson is a second sitting.
+        first, first_env = await _sandboxed(None, "http://127.0.0.1:8765")
+        second, second_env = await _sandboxed(None, "http://127.0.0.1:8765")
+        results["distinct_sittings"] = (
+            first_env["EPHEMERIS_ASSESS_TOKEN"]
+            != second_env["EPHEMERIS_ASSESS_TOKEN"]
+            and first_env["EPHEMERIS_ASSESS_URL"]
+            == second_env["EPHEMERIS_ASSESS_URL"]
+            and _terminal.resolve_assessment_capability(
+                first_env["EPHEMERIS_ASSESS_TOKEN"])["sitting_id"] == first.sid
+            and _terminal.resolve_assessment_capability(
+                second_env["EPHEMERIS_ASSESS_TOKEN"])["sitting_id"] == second.sid
+        )
+        # Closing one sitting leaves the other's capability alive.
+        await first.close()
+        results["revocation_is_per_session"] = (
+            _terminal.resolve_assessment_capability(
+                first_env["EPHEMERIS_ASSESS_TOKEN"]) is None
+            and _terminal.resolve_assessment_capability(
+                second_env["EPHEMERIS_ASSESS_TOKEN"]) is not None
+        )
+        await second.close()
+
+        learner, learner_env = await _sandboxed(
+            "lesson-learner", "http://127.0.0.1:8765", prepare=False)
+        results["learner_gets_nothing"] = not (_S3_VARS & set(learner_env))
+        await learner.close()
+
+        with _sandbox_mock.patch.object(
+                _terminal, "_detect_proxy_env", return_value={}), \
+                _sandbox_mock.patch.object(
+                    _terminal.asyncio, "create_subprocess_exec",
+                    new=_sandbox_mock.AsyncMock(return_value=proc)) as bare, \
+                _sandbox_mock.patch.object(_terminal._TermSession, "start"):
+            plain = await _terminal._create_session(
+                base_url="http://127.0.0.1:8765")
+        results["plain_gets_nothing"] = not (
+            _S3_VARS & set(bare.call_args.kwargs["env"]))
+        await plain.close()
+
+        # No spellable app address: neither variable, rather than a token the
+        # agent has no URL to use.
+        blind, blind_env = await _sandboxed(None, None)
+        results["no_url_no_token"] = (
+            not (_S3_VARS & set(blind_env))
+            and blind._assess_token is None
+            and _terminal._ASSESS_CAPABILITIES == {}
+        )
+        await blind.close()
+
+        # A failed spawn registers nothing: no session, no live token.
+        with _sandbox_mock.patch.object(
+                _terminal, "prepare_terminal_workspace", return_value=workspace), \
+                _sandbox_mock.patch.object(
+                    _terminal, "_detect_proxy_env", return_value={}), \
+                _sandbox_mock.patch.object(
+                    _terminal, "spawn_sandboxed",
+                    new=_sandbox_mock.AsyncMock(
+                        side_effect=_sandbox.SandboxSpawnError("denied"))):
+            try:
+                await _terminal._create_session(
+                    _lt["slug"], None, base_url="http://127.0.0.1:8765")
+            except _terminal._LessonSandboxError:
+                pass
+        results["failed_spawn_leaves_no_token"] = (
+            _terminal._ASSESS_CAPABILITIES == {}
+        )
+        return results
+
+    _s3 = _asyncio.run(_s3_capability_contract())
+    check("S3 a lesson-agent session carries the complete URL and a bound token",
+          _s3.get("agent_capability") and _s3.get("registry_copy"))
+    check("S3 the capability dies with its own terminal session",
+          _s3.get("revoked_with_session")
+          and _s3.get("revocation_is_per_session"))
+    check("S3 concurrent agent sessions on one lesson are distinct sittings",
+          _s3.get("distinct_sittings"))
+    check("S3 learner and plain shells receive neither capability variable",
+          _s3.get("learner_gets_nothing") and _s3.get("plain_gets_nothing"))
+    check("S3 no injection without a spellable app address, none on a failed spawn",
+          _s3.get("no_url_no_token") and _s3.get("failed_spawn_leaves_no_token"))
+    _s3_urls = [
+        _terminal._app_base_url(_E2Sock({}, {
+            "server": ("127.0.0.1", 8765), "scheme": "ws"})),
+        _terminal._app_base_url(_E2Sock({}, {
+            "server": ("0.0.0.0", 8000), "scheme": "ws"})),
+        _terminal._app_base_url(_E2Sock({}, {
+            "server": ("::1", 8765), "scheme": "wss"})),
+        _terminal._app_base_url(_E2Sock({}, {"server": None})),
+        _terminal._app_base_url(_E2Sock({}, {"server": ("127.0.0.1", None)})),
+        _terminal._app_base_url(_E2Sock({}, {})),
+    ]
+    check("S3 the capability URL is the app's own bound address, never Host",
+          _s3_urls == [
+              "http://127.0.0.1:8765", "http://127.0.0.1:8000",
+              "https://[::1]:8765", None, None, None]
+          # the derivation reads the ASGI scope only — the fake carries no
+          # headers at all, so a spoofed Host has no channel into the URL
+          and not hasattr(_E2Sock({}), "headers"))
+    _s3_role_bound = False
+    _s3_master, _s3_slave = _pty.openpty()
+    try:
+        _terminal._TermSession(
+            "verify-s3-role", _types.SimpleNamespace(returncode=0), _s3_master,
+            role="lesson-learner", workspace=ws_info["dir"],
+            sandbox_profile="lesson-learner", assess_token="never")
+    except ValueError:
+        _s3_role_bound = True
+    finally:
+        os.close(_s3_master)
+        os.close(_s3_slave)
+    with _sandbox_mock.patch.dict(os.environ, {
+            "EPHEMERIS_ASSESS_TOKEN": "leaked-from-the-service",
+            "EPHEMERIS_ASSESS_URL": "http://leaked.invalid/"}):
+        _s3_inherited = _terminal._child_env("lesson-agent")
+    check("S3 the two names are minted per session, never inherited or role-shared",
+          _s3_role_bound and not (_S3_VARS & set(_s3_inherited)))
 
     # --- E3: closed role selector + concurrent agent/learner integration -----
     check("E3 role enum is closed and absent selector preserves E2 semantics",

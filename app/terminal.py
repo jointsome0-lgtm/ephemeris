@@ -288,6 +288,76 @@ def _detect_proxy_env(role: TerminalRole) -> dict[str, str]:
     return env
 
 
+# --- the assessment write capability (S-DESIGN D-S1-3 / D-S2-2) ------------------
+# A lesson-agent session is the tutor's shell, and the tutor records its verdicts
+# through the app's HTTP endpoint. Two variables — and only these two, and only for
+# that one role — carry the instance data the generated brief cannot name (it is a
+# constant): the COMPLETE per-lesson endpoint URL, and an opaque token bound
+# in-process to (lesson, this session's SID).
+#
+# The token is PROVENANCE, not authentication. The endpoint stays open to the
+# tokenless owner shell inside the documented loopback single-user perimeter
+# (D-S1-3); what the token adds is a server-derived answer to "which lesson and
+# which sitting is this write from", which the request body is never allowed to
+# claim. So: no persistence, no TTL, no rotation — an entry lives exactly as long
+# as its terminal session and dies with the process, and the brief tells the agent
+# to degrade gracefully when the app answers that its capability is gone.
+_ASSESS_URL_ENV = "EPHEMERIS_ASSESS_URL"
+_ASSESS_TOKEN_ENV = "EPHEMERIS_ASSESS_TOKEN"
+_ASSESS_CAPABILITIES: dict[str, dict] = {}
+
+
+def _app_base_url(ws: WebSocket) -> str | None:
+    """This app's own origin for the connection `ws` arrived on, or None.
+
+    The address comes from the ASGI scope's ``server`` — the LOCAL end of the
+    accepted socket, filled in by the server from the transport — and never from
+    the client-supplied Host header: the URL handed to the agent must name this
+    app, not whatever a local caller claimed it was called. A wildcard bind has
+    no useful spelling, so it falls back to loopback, which is what the deployment
+    listens on anyway.
+    """
+    server = ws.scope.get("server")
+    if not server or len(server) < 2:
+        return None
+    host, port = server[0], server[1]
+    if not host or not port:
+        return None
+    if host in {"0.0.0.0", "::", ""}:
+        host = "127.0.0.1"
+    if ":" in host:  # bare IPv6 literal needs brackets in a URL authority
+        host = f"[{host}]"
+    scheme = "https" if ws.scope.get("scheme") in {"wss", "https"} else "http"
+    return f"{scheme}://{host}:{port}"
+
+
+def _mint_assessment_capability(
+    sid: str, lesson_id: int, lesson_uid: str | None, base_url: str,
+) -> dict:
+    """One capability record for a lesson-agent session (unregistered yet)."""
+    return {
+        "token": token_urlsafe(32),
+        "lesson_id": int(lesson_id),
+        "lesson_uid": lesson_uid,
+        "sitting_id": sid,
+        "url": f"{base_url}/learn/lessons/{int(lesson_id)}/assessments",
+    }
+
+
+def resolve_assessment_capability(token: str | None) -> dict | None:
+    """The narrow accessor the assessment service reads (D-S1-3).
+
+    Returns a copy of the capability record — lesson identity and the sitting the
+    write came from — or None for an unknown or already-dead token. The service
+    turns None into its own visible refusal: a dead capability is never silently
+    downgraded to an anonymous write.
+    """
+    if not isinstance(token, str) or not token:
+        return None
+    capability = _ASSESS_CAPABILITIES.get(token)
+    return None if capability is None else dict(capability)
+
+
 # The child shell starts from this allowlist, NOT the full service environment:
 # the service env carries app config (data paths, trust lists, deploy toggles)
 # that a shell — and any agent launched from it — has no business inheriting.
@@ -421,6 +491,7 @@ class _TermSession:
         role: TerminalRole,
         workspace: str,
         sandbox_profile: SandboxProfile | None,
+        assess_token: str | None = None,
     ) -> None:
         expected_profile = None if role == "plain" else role
         if role not in _TERMINAL_ROLES:
@@ -429,6 +500,9 @@ class _TermSession:
             raise ValueError("terminal role and sandbox profile disagree")
         if not Path(workspace).is_absolute():
             raise ValueError("terminal workspace must be absolute")
+        if assess_token is not None and role != "lesson-agent":
+            # D-S2-2: the write capability belongs to the tutor's session alone.
+            raise ValueError("only a lesson-agent session carries a capability")
         self.sid = sid
         self.proc = proc
         self.master_fd = master_fd
@@ -437,6 +511,7 @@ class _TermSession:
         self._role = role
         self._workspace = workspace
         self._sandbox_profile = sandbox_profile
+        self._assess_token = assess_token
         self.ws: WebSocket | None = None
         self.rows = 24
         self.cols = 80
@@ -559,6 +634,11 @@ class _TermSession:
             return
         self.closed = True
         _SESSIONS.pop(self.sid, None)
+        if self._assess_token is not None:
+            # The capability dies with the session (D-S1-3): whatever kept the
+            # token — a scrollback, a shell history, an agent's own notes — it
+            # stops naming a sitting the moment that sitting ends.
+            _ASSESS_CAPABILITIES.pop(self._assess_token, None)
         self._remove_reader()
         self._remove_writer(exc=OSError("terminal session closed"))
         if self.proc.returncode is None:
@@ -652,6 +732,7 @@ def _select_create_role(
 async def _create_session(
     lesson: str | None = None,
     role_selector: str | None = None,
+    base_url: str | None = None,
 ) -> "_TermSession | None":
     """Spawn a fresh shell on a PTY and register it. Returns None at capacity or on a
     spawn failure. `lesson` is None for a plain shell; any provided value — even an
@@ -659,6 +740,9 @@ async def _create_session(
     lesson's bundle dir or raise _LessonWorkspaceError. ``role_selector`` is the
     optional ``role`` WS query value. Agent sessions regenerate their briefs;
     learner sessions validate and reuse the bundle without writing them.
+    ``base_url`` is this app's own origin (D-S2-2): with it, a lesson-agent session
+    also carries the assessment write capability; without it, neither variable is
+    injected — a token whose URL cannot be spelled is worth nothing to the agent.
     Serialized via _CREATE_LOCK so the capacity check is atomic."""
     # Reject malformed selectors before the capacity path: an invalid request
     # must not force-evict a detached live shell and only then be refused.
@@ -703,6 +787,22 @@ async def _create_session(
         proxy = await asyncio.to_thread(_detect_proxy_env, role)
         env.update(proxy)
 
+        # The SID is minted before the spawn because the capability binds to it and
+        # the capability has to be in the child's environment (D-S2-2). Nothing is
+        # registered yet: a spawn that fails leaves no session, so it must leave no
+        # live token either.
+        sid = (_LEARNER_SID_PREFIX if role == "lesson-learner" else "") + token_urlsafe(18)
+        capability: dict | None = None
+        if role == "lesson-agent" and base_url and workspace and workspace.get("id"):
+            capability = _mint_assessment_capability(
+                sid, workspace["id"], workspace.get("uid"), base_url,
+            )
+            # Exactly these two names, only on this role — no broad EPHEMERIS_
+            # prefix joins the child allowlist (the learner and runner profiles
+            # have no network and are given nothing).
+            env[_ASSESS_URL_ENV] = capability["url"]
+            env[_ASSESS_TOKEN_ENV] = capability["token"]
+
         _fcntl, pty, _termios = _pty_stack()
         master_fd, slave_fd = pty.openpty()
         os.set_blocking(master_fd, False)  # pump + input writes are add_reader/add_writer-driven
@@ -741,15 +841,19 @@ async def _create_session(
         os.close(slave_fd)  # success: parent keeps only the master end
 
         sess = _TermSession(
-            ((_LEARNER_SID_PREFIX if role == "lesson-learner" else "")
-             + token_urlsafe(18)),
+            sid,
             proc,
             master_fd,
             role=role,
             workspace=workspace_dir,
             sandbox_profile=sandbox_profile,
+            assess_token=capability["token"] if capability else None,
         )
         _SESSIONS[sess.sid] = sess
+        if capability is not None:
+            # Registered only now that the session exists and owns the token, so
+            # every live capability has a session whose close() revokes it.
+            _ASSESS_CAPABILITIES[capability["token"]] = capability
         if proxy.get("HTTP_PROXY"):  # informational banner, replayed with the scrollback
             # Redact credentials, then defang control bytes.
             shown = "".join(c for c in _redact_userinfo(proxy["HTTP_PROXY"]) if c.isprintable())
@@ -895,7 +999,9 @@ async def _serve_ws(ws: WebSocket) -> None:
         try:
             lesson = ws.query_params.get("lesson")
             role_selector = ws.query_params.get("role") if role_present else None
-            sess = await _create_session(lesson, role_selector)
+            sess = await _create_session(
+                lesson, role_selector, base_url=_app_base_url(ws),
+            )
         except _SessionRequestError:
             try:
                 await ws.send_bytes(
