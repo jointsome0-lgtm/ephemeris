@@ -24,9 +24,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-28 — `a0ae9dd`, `981400a`, `c91d002`, `18d4195`, `b8b3e02` on
-  `fix/4-s4-record-panel`; the owner selected unmerged branch head `b8b3e02`
-  for this drain, and the eventual merge commit is appended before any restart —
+- [ ] 2026-07-28 — `a0ae9dd`, `981400a`, `c91d002`, `18d4195`, `b8b3e02`,
+  `5bcd585`, `89f0b77` on `fix/4-s4-record-panel`; the owner selected branch
+  head `b8b3e02` for the drain of 2026-07-28, and the two commits after it are
+  NOT covered by that pass — the entry stays current with the branch, and the
+  eventual merge commit is appended before any restart —
   `app/main.py`, `app/services/assessments.py`, `app/services/attempts.py`,
   `app/services/focus.py`, `app/templates/learn.html`, `app/static/style.css`,
   `verify.py`, `docs/reviews/QUEUE.md` — issue #4 phase S slice s4 renders the
