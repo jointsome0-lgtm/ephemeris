@@ -15,7 +15,7 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
-from datetime import date as _date, timedelta
+from datetime import date as _date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -984,6 +984,8 @@ def get_learn(
         # make the very next read report `ok` and erase the finding.
         if selected and selected["entry"] and not selected["bundle"]["stale_selection"]:
             lessons.mark_opened(conn, selected["id"], selected["entry"])
+        if selected:
+            selected["record"] = _record_panel(conn, selected)
     finally:
         conn.close()
     selected_id = selected["id"] if selected else None
@@ -1062,6 +1064,145 @@ def _learn_url(
     if entry:
         query.append(("entry", entry))
     return "/learn" + (f"?{urlencode(query)}" if query else "")
+
+
+# --- the record panel (#4 phase S, D-S3-1) -----------------------------------
+#
+# What the tutor concluded, rendered beside the lesson: evidence per concept,
+# where the last session left off, and the verdict on each question's latest
+# answer. Server-rendered on GET like the rest of the MPA — no JS, and every
+# agent- and learner-authored string reaches the template as plain text that
+# Jinja escapes (learn.html renders no markdown: the lesson iframe's
+# protections do not extend to the parent page).
+#
+# The whole builder is a pure read. The manifest comes from the READONLY
+# reader: D-F1-2 binds phase S too, so rendering a page never creates bundle
+# state. The assessment side is the D-S1-2 active fold, so a retracted or
+# superseded record never reaches the panel.
+
+# Chip order: the actionable state first, then alphabetically so the block is
+# stable between renders. Unknown levels cannot occur (closed vocabulary,
+# CHECK-enforced) but sort last rather than crashing the page.
+_EVIDENCE_ORDER = {"weak": 0, "developing": 1, "seen": 2, "passed": 3}
+
+
+def _record_date(iso: str | None) -> str:
+    """Local calendar date of a UTC authority stamp. The column is written
+    only by the app, so an unparseable value is a corrupt-row guard rather
+    than a contract — it renders as no date instead of failing the page."""
+    try:
+        return pretty_date(datetime.fromisoformat(iso).astimezone().date())
+    except (TypeError, ValueError):
+        return ""
+
+
+def _record_entry(state: dict, attempt: dict | None, *, label: str,
+                  question_id: str, page_id: str | None, retired: bool) -> dict:
+    """One question row: its latest attempt and the verdict on THAT attempt.
+
+    A review names the attempt it judged, so a verdict on a superseded answer
+    stays with that answer instead of being re-attached to a newer one. Only
+    the latest ACTIVE review renders; the ones it replaced are a count."""
+    review = None
+    earlier = 0
+    if attempt is not None:
+        review = state["reviews_by_attempt"].get(attempt["attempt_id"])
+        if review is not None:
+            total = state["review_totals"].get(attempt["attempt_id"], 1)
+            earlier = max(total - 1, 0)
+    return {
+        "question_id": question_id,
+        "label": label,
+        "page_id": page_id,
+        "retired": retired,
+        "attempt": attempt,
+        "attempt_date": _record_date(attempt["created_at"]) if attempt else "",
+        "review": review,
+        "review_date": _record_date(review["created_at"]) if review else "",
+        "review_exam": bool(review and review["mode"] == "exam"),
+        "earlier_reviews": earlier,
+    }
+
+
+def _record_panel(conn, lesson: dict) -> dict:
+    state = assessments.panel_state(conn, lesson["id"])
+    attempt_state = attempts.lesson_attempt_summary(conn, lesson["id"])
+    latest = attempt_state["latest_by_question"]
+    read = lessons.read_bundle_readonly(lesson)
+    # A rejected read knows nothing about what the author still declares, so
+    # nothing is called retired on its word (S-M7 retires by ABSENCE from the
+    # manifest — absence has to be observed, not assumed). The attempted
+    # questions then render under their durable ids and the retired block is
+    # omitted entirely.
+    declared_known = not read.rejected
+    declared = read.questions if declared_known else []
+
+    questions = [
+        _record_entry(
+            state, latest.get(q["id"]),
+            label=q["label"] or q["id"], question_id=q["id"],
+            page_id=q["page"], retired=False,
+        )
+        for q in declared
+    ]
+    declared_ids = {q["id"] for q in declared}
+    # Attempts whose question left the manifest. Durable ids are retired
+    # forever, so the reviewed history behind them must not vanish with them.
+    retired = [
+        _record_entry(
+            state, attempt,
+            label=question_id, question_id=question_id,
+            page_id=attempt["page_id"], retired=True,
+        )
+        for question_id, attempt in latest.items()
+        if question_id not in declared_ids
+    ]
+    if not declared_known:
+        # Not retired — just unlabelled, because the manifest could not be read.
+        questions = [dict(row, retired=False) for row in retired]
+        retired = []
+
+    evidence = sorted(
+        (
+            {
+                "concept": concept,
+                "level": row["level"],
+                "basis": row["basis"],
+                "note": row["note"],
+                "date": _record_date(row["created_at"]),
+                "exam": row["mode"] == "exam",
+            }
+            for concept, row in state["evidence_by_concept"].items()
+        ),
+        key=lambda chip: (_EVIDENCE_ORDER.get(chip["level"], 9), chip["concept"]),
+    )
+
+    summary = state["summary"]
+    focus_total = focus.lesson_total(conn, lesson["id"])
+    return {
+        "evidence": evidence,
+        "summary": {
+            "note": summary["note"],
+            "next_action": summary["next_action"],
+            "date": _record_date(summary["created_at"]),
+            "exam": summary["mode"] == "exam",
+        } if summary else None,
+        "questions": questions,
+        "retired": retired,
+        "declared_known": declared_known,
+        "counts": {
+            "attempts": attempt_state["total"],
+            "assessments": state["active_count"],
+            # `_dur_label` spells nothing as "0s"; the counts line is a row of
+            # magnitudes, so an empty one keeps the minutes unit of the rest.
+            "focus": focus_total["label"] if focus_total["seconds"] else "0m",
+            "focus_seconds": focus_total["seconds"],
+        },
+        "empty": not (
+            evidence or summary or questions or retired
+            or attempt_state["total"] or focus_total["seconds"]
+        ),
+    }
 
 
 # Preview CSP is selected by the manifest's runtime profile

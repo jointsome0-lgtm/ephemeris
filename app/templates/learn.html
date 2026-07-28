@@ -5,6 +5,43 @@
 {% block content_class %}wide learn-page{% endblock %}
 
 {% block content %}
+{# One question's row in the record panel (#4 D-S3-1). Declared and retired
+   questions differ only by their label source and the marker, so they share
+   this shape. Every string here is agent- or learner-authored and renders as
+   escaped text — no markdown: the lesson iframe's protections stop at the
+   frame, and this is the parent page. #}
+{% macro record_question(q) -%}
+<li class="rec-q{% if q.retired %} rec-q-retired{% endif %}">
+  <div class="rec-q-head">
+    <span class="rec-q-label">{{ q.label }}</span>
+    {% if q.page_id %}<span class="rec-q-page">{{ q.page_id }}</span>{% endif %}
+    {% if q.retired %}<span class="rec-tag rec-retired" title="No longer declared in the manifest">retired</span>{% endif %}
+  </div>
+  {% if q.attempt %}
+  <p class="rec-answer">{{ q.attempt.answer }}{% if q.attempt.answer_truncated %}…{% endif %}</p>
+  <p class="rec-meta">
+    {% if q.attempt_date %}<span>{{ q.attempt_date }}</span>{% endif %}
+    {% if q.attempt.stale %}<span class="rec-tag rec-stale" title="The page changed after this answer was recorded">stale</span>{% endif %}
+  </p>
+    {% if q.review %}
+  <div class="rec-verdict rec-lv-{{ q.review.level }}">
+    <p class="rec-meta">
+      <span class="rec-level">{{ q.review.level }}</span>
+      {% if q.review_exam %}<span class="rec-tag rec-exam" title="Recorded during an exam">exam</span>{% endif %}
+      {% if q.review_date %}<span>{{ q.review_date }}</span>{% endif %}
+      {% if q.earlier_reviews %}<span class="rec-earlier">({{ q.earlier_reviews }} earlier)</span>{% endif %}
+    </p>
+    <p class="rec-note">{{ q.review.note }}</p>
+  </div>
+    {% else %}
+  <p class="rec-none">No verdict yet.</p>
+    {% endif %}
+  {% else %}
+  <p class="rec-none">Not attempted.</p>
+  {% endif %}
+</li>
+{%- endmacro %}
+
 <section class="learn-board" aria-labelledby="learn-title">
   <header class="page-head">
     <h1 id="learn-title">Learn</h1>
@@ -159,6 +196,77 @@
           });
         </script>
       </div>
+      {# The record panel: what the tutor concluded (#4 phase S). The whole
+         context is computed on GET, so a live process still running pre-S
+         Python renders this working-tree template with `record` undefined —
+         the guard omits the panel instead of half-drawing it. #}
+      {% if selected.record is defined %}
+      {% set rec = selected.record %}
+      <details class="lesson-record" open>
+        <summary class="lesson-record-head">
+          <span class="lesson-record-title">Record</span>
+          <span class="lesson-record-counts">
+            {{ rec.counts.attempts }} attempts
+            · {{ rec.counts.assessments }} active
+            · {{ rec.counts.focus }} focused
+          </span>
+        </summary>
+        <div class="lesson-record-body">
+          {% if rec.empty %}
+          <p class="rec-none">Nothing recorded yet — verdicts the tutor writes for this lesson appear here.</p>
+          {% endif %}
+
+          {% if rec.evidence %}
+          <ul class="rec-chips" aria-label="Concept evidence">
+            {% for chip in rec.evidence %}
+            <li class="rec-chip rec-lv-{{ chip.level }}"
+                title="{{ chip.level }} · basis: {{ chip.basis }}{% if chip.date %} · {{ chip.date }}{% endif %} — {{ chip.note|truncate(200) }}">
+              <span class="rec-chip-concept">{{ chip.concept }}</span>
+              <span class="rec-chip-level">{{ chip.level }}</span>
+              {% if chip.exam %}<span class="rec-tag rec-exam" title="Recorded during an exam">exam</span>{% endif %}
+            </li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+
+          {% if rec.summary %}
+          <section class="rec-summary" aria-label="Where we left off">
+            <p class="rec-meta">
+              <span class="rec-sec-title">Where we left off</span>
+              {% if rec.summary.exam %}<span class="rec-tag rec-exam" title="Recorded during an exam">exam</span>{% endif %}
+              {% if rec.summary.date %}<span>{{ rec.summary.date }}</span>{% endif %}
+            </p>
+            <p class="rec-note">{{ rec.summary.note }}</p>
+            {% if rec.summary.next_action %}
+            <p class="rec-next"><span>Next</span>{{ rec.summary.next_action }}</p>
+            {% endif %}
+          </section>
+          {% endif %}
+
+          {% if rec.questions %}
+          <section class="rec-block" aria-label="Questions and verdicts">
+            <p class="rec-meta"><span class="rec-sec-title">Questions &amp; verdicts</span>
+              {% if not rec.declared_known %}<span class="rec-earlier">manifest unreadable — shown by durable id</span>{% endif %}
+            </p>
+            <ul class="rec-questions">
+              {% for q in rec.questions %}{{ record_question(q) }}{% endfor %}
+            </ul>
+          </section>
+          {% endif %}
+
+          {% if rec.retired %}
+          <section class="rec-block rec-block-retired" aria-label="Retired questions">
+            <p class="rec-meta"><span class="rec-sec-title">Retired</span>
+              <span class="rec-earlier">no longer declared, history kept</span>
+            </p>
+            <ul class="rec-questions">
+              {% for q in rec.retired %}{{ record_question(q) }}{% endfor %}
+            </ul>
+          </section>
+          {% endif %}
+        </div>
+      </details>
+      {% endif %}
       {% else %}
       <div class="learn-empty">
         {{ ic.constellation_book('learn-mark') }}
