@@ -24,7 +24,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-28 — `a0ae9dd`, `981400a`, `c91d002`, `18d4195`, `b8b3e02`,
+- [x] 2026-07-28 — `a0ae9dd`, `981400a`, `c91d002`, `18d4195`, `b8b3e02`,
   `5bcd585`, `89f0b77`, with queue-only bookkeeping through `ce2ad38` and the
   PR-bot round-6 through round-8 repairs at the current
   `fix/4-s4-record-panel` branch tip; the owner selected branch head `b8b3e02`
@@ -210,7 +210,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   safe only for the documented direct-loopback, single-worker,
   unauthenticated single-user posture once landed. This entry keeps its
   Pending box for owner closure; no application code, merge or restart was
-  performed by the re-drain.
+  performed by the re-drain. Owner closure 2026-07-29: the branch merged into
+  `main` as `b199a20` (PR #92) at branch tip `619e69f`; the merged tree is
+  byte-identical to that tip (both trees `c7d61fb`), and the tip differs from
+  the reviewed head `167df06` (tree `cecc0a4`) only by the re-drain's own
+  `docs/reviews/` commit — the merged application code is exactly the
+  reviewed tree. The restart gate for this entry is open.
 
 ## Done
 
