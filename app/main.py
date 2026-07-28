@@ -1737,6 +1737,12 @@ def _assessment_refusal(code: str, status: int, detail: str = "") -> JSONRespons
     headers = {"Cache-Control": "no-store"}
     if status == 429:
         headers["Retry-After"] = str(int(assessments.RATE_WINDOW_SECONDS))
+    # JSON accepts escaped lone surrogates in object keys. The strict
+    # unknown-field error names those keys, but Starlette deliberately renders
+    # JSON with ensure_ascii=False and cannot UTF-8 encode a surrogate. Keep the
+    # controlled 400 path total: ordinary Unicode stays unchanged while only
+    # unencodable code points become their explicit backslash escape.
+    detail = detail.encode("utf-8", "backslashreplace").decode("utf-8")
     return JSONResponse(
         {"ok": False, "error": code, "detail": detail},
         status_code=status,

@@ -3022,6 +3022,27 @@ process.stdout.write(JSON.stringify([
           ", ".join(f"{label}={_as_refusals[label].get('error')}"
                     for label, code in _as_expected.items()
                     if _as_refusals[label].get("error") != code))
+    # Drain L1: JSON accepts an escaped lone surrogate in an object key. It is
+    # still just an unknown field, and the refusal detail must remain encodable
+    # rather than turning JSONResponse construction into an application error.
+    _as_surrogate_body = (
+        b'{"kind":"summary","note":"Vera Example: a note.",'
+        b'"idempotency_key":"vera-as-surrogate","\\ud800":1}'
+    )
+    _as_surrogate_id = c.post(
+        _as_url, content=_as_surrogate_body,
+        headers={"content-type": "application/json"})
+    _as_surrogate_slug = c.post(
+        f"/learn/lessons/by-slug/{_as['slug']}/assessments",
+        content=_as_surrogate_body,
+        headers={"content-type": "application/json"})
+    check("assessment aliases return a UTF-8-safe unknown-field refusal",
+          _as_surrogate_id.status_code == 400
+          and _as_surrogate_slug.status_code == 400
+          and _as_surrogate_id.json() == _as_surrogate_slug.json()
+          and _as_surrogate_id.json()["error"] == "unknown-field"
+          and _as_surrogate_id.json()["detail"] == r"unknown fields: \ud800"
+          and len(_as_rows()) == 1)
     check("note over 8 KiB and next_action over 512 B have their own codes",
           _as_error({"kind": "summary",
                      "note": "x" * (assess_svc.MAX_NOTE_BYTES + 1)}
