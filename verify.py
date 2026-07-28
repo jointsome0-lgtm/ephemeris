@@ -7694,6 +7694,41 @@ process.stdout.write(JSON.stringify([
           >= {"q_s4alpha001", "q_s4retire01"}
           and "no longer declared" not in c.get(f"/learn?lesson={_s4_id}").text,
           str([q["question_id"] for q in _s4_bad_ctx["retired"]]))
+
+    # Drain L1. An explicit null is the same document as `{}` for this purpose
+    # — a value is present and it is not a list — but `raw.get` cannot tell it
+    # from a MISSING key, which does mean the author declares none. The bundle
+    # reader passes null through as absent and says nothing about it, so the
+    # panel has to read the key itself.
+    (_s4_dir / "lesson.json").write_text(
+        json.dumps(dict(_s4_manifest, questions=None)), encoding="utf-8")
+    _s4_conn = get_conn()
+    try:
+        _s4_null_lesson = lessons_svc.get_lesson(_s4_conn, _s4_id)
+        _s4_null_read = lessons_svc.read_bundle_readonly(_s4_null_lesson)
+        _s4_null_ctx = _s4_panel(_s4_conn, _s4_null_lesson)
+    finally:
+        _s4_conn.close()
+    _s4_dropped = json.loads(json.dumps(_s4_manifest))
+    _s4_dropped.pop("questions")
+    (_s4_dir / "lesson.json").write_text(json.dumps(_s4_dropped), encoding="utf-8")
+    _s4_conn = get_conn()
+    try:
+        _s4_gone_ctx = _s4_panel(_s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id))
+    finally:
+        _s4_conn.close()
+    check("S4 an explicit null question list retires nothing; a missing key does",
+          not _s4_null_read.rejected and _s4_null_read.questions == []
+          and _s4_null_ctx["declared_known"] is False
+          and _s4_null_ctx["retired"] == []
+          and {q["question_id"] for q in _s4_null_ctx["questions"]}
+          >= {"q_s4alpha001", "q_s4retire01"}
+          # the key genuinely absent IS an answer: everything attempted has left
+          and _s4_gone_ctx["declared_known"] is True
+          and _s4_gone_ctx["questions"] == []
+          and {q["question_id"] for q in _s4_gone_ctx["retired"]}
+          >= {"q_s4alpha001", "q_s4retire01"},
+          f'{_s4_null_ctx["declared_known"]} / {_s4_gone_ctx["declared_known"]}')
     bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
 
     # PR round 3. A question may move pages, and `stale` was decided when the

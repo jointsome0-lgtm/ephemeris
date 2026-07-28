@@ -1109,18 +1109,20 @@ def _document_question_ids(read) -> set[str] | None:
     validated model.
 
     A missing `questions` key is an answer: the author declares none, and an
-    attempted question really has left. A `questions` value of the wrong type
-    is not — nothing can be observed absent from a list that is not there —
-    so it reads as unknown, like a rejected manifest.
+    attempted question really has left. Any value PRESENT under that key and
+    not a list — an explicit null included — is not an answer: nothing can be
+    observed absent from a list that is not there, so it reads as unknown,
+    like a rejected manifest. Presence is tested on the key rather than on the
+    value, because `raw.get` cannot tell the two documents apart.
     """
     raw = read.raw if isinstance(read.raw, dict) else None
     if raw is None:
         return None
-    items = raw.get("questions")
-    if items is None:
+    if "questions" not in raw:
         return set()
-    if not isinstance(items, list):
+    if not isinstance(raw["questions"], list):
         return None
+    items = raw["questions"]
     return {
         item["id"] for item in items
         if isinstance(item, dict) and isinstance(item.get("id"), str)
