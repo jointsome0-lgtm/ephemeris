@@ -25,6 +25,7 @@ from app.db import get_conn  # noqa: E402
 
 PASS = 0
 FAIL = 0
+FAILURES: list[str] = []
 
 
 def check(label: str, cond: bool, extra: str = "") -> None:
@@ -34,7 +35,10 @@ def check(label: str, cond: bool, extra: str = "") -> None:
         PASS += 1
     else:
         FAIL += 1
-    print(f"[{mark}] {label}" + (f"  -- {extra}" if extra and not cond else ""))
+    detail = f"[{mark}] {label}" + (f"  -- {extra}" if extra and not cond else "")
+    print(detail)
+    if not cond:
+        FAILURES.append(detail)
 
 
 def events_of(type_: str) -> list:
@@ -74,5 +78,8 @@ def suite_state() -> dict:
 
 def pytest_sessionfinish(session, exitstatus) -> None:
     print(f"\n{PASS} passed, {FAIL} failed")
+    if FAILURES:
+        print("\nFailed checks:")
+        print(*FAILURES, sep="\n")
     if FAIL and exitstatus == pytest.ExitCode.OK:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
