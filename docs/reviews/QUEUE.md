@@ -26,11 +26,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 - [ ] 2026-07-28 — `a0ae9dd`, `981400a`, `c91d002`, `18d4195`, `b8b3e02`,
   `5bcd585`, `89f0b77`, with queue-only bookkeeping through `ce2ad38` and the
-  PR-bot round-6 repair at the current `fix/4-s4-record-panel` branch tip; the
-  owner selected branch head `b8b3e02` for the drain of 2026-07-28, and the
-  two code commits after it are NOT covered by that pass — the entry stays
-  current with the branch, and the eventual merge commit is appended before
-  any restart —
+  PR-bot round-6 and round-7 repairs at the current
+  `fix/4-s4-record-panel` branch tip; the owner selected branch head `b8b3e02`
+  for the drain of 2026-07-28, and the later code commits are NOT covered by
+  that pass — the entry stays current with the branch, and the eventual merge
+  commit is appended before any restart —
   `app/main.py`, `app/services/assessments.py`, `app/services/attempts.py`,
   `app/services/focus.py`, `app/templates/learn.html`, `app/static/style.css`,
   `verify.py`, `docs/reviews/QUEUE.md` — issue #4 phase S slice s4 renders the
@@ -133,7 +133,16 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   declaration helper, winner hydration and verifier; it does not change a
   POST path, write path, projection, template, static asset or escaping rule.
   Host verification at the round-6 branch state: verify 874, verify_restore
-  28; public hygiene clean.
+  28; public hygiene clean. PR-bot round 7 makes a supported v1 manifest
+  declaration-unknown for the panel because v1 has no question declaration:
+  recorded v2 attempts render under durable ids and none is called retired.
+  It also replaces the Python lists of every non-retracted historical review
+  seq with SQL `COUNT` aggregates preceding each active review winner.
+  Superseded readings remain counted, while any review struck by a
+  `retraction` remains excluded; only one aggregate per winner reaches Python.
+  The round changes only GET-side declaration and assessment read helpers plus
+  verifier coverage. Host verification at the round-7 branch state: verify
+  876, verify_restore 28; public hygiene clean.
 
 ## Done
 

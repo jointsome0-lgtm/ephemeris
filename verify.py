@@ -7766,6 +7766,30 @@ process.stdout.write(JSON.stringify([
           str([q["question_id"] for q in _s4_foreign_ctx["questions"]]))
     bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
 
+    # PR round 7. v1 has no question declaration, so its missing `questions`
+    # key says nothing about the recorded v2 questions still existing.
+    (_s4_dir / "lesson.json").write_text(
+        json.dumps({"entry": "index.html"}), encoding="utf-8")
+    _s4_conn = get_conn()
+    try:
+        _s4_v1_lesson = lessons_svc.get_lesson(_s4_conn, _s4_id)
+        _s4_v1_read = lessons_svc.read_bundle_readonly(_s4_v1_lesson)
+        _s4_v1_ctx = _s4_panel(_s4_conn, _s4_v1_lesson)
+    finally:
+        _s4_conn.close()
+    _s4_v1_html = c.get(f"/learn?lesson={_s4_id}").text.split(
+        '<details class="lesson-record"', 1)[-1]
+    check("S4 a v1 manifest asserts no question retirement",
+          _s4_v1_read.version == bschema.SCHEMA_V1
+          and not _s4_v1_read.rejected
+          and _s4_v1_ctx["declared_known"] is False
+          and _s4_v1_ctx["retired"] == []
+          and {q["question_id"] for q in _s4_v1_ctx["questions"]}
+          >= {"q_s4alpha001", "q_s4retire01"}
+          and "no longer declared" not in _s4_v1_html,
+          str([q["question_id"] for q in _s4_v1_ctx["questions"]]))
+    bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
+
     # PR round 3. A question may move pages, and `stale` was decided when the
     # answer was recorded — a move afterwards leaves no mark on it. So the row
     # shows the page the answer was WRITTEN on and names the new binding
@@ -7876,6 +7900,17 @@ process.stdout.write(JSON.stringify([
           and _s4_bounded["reviews_by_attempt"] == _s4_wide_fold["reviews_by_attempt"]
           and _s4_bounded["summary"] == _s4_wide_fold["summary"],
           f"{_s4_active_n} active, {_s4_winners} read whole")
+    _s4_count_calls = [
+        call for call in _s4_spy.calls
+        if "earlier_count" in call[0]
+    ]
+    check("S4 earlier-review markers are SQL aggregates, not lifetime seq lists",
+          len(_s4_count_calls) == 1
+          and "COUNT(*) AS earlier_count" in _s4_count_calls[0][0]
+          and "review_seqs" not in _s4_bounded
+          and len(_s4_bounded["earlier_review_counts"])
+          <= len(_s4_bounded["reviews_by_attempt"]),
+          str(_s4_bounded["earlier_review_counts"]))
 
     # PR round 6. Hydration has no winner-count ceiling, but each SQL statement
     # has to stay below a fixed variable budget.

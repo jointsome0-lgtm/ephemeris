@@ -1115,12 +1115,14 @@ def _document_question_ids(read) -> set[str] | None:
     like a rejected manifest. Presence is tested on the key rather than on the
     value, because `raw.get` cannot tell the two documents apart.
 
-    A rejected read cannot answer for the document. Neither can an
-    identity-mismatched one: its declaration belongs to a different lesson,
-    even though the shared reader keeps that condition DEGRADED so the foreign
-    bundle can still render under the legacy profile.
+    A rejected read cannot answer for the document. A v1 read cannot either:
+    that schema has no question declaration at all. Nor can an
+    identity-mismatched v2 read, whose declaration belongs to a different
+    lesson even though the shared reader keeps that condition DEGRADED so the
+    foreign bundle can still render under the legacy profile.
     """
-    if read.rejected or "identity-mismatch" in read.codes():
+    if (read.rejected or read.version != bundle_schema.SCHEMA_V2
+            or "identity-mismatch" in read.codes()):
         return None
     raw = read.raw if isinstance(read.raw, dict) else None
     if raw is None:
@@ -1159,9 +1161,8 @@ def _record_entry(state: dict, attempt: dict | None, *, label: str,
     if attempt is not None:
         review = state["reviews_by_attempt"].get(attempt["attempt_id"])
         if review is not None:
-            earlier = sum(
-                1 for seq in state["review_seqs"].get(attempt["attempt_id"], ())
-                if seq < review["seq"]
+            earlier = state["earlier_review_counts"].get(
+                attempt["attempt_id"], 0
             )
     recorded_page = attempt["page_id"] if attempt is not None else None
     return {

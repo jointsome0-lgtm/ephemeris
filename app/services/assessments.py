@@ -869,27 +869,37 @@ def active_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
     return fold_rows(active_rows(conn, lesson_id))
 
 
-# The reviews that can stand behind a displayed verdict, by the attempt they
-# judged and in `seq` order. `idx_assessments_lesson_kind` is (lesson_id, kind,
-# id), so this seeks the lesson's reviews instead of walking its history, and
-# the correlated lookup rides `idx_assessments_lesson_supersedes`.
+# The number of earlier readings behind each active review winner. The winners
+# CTE has exactly the review-per-attempt semantics of `fold_rows`: among rows
+# not superseded by ANY later record, the greatest seq wins.
 #
-# The seqs themselves, not a total: the active review is not always the newest
-# one written. Retract a review and the fold falls back to an EARLIER active
-# review, so a total-minus-one would count a later, retracted review among the
-# ones it replaced. The panel counts only the seqs below the review it shows.
-#
-# Retracted reviews are excluded outright, in either direction. A review that a
-# later review corrected still counts — replaced readings are exactly what the
-# marker is for — but a retraction says its target should not stand at all, and
-# a struck verdict is not an earlier reading of the answer.
-_REVIEW_SEQS_SQL = (
-    "SELECT r.attempt_id AS attempt_id, r.id AS id FROM lesson_assessments r "
-    "WHERE r.lesson_id = ? AND r.kind = 'review' AND r.attempt_id IS NOT NULL "
-    "AND NOT EXISTS (SELECT 1 FROM lesson_assessments t "
-    "                WHERE t.lesson_id = r.lesson_id AND t.kind = 'retraction' "
-    "                  AND t.supersedes = r.assessment_id) "
-    "ORDER BY r.id"
+# Only rows before that winner count. Reviews corrected by another review stay
+# in the count — replaced readings are exactly what the marker acknowledges —
+# while reviews struck by a retraction are excluded outright. SQL returns one
+# aggregate per nonzero winner rather than materializing every lifetime review
+# seq in Python. Both correlated lookups ride
+# `idx_assessments_lesson_supersedes`; the outer scans seek reviews through
+# `idx_assessments_lesson_kind`.
+_EARLIER_REVIEW_COUNTS_SQL = (
+    "WITH winners AS ("
+    "  SELECT r.attempt_id AS attempt_id, MAX(r.id) AS winner_id "
+    "  FROM lesson_assessments r "
+    "  WHERE r.lesson_id = ? AND r.kind = 'review' "
+    "    AND r.attempt_id IS NOT NULL "
+    "    AND NOT EXISTS (SELECT 1 FROM lesson_assessments s "
+    "                    WHERE s.lesson_id = r.lesson_id "
+    "                      AND s.supersedes = r.assessment_id) "
+    "  GROUP BY r.attempt_id"
+    ") "
+    "SELECT r.attempt_id AS attempt_id, COUNT(*) AS earlier_count "
+    "FROM lesson_assessments r "
+    "JOIN winners w ON w.attempt_id = r.attempt_id AND r.id < w.winner_id "
+    "WHERE r.lesson_id = ? AND r.kind = 'review' "
+    "  AND NOT EXISTS (SELECT 1 FROM lesson_assessments t "
+    "                  WHERE t.lesson_id = r.lesson_id "
+    "                    AND t.kind = 'retraction' "
+    "                    AND t.supersedes = r.assessment_id) "
+    "GROUP BY r.attempt_id"
 )
 
 # Leave ample room below SQLite's traditional 999-variable default: each
@@ -947,10 +957,12 @@ def panel_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
             in conn.execute(ACTIVE_FOLD_KEYS_SQL, (lesson_id,)).fetchall()]
     state = _hydrate(conn, lesson_id, fold_rows(keys))
     state["active_count"] = sum(1 for row in keys if row["kind"] != "retraction")
-    review_seqs: dict[str, list[int]] = {}
-    for row in conn.execute(_REVIEW_SEQS_SQL, (lesson_id,)).fetchall():
-        review_seqs.setdefault(row["attempt_id"], []).append(row["id"])
-    state["review_seqs"] = review_seqs
+    state["earlier_review_counts"] = {
+        row["attempt_id"]: row["earlier_count"]
+        for row in conn.execute(
+            _EARLIER_REVIEW_COUNTS_SQL, (lesson_id, lesson_id)
+        ).fetchall()
+    }
     return state
 
 
