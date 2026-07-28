@@ -13,7 +13,10 @@ How it works:
   brief) to it and writing a report next to this file. The brief is handed to
   the reviewer by file reference, never restated inline. Entries drain in one
   batch before the restart that would carry them, not one pass per merge;
-  entries over the same surface share a scope and a report.
+  entries over the same surface share a scope and a report. The drain
+  diagnoses and does not repair: findings land in the report, the fix is an
+  ordinary reviewed PR, and an entry reaches Done with that PR — so no code
+  arrives on `main` without a second pair of eyes.
 - Deploy gate: the live service does not restart with code whose entries are
   still Pending (AGENTS.md → Public-Safety Check).
 
