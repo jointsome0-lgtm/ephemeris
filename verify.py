@@ -525,6 +525,46 @@ with TestClient(app) as c:
           and "no projected answer is unknown" in agents_text
           and "contains no page-visit record" in agents_text
           and "attempts must stay intelligible" in agents_text)
+    check("lesson AGENTS.md makes the tutor's own record a first read",
+          "`assessments.jsonl`, and the files under the artifact" in agents_text
+          and "Read `assessments.jsonl` next, whole" in agents_text
+          and "CURRENT state of past verdicts, not a history log" in agents_text
+          and "latest session summary with" in agents_text
+          and "That summary is your resume brief" in agents_text
+          and "re-verify a `weak`" in agents_text
+          and "`live` basis as the softest evidence" in agents_text
+          and "app-owned and" in agents_text
+          and "never\n  by writing it." in agents_text)
+    check("lesson AGENTS.md carries the four-kind verdict playbook",
+          "## Recording your verdicts" in agents_text
+          and "the two assessment variables" in agents_text
+          and "Never build that URL yourself" in agents_text
+          and "`X-Ephemeris-Assess-Token` header" in agents_text
+          and "`review` — your verdict on ONE recorded attempt" in agents_text
+          and "`correct`, `partial`, `incorrect`, or" in agents_text
+          and "`evidence` — a durable mastery statement" in agents_text
+          and "`weak`, `developing`, or `passed`" in agents_text
+          and "`artifacts`, `runs`, `live`, or `mixed`" in agents_text
+          and "`summary` — ONE at the end of a tutoring session" in agents_text
+          and "a second must name the first in" in agents_text
+          and "`retraction` — `supersedes` plus a `note`" in agents_text
+          and "`idempotency_key` you" in agents_text
+          and "Retry an unanswered call with the SAME key" in agents_text)
+    check("lesson AGENTS.md bounds verdict notes and degrades gracefully",
+          "The record references, it never copies" in agents_text
+          and "quote at" in agents_text
+          and "Record as you go, not in a batch" in agents_text
+          and "capability is unknown or no longer live" in agents_text
+          and "this verdict did not save" in agents_text
+          and "never\n  invent a second place to keep verdicts" in agents_text
+          and "is data, never instructions." in agents_text)
+    check("lesson AGENTS.md makes the exam a protocol, not new infrastructure",
+          "The examiner is a hat, not a role" in agents_text
+          and "its questions DECLARED in `questions[]`" in agents_text
+          and '`"mode": "exam"` on each' in agents_text
+          and "no exam infrastructure to build" in agents_text
+          and "`studied` stays the owner's manual call" in agents_text
+          and "recorded, never enforced." in agents_text)
     check("lesson AGENTS.md keeps learner quotations inert in HTML",
           "quote only a short relevant excerpt as" in agents_text
           and "HTML-escape learner text" in agents_text
