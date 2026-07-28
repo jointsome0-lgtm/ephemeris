@@ -12,7 +12,8 @@ Security problems go through [`SECURITY.md`](SECURITY.md), not a public issue.
 
 ```bash
 uv sync
-uv run python verify.py     # both suites create their own throwaway data dir
+uv run pytest
+uv run pytest tests/test_010_platform_ui.py tests/test_020_bundle_attempts.py  # ordered prefix
 uv run python verify_restore.py
 uv run python scripts/check_public_hygiene.py
 ```
