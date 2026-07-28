@@ -108,7 +108,20 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   align it is declined here as a change to shared manifest-read semantics
   (the projection, the generated brief and the F-phase readers all consume
   `codes()`) that belongs to its own reviewed change; the panel no longer
-  depends on it either way. Verify 871, verify_restore 28.
+  depends on it either way. PR-bot round 5 narrows the panel's own read:
+  `panel_state` walked the active rows with `SELECT *`, materializing every
+  active `note` (bounded at 8 KiB each, with no ceiling on how many rows stand
+  active) on every `/learn` render, to keep one row per concept, one per
+  attempt and one summary. `row_view`'s first five keys moved into a shared
+  `_fold_keys`, both queries are now formatted from one `_ACTIVE_SQL` so the
+  narrow walk returns exactly the rows the wide one would, and the fold's
+  winners are re-read whole by id in one further statement on the same
+  connection with no write in between. The fold's inputs, outputs and
+  `active_count` are unchanged, `active_rows`/`active_state` and the s2
+  projection still read whole rows, and the verifier asserts the narrow
+  columns carry no `note`, that one wide read is issued with exactly one id
+  per displayed record, and that the narrow fold equals the wide one.
+  Verify 872, verify_restore 28.
 
 ## Done
 
