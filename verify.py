@@ -7762,6 +7762,8 @@ process.stdout.write(JSON.stringify([
           and {q["question_id"] for q in _s4_foreign_ctx["questions"]}
           >= {"q_s4alpha001", "q_s4retire01"}
           and "Foreign lesson question" not in _s4_foreign_html
+          and "question declarations unavailable" in _s4_foreign_html
+          and "manifest unreadable" not in _s4_foreign_html
           and "no longer declared" not in _s4_foreign_html,
           str([q["question_id"] for q in _s4_foreign_ctx["questions"]]))
     bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
@@ -7786,6 +7788,8 @@ process.stdout.write(JSON.stringify([
           and _s4_v1_ctx["retired"] == []
           and {q["question_id"] for q in _s4_v1_ctx["questions"]}
           >= {"q_s4alpha001", "q_s4retire01"}
+          and "question declarations unavailable" in _s4_v1_html
+          and "manifest unreadable" not in _s4_v1_html
           and "no longer declared" not in _s4_v1_html,
           str([q["question_id"] for q in _s4_v1_ctx["questions"]]))
     bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
@@ -8154,17 +8158,23 @@ process.stdout.write(JSON.stringify([
               f"/learn?lesson={_s4_ghost_id}").text.split(
                   '<details class="lesson-record"', 1)[-1])
 
-    # PR round 9. The selected lesson's bundle metadata and record questions
-    # must come from the same manifest read even if the file changes during a
-    # GET. Instrument both reader entry points: the route establishes one
-    # ensured read and the panel must not perform a second readonly read.
+    # PR rounds 9-10. The selected lesson's bundle metadata and record
+    # questions come from the same FINAL manifest read, taken after the DB
+    # state. The preliminary read is still needed to decide whether the
+    # selected entry may be persisted. Instrument the order and both readers.
+    _s4_main = sys.modules["app.main"]
     _s4_ensure_real = lessons_svc._ensure_bundle_manifest
     _s4_readonly_real = lessons_svc.read_bundle_readonly
+    _s4_db_state_real = _s4_main._record_panel_db_state
+    _s4_panel_real = _s4_main._record_panel
+    _s4_read_order = []
     _s4_ensured_reads = []
     _s4_readonly_reads = []
+    _s4_panel_reads = []
 
     def _s4_ensure_once(lesson):
         read = _s4_ensure_real(lesson)
+        _s4_read_order.append("manifest")
         _s4_ensured_reads.append(read)
         return read
 
@@ -8172,18 +8182,33 @@ process.stdout.write(JSON.stringify([
         _s4_readonly_reads.append(lesson["id"])
         return _s4_readonly_real(lesson)
 
+    def _s4_db_before_manifest(conn, lesson_id):
+        _s4_read_order.append("db")
+        return _s4_db_state_real(conn, lesson_id)
+
+    def _s4_panel_same_read(conn, lesson, **kwargs):
+        _s4_read_order.append("panel")
+        _s4_panel_reads.append(kwargs.get("manifest_read"))
+        return _s4_panel_real(conn, lesson, **kwargs)
+
     lessons_svc._ensure_bundle_manifest = _s4_ensure_once
     lessons_svc.read_bundle_readonly = _s4_readonly_unexpected
+    _s4_main._record_panel_db_state = _s4_db_before_manifest
+    _s4_main._record_panel = _s4_panel_same_read
     try:
         _s4_same_manifest = c.get(f"/learn?lesson={_s4_id}")
     finally:
         lessons_svc._ensure_bundle_manifest = _s4_ensure_real
         lessons_svc.read_bundle_readonly = _s4_readonly_real
-    check("S4 one GET reuses the selected bundle's exact manifest read",
+        _s4_main._record_panel_db_state = _s4_db_state_real
+        _s4_main._record_panel = _s4_panel_real
+    check("S4 DB state precedes and reuses the final manifest read",
           _s4_same_manifest.status_code == 200
-          and len(_s4_ensured_reads) == 1
+          and _s4_read_order == ["manifest", "db", "manifest", "panel"]
+          and len(_s4_ensured_reads) == 2
+          and _s4_panel_reads == [_s4_ensured_reads[-1]]
           and not _s4_readonly_reads,
-          f"ensured={len(_s4_ensured_reads)}, readonly={_s4_readonly_reads}")
+          f"order={_s4_read_order}, readonly={_s4_readonly_reads}")
 
     # The live process runs the OLD context until the owner's restart while
     # serving this template from the working tree: the guard must omit the

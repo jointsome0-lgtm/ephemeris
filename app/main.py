@@ -977,7 +977,7 @@ def get_learn(
                 selected_entry = entry
         if selected is None and rows:
             selected = rows[0]
-        selected, selected_manifest = lessons.with_bundle_info_read(
+        selected, _selected_manifest = lessons.with_bundle_info_read(
             selected, entry=selected_entry
         )
         # A rejected manifest has no selectable entry — show the placeholder
@@ -987,8 +987,18 @@ def get_learn(
         if selected and selected["entry"] and not selected["bundle"]["stale_selection"]:
             lessons.mark_opened(conn, selected["id"], selected["entry"])
         if selected:
+            # Lesson agents write the manifest before they can POST an attempt
+            # against its question. Capture the DB state first, then take the
+            # FINAL manifest read used by both bundle metadata and the record:
+            # a newly committed attempt can therefore never be classified
+            # against the older declaration set read at the top of this GET.
+            record_db_state = _record_panel_db_state(conn, selected["id"])
+            selected, selected_manifest = lessons.with_bundle_info_read(
+                selected, entry=selected_entry
+            )
             selected["record"] = _record_panel(
-                conn, selected, manifest_read=selected_manifest
+                conn, selected, manifest_read=selected_manifest,
+                db_state=record_db_state,
             )
     finally:
         conn.close()
@@ -1214,16 +1224,20 @@ def _record_panel_db_state(conn, lesson_id: int) -> tuple[dict, dict, dict]:
             conn.rollback()
 
 
-def _record_panel(conn, lesson: dict, *, manifest_read=None) -> dict:
-    state, attempt_state, focus_total = _record_panel_db_state(
-        conn, lesson["id"]
+def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> dict:
+    state, attempt_state, focus_total = (
+        db_state if db_state is not None
+        else _record_panel_db_state(conn, lesson["id"])
     )
     latest = attempt_state["latest_by_question"]
     # `/learn` passes the exact read that built `selected["bundle"]`, so one
     # GET cannot show metadata from one manifest version and question
     # retirement/labels from another. Direct helper callers retain the pure
     # read fallback.
-    read = manifest_read or lessons.read_bundle_readonly(lesson)
+    read = (
+        manifest_read if manifest_read is not None
+        else lessons.read_bundle_readonly(lesson)
+    )
     # A manifest that does not yield a declaration list — rejected outright, or
     # carrying a `questions` value nothing can be read as absent from — knows
     # nothing about what the author still declares, so nothing is called

@@ -166,7 +166,18 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   exists; any index belongs to its own migration if growth makes it useful.
   The focused-minutes count remains intact and no schema, template, escaping,
   POST or write path changes in this round. Host verification at the round-9
-  worktree state: verify 880.
+  worktree state: verify 880. PR-bot round 10 orders the selected lesson's
+  final cross-store reads as database state first and manifest second. The
+  preliminary manifest read remains only to validate entry persistence; after
+  the DB state is captured, one final manifest read supplies both bundle
+  metadata and the record's labels and retirement decisions. This respects
+  the lesson-agent write order (manifest declaration before attempt POST), so
+  a newly committed attempt cannot be classified against the older
+  declaration set. The declaration-unknown annotation is also neutral now:
+  it says question declarations are unavailable rather than calling readable
+  v1 and identity-mismatched manifests unreadable. Autoescape, the stale-
+  process guard and the no-JS posture are unchanged. Host verification at the
+  round-10 worktree state: verify 880.
 
 ## Done
 

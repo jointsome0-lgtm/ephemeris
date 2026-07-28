@@ -248,7 +248,7 @@
           {% if rec.questions %}
           <section class="rec-block" aria-label="Questions and verdicts">
             <p class="rec-meta"><span class="rec-sec-title">Questions &amp; verdicts</span>
-              {% if not rec.declared_known %}<span class="rec-earlier">manifest unreadable — shown by durable id</span>{% endif %}
+              {% if not rec.declared_known %}<span class="rec-earlier">question declarations unavailable — shown by durable id</span>{% endif %}
             </p>
             <ul class="rec-questions">
               {% for q in rec.questions %}{{ record_question(q) }}{% endfor %}
