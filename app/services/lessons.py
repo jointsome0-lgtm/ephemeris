@@ -1324,6 +1324,27 @@ def resolve_terminal_workspace(slug: str | None) -> dict | None:
     return {"slug": slug, "title": lesson["title"], "dir": str(lesson_dir)}
 
 
+def _reconcile_assessment_projection(lesson: dict) -> None:
+    """Reconcile trigger (a) — S-DESIGN D-S1-5: the tutor's own record is
+    rewritten from the authority the moment its next reader appears.
+
+    Best effort in every direction. A pending projection must not keep the
+    terminal from opening, so nothing here can refuse the workspace; the
+    service itself already answers False rather than raising. The import is
+    deferred because the assessment service imports this module.
+    """
+    try:
+        from .assessments import reconcile_projection
+
+        conn = get_conn()
+        try:
+            reconcile_projection(conn, lesson)
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error, ImportError):
+        pass
+
+
 def prepare_terminal_workspace(slug: str | None) -> dict | None:
     """Resolve a Learn slug and regenerate its agent-facing terminal briefs.
 
@@ -1343,6 +1364,9 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
         _write_brief(lesson_dir / CLAUDE_FILENAME, _CLAUDE_TEMPLATE)
     except (OSError, sqlite3.Error, LessonError):
         return None
+    # After the briefs: the workspace is ready either way, and a projection
+    # hiccup may not cost the agent its regenerated contract.
+    _reconcile_assessment_projection(lesson)
     return {"slug": slug, "title": lesson["title"], "dir": str(lesson_dir)}
 
 

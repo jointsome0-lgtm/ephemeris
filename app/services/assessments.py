@@ -25,22 +25,29 @@ Ordering: the rowid, exposed as `seq`, is the sole recency authority;
 wrong record is corrected by a later row naming it in `supersedes` (or by a
 `retraction`), and `active_state` folds that into the current view.
 
-Projection: `assessments.jsonl` is slice s2. Until it lands every response
-honestly reports `projection: "pending"` (docs/lesson-assessments-api.md).
+Projection (s2): `assessments.jsonl` at the bundle root is the ACTIVE-STATE
+read model — the next tutor's resume artifact, not a history log. It is
+rewritten in full after the transaction commits and never inside it; a
+projection failure never fails the durable write, and the response says
+`projected` or `pending` honestly (docs/lesson-assessments-api.md).
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
+import stat as stat_module
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
-from ..db import append_event
-from . import bundle_schema
+from ..db import DATA_DIR, append_event
+from . import bundle_schema, lessons
 
 KINDS = ("review", "evidence", "summary", "retraction")
 MODES = ("tutoring", "exam")
@@ -61,6 +68,16 @@ MAX_KEY_LEN = 128                # the attempts §6.3 bound
 MAX_CONCEPTS = 8                 # D-S1-2: 1–8 opaque refs per evidence row
 
 PROJECTION_PENDING = "pending"
+PROJECTION_PROJECTED = "projected"
+
+# The bundle projection (D-S1-5, spec §6.5). The lock file lives OUTSIDE the
+# agent-writable bundle and is this file's own — the attempts projection keeps
+# its separate lock, so assessment work never makes an attempt write report
+# `pending` and the freshly drained #58 machinery is not touched.
+PROJECTION_NAME = "assessments.jsonl"
+PROJECTION_STATE_DIR = DATA_DIR / "assessment-projections"
+META_KIND = "assessments_meta"
+META_VERSION = 1
 
 # Rate limit (D-S1-3): 30 per lesson per 60 s with the attempts-style refund
 # table — replays and key conflicts are not new writes and get their slot back,
@@ -359,22 +376,24 @@ def _fingerprint(submission: dict) -> str:
     return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def _row_response(row: sqlite3.Row | dict, result: str) -> dict:
-    """The endpoint's response body for one outcome. `assessments.jsonl` is
-    slice s2, so `projection` is `pending` here for every outcome — honestly,
-    because nothing projects yet (docs/lesson-assessments-api.md records this
-    as the s1 interim state).
+def _row_response(
+    conn: sqlite3.Connection, lesson: dict, row: sqlite3.Row | dict, result: str
+) -> dict:
+    """The endpoint's response body for one outcome, projection included.
 
     This is the projection seam. Both callers hold the committed authority row
     when they get here — the replay path reads it back from SQLite, the write
-    path has just inserted it — which is exactly what s2's reconcile needs:
-    per D-S1-3 a lost-response retry must heal a projection left pending, or a
-    session-closing summary stays invisible to the next tutor."""
+    path has just inserted it — and the projection runs from here, after the
+    transaction, never inside it (D-S1-5). Routing the REPLAY path through the
+    same seam is what D-S1-3 asks for: a lost-response retry heals a projection
+    left pending, or a session-closing summary stays invisible to the next
+    tutor. The rewrite renders the whole committed active state, so healing
+    needs no record of which write was left unprojected."""
     return {
         "result": result,
         "assessment_id": row["assessment_id"],
         "seq": row["id"],
-        "projection": PROJECTION_PENDING,
+        "projection": _project(conn, lesson),
     }
 
 
@@ -391,7 +410,7 @@ def _replay_or_conflict(
     if existing is None:
         return None
     if existing["fingerprint"] == fingerprint:
-        return _row_response(existing, "duplicate")
+        return _row_response(conn, lesson, existing, "duplicate")
     raise AssessmentError(
         "idempotency-conflict", 409,
         "idempotency_key was already used for a different assessment",
@@ -448,6 +467,16 @@ def record_assessment(conn: sqlite3.Connection, lesson: dict, payload: dict) -> 
     docs/lesson-assessments-api.md."""
     submission = _clean_submission(payload)
     fingerprint = _fingerprint(submission)
+
+    # Reconcile trigger (c) — first write per lesson per process (D-S1-5). The
+    # write paths below rewrite the projection themselves, so this sweep exists
+    # for the outcomes that do NOT write: a process that restarted while a
+    # projection was pending heals it on the next assessment call for that
+    # lesson even when the call turns out to be a refusal. It runs after
+    # validation (a malformed body does no filesystem work) and once per lesson
+    # per process whether or not it succeeds — the other two triggers are the
+    # retry mechanism.
+    _sweep_once(conn, lesson)
 
     # D-S1-3: the replay lookup precedes every mutable-state refusal — the
     # archive check, the attempt/supersedes references, and the rate limit
@@ -611,7 +640,10 @@ def _record_locked(
             if replay is None:
                 raise
         else:
+            # Post-commit, outside the transaction: the projection reads the
+            # freshly committed state itself rather than this row (D-S1-5).
             return _row_response(
+                conn, lesson,
                 {"assessment_id": assessment_id, "event_uuid": event_uuid,
                  "id": seq},
                 "recorded",
@@ -703,3 +735,367 @@ def active_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
         "reviews_by_attempt": reviews_by_attempt,
         "summary": summary,
     }
+
+
+# --- projection: `assessments.jsonl`, the active-state read model (D-S1-5) ---
+#
+# Purpose (spec §6.5): the file is the next tutor's RESUME ARTIFACT — the
+# current state, not the history. Full history stays in SQLite and rides the
+# JSONL export. Its size is therefore bounded by current state (concepts +
+# reviewed attempts + 1), not by lifetime writes, which is why this is a plain
+# full rewrite: no append fast path, no cursor, no seal, no prefix
+# verification, and none of the #58 attempts machinery.
+#
+# Ordering invariant (S-H1): commit first, project after. The transaction is
+# short and touches no filesystem; the entry point below refuses an
+# in-transaction connection outright. The per-lesson flock is an app-private
+# file outside the agent-writable bundle — never SQLite's writer lock — and the
+# committed state is re-read FRESH under it, so whoever holds the lock renders
+# the newest fold and a slow writer cannot publish an older file last.
+
+_DIRECTORY_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_DIRECTORY", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_CLOEXEC", 0)
+)
+
+# Reconcile trigger (c): the lessons already swept in this process. Membership
+# is recorded before the sweep runs, so a failing sweep is not retried on every
+# subsequent write — triggers (a) and (b) are the retry mechanism.
+_swept_lock = threading.Lock()
+_swept: set[int] = set()
+
+
+def _reset_sweep_state() -> None:
+    """Test hook: forget which lessons this process has swept."""
+    with _swept_lock:
+        _swept.clear()
+
+
+def _lock_path(lesson: dict) -> Path:
+    """The app-private lock file for this lesson's assessment projection.
+
+    Named by the immutable lesson uid and kept outside the bundle, so a lesson
+    dir the agent can write cannot influence the lock. A lesson without a
+    usable uid has no safe lock name — that is an unavailable lock, i.e. a
+    pending projection, never a write into a guessed path."""
+    uid = lesson.get("uid")
+    if not isinstance(uid, str) or bundle_schema.UUID_RE.match(uid) is None:
+        raise OSError("lesson has no safe projection-lock identity")
+    return PROJECTION_STATE_DIR / f"{uid}.lock"
+
+
+@contextmanager
+def _projection_file_lock(lesson: dict):
+    """Private per-lesson cross-process exclusion for assessment projection
+    work (the attempts `_projection_file_lock` idiom, its own lock file).
+
+    Non-blocking: a busy lock is an unavailable lock, which callers report as
+    `projection: pending` — the row is already durable and the next reconcile
+    trigger heals the file. Two open descriptors of the same lock file conflict
+    even inside one process, so this also serializes threads that did not take
+    the in-process lesson lock."""
+    # Unix-only, and this module is on main.py's import chain, so fcntl is
+    # imported here rather than at module level. A platform without it is an
+    # unavailable lock, not a crash: callers degrade to pending, exactly as the
+    # attempts projection does.
+    try:
+        import fcntl
+    except ImportError as exc:
+        raise OSError("advisory file locking (fcntl.flock) is unavailable") from exc
+
+    lock_path = _lock_path(lesson)
+    PROJECTION_STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not stat_module.S_ISDIR(os.lstat(PROJECTION_STATE_DIR).st_mode):
+        raise OSError("projection lock root is not a directory")
+    fd = os.open(
+        lock_path,
+        os.O_RDWR | os.O_CREAT | os.O_NONBLOCK
+        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        0o600,
+    )
+    try:
+        st = os.fstat(fd)
+        if not stat_module.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            raise OSError("unsafe projection lock file")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        count = os.write(fd, view)
+        if count <= 0:
+            raise OSError("short write on the assessment projection")
+        view = view[count:]
+
+
+def _fold_records(conn: sqlite3.Connection, lesson_id: int) -> tuple[int, list[dict]]:
+    """The lines the file projects: the active-state fold, deduplicated by
+    `seq` and ascending.
+
+    One evidence row can cover several concepts and would appear once per
+    concept in the fold's index — it is ONE record and is written once.
+    Retractions are active rows that carry no state of their own, so the fold
+    never yields them; superseded and retracted rows never appear at all.
+
+    `as_of_seq` is the newest rowid of the lesson's whole history, not of the
+    fold: it is the authority watermark the rendered state was taken at, so a
+    retraction (which removes a line) still advances it.
+
+    Both reads share ONE snapshot. A sibling process — the documented
+    rolling-restart overlap — can commit between two autocommit statements,
+    and the file would then advertise a watermark it does not contain: the
+    fold would miss the new row while `as_of_seq` named it, and the sibling's
+    own write would report `pending` after losing the non-blocking lock, so
+    the inconsistency could outlive the request. The transaction is a
+    read-only snapshot (WAL: it blocks no writer) and is closed before any
+    filesystem work begins."""
+    conn.execute("BEGIN")
+    try:
+        state = active_state(conn, lesson_id)
+        as_of_seq = conn.execute(
+            "SELECT MAX(id) FROM lesson_assessments WHERE lesson_id = ?",
+            (lesson_id,),
+        ).fetchone()[0]
+    finally:
+        conn.rollback()  # nothing was written; just release the snapshot
+    by_seq: dict[int, dict] = {}
+    for row in state["evidence_by_concept"].values():
+        by_seq[row["seq"]] = row
+    for row in state["reviews_by_attempt"].values():
+        by_seq[row["seq"]] = row
+    if state["summary"] is not None:
+        by_seq[state["summary"]["seq"]] = state["summary"]
+    return int(as_of_seq or 0), [by_seq[seq] for seq in sorted(by_seq)]
+
+
+def _render(lesson: dict, as_of_seq: int, records: list[dict]) -> bytes:
+    """The file's bytes: one `assessments_meta` line, then one line per active
+    record, ascending `seq` (spec §6.5). Each record line is the full authority
+    record — the same shape the ledger event echoes — so a reader needs no
+    join to know what was concluded."""
+    lines = [{
+        "kind": META_KIND,
+        "v": META_VERSION,
+        "lesson_uid": lesson["uid"],
+        "as_of_seq": as_of_seq,
+        "generated_at": _utc_now_iso(),
+    }]
+    lines.extend(records)
+    return "".join(
+        json.dumps(line, ensure_ascii=False) + "\n" for line in lines
+    ).encode("utf-8")
+
+
+def _identity_contradicts(lesson: dict) -> bool:
+    """The publication identity gate (S-H7): never publish lesson A's
+    conclusions into a bundle whose manifest says it is lesson B.
+
+    A readable manifest carrying a `lesson_uid` that differs from the DB uid
+    blocks publication; the row still commits and the projection stays pending
+    until the contradiction is resolved. A missing, v1/legacy, or rejected
+    manifest does NOT block — the slug directory is the DB's own mapping, and
+    demanding a valid v2 manifest would silence exactly the legacy lessons the
+    assessment channel exists for (D-S1-4). The read is the PURE one (D-F1-2):
+    projecting never creates a directory, a skeleton manifest, or a file.
+
+    A rejected read carries no trusted identity, so it never gates. The
+    reader can assign `lesson_uid` and only afterwards accumulate a rejecting
+    finding — an empty `pages` list, a duplicate id — and honouring that
+    half-parsed value would block the projection permanently on exactly the
+    broken manifests the rule above says must publish. This is the
+    `effective_profile` idiom (§9.2): consumers read nothing but findings out
+    of a rejected manifest."""
+    read = lessons.read_bundle_readonly(lesson)
+    if read.rejected:
+        return False
+    uid = read.lesson_uid
+    return isinstance(uid, str) and bool(uid) and uid != lesson.get("uid")
+
+
+def _projection_exists(lesson: dict) -> bool:
+    """Whether anything at all occupies the projection name (no-follow)."""
+    try:
+        os.lstat(lessons._lesson_dir(lesson["slug"]) / PROJECTION_NAME)
+    except (OSError, lessons.LessonError):
+        return False
+    return True
+
+
+def _clear_collision(dir_fd: int) -> str | None:
+    """Make the projection name replaceable, never adopting what sits there.
+
+    A regular single-link file is the normal case and is left for `os.replace`.
+    Anything else — a directory (which `os.replace` cannot overwrite), a
+    symlink, a multi-link file, a device or socket — is a foreign object: an
+    empty directory is removed, everything else is moved aside under a unique
+    name. Deterministic, never silent adoption, and never a permanent
+    projection-pending state (the attempts collision idiom). The file's content
+    is never read, so a planted file cannot influence what is published."""
+    try:
+        st = os.lstat(PROJECTION_NAME, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return None
+    if stat_module.S_ISREG(st.st_mode) and st.st_nlink == 1:
+        return None
+    if stat_module.S_ISDIR(st.st_mode):
+        try:
+            os.rmdir(PROJECTION_NAME, dir_fd=dir_fd)
+            return None
+        except OSError:
+            pass  # non-empty: move it aside with its content intact
+    aside = f"{PROJECTION_NAME}.collision-{uuid4().hex[:8]}"
+    os.rename(PROJECTION_NAME, aside, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    return aside
+
+
+def _stage_temp(dir_fd: int, data: bytes) -> tuple[str, int]:
+    """Write the rendered bytes to a fresh 0600 temp file in the bundle and
+    fsync it. `O_EXCL` means an attacker-planted name is never opened.
+
+    Returns the name and the still-open descriptor: the caller publishes under
+    it, so it must be able to ask the staged inode what it has become."""
+    for _ in range(20):
+        name = f".assessments-{uuid4().hex}.tmp"
+        try:
+            fd = os.open(
+                name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+                dir_fd=dir_fd,
+            )
+        except FileExistsError:
+            continue
+        try:
+            _write_all(fd, data)
+            os.fsync(fd)
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(name, dir_fd=dir_fd)
+            except OSError:
+                pass
+            raise
+        return name, fd
+    raise OSError("could not allocate an assessment projection temp file")
+
+
+def _publish(lesson: dict, data: bytes) -> None:
+    """Atomically replace the projection over the verified bundle root.
+
+    The bundle directory is opened once with `O_NOFOLLOW | O_DIRECTORY` — a
+    symlinked or non-directory bundle root refuses here rather than being
+    followed — and every later step is relative to that descriptor, so the
+    published name cannot be redirected between the checks and the rename."""
+    dir_fd = os.open(lessons._lesson_dir(lesson["slug"]), _DIRECTORY_FLAGS)
+    try:
+        # Stage first, clear second: a failure while rendering must not leave
+        # the reader with the published file already moved out of the way.
+        temp_name, temp_fd = _stage_temp(dir_fd, data)
+        try:
+            # The temp carries a visible name in a directory the lesson agent
+            # can write, so a link planted there would survive the rename and
+            # publish a multiply-linked projection — exactly the shape
+            # `_clear_collision` refuses to accept on the way in. The staged
+            # descriptor is still open, so ask the inode itself.
+            if os.fstat(temp_fd).st_nlink != 1:
+                raise OSError("the staged assessment projection gained a link")
+            _clear_collision(dir_fd)
+            os.replace(
+                temp_name, PROJECTION_NAME, src_dir_fd=dir_fd, dst_dir_fd=dir_fd
+            )
+            closing_fd, temp_fd = temp_fd, -1
+            os.close(closing_fd)
+        except BaseException:
+            if temp_fd >= 0:
+                try:
+                    os.close(temp_fd)
+                except OSError:
+                    pass
+            try:
+                os.unlink(temp_name, dir_fd=dir_fd)
+            except OSError:
+                pass
+            raise
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _rewrite_locked(conn: sqlite3.Connection, lesson: dict) -> bool:
+    """Render the committed state and publish it. Runs under the flock."""
+    as_of_seq, records = _fold_records(conn, lesson["id"])
+    if as_of_seq == 0 and not _projection_exists(lesson):
+        # Nothing was ever recorded for this lesson and nothing occupies the
+        # name: the absent file already IS the state. Reconcile runs at every
+        # lesson-agent terminal open, and it must not litter every bundle —
+        # including the legacy ones — with an empty projection.
+        return True
+    if _identity_contradicts(lesson):
+        return False
+    _publish(lesson, _render(lesson, as_of_seq, records))
+    return True
+
+
+def reconcile_projection(conn: sqlite3.Connection, lesson: dict) -> bool:
+    """Rewrite `assessments.jsonl` from the committed authority.
+
+    The single projection entry point: the write path, the replay heal, the
+    first-write sweep, and the lesson-agent terminal open all land here.
+    Idempotent by construction — it renders current state, so running it twice
+    publishes the same bytes but for the meta line's `generated_at`.
+
+    Returns True when the bundle now reflects the authority, False when it does
+    not: an active transaction (filesystem work must never run inside one), an
+    unavailable or busy lock, a bundle root that cannot be opened safely, a
+    manifest whose identity contradicts the lesson, or any filesystem error.
+    False is the honest `projection: pending` — never an exception past a
+    durable write."""
+    if conn.in_transaction:
+        return False
+    try:
+        # The in-process lesson lock first (it is re-entrant, and the write
+        # path already holds it), so concurrent same-lesson requests in this
+        # worker queue instead of losing the non-blocking flock to each other.
+        with _lesson_lock(lesson["slug"]):
+            with _projection_file_lock(lesson):
+                return _rewrite_locked(conn, lesson)
+    except Exception:
+        # Deliberately every exception, not a curated list. The projection is
+        # derived and best-effort; the durable write it follows has already
+        # committed. Any failure here — a filesystem error, an unencodable row
+        # written by something other than this module, a bug in the renderer —
+        # must degrade to `pending` and heal at the next trigger, never turn a
+        # successful write into a 500.
+        return False
+
+
+def _project(conn: sqlite3.Connection, lesson: dict) -> str:
+    """The response's `projection` field for one outcome."""
+    return (
+        PROJECTION_PROJECTED if reconcile_projection(conn, lesson)
+        else PROJECTION_PENDING
+    )
+
+
+def _sweep_once(conn: sqlite3.Connection, lesson: dict) -> None:
+    """Reconcile trigger (c): once per lesson per process, best effort."""
+    lesson_id = lesson.get("id")
+    if not isinstance(lesson_id, int):
+        return
+    with _swept_lock:
+        if lesson_id in _swept:
+            return
+        _swept.add(lesson_id)
+    reconcile_projection(conn, lesson)
