@@ -24,9 +24,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-28 — `a0ae9dd`, `981400a`, `c91d002`, `18d4195` on
-  `fix/4-s4-record-panel`; the entry stays current with the branch, and the
-  merge commit itself is appended here before any drain or restart —
+- [ ] 2026-07-28 — `a0ae9dd`, `981400a`, `c91d002`, `18d4195`, `b8b3e02` on
+  `fix/4-s4-record-panel`; the owner selected unmerged branch head `b8b3e02`
+  for this drain, and the eventual merge commit is appended before any restart —
   `app/main.py`, `app/services/assessments.py`, `app/services/attempts.py`,
   `app/services/focus.py`, `app/templates/learn.html`, `app/static/style.css`,
   `verify.py`, `docs/reviews/QUEUE.md` — issue #4 phase S slice s4 renders the
@@ -87,8 +87,17 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `moved` marker, with `page_id=None` passed for the retired and unvalidated
   rows that have no readable current binding. `style.css` gains one
   `.rec-moved` rule. Verify 870, verify_restore 28.
+  Diagnosis-only drain 2026-07-28 →
+  `2026-07-28-lesson-record-panel-review.md`: one Low finding remains open;
+  this entry stays Pending for a separate reviewed repair PR. The finding is
+  the explicit-null spelling of the wrong-typed declaration case:
+  `"questions": null` is conflated with an absent key, so the panel presents
+  every historical attempted question as retired without observing a list
+  from which absence could be established. No merge or restart was performed.
 
-- [ ] 2026-07-28 — `f40bc2f`, `76b2021`, `3706562`, `419ccbc`, `2cef3b4` on
+## Done
+
+- [x] 2026-07-28 — `f40bc2f`, `76b2021`, `3706562`, `419ccbc`, `2cef3b4` on
   `fix/4-s3-capability-brief`, merged into `main` as `42eabf4` (PR #90); the
   merged tree is byte-identical to the reviewed branch head `2cef3b4` (both
   trees `b953ef1`) — `app/terminal.py`, `app/services/assessments.py`,
@@ -170,8 +179,15 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   on the reading side and restating that the writer never truncates; the
   projection code, the endpoint, the capability registry and the sandbox
   surfaces are untouched. Verify 850, verify_restore 28.
-
-## Done
+  Resolution review 2026-07-28 →
+  `2026-07-28-lesson-assessment-capability-brief-review.md`: the one Low
+  finding is resolved by the separate reviewed repair; no Critical, High,
+  Medium, Low, Info, or open s3 finding remains. Final host verification on
+  the batch starting head: verify 870, verify_restore 28. Final verdict:
+  SAFE TO MAKE LIVE for the documented direct-loopback single-worker
+  deployment; wider, proxy-adjacent, or multi-user deployment NO. The
+  separate s4 entry remains Pending and keeps the repository restart gate
+  closed. No merge or restart was performed.
 
 - [x] 2026-07-28 — `a05d5fc`, `f03ae5d`, `49ae440`, `d18f755` on
   `fix/4-s2-assessments-projection`, merged into `main` as `876b879`
