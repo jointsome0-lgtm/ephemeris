@@ -69,7 +69,24 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   rest of the constant byte-identical. No schema migration, no new index, no
   route, no change to the sandbox profiles, argv, trust gates, WS protocol,
   bridge ABI, attempts machinery, the s2 projection algorithm, CSP, or the
-  rate limit. Verify 846, verify_restore 28.
+  rate limit. The first findings round adds `_with_loopback_direct`: the
+  inherited-proxy branch of `_detect_proxy_env` returned the service's proxy
+  variables verbatim and could therefore hand the child a proxy with no
+  `NO_PROXY`, so an ordinary client would send a loopback assessment POST — its
+  token and note included — to the proxy. Both proxy-carrying branches now pass
+  through one helper that merges the entries of both `NO_PROXY` spellings and
+  appends `localhost`, `127.0.0.1` and `::1` when absent; nothing configured is
+  dropped, the composed branches are unchanged because they already spell those
+  out, and a child with no proxy is untouched. The same round publishes the
+  capability into the registry BEFORE the spawn rather than after it, so a child
+  that reaches the endpoint from a shell startup file cannot be told its
+  capability is unknown; the spawn body moved into `_spawn_on_pty` and the
+  caller's `finally` removes the token whenever no session took ownership
+  (failed spawn, refusal, capacity). The brief's degradation paragraph now
+  separates a refused write from an unanswered one (retry with the same key,
+  then report it as unknown rather than failed) and states the
+  `idempotency_key`, `next_action` and concept-ref bounds. Verify 849,
+  verify_restore 28.
 
 ## Done
 

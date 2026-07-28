@@ -213,6 +213,10 @@ _SOCKS_PROXY_PORT = 10808
 # Loopback literals are honored by every client and cover this app's own calls; the
 # CIDR LAN ranges are best-effort (only some clients parse CIDR in NO_PROXY).
 _NO_PROXY = "localhost,127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12"
+# This app's own spellings. The composed sets below already carry them inside
+# _NO_PROXY; _with_loopback_direct is what guarantees them on the one branch that
+# cannot compose its value — the inherited one.
+_LOOPBACK_NO_PROXY = ("localhost", "127.0.0.1", "::1")
 # Presence of any of these => "already configured"; the full set is what we clear/re-emit.
 _PROXY_SET_VARS = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
 _PROXY_ENV_VARS = _PROXY_SET_VARS + ("NO_PROXY", "no_proxy", "FTP_PROXY", "ftp_proxy")
@@ -231,6 +235,35 @@ def _socks5h(url: str) -> str:
     """Upgrade socks5:// -> socks5h:// so the proxy resolves DNS remotely. Local DNS
     can be poisoned/blocked on a censored network, which would defeat the bypass."""
     return "socks5h://" + url[len("socks5://"):] if url.startswith("socks5://") else url
+
+
+def _with_loopback_direct(env: dict[str, str]) -> dict[str, str]:
+    """Guarantee a proxied child still reaches this app directly.
+
+    Ordinary HTTP clients (curl and friends) honour these variables, and the
+    lesson-agent session is now handed a loopback URL to POST its verdicts to
+    (D-S2-2). A proxy inherited from the service can arrive without any
+    NO_PROXY at all — "preserve it verbatim" has nothing to preserve — and the
+    verdict, its note and its token would then be sent to the proxy instead of
+    the app, which is a failed write in a configuration this module explicitly
+    supports.
+
+    Nothing configured is dropped or rewritten: both spellings are merged (a
+    service may carry different lists in NO_PROXY and no_proxy, and clients
+    disagree about which one they read), the loopback literals are appended only
+    when absent, and a child with no proxy at all is left alone.
+    """
+    if not any(env.get(name) for name in _PROXY_SET_VARS):
+        return env
+    entries: list[str] = []
+    for spelling in ("NO_PROXY", "no_proxy"):
+        for part in (env.get(spelling) or "").split(","):
+            part = part.strip()
+            if part and part not in entries:
+                entries.append(part)
+    entries += [host for host in _LOOPBACK_NO_PROXY if host not in entries]
+    env["NO_PROXY"] = env["no_proxy"] = ",".join(entries)
+    return env
 
 
 def _detect_proxy_env(role: TerminalRole) -> dict[str, str]:
@@ -266,8 +299,10 @@ def _detect_proxy_env(role: TerminalRole) -> dict[str, str]:
         else:
             http_url = override
     elif any(os.environ.get(v) for v in _PROXY_SET_VARS):
-        # already configured upstream — preserve it verbatim (incl. NO_PROXY)
-        return {k: os.environ[k] for k in _PROXY_ENV_VARS if k in os.environ}
+        # already configured upstream — preserve it verbatim (incl. NO_PROXY),
+        # with this app's own address kept direct whatever it does or does not say
+        return _with_loopback_direct(
+            {k: os.environ[k] for k in _PROXY_ENV_VARS if k in os.environ})
     else:
         if _port_open(_HTTP_PROXY_PORT):
             http_url = f"http://127.0.0.1:{_HTTP_PROXY_PORT}"
@@ -285,7 +320,7 @@ def _detect_proxy_env(role: TerminalRole) -> dict[str, str]:
     }
     if socks_url:
         env["ALL_PROXY"] = env["all_proxy"] = socks_url
-    return env
+    return _with_loopback_direct(env)
 
 
 # --- the assessment write capability (S-DESIGN D-S1-3 / D-S2-2) ------------------
@@ -788,9 +823,7 @@ async def _create_session(
         env.update(proxy)
 
         # The SID is minted before the spawn because the capability binds to it and
-        # the capability has to be in the child's environment (D-S2-2). Nothing is
-        # registered yet: a spawn that fails leaves no session, so it must leave no
-        # live token either.
+        # the capability has to be in the child's environment (D-S2-2).
         sid = (_LEARNER_SID_PREFIX if role == "lesson-learner" else "") + token_urlsafe(18)
         capability: dict | None = None
         if role == "lesson-agent" and base_url and workspace and workspace.get("id"):
@@ -802,77 +835,113 @@ async def _create_session(
             # have no network and are given nothing).
             env[_ASSESS_URL_ENV] = capability["url"]
             env[_ASSESS_TOKEN_ENV] = capability["token"]
-
-        _fcntl, pty, _termios = _pty_stack()
-        master_fd, slave_fd = pty.openpty()
-        os.set_blocking(master_fd, False)  # pump + input writes are add_reader/add_writer-driven
-        if sandbox_profile is not None:
-            try:
-                proc = await spawn_sandboxed(
-                    sandbox_profile,
-                    workspace_dir,
-                    [shell, "-i"],
-                    bundle_root=str(LESSONS_DIR),
-                    private_root=str(LESSONS_DIR.parent),
-                    private_masks=private_masks,
-                    stdin=slave_fd,
-                    stdout=slave_fd,
-                    stderr=slave_fd,
-                    preexec_fn=_child_setup,
-                    env=env,
-                )
-            except (SandboxError, ValueError) as exc:
-                os.close(master_fd)
-                os.close(slave_fd)
-                raise _LessonSandboxError(lesson) from exc
-        else:
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    shell, "-i",
-                    stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-                    preexec_fn=_child_setup,
-                    cwd=workspace_dir,
-                    env=env,
-                )
-            except (OSError, ValueError):
-                os.close(master_fd)  # no proc took ownership of the master end — don't leak it
-                os.close(slave_fd)
-                return None
-        os.close(slave_fd)  # success: parent keeps only the master end
-
-        sess = _TermSession(
-            sid,
-            proc,
-            master_fd,
-            role=role,
-            workspace=workspace_dir,
-            sandbox_profile=sandbox_profile,
-            assess_token=capability["token"] if capability else None,
-        )
-        _SESSIONS[sess.sid] = sess
-        if capability is not None:
-            # Registered only now that the session exists and owns the token, so
-            # every live capability has a session whose close() revokes it.
+            # Published BEFORE the spawn: the child can reach the endpoint from a
+            # shell startup file, before this coroutine is resumed at all, and a
+            # refusal there would tell the agent its capability is dead when it is
+            # merely young. From here to the session object, the `finally` below
+            # owns revocation; afterwards the session's close() does.
             _ASSESS_CAPABILITIES[capability["token"]] = capability
-        if proxy.get("HTTP_PROXY"):  # informational banner, replayed with the scrollback
-            # Redact credentials, then defang control bytes.
-            shown = "".join(c for c in _redact_userinfo(proxy["HTTP_PROXY"]) if c.isprintable())
-            sess.remember(
-                (f"\x1b[2m· terminal egress via proxy {shown} — agents bypass geo-blocks; "
-                 f"localhost direct (EPHEMERIS_TERM_PROXY=off to disable).\x1b[0m\r\n").encode()
+
+        try:
+            return await _spawn_on_pty(
+                lesson, role, sid, shell, env, workspace, workspace_dir,
+                sandbox_profile, private_masks, proxy, capability,
             )
-        if workspace is not None:  # informational banner, replayed with the scrollback
-            where = "".join(c for c in workspace["dir"] if c.isprintable())  # defang control bytes
-            detail = (
-                "AGENTS.md refreshed" if role == "lesson-agent"
-                else "briefs left unchanged"
+        finally:
+            if capability is not None and _SESSIONS.get(sid) is None:
+                # No session took ownership — a failed spawn, a refusal, or a
+                # capacity answer — so the token published above dies here.
+                _ASSESS_CAPABILITIES.pop(capability["token"], None)
+
+
+async def _spawn_on_pty(
+    lesson: str | None,
+    role: TerminalRole,
+    sid: str,
+    shell: str,
+    env: dict[str, str],
+    workspace: dict | None,
+    workspace_dir: str,
+    sandbox_profile: SandboxProfile | None,
+    private_masks: tuple[str, ...],
+    proxy: dict[str, str],
+    capability: dict | None,
+) -> "_TermSession | None":
+    """Open a PTY, spawn `shell` on it, and register the session that owns it.
+
+    Split out of `_create_session` so the capability published for the child has
+    exactly one boundary: past this call either a session owns it (and its
+    close() revokes it) or the caller's `finally` takes it back. Runs under the
+    caller's _CREATE_LOCK.
+    """
+    _fcntl, pty, _termios = _pty_stack()
+    master_fd, slave_fd = pty.openpty()
+    os.set_blocking(master_fd, False)  # pump + input writes are add_reader/add_writer-driven
+    if sandbox_profile is not None:
+        try:
+            proc = await spawn_sandboxed(
+                sandbox_profile,
+                workspace_dir,
+                [shell, "-i"],
+                bundle_root=str(LESSONS_DIR),
+                private_root=str(LESSONS_DIR.parent),
+                private_masks=private_masks,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                preexec_fn=_child_setup,
+                env=env,
             )
-            sess.remember(
-                (f"\x1b[2m· {role} sandbox — cwd {where}; "
-                 f"{detail}.\x1b[0m\r\n").encode()
+        except (SandboxError, ValueError) as exc:
+            os.close(master_fd)
+            os.close(slave_fd)
+            raise _LessonSandboxError(lesson) from exc
+    else:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                shell, "-i",
+                stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+                preexec_fn=_child_setup,
+                cwd=workspace_dir,
+                env=env,
             )
-        sess.start()
-        return sess
+        except (OSError, ValueError):
+            os.close(master_fd)  # no proc took ownership of the master end — don't leak it
+            os.close(slave_fd)
+            return None
+    os.close(slave_fd)  # success: parent keeps only the master end
+
+    sess = _TermSession(
+        sid,
+        proc,
+        master_fd,
+        role=role,
+        workspace=workspace_dir,
+        sandbox_profile=sandbox_profile,
+        assess_token=capability["token"] if capability else None,
+    )
+    # The session now owns the capability published before the spawn: its
+    # close() is what revokes it from here on.
+    _SESSIONS[sess.sid] = sess
+    if proxy.get("HTTP_PROXY"):  # informational banner, replayed with the scrollback
+        # Redact credentials, then defang control bytes.
+        shown = "".join(c for c in _redact_userinfo(proxy["HTTP_PROXY"]) if c.isprintable())
+        sess.remember(
+            (f"\x1b[2m· terminal egress via proxy {shown} — agents bypass geo-blocks; "
+             f"localhost direct (EPHEMERIS_TERM_PROXY=off to disable).\x1b[0m\r\n").encode()
+        )
+    if workspace is not None:  # informational banner, replayed with the scrollback
+        where = "".join(c for c in workspace["dir"] if c.isprintable())  # defang control bytes
+        detail = (
+            "AGENTS.md refreshed" if role == "lesson-agent"
+            else "briefs left unchanged"
+        )
+        sess.remember(
+            (f"\x1b[2m· {role} sandbox — cwd {where}; "
+             f"{detail}.\x1b[0m\r\n").encode()
+        )
+    sess.start()
+    return sess
 
 
 async def _write_all(sess: _TermSession, ws: WebSocket, data: bytes) -> None:
