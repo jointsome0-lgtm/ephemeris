@@ -1104,8 +1104,13 @@ def _rewrite_locked(
         # that now names another lesson is `pending` whether or not this
         # process would have had bytes to publish. One small manifest read is
         # still nothing against the rewrite it replaces.
-        if (stamp is not None and _projection_unchanged(lesson, stamp)
-                and not _identity_contradicts(lesson)):
+        if stamp is not None and _projection_unchanged(lesson, stamp):
+            if _identity_contradicts(lesson):
+                # Answer here rather than falling through as a cache miss: the
+                # fall-through would fold the whole active state only to refuse
+                # on the same ground below, and replays that reach this are
+                # unmetered.
+                return False
             already_seq = stamp[0]
     as_of_seq, records = _fold_records(conn, lesson["id"], already_seq)
     if records is None:

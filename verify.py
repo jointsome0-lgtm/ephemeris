@@ -3721,14 +3721,26 @@ process.stdout.write(JSON.stringify([
     _s2_rep_before_swap = _s2_path(_s2_rep).read_bytes()
     bschema.write_manifest(_s2_rep_mpath, dict(
         _s2_rep_manifest, lesson_uid="0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60"))
-    _s2_rep_foreign = _s2_post(_s2_rep_id, _s2_rep_body, "s2-rep-1")
+    # ...and it refuses WITHOUT folding: these replays are unmetered, so the
+    # refusal must not be linear in the lesson's active state either
+    _s2_rep_folds = []
+    _s2_fold_real = assess_svc.active_state
+
+    def _s2_counting_state(conn_, lesson_id_):
+        _s2_rep_folds.append(lesson_id_)
+        return _s2_fold_real(conn_, lesson_id_)
+
+    with _mock.patch.object(assess_svc, "active_state", _s2_counting_state):
+        _s2_rep_foreign = _s2_post(_s2_rep_id, _s2_rep_body, "s2-rep-1")
     bschema.write_manifest(_s2_rep_mpath, _s2_rep_manifest)
     _s2_rep_restored = _s2_post(_s2_rep_id, _s2_rep_body, "s2-rep-1")
     check("a skip is refused while the manifest names another lesson",
           _s2_rep_foreign["result"] == "duplicate"
           and _s2_rep_foreign["projection"] == "pending"
+          and _s2_rep_folds == []
           and _s2_rep_restored["projection"] == "projected"
-          and _s2_path(_s2_rep).read_bytes() == _s2_rep_before_swap)
+          and _s2_path(_s2_rep).read_bytes() == _s2_rep_before_swap,
+          f"folds={_s2_rep_folds}")
     # ...and the watermark query itself seeks instead of walking the lesson's
     # history: replays are unmetered, so it must not be linear in lifetime rows
     _s2_plan_conn = get_conn()
