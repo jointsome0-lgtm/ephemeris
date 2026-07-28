@@ -86,7 +86,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   separates a refused write from an unanswered one (retry with the same key,
   then report it as unknown rather than failed) and states the
   `idempotency_key`, `next_action` and concept-ref bounds. Verify 849,
-  verify_restore 28.
+  verify_restore 28. Diagnosis-only drain 2026-07-28 →
+  `2026-07-28-lesson-assessment-capability-brief-review.md`: one Low finding
+  remains open; this entry stays Pending for a separate reviewed repair PR.
 
 ## Done
 
