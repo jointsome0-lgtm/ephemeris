@@ -19,10 +19,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-28 — `a05d5fc`, `f03ae5d` on
-  `fix/4-s2-assessments-projection` — the entry stays current with the
-  branch: any further branch commit, and the merge commit itself once the PR
-  lands, is appended here before any drain or restart —
+- [ ] 2026-07-28 — `a05d5fc`, `f03ae5d`, `49ae440`, `d18f755` on
+  `fix/4-s2-assessments-projection`, merged into `main` as `876b879`
+  (PR #88) —
   `app/services/assessments.py`, `app/services/lessons.py`,
   `app/services/bundle_schema.py`, `docs/learn-bundle-spec.md`,
   `docs/lesson-assessments-api.md`, `verify.py`, `docs/reviews/QUEUE.md` —
