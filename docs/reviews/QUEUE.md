@@ -177,7 +177,18 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   it says question declarations are unavailable rather than calling readable
   v1 and identity-mismatched manifests unreadable. Autoescape, the stale-
   process guard and the no-JS posture are unchanged. Host verification at the
-  round-10 worktree state: verify 880.
+  round-10 worktree state: verify 880. Diagnosis-only follow-up drain
+  2026-07-29 →
+  `2026-07-29-lesson-record-panel-review.md`: one Low finding remains open, so
+  this entry stays Pending for a separate reviewed repair PR. Round 10
+  persists the selected entry from its preliminary manifest read, then uses a
+  second final read for the response's bundle metadata and record. An
+  invented-data interleaving confirmed that a page removed between those
+  reads remains stored as `current_entry` even while the same 200 response
+  renders the final manifest's fallback and stale-selection finding. The
+  repair must make page-selection persistence use the same final manifest
+  authority as the response and add a deterministic manifest-swap regression.
+  No application code, merge, or restart was performed by the drain.
 
 ## Done
 
