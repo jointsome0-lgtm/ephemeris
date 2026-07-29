@@ -42,6 +42,31 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers
 Open <http://localhost:8000>. The SQLite file and seed items are created on first
 start under `$ACTIVITY_DATA_DIR/activity.sqlite`.
 
+### One worker
+
+Run Ephemeris with **exactly one uvicorn worker**. The commands above and the
+systemd unit already do — uvicorn defaults to one, so this is a warning against
+adding `--workers N`, not a flag to set. Nothing enforces it at runtime; it is a
+property of the documented deployment, which is "direct loopback, single user,
+single worker" ([lesson artifacts API](docs/lesson-artifacts-api.md),
+[lesson assessments API](docs/lesson-assessments-api.md)).
+
+Three things assume it:
+
+- **The abuse dampers are in-process.** The per-lesson rate limits on artifact
+  saves and assessments are sliding windows in server-process memory, so N
+  workers would permit N times the documented budget. (Even a rolling restart
+  briefly overlaps two processes, which the assessments API notes as a bounded
+  2×.)
+- **The terminal session registry is in-process.** A detached PTY lives in the
+  worker that created it, so a second worker cannot reattach to it — the drawer
+  would appear to lose sessions at random depending on which worker answered.
+- **The capability-token registry is in-process** — memory only, no persistence
+  or TTL, so a token minted by one worker is unknown to the others.
+
+SQLite itself is fine with concurrent readers (WAL) and would not be the thing
+that breaks; the in-memory state above is.
+
 No uv? A pinned `requirements.txt` (generated from `uv.lock`) is the pip fallback:
 
 ```bash
