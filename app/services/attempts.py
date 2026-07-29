@@ -23,6 +23,7 @@ save-only; a future agent subscribes to `lesson_attempt` events instead).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -564,11 +565,13 @@ def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
             "ORDER BY created_at, attempt_id",
             (lesson["id"],),
         )
+        rendered_hash = hashlib.sha256()
         try:
             for sqlite_row in rows:
                 row = dict(sqlite_row)
                 line = _projection_line(row).encode("utf-8")
                 _write_all(fd, line)
+                rendered_hash.update(line)
                 if row["id"] > cursor_id:
                     cursor_id = row["id"]
                     cursor_attempt_id = row["attempt_id"]
@@ -591,7 +594,6 @@ def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
         )
         try:
             os.fsync(parent_fd)
-            parent_st = os.fstat(parent_fd)
         finally:
             os.close(parent_fd)
         published_st = os.fstat(fd)
@@ -600,8 +602,28 @@ def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
              published_st.st_mtime_ns)
             != (rendered_st.st_dev, rendered_st.st_ino, rendered_st.st_size,
                 rendered_st.st_mtime_ns)
-            or published_st.st_ctime_ns != parent_st.st_mtime_ns
         ):
+            raise OSError("rebuilt projection changed during publication")
+        # A same-inode rewrite inside the publication window can restore size
+        # and mtime (utime), so the descriptor tuple above cannot see it. Its
+        # former detector — file ctime == parent-dir mtime — was not a real
+        # invariant: rename(2) stamps the two inodes with separate coarse-clock
+        # reads, so a timer tick between them fails legitimate publications
+        # (~0.34% of renames at HZ=1000; #109). Re-reading the published bytes
+        # against the rendered hash catches the rewrite without clocks; a
+        # rewrite after this read still moves ctime away from the seal captured
+        # above and fails the next _projection_matches_state.
+        remaining = published_st.st_size
+        offset = 0
+        published_hash = hashlib.sha256()
+        while remaining > 0:
+            chunk = os.pread(fd, min(remaining, 1 << 20), offset)
+            if not chunk:
+                raise OSError("rebuilt projection changed during publication")
+            published_hash.update(chunk)
+            offset += len(chunk)
+            remaining -= len(chunk)
+        if published_hash.digest() != rendered_hash.digest():
             raise OSError("rebuilt projection changed during publication")
         state = {
             "v": PROJECTION_STATE_VERSION,
