@@ -369,7 +369,7 @@ def test_bundle_attempts(client, suite_state):
     # under the strict local-only policy, legacy-display keeps the historical
     # permissive one, and the preview metadata surfaces the effective profile
     # plus bridge eligibility (v2 ∧ not rejected ∧ interactive)
-    from app.main import (  # local: only these checks use them
+    from app.routers.learn import (  # local: only these checks use them
         _LESSON_PREVIEW_CSP_INTERACTIVE as _CSP_INT,
         _LESSON_PREVIEW_CSP_LEGACY as _CSP_LEG,
         _preview_csp as _csp_for,
@@ -492,7 +492,7 @@ def test_bundle_attempts(client, suite_state):
     # The metadata is what the parent runtime (learn-bridge.ts) binds its
     # handshake to: identity present exactly for a bridge-eligible manifest's
     # declared, readable page; sandbox tokens mirror the profile-keyed CSP.
-    from app.main import _preview_sandbox as _sandbox_for
+    from app.routers.learn import _preview_sandbox as _sandbox_for
     _SANDBOX_LEG = "allow-scripts allow-forms allow-popups allow-downloads"
     # entry pinned: the earlier set_current_entry checks moved this lesson's
     # durable selection to the stage page

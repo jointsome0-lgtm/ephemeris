@@ -20,7 +20,8 @@ from conftest import ROOT, events_of, item_row
 _TERMINAL_WIRING_PROBE = r"""
 from starlette.requests import Request
 
-from app.main import app, templates
+from app.main import app
+from app.templating import templates
 
 request = Request({"type": "http", "client": ("127.0.0.1", 50000)})
 html = templates.get_template("base.html").render(request=request)
@@ -764,7 +765,7 @@ def test_002_ui_and_workspace(client, suite_state):
     # This Starlette TestClient reports a synthetic non-loopback peer. Exercise
     # the local-only template branch explicitly, restoring the real predicate
     # immediately after these two renders.
-    from app.main import templates as _e4_templates
+    from app.templating import templates as _e4_templates
     _e4_local_predicate = _e4_templates.env.globals["client_is_local"]
     try:
         _e4_templates.env.globals["client_is_local"] = lambda request: True
