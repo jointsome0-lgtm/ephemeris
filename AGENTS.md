@@ -69,4 +69,4 @@ The app has no auth in v0. Keeping the code in public Git is acceptable; exposin
 
 Changes touching `app/terminal.py`, `app/agent/`, a new bundle file the lesson sandboxes read, or anything about to listen on a port get one entry appended to `docs/reviews/QUEUE.md` when they land, and do not go live while their entries are Pending (that file's header describes the drain protocol). Nothing else earns an entry: UI, templates, and portability work go straight to the deploy gate.
 
-Git worktrees: create them only in `.worktrees/<name>` inside the repo (globally gitignored via `~/.config/git/ignore`), never as sibling directories.
+Git worktrees: create them only in `.worktrees/<name>` inside the repo (globally gitignored via `~/.config/git/ignore`), never as sibling directories. Any work that will open a PR branches and builds in such a worktree, never in the primary checkout — the primary checkout stays on a clean `main` so parallel sessions don't fight for its index. Trivial read-only work and single-file doc edits on a clean main need no worktree. Remove the worktree and delete its local branch once its PR merges.
