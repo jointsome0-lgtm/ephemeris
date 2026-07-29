@@ -14,7 +14,7 @@ import threading
 from datetime import date as _vdate
 from pathlib import Path
 
-from conftest import ROOT, check, events_of, item_row
+from conftest import ROOT, events_of, item_row
 
 
 
@@ -58,21 +58,27 @@ def test_sandbox_learning(client, suite_state):
         return [(argv[i + 1], argv[i + 2]) for i, arg in enumerate(argv)
                 if arg == flag]
 
-    check("E1 argv: every profile has the namespace/base-fs/die-with-parent contract",
-          all(argv[0] == _sandbox.BWRAP
-              and "--unshare-all" in argv
-              and "--die-with-parent" in argv
-              and ("/", "/") in _sb_mounts(argv, "--ro-bind")
-              and ["--proc", "/proc"] == argv[argv.index("--proc"):argv.index("--proc") + 2]
-              and ["--dev", "/dev"] == argv[argv.index("--dev"):argv.index("--dev") + 2]
-              and argv.count("--tmpfs") >= 2
-              and "/tmp" in [argv[i + 1] for i, x in enumerate(argv) if x == "--tmpfs"]
-              and "/home/aina" in [argv[i + 1] for i, x in enumerate(argv) if x == "--tmpfs"]
-              for argv in (_sb_agent, _sb_learner, _sb_runner)))
-    check("E1 argv: host network is shared only by lesson-agent",
-          "--share-net" in _sb_agent
-          and "--share-net" not in _sb_learner
-          and "--share-net" not in _sb_runner)
+    assert (
+        all(argv[0] == _sandbox.BWRAP
+          and "--unshare-all" in argv
+          and "--die-with-parent" in argv
+          and ("/", "/") in _sb_mounts(argv, "--ro-bind")
+          and ["--proc", "/proc"] == argv[argv.index("--proc"):argv.index("--proc") + 2]
+          and ["--dev", "/dev"] == argv[argv.index("--dev"):argv.index("--dev") + 2]
+          and argv.count("--tmpfs") >= 2
+          and "/tmp" in [argv[i + 1] for i, x in enumerate(argv) if x == "--tmpfs"]
+          and "/home/aina" in [argv[i + 1] for i, x in enumerate(argv) if x == "--tmpfs"]
+          for argv in (_sb_agent, _sb_learner, _sb_runner))
+    ), (
+        "E1 argv: every profile has the namespace/base-fs/die-with-parent contract"
+    )
+    assert (
+        "--share-net" in _sb_agent
+        and "--share-net" not in _sb_learner
+        and "--share-net" not in _sb_runner
+    ), (
+        "E1 argv: host network is shared only by lesson-agent"
+    )
 
     _sb_agent_try_ro = {
         ("/home/aina/.nvm/versions", "/home/aina/.nvm/versions"),
@@ -83,41 +89,50 @@ def test_sandbox_learning(client, suite_state):
         ("/home/aina/.claude/settings.json", "/home/aina/.claude/settings.json"),
         ("/home/aina/.claude.json", "/home/aina/.claude.json"),
     }
-    check("E1 argv: lesson-agent exact home binds and ephemeral CLI state",
-          set(_sb_mounts(_sb_agent, "--ro-bind")) == {
-              ("/", "/"),
-              ("/home/aina/.local/bin", "/home/aina/.local/bin"),
-          }
-          and set(_sb_mounts(_sb_agent, "--ro-bind-try")) == _sb_agent_try_ro
-          and set(_sb_mounts(_sb_agent, "--bind-try")) == {
-              ("/home/aina/go", "/home/aina/go"),
-              ("/home/aina/.cache/go-build", "/home/aina/.cache/go-build"),
-          }
-          and _sb_mounts(_sb_agent, "--bind") == [(_sb_bundle, _sb_bundle)]
-          and {"/home/aina/.codex", "/home/aina/.claude"}.issubset(
-              {_sb_agent[i + 1] for i, x in enumerate(_sb_agent) if x == "--tmpfs"}))
-    check("E1 argv: lesson-learner exact ro caches + rw bundle",
-          set(_sb_mounts(_sb_learner, "--ro-bind")) == {
-              ("/", "/"),
-              ("/home/aina/.local/bin", "/home/aina/.local/bin"),
-          }
-          and set(_sb_mounts(_sb_learner, "--ro-bind-try")) == {
-              ("/home/aina/go", "/home/aina/go"),
-              ("/home/aina/.cache/go-build", "/home/aina/.cache/go-build"),
-          }
-          and _sb_mounts(_sb_learner, "--bind") == [(_sb_bundle, _sb_bundle)]
-          and _sb_learner[-2:] == ["--chdir", _sb_bundle])
-    check("E1 argv: lesson-runner ro bundle + isolated tmpfs cwd",
-          set(_sb_mounts(_sb_runner, "--ro-bind")) == {
-              ("/", "/"),
-              (_sb_bundle, _sb_bundle),
-          }
-          and _sb_mounts(_sb_runner, "--ro-bind-fd") == [
-              ("7", "/home/aina/go/pkg/mod")
-          ]
-          and not _sb_mounts(_sb_runner, "--bind")
-          and _sb_runner[-4:] == ["--dir", _sandbox.RUNNER_WORKDIR,
-                                  "--chdir", _sandbox.RUNNER_WORKDIR])
+    assert (
+        set(_sb_mounts(_sb_agent, "--ro-bind")) == {
+          ("/", "/"),
+          ("/home/aina/.local/bin", "/home/aina/.local/bin"),
+        }
+        and set(_sb_mounts(_sb_agent, "--ro-bind-try")) == _sb_agent_try_ro
+        and set(_sb_mounts(_sb_agent, "--bind-try")) == {
+          ("/home/aina/go", "/home/aina/go"),
+          ("/home/aina/.cache/go-build", "/home/aina/.cache/go-build"),
+        }
+        and _sb_mounts(_sb_agent, "--bind") == [(_sb_bundle, _sb_bundle)]
+        and {"/home/aina/.codex", "/home/aina/.claude"}.issubset(
+          {_sb_agent[i + 1] for i, x in enumerate(_sb_agent) if x == "--tmpfs"})
+    ), (
+        "E1 argv: lesson-agent exact home binds and ephemeral CLI state"
+    )
+    assert (
+        set(_sb_mounts(_sb_learner, "--ro-bind")) == {
+          ("/", "/"),
+          ("/home/aina/.local/bin", "/home/aina/.local/bin"),
+        }
+        and set(_sb_mounts(_sb_learner, "--ro-bind-try")) == {
+          ("/home/aina/go", "/home/aina/go"),
+          ("/home/aina/.cache/go-build", "/home/aina/.cache/go-build"),
+        }
+        and _sb_mounts(_sb_learner, "--bind") == [(_sb_bundle, _sb_bundle)]
+        and _sb_learner[-2:] == ["--chdir", _sb_bundle]
+    ), (
+        "E1 argv: lesson-learner exact ro caches + rw bundle"
+    )
+    assert (
+        set(_sb_mounts(_sb_runner, "--ro-bind")) == {
+          ("/", "/"),
+          (_sb_bundle, _sb_bundle),
+        }
+        and _sb_mounts(_sb_runner, "--ro-bind-fd") == [
+          ("7", "/home/aina/go/pkg/mod")
+        ]
+        and not _sb_mounts(_sb_runner, "--bind")
+        and _sb_runner[-4:] == ["--dir", _sandbox.RUNNER_WORKDIR,
+                              "--chdir", _sandbox.RUNNER_WORKDIR]
+    ), (
+        "E1 argv: lesson-runner ro bundle + isolated tmpfs cwd"
+    )
     try:
         _sandbox.build_sandbox_argv("plain", _sb_bundle, bundle_root=_sb_root)
         _sb_bad_profile = False
@@ -142,20 +157,26 @@ def test_sandbox_learning(client, suite_state):
             _sb_boundary_rejections.append(False)
         except ValueError:
             _sb_boundary_rejections.append(True)
-    check("E1 argv builder rejects unknown profiles and unsafe bundle authorities",
-          _sb_bad_profile and _sb_bad_path and all(_sb_boundary_rejections))
+    assert (
+        _sb_bad_profile and _sb_bad_path and all(_sb_boundary_rejections)
+    ), (
+        "E1 argv builder rejects unknown profiles and unsafe bundle authorities"
+    )
 
     _sandbox._cached_runtime_probe.cache_clear()
     _sb_probe_ok = _types.SimpleNamespace(returncode=0, stderr="")
     with _sandbox_mock.patch.object(_sandbox.subprocess, "run", return_value=_sb_probe_ok) as _run:
         _sandbox.require_sandbox_runtime()
         _sandbox.require_sandbox_runtime()
-    check("E1 runtime probe: exact command succeeds once and is process-cached",
-          _run.call_count == 1
-          and _run.call_args.args[0] == [
-              _sandbox.BWRAP, "--unshare-user", "--die-with-parent",
-              "--ro-bind", "/", "/", "true",
-          ])
+    assert (
+        _run.call_count == 1
+        and _run.call_args.args[0] == [
+          _sandbox.BWRAP, "--unshare-user", "--die-with-parent",
+          "--ro-bind", "/", "/", "true",
+        ]
+    ), (
+        "E1 runtime probe: exact command succeeds once and is process-cached"
+    )
 
     async def _sb_no_fallback_contract():
         results = {}
@@ -192,22 +213,31 @@ def test_sandbox_learning(client, suite_state):
         return results
 
     _sb_fail = _asyncio.run(_sb_no_fallback_contract())
-    check("E1 no-fallback: failed cached probe visibly refuses before spawn",
-          _sb_fail.get("probe_visible") and _sb_fail.get("probe_cached")
-          and _sb_fail.get("probe_never_spawned"))
-    check("E1 no-fallback: bwrap spawn failure is visible, never a bare command retry",
-          _sb_fail.get("spawn_visible") and _sb_fail.get("only_bwrap_attempted"))
+    assert (
+        _sb_fail.get("probe_visible") and _sb_fail.get("probe_cached")
+        and _sb_fail.get("probe_never_spawned")
+    ), (
+        "E1 no-fallback: failed cached probe visibly refuses before spawn"
+    )
+    assert (
+        _sb_fail.get("spawn_visible") and _sb_fail.get("only_bwrap_attempted")
+    ), (
+        "E1 no-fallback: bwrap spawn failure is visible, never a bare command retry"
+    )
     try:
         _sandbox.spawn_sandboxed(
             "lesson-agent", _sb_bundle, ["/bin/true"], bundle_root=_sb_root)
         _sb_env_required = False
     except TypeError:
         _sb_env_required = True
-    check("E1 rlimits and env: PTY caps hooked, explicit child env required",
-          set(_sandbox._GENEROUS_LIMITS) == {"RLIMIT_NOFILE", "RLIMIT_NPROC"}
-          and _sandbox.profile_preexec_fn("lesson-agent") is not None
-          and _sandbox.profile_preexec_fn("lesson-runner") is not None
-          and _sb_env_required)
+    assert (
+        set(_sandbox._GENEROUS_LIMITS) == {"RLIMIT_NOFILE", "RLIMIT_NPROC"}
+        and _sandbox.profile_preexec_fn("lesson-agent") is not None
+        and _sandbox.profile_preexec_fn("lesson-runner") is not None
+        and _sb_env_required
+    ), (
+        "E1 rlimits and env: PTY caps hooked, explicit child env required"
+    )
 
     # --- E2: lesson-agent is server-owned, sandboxed, immutable, fail-closed ---
     class _E2Sock:
@@ -402,14 +432,26 @@ def test_sandbox_learning(client, suite_state):
         return results
 
     _e2 = _asyncio.run(_e2_contract())
-    check("E2 lesson create uses only the lesson-agent sandbox launcher",
-          _e2.get("lesson_launcher"))
-    check("E2 probe/bwrap failures visibly refuse with no bare-shell fallback",
-          _e2.get("sandbox_refusal"))
-    check("E2 plain create stays unsandboxed in the repository",
-          _e2.get("plain_unchanged"))
-    check("E2 attach preserves immutable role/workspace/profile and reports role",
-          _e2.get("attach_immutable"))
+    assert (
+        _e2.get("lesson_launcher")
+    ), (
+        "E2 lesson create uses only the lesson-agent sandbox launcher"
+    )
+    assert (
+        _e2.get("sandbox_refusal")
+    ), (
+        "E2 probe/bwrap failures visibly refuse with no bare-shell fallback"
+    )
+    assert (
+        _e2.get("plain_unchanged")
+    ), (
+        "E2 plain create stays unsandboxed in the repository"
+    )
+    assert (
+        _e2.get("attach_immutable")
+    ), (
+        "E2 attach preserves immutable role/workspace/profile and reports role"
+    )
 
     with _sandbox_mock.patch.dict(
             os.environ,
@@ -423,11 +465,14 @@ def test_sandbox_learning(client, suite_state):
             _terminal._detect_proxy_env("plain"),
             _terminal._detect_proxy_env("lesson-agent"),
         )
-    check("E2 proxy env is limited to host-network roles and honors override-off",
-          _proxy_plain.get("HTTP_PROXY") == "http://127.0.0.1:19091"
-          and _proxy_agent.get("HTTPS_PROXY") == "http://127.0.0.1:19091"
-          and _proxy_learner == {}
-          and _proxy_off == ({}, {}))
+    assert (
+        _proxy_plain.get("HTTP_PROXY") == "http://127.0.0.1:19091"
+        and _proxy_agent.get("HTTPS_PROXY") == "http://127.0.0.1:19091"
+        and _proxy_learner == {}
+        and _proxy_off == ({}, {})
+    ), (
+        "E2 proxy env is limited to host-network roles and honors override-off"
+    )
     # A proxied child must still reach this app directly: the s3 capability URL
     # is a loopback address, and an inherited proxy can arrive with no NO_PROXY
     # at all (or one that never mentions loopback).
@@ -442,20 +487,23 @@ def test_sandbox_learning(client, suite_state):
             clear=True):
         _proxy_kept = _terminal._detect_proxy_env("lesson-agent")
     _proxy_none = _terminal._with_loopback_direct({})
-    check("an inherited proxy never swallows this app's own loopback address",
-          _proxy_inherited["HTTP_PROXY"] == "http://proxy.invalid:3128"
-          and set(_proxy_inherited["NO_PROXY"].split(","))
-              == {"localhost", "127.0.0.1", "::1"}
-          and _proxy_inherited["no_proxy"] == _proxy_inherited["NO_PROXY"]
-          # an existing exclusion list is extended, never replaced
-          and _proxy_kept["NO_PROXY"].split(",")
-              == ["example.invalid", "lower.invalid",
-                  "localhost", "127.0.0.1", "::1"]
-          and _proxy_kept["HTTP_PROXY"] == "http://proxy.invalid:3128"
-          # the composed sets already spell it out, and a proxy-less child is
-          # left exactly as it was
-          and _proxy_plain["NO_PROXY"] == _terminal._NO_PROXY
-          and _proxy_none == {})
+    assert (
+        _proxy_inherited["HTTP_PROXY"] == "http://proxy.invalid:3128"
+        and set(_proxy_inherited["NO_PROXY"].split(","))
+          == {"localhost", "127.0.0.1", "::1"}
+        and _proxy_inherited["no_proxy"] == _proxy_inherited["NO_PROXY"]
+        # an existing exclusion list is extended, never replaced
+        and _proxy_kept["NO_PROXY"].split(",")
+          == ["example.invalid", "lower.invalid",
+              "localhost", "127.0.0.1", "::1"]
+        and _proxy_kept["HTTP_PROXY"] == "http://proxy.invalid:3128"
+        # the composed sets already spell it out, and a proxy-less child is
+        # left exactly as it was
+        and _proxy_plain["NO_PROXY"] == _terminal._NO_PROXY
+        and _proxy_none == {}
+    ), (
+        "an inherited proxy never swallows this app's own loopback address"
+    )
 
     # --- S3: the assessment write capability (S-DESIGN D-S1-3 / D-S2-2) ------
     _S3_VARS = {"EPHEMERIS_ASSESS_URL", "EPHEMERIS_ASSESS_TOKEN"}
@@ -621,21 +669,42 @@ def test_sandbox_learning(client, suite_state):
         return results
 
     _s3 = _asyncio.run(_s3_capability_contract())
-    check("S3 a lesson-agent session carries the complete URL and a bound token",
-          _s3.get("agent_capability") and _s3.get("registry_copy"))
-    check("S3 the capability dies with its own terminal session",
-          _s3.get("revoked_with_session")
-          and _s3.get("revocation_is_per_session"))
-    check("S3 concurrent agent sessions on one lesson are distinct sittings",
-          _s3.get("distinct_sittings"))
-    check("S3 learner and plain shells receive neither capability variable",
-          _s3.get("learner_gets_nothing") and _s3.get("plain_gets_nothing"))
-    check("S3 no injection without a spellable app address, none on a failed spawn",
-          _s3.get("no_url_no_token") and _s3.get("failed_spawn_leaves_no_token"))
-    check("S3 the capability is live while the child is still being spawned",
-          _s3.get("live_during_spawn") and _s3.get("live_during_spawn_revoked"))
-    check("S3 the idle reaper and the lifespan shutdown revoke it too",
-          _s3.get("revoked_on_reap_and_shutdown"))
+    assert (
+        _s3.get("agent_capability") and _s3.get("registry_copy")
+    ), (
+        "S3 a lesson-agent session carries the complete URL and a bound token"
+    )
+    assert (
+        _s3.get("revoked_with_session")
+        and _s3.get("revocation_is_per_session")
+    ), (
+        "S3 the capability dies with its own terminal session"
+    )
+    assert (
+        _s3.get("distinct_sittings")
+    ), (
+        "S3 concurrent agent sessions on one lesson are distinct sittings"
+    )
+    assert (
+        _s3.get("learner_gets_nothing") and _s3.get("plain_gets_nothing")
+    ), (
+        "S3 learner and plain shells receive neither capability variable"
+    )
+    assert (
+        _s3.get("no_url_no_token") and _s3.get("failed_spawn_leaves_no_token")
+    ), (
+        "S3 no injection without a spellable app address, none on a failed spawn"
+    )
+    assert (
+        _s3.get("live_during_spawn") and _s3.get("live_during_spawn_revoked")
+    ), (
+        "S3 the capability is live while the child is still being spawned"
+    )
+    assert (
+        _s3.get("revoked_on_reap_and_shutdown")
+    ), (
+        "S3 the idle reaper and the lifespan shutdown revoke it too"
+    )
     _s3_urls = [
         _terminal._app_base_url(_E2Sock({}, {
             "server": ("127.0.0.1", 8765), "scheme": "ws"})),
@@ -647,13 +716,16 @@ def test_sandbox_learning(client, suite_state):
         _terminal._app_base_url(_E2Sock({}, {"server": ("127.0.0.1", None)})),
         _terminal._app_base_url(_E2Sock({}, {})),
     ]
-    check("S3 the capability URL is the app's own bound address, never Host",
-          _s3_urls == [
-              "http://127.0.0.1:8765", "http://127.0.0.1:8000",
-              "https://[::1]:8765", None, None, None]
-          # the derivation reads the ASGI scope only — the fake carries no
-          # headers at all, so a spoofed Host has no channel into the URL
-          and not hasattr(_E2Sock({}), "headers"))
+    assert (
+        _s3_urls == [
+          "http://127.0.0.1:8765", "http://127.0.0.1:8000",
+          "https://[::1]:8765", None, None, None]
+        # the derivation reads the ASGI scope only — the fake carries no
+        # headers at all, so a spoofed Host has no channel into the URL
+        and not hasattr(_E2Sock({}), "headers")
+    ), (
+        "S3 the capability URL is the app's own bound address, never Host"
+    )
     _s3_role_bound = False
     _s3_master, _s3_slave = _pty.openpty()
     try:
@@ -670,8 +742,11 @@ def test_sandbox_learning(client, suite_state):
             "EPHEMERIS_ASSESS_TOKEN": "leaked-from-the-service",
             "EPHEMERIS_ASSESS_URL": "http://leaked.invalid/"}):
         _s3_inherited = _terminal._child_env("lesson-agent")
-    check("S3 the two names are minted per session, never inherited or role-shared",
-          _s3_role_bound and not (_S3_VARS & set(_s3_inherited)))
+    assert (
+        _s3_role_bound and not (_S3_VARS & set(_s3_inherited))
+    ), (
+        "S3 the two names are minted per session, never inherited or role-shared"
+    )
 
     # --- S4: the Learn record panel (S-DESIGN D-S3-1) ------------------------
     # The panel is a pure read over the s1 authority rows: the active fold, the
@@ -785,71 +860,94 @@ def test_sandbox_learning(client, suite_state):
     _s4_html = c.get(f"/learn?lesson={_s4_id}").text
     _s4_body = _s4_html.split('<details class="lesson-record"', 1)[-1]
 
-    check("S4 panel renders on the selected lesson with its counts line",
-          '<details class="lesson-record"' in _s4_html
-          and _s4_ctx["counts"] == {"attempts": 4, "assessments": 6,
-                                    "focus": "25m", "focus_seconds": 1500}
-          and "4 attempts" in _s4_body and "6 active" in _s4_body
-          and "25m focused" in _s4_body,
-          str(_s4_ctx["counts"]))
-    check("S4 evidence chips fold to the latest ACTIVE row per concept, weak first",
-          [(chip["concept"], chip["level"], chip["exam"])
-           for chip in _s4_ctx["evidence"]]
-          == [("channels & <select>", "weak", False), ("goroutines", "passed", True)]
-          and "s4-evidence-superseded" not in _s4_html
-          and 'class="rec-chip rec-lv-weak"' in _s4_body,
-          str(_s4_ctx["evidence"]))
-    check("S4 latest active summary renders with its next_action line",
-          _s4_ctx["summary"]["note"] == "Covered fan-in & <select>."
-          and "Read the select page, then retry q_s4beta0001." in _s4_body
-          and 'class="rec-next"' in _s4_body
-          and "s4-summary-superseded" not in _s4_html)
+    assert (
+        '<details class="lesson-record"' in _s4_html
+        and _s4_ctx["counts"] == {"attempts": 4, "assessments": 6,
+                                "focus": "25m", "focus_seconds": 1500}
+        and "4 attempts" in _s4_body and "6 active" in _s4_body
+        and "25m focused" in _s4_body
+    ), (
+        "S4 panel renders on the selected lesson with its counts line" + "  -- " + (str(_s4_ctx["counts"]))
+    )
+    assert (
+        [(chip["concept"], chip["level"], chip["exam"])
+        for chip in _s4_ctx["evidence"]]
+        == [("channels & <select>", "weak", False), ("goroutines", "passed", True)]
+        and "s4-evidence-superseded" not in _s4_html
+        and 'class="rec-chip rec-lv-weak"' in _s4_body
+    ), (
+        "S4 evidence chips fold to the latest ACTIVE row per concept, weak first" + "  -- " + (str(_s4_ctx["evidence"]))
+    )
+    assert (
+        _s4_ctx["summary"]["note"] == "Covered fan-in & <select>."
+        and "Read the select page, then retry q_s4beta0001." in _s4_body
+        and 'class="rec-next"' in _s4_body
+        and "s4-summary-superseded" not in _s4_html
+    ), (
+        "S4 latest active summary renders with its next_action line"
+    )
     _s4_by_q = {q["question_id"]: q for q in _s4_ctx["questions"]}
-    check("S4 each question carries its LATEST attempt only",
-          [q["question_id"] for q in _s4_ctx["questions"]] == _s4_qs[:3]
-          and _s4_by_q["q_s4alpha001"]["attempt"]["attempt_id"] == _s4_a_new
-          and "s4-superseded-answer" not in _s4_html
-          and _s4_by_q["q_s4gamma001"]["attempt"] is None
-          and "Not attempted." in _s4_body,
-          str([q["question_id"] for q in _s4_ctx["questions"]]))
-    check("S4 verdict is the latest ACTIVE review of that attempt, earlier ones a count",
-          _s4_by_q["q_s4alpha001"]["review"]["level"] == "partial"
-          and _s4_by_q["q_s4alpha001"]["earlier_reviews"] == 1
-          and "(1 earlier)" in _s4_body
-          and "s4-first-reading-of-the-answer" not in _s4_html
-          # the verdict on the OLD attempt never migrates to the new one
-          and "s4-verdict-on-the-old-answer" not in _s4_html)
-    check("S4 a retracted review leaves the question unreviewed, not mis-reviewed",
-          _s4_by_q["q_s4beta0001"]["review"] is None
-          and "s4-review-that-gets-retracted" not in _s4_html
-          and "s4-wrong-attempt-judged" not in _s4_html
-          and "No verdict yet." in _s4_body)
-    check("S4 an undeclared question's attempt and verdict move to the retired block",
-          [q["question_id"] for q in _s4_ctx["retired"]] == ["q_s4retire01"]
-          and _s4_ctx["retired"][0]["review"]["level"] == "correct"
-          and _s4_ctx["retired"][0]["retired"] is True
-          and "s4-verdict-kept-after-retirement" in _s4_body
-          and 'class="rec-tag rec-retired"' in _s4_body
-          and 'rec-block rec-block-retired' in _s4_body,
-          str([q["question_id"] for q in _s4_ctx["retired"]]))
+    assert (
+        [q["question_id"] for q in _s4_ctx["questions"]] == _s4_qs[:3]
+        and _s4_by_q["q_s4alpha001"]["attempt"]["attempt_id"] == _s4_a_new
+        and "s4-superseded-answer" not in _s4_html
+        and _s4_by_q["q_s4gamma001"]["attempt"] is None
+        and "Not attempted." in _s4_body
+    ), (
+        "S4 each question carries its LATEST attempt only" + "  -- " + (str([q["question_id"] for q in _s4_ctx["questions"]]))
+    )
+    assert (
+        _s4_by_q["q_s4alpha001"]["review"]["level"] == "partial"
+        and _s4_by_q["q_s4alpha001"]["earlier_reviews"] == 1
+        and "(1 earlier)" in _s4_body
+        and "s4-first-reading-of-the-answer" not in _s4_html
+        # the verdict on the OLD attempt never migrates to the new one
+        and "s4-verdict-on-the-old-answer" not in _s4_html
+    ), (
+        "S4 verdict is the latest ACTIVE review of that attempt, earlier ones a count"
+    )
+    assert (
+        _s4_by_q["q_s4beta0001"]["review"] is None
+        and "s4-review-that-gets-retracted" not in _s4_html
+        and "s4-wrong-attempt-judged" not in _s4_html
+        and "No verdict yet." in _s4_body
+    ), (
+        "S4 a retracted review leaves the question unreviewed, not mis-reviewed"
+    )
+    assert (
+        [q["question_id"] for q in _s4_ctx["retired"]] == ["q_s4retire01"]
+        and _s4_ctx["retired"][0]["review"]["level"] == "correct"
+        and _s4_ctx["retired"][0]["retired"] is True
+        and "s4-verdict-kept-after-retirement" in _s4_body
+        and 'class="rec-tag rec-retired"' in _s4_body
+        and 'rec-block rec-block-retired' in _s4_body
+    ), (
+        "S4 an undeclared question's attempt and verdict move to the retired block" + "  -- " + (str([q["question_id"] for q in _s4_ctx["retired"]]))
+    )
     # Agent- and learner-authored text is the panel's whole content, so nothing
     # it carries may reach the parent document as markup (no markdown either).
-    check("S4 agent/learner text renders as escaped text, never markup",
-          "Counts the edges, not the &lt;iterations&gt; &amp; stops." in _s4_body
-          and "Vera Example: &lt;b&gt;closes&lt;/b&gt; the channel &amp; waits."
-              in _s4_body
-          and "channels &amp; &lt;select&gt;" in _s4_body
-          and "Covered fan-in &amp; &lt;select&gt;." in _s4_body
-          and "Label &lt;q_s4alpha001&gt; &amp; more" in _s4_body
-          and "<b>closes</b>" not in _s4_body and "<select>" not in _s4_body
-          and "<iterations>" not in _s4_body
-          # the same note inside the chip's title="" attribute: a dropped
-          # escape there would close the attribute on the quote
-          and 'Says &#34;a mutex&#34; where &lt;a channel&gt; fits &amp; stalls.'
-              in _s4_body
-          and _s4_ev_note not in _s4_body)
-    check("S4 a question label falls back to its durable id",
-          _s4_by_q["q_s4beta0001"]["label"] == "q_s4beta0001")
+    assert (
+        "Counts the edges, not the &lt;iterations&gt; &amp; stops." in _s4_body
+        and "Vera Example: &lt;b&gt;closes&lt;/b&gt; the channel &amp; waits."
+          in _s4_body
+        and "channels &amp; &lt;select&gt;" in _s4_body
+        and "Covered fan-in &amp; &lt;select&gt;." in _s4_body
+        and "Label &lt;q_s4alpha001&gt; &amp; more" in _s4_body
+        and "<b>closes</b>" not in _s4_body and "<select>" not in _s4_body
+        and "<iterations>" not in _s4_body
+        # the same note inside the chip's title="" attribute: a dropped
+        # escape there would close the attribute on the quote
+        and 'Says &#34;a mutex&#34; where &lt;a channel&gt; fits &amp; stalls.'
+          in _s4_body
+        and _s4_ev_note not in _s4_body
+    ), (
+        "S4 agent/learner text renders as escaped text, never markup"
+    )
+    assert (
+        _s4_by_q["q_s4beta0001"]["label"] == "q_s4beta0001"
+    ), (
+        "S4 a question label falls back to its durable id"
+    )
 
     # PR round 1. A review written AFTER the displayed one and then retracted
     # is not an earlier reading of the answer: the fold falls back to the
@@ -866,11 +964,13 @@ def test_sandbox_learning(client, suite_state):
     finally:
         _s4_conn.close()
     _s4_late_q = {q["question_id"]: q for q in _s4_late_ctx["questions"]}
-    check("S4 only reviews written BEFORE the displayed verdict count as earlier",
-          _s4_late_q["q_s4alpha001"]["review"]["level"] == "partial"
-          and _s4_late_q["q_s4alpha001"]["earlier_reviews"] == 1
-          and "(2 earlier)" not in c.get(f"/learn?lesson={_s4_id}").text,
-          str(_s4_late_q["q_s4alpha001"]["earlier_reviews"]))
+    assert (
+        _s4_late_q["q_s4alpha001"]["review"]["level"] == "partial"
+        and _s4_late_q["q_s4alpha001"]["earlier_reviews"] == 1
+        and "(2 earlier)" not in c.get(f"/learn?lesson={_s4_id}").text
+    ), (
+        "S4 only reviews written BEFORE the displayed verdict count as earlier" + "  -- " + (str(_s4_late_q["q_s4alpha001"]["earlier_reviews"]))
+    )
 
     # PR round 1. `type-mismatch`, `dangling-ref` and `invalid-id` are DEGRADED,
     # not rejecting: a manifest can drop a question from the typed list while
@@ -891,16 +991,18 @@ def test_sandbox_learning(client, suite_state):
     _s4_deg_html = c.get(f"/learn?lesson={_s4_id}").text.split(
         '<details class="lesson-record"', 1)[-1]
     _s4_deg_q = {q["question_id"]: q for q in _s4_deg_ctx["questions"]}
-    check("S4 a question dropped by validation is shown as unread, never retired",
-          "dangling-ref" in _s4_deg_read.codes() and not _s4_deg_read.rejected
-          and "q_s4alpha001" not in {q["id"] for q in _s4_deg_read.questions}
-          and [q["question_id"] for q in _s4_deg_ctx["retired"]] == ["q_s4retire01"]
-          and _s4_deg_q["q_s4alpha001"]["unvalidated"] is True
-          and _s4_deg_q["q_s4alpha001"]["retired"] is False
-          # its verdict survives the degraded read intact
-          and _s4_deg_q["q_s4alpha001"]["review"]["level"] == "partial"
-          and 'class="rec-tag rec-unvalidated"' in _s4_deg_html,
-          str([q["question_id"] for q in _s4_deg_ctx["retired"]]))
+    assert (
+        "dangling-ref" in _s4_deg_read.codes() and not _s4_deg_read.rejected
+        and "q_s4alpha001" not in {q["id"] for q in _s4_deg_read.questions}
+        and [q["question_id"] for q in _s4_deg_ctx["retired"]] == ["q_s4retire01"]
+        and _s4_deg_q["q_s4alpha001"]["unvalidated"] is True
+        and _s4_deg_q["q_s4alpha001"]["retired"] is False
+        # its verdict survives the degraded read intact
+        and _s4_deg_q["q_s4alpha001"]["review"]["level"] == "partial"
+        and 'class="rec-tag rec-unvalidated"' in _s4_deg_html
+    ), (
+        "S4 a question dropped by validation is shown as unread, never retired" + "  -- " + (str([q["question_id"] for q in _s4_deg_ctx["retired"]]))
+    )
     bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
 
     # PR round 3. A `questions` value of the wrong type is DEGRADED too, and it
@@ -917,15 +1019,17 @@ def test_sandbox_learning(client, suite_state):
         _s4_bad_ctx = _s4_panel(_s4_conn, _s4_bad_lesson)
     finally:
         _s4_conn.close()
-    check("S4 a question list of the wrong type retires nothing",
-          "type-mismatch" in _s4_bad_read.codes() and not _s4_bad_read.rejected
-          and _s4_bad_read.questions == []
-          and _s4_bad_ctx["declared_known"] is False
-          and _s4_bad_ctx["retired"] == []
-          and {q["question_id"] for q in _s4_bad_ctx["questions"]}
-          >= {"q_s4alpha001", "q_s4retire01"}
-          and "no longer declared" not in c.get(f"/learn?lesson={_s4_id}").text,
-          str([q["question_id"] for q in _s4_bad_ctx["retired"]]))
+    assert (
+        "type-mismatch" in _s4_bad_read.codes() and not _s4_bad_read.rejected
+        and _s4_bad_read.questions == []
+        and _s4_bad_ctx["declared_known"] is False
+        and _s4_bad_ctx["retired"] == []
+        and {q["question_id"] for q in _s4_bad_ctx["questions"]}
+        >= {"q_s4alpha001", "q_s4retire01"}
+        and "no longer declared" not in c.get(f"/learn?lesson={_s4_id}").text
+    ), (
+        "S4 a question list of the wrong type retires nothing" + "  -- " + (str([q["question_id"] for q in _s4_bad_ctx["retired"]]))
+    )
 
     # Drain L1. An explicit null is the same document as `{}` for this purpose
     # — a value is present and it is not a list — but `raw.get` cannot tell it
@@ -949,18 +1053,20 @@ def test_sandbox_learning(client, suite_state):
         _s4_gone_ctx = _s4_panel(_s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id))
     finally:
         _s4_conn.close()
-    check("S4 an explicit null question list retires nothing; a missing key does",
-          not _s4_null_read.rejected and _s4_null_read.questions == []
-          and _s4_null_ctx["declared_known"] is False
-          and _s4_null_ctx["retired"] == []
-          and {q["question_id"] for q in _s4_null_ctx["questions"]}
-          >= {"q_s4alpha001", "q_s4retire01"}
-          # the key genuinely absent IS an answer: everything attempted has left
-          and _s4_gone_ctx["declared_known"] is True
-          and _s4_gone_ctx["questions"] == []
-          and {q["question_id"] for q in _s4_gone_ctx["retired"]}
-          >= {"q_s4alpha001", "q_s4retire01"},
-          f'{_s4_null_ctx["declared_known"]} / {_s4_gone_ctx["declared_known"]}')
+    assert (
+        not _s4_null_read.rejected and _s4_null_read.questions == []
+        and _s4_null_ctx["declared_known"] is False
+        and _s4_null_ctx["retired"] == []
+        and {q["question_id"] for q in _s4_null_ctx["questions"]}
+        >= {"q_s4alpha001", "q_s4retire01"}
+        # the key genuinely absent IS an answer: everything attempted has left
+        and _s4_gone_ctx["declared_known"] is True
+        and _s4_gone_ctx["questions"] == []
+        and {q["question_id"] for q in _s4_gone_ctx["retired"]}
+        >= {"q_s4alpha001", "q_s4retire01"}
+    ), (
+        "S4 an explicit null question list retires nothing; a missing key does" + "  -- " + (f'{_s4_null_ctx["declared_known"]} / {_s4_gone_ctx["declared_known"]}')
+    )
     bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
 
     # PR round 6. `identity-mismatch` is DEGRADED so the copied bundle can
@@ -983,21 +1089,23 @@ def test_sandbox_learning(client, suite_state):
         _s4_conn.close()
     _s4_foreign_html = c.get(f"/learn?lesson={_s4_id}").text.split(
         '<details class="lesson-record"', 1)[-1]
-    check("S4 a foreign-identity declaration retires and declares nothing",
-          "identity-mismatch" in _s4_foreign_read.codes()
-          and not _s4_foreign_read.rejected
-          and _s4_foreign_ctx["declared_known"] is False
-          and _s4_foreign_ctx["retired"] == []
-          and _s4_foreign_q not in {
-              q["question_id"] for q in _s4_foreign_ctx["questions"]
-          }
-          and {q["question_id"] for q in _s4_foreign_ctx["questions"]}
-          >= {"q_s4alpha001", "q_s4retire01"}
-          and "Foreign lesson question" not in _s4_foreign_html
-          and "question declarations unavailable" in _s4_foreign_html
-          and "manifest unreadable" not in _s4_foreign_html
-          and "no longer declared" not in _s4_foreign_html,
-          str([q["question_id"] for q in _s4_foreign_ctx["questions"]]))
+    assert (
+        "identity-mismatch" in _s4_foreign_read.codes()
+        and not _s4_foreign_read.rejected
+        and _s4_foreign_ctx["declared_known"] is False
+        and _s4_foreign_ctx["retired"] == []
+        and _s4_foreign_q not in {
+          q["question_id"] for q in _s4_foreign_ctx["questions"]
+        }
+        and {q["question_id"] for q in _s4_foreign_ctx["questions"]}
+        >= {"q_s4alpha001", "q_s4retire01"}
+        and "Foreign lesson question" not in _s4_foreign_html
+        and "question declarations unavailable" in _s4_foreign_html
+        and "manifest unreadable" not in _s4_foreign_html
+        and "no longer declared" not in _s4_foreign_html
+    ), (
+        "S4 a foreign-identity declaration retires and declares nothing" + "  -- " + (str([q["question_id"] for q in _s4_foreign_ctx["questions"]]))
+    )
     bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
 
     # PR round 7. v1 has no question declaration, so its missing `questions`
@@ -1013,17 +1121,19 @@ def test_sandbox_learning(client, suite_state):
         _s4_conn.close()
     _s4_v1_html = c.get(f"/learn?lesson={_s4_id}").text.split(
         '<details class="lesson-record"', 1)[-1]
-    check("S4 a v1 manifest asserts no question retirement",
-          _s4_v1_read.version == bschema.SCHEMA_V1
-          and not _s4_v1_read.rejected
-          and _s4_v1_ctx["declared_known"] is False
-          and _s4_v1_ctx["retired"] == []
-          and {q["question_id"] for q in _s4_v1_ctx["questions"]}
-          >= {"q_s4alpha001", "q_s4retire01"}
-          and "question declarations unavailable" in _s4_v1_html
-          and "manifest unreadable" not in _s4_v1_html
-          and "no longer declared" not in _s4_v1_html,
-          str([q["question_id"] for q in _s4_v1_ctx["questions"]]))
+    assert (
+        _s4_v1_read.version == bschema.SCHEMA_V1
+        and not _s4_v1_read.rejected
+        and _s4_v1_ctx["declared_known"] is False
+        and _s4_v1_ctx["retired"] == []
+        and {q["question_id"] for q in _s4_v1_ctx["questions"]}
+        >= {"q_s4alpha001", "q_s4retire01"}
+        and "question declarations unavailable" in _s4_v1_html
+        and "manifest unreadable" not in _s4_v1_html
+        and "no longer declared" not in _s4_v1_html
+    ), (
+        "S4 a v1 manifest asserts no question retirement" + "  -- " + (str([q["question_id"] for q in _s4_v1_ctx["questions"]]))
+    )
     bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
 
     # PR round 3. A question may move pages, and `stale` was decided when the
@@ -1050,15 +1160,17 @@ def test_sandbox_learning(client, suite_state):
     _s4_mv = {q["question_id"]: q for q in _s4_mv_ctx["questions"]}
     _s4_mv_html = c.get(f"/learn?lesson={_s4_id}").text.split(
         '<details class="lesson-record"', 1)[-1]
-    check("S4 an answer keeps the page it was written on when its question moves",
-          _s4_mv["q_s4alpha001"]["attempt"]["attempt_id"] == _s4_a_new
-          and _s4_mv["q_s4alpha001"]["page_id"] == _s4_page
-          and _s4_mv["q_s4alpha001"]["moved_to"] == _s4_moved_page
-          and _s4_mv["q_s4beta0001"]["moved_to"] is None
-          and 'class="rec-tag rec-moved"' in _s4_mv_html
-          and f">{_s4_page}<" in _s4_mv_html,
-          f'{_s4_mv["q_s4alpha001"]["page_id"]} / '
-          f'{_s4_mv["q_s4alpha001"]["moved_to"]}')
+    assert (
+        _s4_mv["q_s4alpha001"]["attempt"]["attempt_id"] == _s4_a_new
+        and _s4_mv["q_s4alpha001"]["page_id"] == _s4_page
+        and _s4_mv["q_s4alpha001"]["moved_to"] == _s4_moved_page
+        and _s4_mv["q_s4beta0001"]["moved_to"] is None
+        and 'class="rec-tag rec-moved"' in _s4_mv_html
+        and f">{_s4_page}<" in _s4_mv_html
+    ), (
+        "S4 an answer keeps the page it was written on when its question moves" + "  -- " + (f'{_s4_mv["q_s4alpha001"]["page_id"]} / '
+        f'{_s4_mv["q_s4alpha001"]["moved_to"]}')
+    )
     bschema.write_manifest(_s4_dir / "lesson.json", _s4_manifest)
     (_s4_dir / "s4-moved.html").unlink()
 
@@ -1082,14 +1194,16 @@ def test_sandbox_learning(client, suite_state):
     finally:
         _s4_conn.close()
     _s4_ret_q = {q["question_id"]: q for q in _s4_ret_ctx["questions"]}
-    check("S4 a retracted review is not counted as an earlier reading either",
-          _s4_ret_q["q_s4gamma001"]["review"]["assessment_id"]
-          == _s4_g2["assessment_id"]
-          and _s4_ret_q["q_s4gamma001"]["earlier_reviews"] == 0
-          and "s4-gamma-review-retracted" not in c.get(f"/learn?lesson={_s4_id}").text
-          # the corrected-by-a-review case is untouched
-          and _s4_ret_q["q_s4alpha001"]["earlier_reviews"] == 1,
-          str(_s4_ret_q["q_s4gamma001"]["earlier_reviews"]))
+    assert (
+        _s4_ret_q["q_s4gamma001"]["review"]["assessment_id"]
+        == _s4_g2["assessment_id"]
+        and _s4_ret_q["q_s4gamma001"]["earlier_reviews"] == 0
+        and "s4-gamma-review-retracted" not in c.get(f"/learn?lesson={_s4_id}").text
+        # the corrected-by-a-review case is untouched
+        and _s4_ret_q["q_s4alpha001"]["earlier_reviews"] == 1
+    ), (
+        "S4 a retracted review is not counted as an earlier reading either" + "  -- " + (str(_s4_ret_q["q_s4gamma001"]["earlier_reviews"]))
+    )
 
     # PR round 5. The fold has to VISIT every active row, but it keeps one per
     # concept, one per attempt and one summary — and this runs on every /learn
@@ -1138,44 +1252,49 @@ def test_sandbox_learning(client, suite_state):
     _s4_winners = (len(_s4_bounded["evidence_by_concept"])
                    + len(_s4_bounded["reviews_by_attempt"])
                    + (1 if _s4_bounded["summary"] else 0))
-    check("S4 the panel's fold walks narrow rows and reads only its winners whole",
-          # the four extra active reviews of one attempt are visited, not read
-          _s4_active_n >= _s4_winners + 4
-          and "note" not in assess_svc.ACTIVE_FOLD_KEYS_SQL
-          and "next_action" not in assess_svc.ACTIVE_FOLD_KEYS_SQL
-          and len(_s4_wide_calls) == 1
-          # lesson_id + exactly one id per displayed record
-          and len(_s4_wide_calls[0][1]) == 1 + _s4_winners
-          # and the narrow path folds to precisely what the wide one does
-          and _s4_bounded["evidence_by_concept"] == _s4_wide_fold["evidence_by_concept"]
-          and _s4_bounded["reviews_by_attempt"] == {
-              attempt_id: row
-              for attempt_id, row in _s4_wide_fold["reviews_by_attempt"].items()
-              if attempt_id in _s4_latest_attempt_ids
-          }
-          and _s4_bounded["summary"] == _s4_wide_fold["summary"],
-          f"{_s4_active_n} active, {_s4_winners} read whole")
-    check("S4 hydrates no review winner for a discarded historical attempt",
-          set(_s4_bounded["reviews_by_attempt"]) <= _s4_latest_attempt_ids
-          and set(_s4_wide_fold["reviews_by_attempt"])
-          - set(_s4_bounded["reviews_by_attempt"]),
-          str(len(_s4_wide_fold["reviews_by_attempt"])
-              - len(_s4_bounded["reviews_by_attempt"])))
+    assert (
+        _s4_active_n >= _s4_winners + 4
+        and "note" not in assess_svc.ACTIVE_FOLD_KEYS_SQL
+        and "next_action" not in assess_svc.ACTIVE_FOLD_KEYS_SQL
+        and len(_s4_wide_calls) == 1
+        # lesson_id + exactly one id per displayed record
+        and len(_s4_wide_calls[0][1]) == 1 + _s4_winners
+        # and the narrow path folds to precisely what the wide one does
+        and _s4_bounded["evidence_by_concept"] == _s4_wide_fold["evidence_by_concept"]
+        and _s4_bounded["reviews_by_attempt"] == {
+          attempt_id: row
+          for attempt_id, row in _s4_wide_fold["reviews_by_attempt"].items()
+          if attempt_id in _s4_latest_attempt_ids
+        }
+        and _s4_bounded["summary"] == _s4_wide_fold["summary"]
+    ), (
+        "S4 the panel's fold walks narrow rows and reads only its winners whole" + "  -- " + (f"{_s4_active_n} active, {_s4_winners} read whole")
+    )
+    assert (
+        set(_s4_bounded["reviews_by_attempt"]) <= _s4_latest_attempt_ids
+        and set(_s4_wide_fold["reviews_by_attempt"])
+        - set(_s4_bounded["reviews_by_attempt"])
+    ), (
+        "S4 hydrates no review winner for a discarded historical attempt" + "  -- " + (str(len(_s4_wide_fold["reviews_by_attempt"])
+        - len(_s4_bounded["reviews_by_attempt"])))
+    )
     _s4_count_calls = [
         call for call in _s4_spy.calls
         if "earlier_count" in call[0]
     ]
-    check("S4 earlier-review markers aggregate only displayed winners",
-          len(_s4_count_calls) == 1
-          and "WITH winners(attempt_id, winner_id) AS (VALUES" in
-              _s4_count_calls[0][0]
-          and "COUNT(r.id) AS earlier_count" in _s4_count_calls[0][0]
-          and set(_s4_count_calls[0][1][:-1:2])
-              == set(_s4_bounded["reviews_by_attempt"])
-          and "review_seqs" not in _s4_bounded
-          and len(_s4_bounded["earlier_review_counts"])
-          <= len(_s4_bounded["reviews_by_attempt"]),
-          str(_s4_bounded["earlier_review_counts"]))
+    assert (
+        len(_s4_count_calls) == 1
+        and "WITH winners(attempt_id, winner_id) AS (VALUES" in
+          _s4_count_calls[0][0]
+        and "COUNT(r.id) AS earlier_count" in _s4_count_calls[0][0]
+        and set(_s4_count_calls[0][1][:-1:2])
+          == set(_s4_bounded["reviews_by_attempt"])
+        and "review_seqs" not in _s4_bounded
+        and len(_s4_bounded["earlier_review_counts"])
+        <= len(_s4_bounded["reviews_by_attempt"])
+    ), (
+        "S4 earlier-review markers aggregate only displayed winners" + "  -- " + (str(_s4_bounded["earlier_review_counts"]))
+    )
 
     # PR round 9. Two variables per displayed winner are bounded independently
     # of both lifetime review history and the number of active historical
@@ -1206,12 +1325,14 @@ def test_sandbox_learning(client, suite_state):
         for _sql, params in _s4_count_conn.calls
         for attempt_id in params[:-1:2]
     }
-    check("S4 displayed-review aggregates use bounded SQL-variable batches",
-          len(_s4_count_conn.calls) == 2
-          and max(len(params) for _, params in _s4_count_conn.calls)
-              == assess_svc._REVIEW_COUNTS_PER_QUERY * 2 + 1
-          and _s4_bound_attempts == set(_s4_count_winners),
-          str([len(params) for _, params in _s4_count_conn.calls]))
+    assert (
+        len(_s4_count_conn.calls) == 2
+        and max(len(params) for _, params in _s4_count_conn.calls)
+          == assess_svc._REVIEW_COUNTS_PER_QUERY * 2 + 1
+        and _s4_bound_attempts == set(_s4_count_winners)
+    ), (
+        "S4 displayed-review aggregates use bounded SQL-variable batches" + "  -- " + (str([len(params) for _, params in _s4_count_conn.calls]))
+    )
 
     # PR round 6. Hydration has no winner-count ceiling, but each SQL statement
     # has to stay below a fixed variable budget.
@@ -1261,18 +1382,20 @@ def test_sandbox_learning(client, suite_state):
         "reviews_by_attempt": {},
         "summary": None,
     })
-    check("S4 winner hydration uses bounded SQL-variable batches",
-          len(_s4_hydrate_conn.calls) == 2
-          and max(len(params) for _, params in _s4_hydrate_conn.calls)
-          == assess_svc._HYDRATE_IDS_PER_QUERY + 1
-          and len(_s4_hydrated["evidence_by_concept"]) == _s4_hydrate_n
-          and all(
-              row["seq"] == 1_000_000 + n
-              for n, row in enumerate(
-                  _s4_hydrated["evidence_by_concept"].values()
-              )
-          ),
-          str([len(params) for _, params in _s4_hydrate_conn.calls]))
+    assert (
+        len(_s4_hydrate_conn.calls) == 2
+        and max(len(params) for _, params in _s4_hydrate_conn.calls)
+        == assess_svc._HYDRATE_IDS_PER_QUERY + 1
+        and len(_s4_hydrated["evidence_by_concept"]) == _s4_hydrate_n
+        and all(
+          row["seq"] == 1_000_000 + n
+          for n, row in enumerate(
+              _s4_hydrated["evidence_by_concept"].values()
+          )
+        )
+    ), (
+        "S4 winner hydration uses bounded SQL-variable batches" + "  -- " + (str([len(params) for _, params in _s4_hydrate_conn.calls]))
+    )
 
     # PR round 8. The attempt read establishes the panel snapshot. A review
     # committed by a sibling connection immediately afterwards must not leak
@@ -1322,14 +1445,16 @@ def test_sandbox_learning(client, suite_state):
     _s4_after_q = {
         q["question_id"]: q for q in _s4_after_ctx["questions"]
     }["q_s4alpha001"]
-    check("S4 concurrent assessment writes cannot mix panel DB versions",
-          _s4_snapshot_write
-          and _s4_snapshot_q["review"] == _s4_snapshot_alpha["review"]
-          and _s4_snapshot_q["earlier_reviews"]
-          == _s4_snapshot_alpha["earlier_reviews"]
-          and _s4_after_q["review"]["assessment_id"]
-          == _s4_snapshot_write["assessment_id"],
-          f'{_s4_snapshot_q["review"]} / {_s4_after_q["review"]}')
+    assert (
+        _s4_snapshot_write
+        and _s4_snapshot_q["review"] == _s4_snapshot_alpha["review"]
+        and _s4_snapshot_q["earlier_reviews"]
+        == _s4_snapshot_alpha["earlier_reviews"]
+        and _s4_after_q["review"]["assessment_id"]
+        == _s4_snapshot_write["assessment_id"]
+    ), (
+        "S4 concurrent assessment writes cannot mix panel DB versions" + "  -- " + (f'{_s4_snapshot_q["review"]} / {_s4_after_q["review"]}')
+    )
 
     # PR round 1 + re-check. The answer excerpt is bounded by SQLite, so a long
     # answer is never materialized whole to render 400 characters of it — and
@@ -1350,23 +1475,27 @@ def test_sandbox_learning(client, suite_state):
     _s4_long_view = _s4_views["q_s4gamma001"]
     _s4_nul_view = _s4_views["q_s4beta0001"]
     _s4_wide_view = _s4_views["q_s4alpha001"]
-    check("S4 the panel reads a bounded excerpt of the answer, flagged when cut",
-          _s4_long_view["attempt_id"] == _s4_long_att
-          and _s4_long_view["answer"] == _s4_long[:attempts_svc.PANEL_ANSWER_CHARS]
-          and _s4_long_view["answer_truncated"] is True
-          # a whole answer shorter than the bound is neither cut nor flagged,
-          # multi-byte characters included
-          and _s4_wide_view["attempt_id"] == _s4_wide_att
-          and _s4_wide_view["answer"] == _s4_wide
-          and _s4_wide_view["answer_truncated"] is False,
-          str(len(_s4_long_view["answer"])))
-    check("S4 an embedded NUL neither swallows the answer nor hides the cut",
-          _s4_nul_view["attempt_id"] == _s4_nul_att
-          and _s4_nul_view["answer"] == _s4_nul[:attempts_svc.PANEL_ANSWER_CHARS]
-          and len(_s4_nul_view["answer"]) == attempts_svc.PANEL_ANSWER_CHARS
-          and _s4_nul_view["answer_truncated"] is True
-          and "CAST(answer AS BLOB)" in attempts_svc._LATEST_PER_QUESTION_SQL,
-          repr(_s4_nul_view["answer"][:20]))
+    assert (
+        _s4_long_view["attempt_id"] == _s4_long_att
+        and _s4_long_view["answer"] == _s4_long[:attempts_svc.PANEL_ANSWER_CHARS]
+        and _s4_long_view["answer_truncated"] is True
+        # a whole answer shorter than the bound is neither cut nor flagged,
+        # multi-byte characters included
+        and _s4_wide_view["attempt_id"] == _s4_wide_att
+        and _s4_wide_view["answer"] == _s4_wide
+        and _s4_wide_view["answer_truncated"] is False
+    ), (
+        "S4 the panel reads a bounded excerpt of the answer, flagged when cut" + "  -- " + (str(len(_s4_long_view["answer"])))
+    )
+    assert (
+        _s4_nul_view["attempt_id"] == _s4_nul_att
+        and _s4_nul_view["answer"] == _s4_nul[:attempts_svc.PANEL_ANSWER_CHARS]
+        and len(_s4_nul_view["answer"]) == attempts_svc.PANEL_ANSWER_CHARS
+        and _s4_nul_view["answer_truncated"] is True
+        and "CAST(answer AS BLOB)" in attempts_svc._LATEST_PER_QUESTION_SQL
+    ), (
+        "S4 an embedded NUL neither swallows the answer nor hides the cut" + "  -- " + (repr(_s4_nul_view["answer"][:20]))
+    )
 
     # The panel reads the manifest through the PURE reader (D-F1-2 binds phase
     # S too): a render may never create bundle state, and what it cannot read
@@ -1380,15 +1509,21 @@ def test_sandbox_learning(client, suite_state):
         _s4_ghost_ctx = _s4_panel(_s4_conn, _s4_ghost)
     finally:
         _s4_conn.close()
-    check("S4 the panel's manifest read creates nothing and asserts no retirement",
-          not _s4_ghost_dir.exists()
-          and _s4_ghost_ctx["declared_known"] is False
-          and _s4_ghost_ctx["questions"] == [] and _s4_ghost_ctx["retired"] == []
-          and _s4_ghost_ctx["empty"] is True)
-    check("S4 an empty record still renders the panel with its invitation",
-          "Nothing recorded yet" in c.get(
-              f"/learn?lesson={_s4_ghost_id}").text.split(
-                  '<details class="lesson-record"', 1)[-1])
+    assert (
+        not _s4_ghost_dir.exists()
+        and _s4_ghost_ctx["declared_known"] is False
+        and _s4_ghost_ctx["questions"] == [] and _s4_ghost_ctx["retired"] == []
+        and _s4_ghost_ctx["empty"] is True
+    ), (
+        "S4 the panel's manifest read creates nothing and asserts no retirement"
+    )
+    assert (
+        "Nothing recorded yet" in c.get(
+          f"/learn?lesson={_s4_ghost_id}").text.split(
+              '<details class="lesson-record"', 1)[-1]
+    ), (
+        "S4 an empty record still renders the panel with its invitation"
+    )
 
     # Drain follow-up. Start the request with a valid selected page, then
     # atomically remove it after the DB state is captured but before the one
@@ -1478,18 +1613,20 @@ def test_sandbox_learning(client, suite_state):
     finally:
         _s4_conn.close()
     _s4_swap_html = _s4_same_manifest.text
-    check("S4 a page removed before the final manifest read is not persisted",
-          _s4_same_manifest.status_code == 200
-          and _s4_read_order
-              == ["db", "manifest-swap", "manifest", "panel"]
-          and len(_s4_ensured_reads) == 1
-          and _s4_panel_reads == [_s4_ensured_reads[-1]]
-          and not _s4_readonly_reads
-          and not _s4_mark_opened_calls
-          and _s4_entry_after_swap == "index.html"
-          and f"/files/index.html" in _s4_swap_html
-          and f"preview-meta?entry={_s4_swap_path}" in _s4_swap_html,
-          f"order={_s4_read_order}, current_entry={_s4_entry_after_swap}")
+    assert (
+        _s4_same_manifest.status_code == 200
+        and _s4_read_order
+          == ["db", "manifest-swap", "manifest", "panel"]
+        and len(_s4_ensured_reads) == 1
+        and _s4_panel_reads == [_s4_ensured_reads[-1]]
+        and not _s4_readonly_reads
+        and not _s4_mark_opened_calls
+        and _s4_entry_after_swap == "index.html"
+        and f"/files/index.html" in _s4_swap_html
+        and f"preview-meta?entry={_s4_swap_path}" in _s4_swap_html
+    ), (
+        "S4 a page removed before the final manifest read is not persisted" + "  -- " + (f"order={_s4_read_order}, current_entry={_s4_entry_after_swap}")
+    )
 
     # The live process runs the OLD context until the owner's restart while
     # serving this template from the working tree: the guard must omit the
@@ -1510,9 +1647,12 @@ def test_sandbox_learning(client, suite_state):
                          **{k: 0 for k in lessons_svc.STATUSES}},
         status_tabs=[], status_filter=None, show_archived=False, flash=None,
         self_url="/learn", selected=_s4_stale_selected)
-    check("S4 the template guard omits the panel when the context lacks it",
-          "record" not in _s4_stale_selected
-          and "lesson-record" not in _s4_stale and "lesson-frame" in _s4_stale)
+    assert (
+        "record" not in _s4_stale_selected
+        and "lesson-record" not in _s4_stale and "lesson-frame" in _s4_stale
+    ), (
+        "S4 the template guard omits the panel when the context lacks it"
+    )
     _s4_all = _s4_rows(_s4_id)
     _s4_superseded = {r["supersedes"] for r in _s4_all if r["supersedes"]}
     _s4_conn = get_conn()
@@ -1520,14 +1660,17 @@ def test_sandbox_learning(client, suite_state):
         _s4_final = _s4_panel(_s4_conn, lessons_svc.get_lesson(_s4_conn, _s4_id))
     finally:
         _s4_conn.close()
-    check("S4 the fold helpers are shared, and retractions are not counted as state",
-          assess_svc.fold_rows([]) == {"evidence_by_concept": {},
-                                       "reviews_by_attempt": {}, "summary": None}
-          and _s4_final["counts"]["assessments"] == len(
-              [r for r in _s4_all if r["kind"] != "retraction"
-               and r["assessment_id"] not in _s4_superseded])
-          # the whole lesson's writes are in this count, not just the first fold
-          and _s4_final["counts"]["assessments"] > _s4_ctx["counts"]["assessments"])
+    assert (
+        assess_svc.fold_rows([]) == {"evidence_by_concept": {},
+                                   "reviews_by_attempt": {}, "summary": None}
+        and _s4_final["counts"]["assessments"] == len(
+          [r for r in _s4_all if r["kind"] != "retraction"
+           and r["assessment_id"] not in _s4_superseded])
+        # the whole lesson's writes are in this count, not just the first fold
+        and _s4_final["counts"]["assessments"] > _s4_ctx["counts"]["assessments"]
+    ), (
+        "S4 the fold helpers are shared, and retractions are not counted as state"
+    )
 
     suite_state.update({
         name: value for name, value in locals().items()
