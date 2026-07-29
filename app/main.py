@@ -13,23 +13,28 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from datetime import date as _date, timedelta
-from urllib.parse import quote
+from datetime import date as _date
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .db import (
-    get_conn, init_db, is_not_future, is_valid_date, now_iso, pretty_date, today_str,
+from .db import get_conn, init_db, pretty_date, today_str
+from .routers.calendar import router as calendar_router
+from .routers.habits import (
+    detail_router as habit_detail_router, items_router, router as habits_router,
+    write_router as habit_write_router,
 )
 from .routers.learn import router as learn_router, _learn_url
 from .security import install_security
 from .services import (
-    calendar_events, checkins, export, focus, items, lessons, lists, quickadd,
+    checkins, export, focus, items, lessons, lists, quickadd,
     retro, runs, stats, tasks,
 )
-from .templating import BASE_DIR, _safe_return, _with_flash, templates
+from .templating import (
+    BASE_DIR, _enrich_groups, _habit_detail_ctx, _safe_return, _validated_write_date,
+    _wants_json, _week_strip, _with_flash, templates,
+)
 from .terminal import client_is_local, setup_terminal, shutdown_terminal
 
 log = logging.getLogger("activity_ledger")
@@ -177,96 +182,7 @@ setup_terminal(app)
 # route is covered without remembering anything.
 
 
-def _validated_write_date(date: str) -> str:
-    if not is_valid_date(date):
-        raise HTTPException(status_code=400, detail="invalid date (expected YYYY-MM-DD)")
-    if not is_not_future(date):
-        raise HTTPException(status_code=400, detail="date is in the future")
-    return date
-
-
-def _wants_json(request: Request) -> bool:
-    return request.headers.get("x-partial") == "1"
-
-
-def _redirect_for(date: str, anchor: str, flash: str | None = None) -> str:
-    base = "/habits" if date == today_str() else f"/history?date={date}"
-    if flash:
-        sep = "&" if "?" in base else "?"
-        base = f"{base}{sep}flash={quote(flash)}"
-    return f"{base}#{anchor}" if anchor else base
-
-
 # --- day view (shared by Today + History) ----------------------------------
-
-
-def _sunday_of(d: _date) -> _date:
-    """The Sunday starting d's week — weeks are Sunday-first everywhere (the week
-    strip, the month grid's firstweekday=6, and the calendar week view)."""
-    return d - timedelta(days=(d.weekday() + 1) % 7)
-
-
-def _week_strip(conn, active: str) -> list[dict]:
-    """Sunday-start week containing `active`, with a per-day logged count."""
-    d = _date.fromisoformat(active)
-    today = _date.fromisoformat(today_str())
-    start = _sunday_of(d)
-    days = [start + timedelta(days=i) for i in range(7)]
-    iso = [x.isoformat() for x in days]
-    rows = conn.execute(
-        f"SELECT date, COUNT(*) AS n FROM checkins "
-        f"WHERE date IN ({','.join('?' * len(iso))}) GROUP BY date",
-        iso,
-    ).fetchall()
-    counts = {r["date"]: r["n"] for r in rows}
-    return [
-        {
-            "date": x.isoformat(),
-            "dow": x.strftime("%a"),
-            "day": x.day,
-            "is_today": x == today,
-            "is_active": x.isoformat() == active,
-            "is_future": x > today,
-            "logged": counts.get(x.isoformat(), 0),
-        }
-        for x in days
-    ]
-
-
-def _enrich_groups(raw_groups, hist: dict, strip: list[dict], today_d: _date):
-    """Turn (group, [Row]) into (group, [dict]) with streaks + weekly dots.
-
-    Each item's `week_dots` align 1:1 with the week strip columns, coloured by the
-    four-status model so a row shows its last 7 days at a glance (sec16.2). Streaks
-    follow services.stats (light_done keeps the chain; skipped is neutral)."""
-    groups = []
-    for group_name, items in raw_groups:
-        out = []
-        for it in items:
-            smap = hist.get(it["id"], {})
-            out.append({
-                "id": it["id"],
-                "title": it["title"],
-                "group_name": it["group_name"],
-                "emoji": it["emoji"],
-                "status": it["status"],
-                "note": it["note"],
-                "current_streak": stats.current_streak_from(smap, today_d),
-                "best_streak": stats.best_streak_from(smap, today_d),
-                # all-time kept days (full/light) — the "⚡ N Day" total on each row
-                "total": sum(1 for s in smap.values() if s in ("full_done", "light_done")),
-                "week_dots": [
-                    {
-                        "date": sd["date"],
-                        "status": smap.get(sd["date"]),
-                        "is_future": sd["is_future"],
-                        "is_active": sd["is_active"],
-                    }
-                    for sd in strip
-                ],
-            })
-        groups.append((group_name, out))
-    return groups
 
 
 def _render_day(request: Request, date: str, nav_active: str, flash: str | None,
@@ -307,42 +223,6 @@ def _render_day(request: Request, date: str, nav_active: str, flash: str | None,
 
 
 # --- tasks view (Today / lists / smart lists, sec21) -----------------------
-
-
-def _habit_detail_ctx(conn, item_id: int, month: str | None, base: str) -> dict | None:
-    """Shared context for the habit detail (full page + inline pane, sec16.6).
-
-    `base` is the URL the month-paging controls return to (carrying the right
-    selection), so the pane stays put when you page months."""
-    item = conn.execute("SELECT * FROM routine_items WHERE id = ?", (item_id,)).fetchone()
-    if item is None:
-        return None
-    year, mon = _parse_month(month)
-    first = _date(year, mon, 1)
-    prev_first = (first - timedelta(days=1)).replace(day=1)
-    next_first = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
-    today_d = _date.fromisoformat(today_str())
-    sep = "&" if "?" in base else "?"
-    today_row = checkins.get_checkin(conn, today_str(), item_id)
-    return {
-        "item": item,
-        "current_streak": stats.current_streak(conn, item_id),
-        "best_streak": stats.best_streak(conn, item_id),
-        "total": stats.total_checkins(conn, item_id),
-        "month_stats": stats.month_stats(conn, item_id, year, mon),
-        "weeks": stats.month_calendar(conn, item_id, year, mon),
-        "year_map": stats.year_map(conn, item_id),
-        "log": stats.recent_log(conn, item_id),
-        "month_label": first.strftime("%B %Y"),
-        "month_prev_url": f"{base}{sep}month={prev_first.strftime('%Y-%m')}",
-        "month_next_url": f"{base}{sep}month={next_first.strftime('%Y-%m')}",
-        "can_next": (year, mon) < (today_d.year, today_d.month),
-        "today": today_str(),
-        # Today check-in control in the pane (sec31)
-        "today_status": today_row["status"] if today_row else None,
-        "today_note": (today_row["note"] if today_row else "") or "",
-        "pane_return": base,
-    }
 
 
 def _selection_ctx(conn, request: Request, sel: str | None, month: str | None) -> dict:
@@ -539,79 +419,6 @@ def get_search(request: Request, q: str = ""):
     )
 
 
-# --- Calendar (month grid) (sec: premium views) -----------------------------
-
-
-def _task_chip(t) -> dict:
-    """A due task as a calendar chip — shared by the month + week views
-    (the templates' chip class ladder reads exactly these keys)."""
-    return {
-        "title": t["title"], "kind": t["kind"],
-        "completed": t["completed_at"] is not None, "priority": t["priority"],
-    }
-
-
-def _month_grid(conn, year: int, month: int) -> list[list[dict]]:
-    """Always six Sunday-start weeks for the month (TickTick fixes the grid at 6
-    rows so its height never jumps), each cell carrying its day's task events."""
-    import calendar as _cal
-    today_d = _date.fromisoformat(today_str())
-    grid = _cal.Calendar(firstweekday=6)  # 6 = Sunday
-    first_cell = grid.monthdatescalendar(year, month)[0][0]
-    days = [first_cell + timedelta(days=i) for i in range(42)]  # 6 weeks, fixed
-    win_start, win_end = days[0].isoformat(), days[-1].isoformat()
-    by_date: dict[str, list] = {}
-    # Calendar events first so they sort above tasks in a cell (sec32 §13.6);
-    # occurrences_between already returns all-day-first then by start_time.
-    for o in calendar_events.occurrences_between(conn, win_start, win_end):
-        by_date.setdefault(o["date"], []).append({**o, "kind": "event"})
-    for t in tasks.due_between(conn, win_start, win_end):
-        by_date.setdefault(t["due_date"], []).append(_task_chip(t))
-    weeks: list[list[dict]] = []
-    for w in range(6):
-        cells = []
-        for d in days[w * 7:(w + 1) * 7]:
-            iso = d.isoformat()
-            cells.append({
-                "day": d.day,
-                "date": iso,
-                "in_month": d.month == month and d.year == year,
-                "is_today": d == today_d,
-                "month_abbr": d.strftime("%b"),
-                "events": by_date.get(iso, []),
-            })
-        weeks.append(cells)
-    return weeks
-
-
-def _event_modal_ctx(conn, self_url: str, ev: str | None, on: str | None,
-                     add: str | None = None, at: str | None = None) -> dict:
-    """Context for the event modals on both calendar views (sec32 M3): the create
-    modal always needs lists + today; ?ev=<id> opens the edit modal for that series
-    (silently ignored if unknown/archived/garbage), with ?on=<date> carrying the
-    clicked occurrence so the modal can offer Skip for exactly that day.
-    ?add=<date>&at=<HH:MM> (the week grid's empty slots, M4) opens the CREATE modal
-    prefilled instead — ignored when an edit modal is already being opened."""
-    ctx = {"self_url": self_url, "today": today_str(),
-           "cal_lists": lists.list_lists(conn),
-           "edit_ev": None, "edit_exdates": [], "on": None,
-           "new_date": None, "new_time": None}
-    try:
-        event_id = int(ev) if ev else None
-    except ValueError:
-        event_id = None
-    if event_id is not None:
-        row = calendar_events.get_event(conn, event_id)
-        if row is not None and row["archived_at"] is None:
-            ctx.update(edit_ev=row,
-                       edit_exdates=calendar_events.exdates_of(row),
-                       on=on if is_valid_date(on) else None)
-    if ctx["edit_ev"] is None and is_valid_date(add):
-        ctx.update(new_date=add,
-                   new_time=at if calendar_events.is_valid_hhmm(at) else None)
-    return ctx
-
-
 # --- command palette (Ctrl/⌘K) index ----------------------------------------
 _PALETTE_VIEWS = [
     {"label": "Tasks", "href": "/today", "icon": "tasks"},
@@ -655,278 +462,9 @@ def get_palette():
     })
 
 
-@app.get("/calendar")
-def get_calendar(request: Request, month: str | None = None, ev: str | None = None,
-                 on: str | None = None, flash: str | None = None):
-    year, mon = _parse_month(month)
-    first = _date(year, mon, 1)
-    self_url = f"/calendar?month={first.strftime('%Y-%m')}"
-    conn = get_conn()
-    try:
-        weeks = _month_grid(conn, year, mon)
-        modal = _event_modal_ctx(conn, self_url, ev, on)
-    finally:
-        conn.close()
-    prev_first = (first - timedelta(days=1)).replace(day=1)
-    next_first = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
-    return templates.TemplateResponse(request,
-        "calendar.html",
-        {
-            "request": request, "rail": "calendar",
-            "month_label": first.strftime("%B %Y"),
-            "weeks": weeks, "flash": flash, **modal,
-            "prev_url": f"/calendar?month={prev_first.strftime('%Y-%m')}",
-            "next_url": f"/calendar?month={next_first.strftime('%Y-%m')}",
-        },
-    )
-
-
-# Timed week grid geometry: a fixed px-per-hour scale the template multiplies by.
-_WEEK_HOUR_PX = 48          # height of one hour row
-_WEEK_MIN_BLOCK_PX = 22     # floor so a 15-min slot stays legible (sec32 §6.1)
-_WEEK_BAND = (6, 23)        # default visible band 06:00–23:00, expands to fit
-
-
-def _week_ctx(conn, sun: _date) -> dict:
-    """Build the Sunday-start week beginning at `sun` — the caller snaps via
-    _sunday_of (firstweekday=6, matching the month grid): 7 day columns, an
-    all-day row (all-day events + due tasks), and the timed grid with overlap
-    columns (sec32 §6/§6.1)."""
-    week_days = [sun + timedelta(days=i) for i in range(7)]
-    start_iso, end_iso = week_days[0].isoformat(), week_days[-1].isoformat()
-    occs = calendar_events.occurrences_between(conn, start_iso, end_iso)
-
-    tasks_by_date: dict[str, list] = {}
-    for t in tasks.due_between(conn, start_iso, end_iso):
-        tasks_by_date.setdefault(t["due_date"], []).append(_task_chip(t))
-
-    allday: dict[str, list] = {}
-    timed: dict[str, list] = {}
-    for o in occs:
-        (timed if calendar_events.is_timed(o) else allday) \
-            .setdefault(o["date"], []).append(o)
-
-    # Lay each day out first — the engine owns all minute math (layout_day drops
-    # all-day items and annotates canonical start_min/end_min, defaulting an open
-    # end to +30 min) — so the band below always covers what actually renders.
-    laid = {d.isoformat(): calendar_events.layout_day(timed.get(d.isoformat(), []))
-            for d in week_days}
-
-    # Visible band: default 06:00–23:00, widened (floor/ceil to the hour) to fit
-    # any earlier/later timed occurrence anywhere in the week.
-    band_start, band_end = _WEEK_BAND[0] * 60, _WEEK_BAND[1] * 60
-    for o in (b for blocks in laid.values() for b in blocks):
-        band_start = min(band_start, o["start_min"] // 60 * 60)
-        band_end = max(band_end, -(-o["end_min"] // 60) * 60)  # ceil to the hour
-    band_end = min(24 * 60, band_end)  # an open-ended 23:5x event (+30 min) ceils past midnight
-    ppm = _WEEK_HOUR_PX / 60.0
-
-    today_iso = today_str()
-    # Current-time line (M4): rendered in today's column only, and only while
-    # "now" falls inside the visible band (the band never widens just for it).
-    now_top = None
-    if week_days[0].isoformat() <= today_iso <= week_days[-1].isoformat():
-        hhmm = now_iso()[11:16]  # wall-clock in the ledger zone (sec13.3)
-        now_min = int(hhmm[:2]) * 60 + int(hhmm[3:])
-        if band_start <= now_min <= band_end:
-            now_top = round((now_min - band_start) * ppm, 1)
-    days = []
-    for d in week_days:
-        iso = d.isoformat()
-        blocks = []
-        for o in laid[iso]:
-            top = (o["start_min"] - band_start) * ppm
-            height = max((o["end_min"] - o["start_min"]) * ppm, _WEEK_MIN_BLOCK_PX)
-            blocks.append({
-                "title": o["title"], "emoji": o["emoji"], "event_id": o["event_id"],
-                "start_time": o["start_time"], "end_time": o["end_time"],
-                "top": round(top, 1), "height": round(height, 1),
-                "left": round(o["left"] * 100, 3), "width": round(o["width"] * 100, 3),
-            })
-        days.append({
-            "date": iso, "dow": d.strftime("%a"), "dom": d.day,
-            "is_today": iso == today_iso,
-            "allday": allday.get(iso, []), "tasks": tasks_by_date.get(iso, []),
-            "blocks": blocks,
-        })
-
-    hours = [{"label": f"{h:02d}:00", "top": round((h * 60 - band_start) * ppm, 1)}
-             for h in range(band_start // 60, band_end // 60)]
-    return {
-        "days": days, "hours": hours, "now_top": now_top,
-        "grid_h": int(round((band_end - band_start) * ppm)), "hour_px": _WEEK_HOUR_PX,
-    }
-
-
-def _parse_date(s: str | None) -> _date:
-    """Parse ?date=YYYY-MM-DD, defaulting to today; reject garbage (same canonical
-    date check as every other route — db.is_valid_date)."""
-    return _date.fromisoformat(s if is_valid_date(s) else today_str())
-
-
-@app.get("/calendar/week")
-def get_calendar_week(request: Request, date: str | None = None, ev: str | None = None,
-                      on: str | None = None, add: str | None = None,
-                      at: str | None = None, flash: str | None = None):
-    sun = _sunday_of(_parse_date(date))
-    self_url = f"/calendar/week?date={sun.isoformat()}"
-    conn = get_conn()
-    try:
-        ctx = _week_ctx(conn, sun)
-        ctx.update(_event_modal_ctx(conn, self_url, ev, on, add, at), flash=flash)
-    finally:
-        conn.close()
-    last = sun + timedelta(days=6)
-    if sun.month == last.month:
-        label = f"{sun.strftime('%b')} {sun.day}–{last.day}, {sun.year}"
-    elif sun.year == last.year:
-        label = f"{sun.strftime('%b')} {sun.day} – {last.strftime('%b')} {last.day}, {sun.year}"
-    else:
-        label = f"{pretty_date(sun, year=True)} – {pretty_date(last, year=True)}"
-    ctx.update({
-        "request": request, "rail": "calendar", "week_label": label,
-        "prev_url": f"/calendar/week?date={(sun - timedelta(days=7)).isoformat()}",
-        "next_url": f"/calendar/week?date={(sun + timedelta(days=7)).isoformat()}",
-    })
-    return templates.TemplateResponse(request, "calendar_week.html", ctx)
-
-
-# --- Calendar-event writes (sec32 M3): create / update / archive / skip ----
-
-
-def _wd_mask(wd: list[str]) -> str:
-    """The form's 7 weekday checkboxes (values '0'..'6', Mon..Sun) → the stored
-    byweekday mask. The service nulls it for non-weekly freqs and rejects an
-    all-zero mask on weekly, so the route just assembles."""
-    return "".join("1" if str(i) in wd else "0" for i in range(7))
-
-
-def _events_redirect(return_to: str, flash: str | None = None) -> RedirectResponse:
-    url = _safe_return(return_to, "/calendar")
-    return RedirectResponse(_with_flash(url, flash) if flash else url, status_code=303)
-
-
-@app.post("/calendar/events")
-def post_event_create(
-    request: Request,
-    title: str = Form(...),
-    emoji: str = Form(""),
-    list_id: str = Form(""),
-    note: str = Form(""),
-    all_day: str | None = Form(None),
-    start_time: str = Form(""),
-    end_time: str = Form(""),
-    freq: str = Form("once"),
-    wd: list[str] = Form([]),
-    interval_n: str = Form("1"),
-    start_date: str = Form(...),
-    end_date: str = Form(""),
-    return_to: str = Form("/calendar"),
-):
-    conn = get_conn()
-    try:
-        calendar_events.create_event(
-            conn, title, start_date=start_date, freq=freq, byweekday=_wd_mask(wd),
-            interval_n=interval_n, all_day=bool(all_day), start_time=start_time,
-            end_time=end_time, end_date=end_date, list_id=list_id, emoji=emoji, note=note,
-        )
-    except calendar_events.CalendarEventError as exc:
-        return _events_redirect(return_to, str(exc))
-    finally:
-        conn.close()
-    return _events_redirect(return_to)
-
-
-@app.post("/calendar/events/{event_id}")
-def post_event_update(
-    request: Request,
-    event_id: int,
-    title: str = Form(...),
-    emoji: str = Form(""),
-    list_id: str = Form(""),
-    note: str = Form(""),
-    all_day: str | None = Form(None),
-    start_time: str = Form(""),
-    end_time: str = Form(""),
-    freq: str = Form("once"),
-    wd: list[str] = Form([]),
-    interval_n: str = Form("1"),
-    start_date: str = Form(...),
-    end_date: str = Form(""),
-    return_to: str = Form("/calendar"),
-):
-    """Update the whole series ("All events" — v1 has no per-occurrence override;
-    use Skip for one day). exdates survive the edit (the service preserves them)."""
-    conn = get_conn()
-    try:
-        calendar_events.update_event(
-            conn, event_id, title=title, emoji=emoji, list_id=list_id, note=note,
-            all_day=bool(all_day), start_time=start_time, end_time=end_time,
-            freq=freq, byweekday=_wd_mask(wd), interval_n=interval_n,
-            start_date=start_date, end_date=end_date,
-        )
-    except calendar_events.CalendarEventError as exc:
-        return _events_redirect(return_to, str(exc))
-    finally:
-        conn.close()
-    return _events_redirect(return_to)
-
-
-@app.post("/calendar/events/{event_id}/archive")
-def post_event_archive(request: Request, event_id: int, return_to: str = Form("/calendar")):
-    conn = get_conn()
-    try:
-        calendar_events.archive_event(conn, event_id)  # soft: series stays in the ledger
-    except calendar_events.CalendarEventError as exc:
-        return _events_redirect(return_to, str(exc))
-    finally:
-        conn.close()
-    return _events_redirect(return_to)
-
-
-@app.post("/calendar/events/{event_id}/skip")
-def post_event_skip(request: Request, event_id: int, date: str = Form(...),
-                    return_to: str = Form("/calendar")):
-    conn = get_conn()
-    try:
-        calendar_events.skip_occurrence(conn, event_id, date)
-    except calendar_events.CalendarEventError as exc:
-        return _events_redirect(return_to, str(exc))
-    finally:
-        conn.close()
-    return _events_redirect(return_to)
-
-
-@app.post("/calendar/events/{event_id}/unskip")
-def post_event_unskip(request: Request, event_id: int, date: str = Form(...),
-                      return_to: str = Form("/calendar")):
-    conn = get_conn()
-    try:
-        calendar_events.unskip_occurrence(conn, event_id, date)
-    except calendar_events.CalendarEventError as exc:
-        return _events_redirect(return_to, str(exc))
-    finally:
-        conn.close()
-    return _events_redirect(return_to)
-
-
-@app.post("/calendar/events/{event_id}/move")
-def post_event_move(request: Request, event_id: int, date: str = Form(...),
-                    return_to: str = Form("/calendar")):
-    """Drag-and-drop a non-recurring event to another day (Mode A/B)."""
-    json_mode = _wants_json(request)
-    conn = get_conn()
-    try:
-        calendar_events.move_event(conn, event_id, date)
-        if json_mode:
-            return JSONResponse({"ok": True, "event_id": event_id, "date": date})
-    except calendar_events.CalendarEventError as exc:
-        if json_mode:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
-        return _events_redirect(return_to, str(exc))
-    finally:
-        conn.close()
-    return _events_redirect(return_to)
+# --- Calendar (app/routers/calendar.py, #24 cut 2) -------------------------
+# Mounted with no prefix, at the position those routes used to occupy.
+app.include_router(calendar_router)
 
 
 # --- Learn (app/routers/learn.py, #24 cut 1) --------------------------------
@@ -1018,55 +556,9 @@ def post_export_jsonl(request: Request):
     )
 
 
-# --- Habit tab (TickTick-style: list + inline detail pane, sec31) ----------
-
-
-def _habit_selection_ctx(conn, request: Request, sel: str | None, month: str | None,
-                         edit: bool = False) -> dict:
-    """Parse ?sel=habit-N into the detail-pane context (with optional edit mode)."""
-    none = {"sel": None, "sel_id": None}
-    if not sel:
-        return none
-    kind, _, raw = sel.partition("-")
-    if kind != "habit":
-        return none
-    try:
-        sid = int(raw)
-    except ValueError:
-        return none
-    ctx = _habit_detail_ctx(conn, sid, month, f"{request.url.path}?sel=habit-{sid}")
-    if ctx is None:
-        return none
-    ctx.update(sel="habit", sel_id=sid, pane=True, close_url=request.url.path, edit=edit)
-    return ctx
-
-
-def _render_habits(request: Request, sel=None, month=None, edit=False, flash=None):
-    conn = get_conn()
-    try:
-        today = today_str()
-        raw_groups = checkins.today_view(conn, today)
-        strip = _week_strip(conn, today)
-        hist = stats.all_histories(conn)
-        groups = _enrich_groups(raw_groups, hist, strip, _date.fromisoformat(today))
-        ctx = {
-            "request": request, "rail": "habit", "date": today, "today": today,
-            "pretty_date": pretty_date(_date.fromisoformat(today)),
-            "week": strip, "groups": groups, "flash": flash,
-            "daily_note": checkins.get_daily_note(conn, today),
-            "sections": items.list_sections(conn),
-            "default_section": (groups[0][0] if groups else items.DEFAULT_GROUP),
-        }
-        ctx.update(_habit_selection_ctx(conn, request, sel, month, edit))
-        return templates.TemplateResponse(request,"habits.html", ctx)
-    finally:
-        conn.close()
-
-
-@app.get("/habits")
-def get_habits(request: Request, sel: str | None = None, month: str | None = None,
-               edit: int = 0, flash: str | None = None):
-    return _render_habits(request, sel=sel, month=month, edit=bool(edit), flash=flash)
+# --- Habit tab (app/routers/habits.py, #24 cut 2) --------------------------
+# Mounted with no prefix, at the position those routes used to occupy.
+app.include_router(habits_router)
 
 
 @app.get("/history")
@@ -1077,110 +569,9 @@ def get_history(request: Request, date: str | None = None, flash: str | None = N
     return _render_day(request, date, nav, flash, rail="habit")
 
 
-def _parse_month(month: str | None) -> tuple[int, int]:
-    """Parse ?month=YYYY-MM, defaulting to the current month; reject garbage."""
-    if month:
-        try:
-            y, m = month.split("-")
-            y, m = int(y), int(m)
-            if 1 <= m <= 12 and 1900 <= y <= 2999:
-                return y, m
-        except (ValueError, AttributeError):
-            pass
-    t = _date.fromisoformat(today_str())
-    return t.year, t.month
-
-
-@app.get("/habit/{item_id}")
-def get_habit(request: Request, item_id: int, month: str | None = None):
-    """Per-item detail page (sec16.6): stat cards + monthly heatmap + habit log.
-
-    Mirrors TickTick's habit detail pane in PATTERN only; uses our four-status
-    model so the heatmap is richer than a binary done/not-done grid (sec7.3).
-    The same partial renders inline on the tasks view via ?sel=habit-{id}."""
-    conn = get_conn()
-    try:
-        ctx = _habit_detail_ctx(conn, item_id, month, f"/habit/{item_id}")
-    finally:
-        conn.close()
-    if ctx is None:
-        raise HTTPException(status_code=404, detail="unknown item")
-    ctx.update(request=request, rail="habit")
-    return templates.TemplateResponse(request,"habit.html", ctx)
-
-
-def _checkin_state(conn, date: str, item_id: int) -> dict:
-    row = checkins.get_checkin(conn, date, item_id)
-    smap = stats.history(conn, item_id)
-    today_d = _date.fromisoformat(today_str())
-    return {
-        "ok": True,
-        "item_id": item_id,
-        "date": date,
-        "status": row["status"] if row else None,
-        "note": (row["note"] if row else "") or "",
-        # so Mode B can refresh the row's streak + total + that day's ring without a reload
-        "current_streak": stats.current_streak_from(smap, today_d),
-        "best_streak": stats.best_streak_from(smap, today_d),
-        "total": sum(1 for s in smap.values() if s in ("full_done", "light_done")),
-    }
-
-
-@app.post("/checkins")
-def post_checkin(
-    request: Request,
-    date: str = Form(...),
-    routine_item_id: int = Form(...),
-    status: str | None = Form(None),
-    note: str | None = Form(None),
-    return_to: str | None = Form(None),
-):
-    date = _validated_write_date(date)
-    anchor = f"item-{routine_item_id}"
-    json_mode = _wants_json(request)
-
-    def dest(flash: str | None = None) -> str:
-        # compact habit rows on the tasks view pass return_to to stay put;
-        # the rich day view omits it and falls back to the habit day route.
-        if return_to:
-            url = _safe_return(return_to)
-            return f"{_with_flash(url, flash) if flash else url}#{anchor}"
-        return _redirect_for(date, anchor, flash=flash)
-
-    conn = get_conn()
-    try:
-        if status is not None and status != "":
-            checkins.apply_status(conn, date, routine_item_id, status)
-        elif note is not None:
-            checkins.upsert_checkin(conn, date, routine_item_id, note=note)
-        else:
-            raise HTTPException(status_code=400, detail="nothing to update")
-        if json_mode:
-            return JSONResponse(_checkin_state(conn, date, routine_item_id))
-    except checkins.CheckinError as exc:
-        if json_mode:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
-        return RedirectResponse(dest(str(exc)), status_code=303)
-    finally:
-        conn.close()
-    return RedirectResponse(dest(), status_code=303)
-
-
-@app.post("/daily-note")
-def post_daily_note(
-    request: Request,
-    date: str = Form(...),
-    text: str = Form(""),
-):
-    date = _validated_write_date(date)
-    conn = get_conn()
-    try:
-        checkins.upsert_daily_note(conn, date, text)
-    finally:
-        conn.close()
-    if _wants_json(request):
-        return JSONResponse({"ok": True, "date": date})
-    return RedirectResponse(_redirect_for(date, "daily-note"), status_code=303)
+# --- Habit detail + check-in writes (app/routers/habits.py, #24 cut 2) -----
+# Mounted with no prefix, at the position those routes used to occupy.
+app.include_router(habit_detail_router)
 
 
 # --- Tasks write contract (sec21) ------------------------------------------
@@ -1281,177 +672,14 @@ def post_task_update(
     return RedirectResponse(_safe_return(return_to), status_code=303)
 
 
-# --- Habit tab writes (sec31): create / edit / archive / delete ------------
+# --- Habit tab writes (app/routers/habits.py, #24 cut 2) -------------------
+# Mounted with no prefix, at the position those routes used to occupy.
+app.include_router(habit_write_router)
 
 
-@app.post("/habits")
-def post_habit_create(
-    request: Request,
-    title: str = Form(...),
-    group_name: str = Form(""),
-    emoji: str = Form(""),
-    frequency: str = Form("daily"),
-    goal: str = Form("achieve_all"),
-    goal_days: str = Form("forever"),
-    start_date: str = Form(""),
-    reminder: str = Form(""),
-    constant_reminder: str | None = Form(None),
-    return_to: str = Form("/habits"),
-):
-    conn = get_conn()
-    try:
-        items.create_item(
-            conn, title, group_name, emoji=emoji, frequency=frequency, goal=goal,
-            goal_days=goal_days, start_date=(start_date or None),
-            reminder=(reminder or None), constant_reminder=bool(constant_reminder),
-        )
-    except items.ItemError as exc:
-        return RedirectResponse(_with_flash(_safe_return(return_to), str(exc)), status_code=303)
-    finally:
-        conn.close()
-    return RedirectResponse(_safe_return(return_to), status_code=303)
-
-
-@app.post("/habits/{item_id}/edit")
-def post_habit_edit(
-    request: Request,
-    item_id: int,
-    title: str = Form(...),
-    group_name: str = Form(""),
-    emoji: str = Form(""),
-    frequency: str = Form("daily"),
-    goal: str = Form("achieve_all"),
-    goal_days: str = Form("forever"),
-    start_date: str = Form(""),
-    reminder: str = Form(""),
-    constant_reminder: str | None = Form(None),
-    return_to: str = Form("/habits"),
-):
-    conn = get_conn()
-    try:
-        items.update_item(
-            conn, item_id, title, group_name, emoji=emoji, frequency=frequency,
-            goal=goal, goal_days=goal_days, start_date=(start_date or None),
-            reminder=(reminder or None), constant_reminder=bool(constant_reminder),
-        )
-    except items.ItemError as exc:
-        return RedirectResponse(_with_flash(_safe_return(return_to), str(exc)), status_code=303)
-    finally:
-        conn.close()
-    return RedirectResponse(_safe_return(return_to), status_code=303)
-
-
-@app.post("/habits/{item_id}/archive")
-def post_habit_archive(request: Request, item_id: int, return_to: str = Form("/habits")):
-    conn = get_conn()
-    try:
-        items.deactivate_item(conn, item_id)  # soft retire; history kept
-    except items.ItemError as exc:
-        return RedirectResponse(_with_flash(_safe_return(return_to), str(exc)), status_code=303)
-    finally:
-        conn.close()
-    return RedirectResponse(_safe_return(return_to), status_code=303)
-
-
-@app.post("/habits/{item_id}/delete")
-def post_habit_delete(request: Request, item_id: int, return_to: str = Form("/habits")):
-    conn = get_conn()
-    try:
-        items.delete_item(conn, item_id)  # hard delete (events keep the audit trail)
-    except items.ItemError as exc:
-        return RedirectResponse(_with_flash(_safe_return(return_to), str(exc)), status_code=303)
-    finally:
-        conn.close()
-    return RedirectResponse(_safe_return(return_to), status_code=303)
-
-
-# --- Manage Items (sec15.3) ------------------------------------------------
-
-
-def _items_redirect(flash: str | None = None) -> RedirectResponse:
-    url = "/items" + (f"?flash={quote(flash)}" if flash else "")
-    return RedirectResponse(url, status_code=303)
-
-
-@app.get("/items")
-def get_items(request: Request, flash: str | None = None):
-    conn = get_conn()
-    try:
-        rows = items.list_items(conn)
-    finally:
-        conn.close()
-    groups: list[tuple[str, list]] = []
-    index: dict[str, list] = {}
-    for r in rows:
-        if not r["active"]:
-            continue
-        bucket = index.get(r["group_name"])
-        if bucket is None:
-            bucket = []
-            index[r["group_name"]] = bucket
-            groups.append((r["group_name"], bucket))
-        bucket.append(r)
-    inactive = [r for r in rows if not r["active"]]
-    return templates.TemplateResponse(request,
-        "items.html",
-        {
-            "request": request,
-            "groups": groups,
-            "inactive": inactive,
-            "known_groups": list(index.keys()) or [items.DEFAULT_GROUP],
-            "flash": flash,
-            "nav_active": "items",
-            "rail": "items",
-        },
-    )
-
-
-@app.post("/items")
-def post_item_create(request: Request, title: str = Form(...), group_name: str = Form("")):
-    conn = get_conn()
-    try:
-        items.create_item(conn, title, group_name)
-    except items.ItemError as exc:
-        return _items_redirect(str(exc))
-    finally:
-        conn.close()
-    return _items_redirect()
-
-
-@app.post("/items/{item_id}/edit")
-def post_item_edit(request: Request, item_id: int, title: str = Form(...), group_name: str = Form("")):
-    conn = get_conn()
-    try:
-        items.update_item(conn, item_id, title, group_name)
-    except items.ItemError as exc:
-        return _items_redirect(str(exc))
-    finally:
-        conn.close()
-    return _items_redirect()
-
-
-@app.post("/items/{item_id}/deactivate")
-def post_item_deactivate(request: Request, item_id: int):
-    conn = get_conn()
-    try:
-        items.deactivate_item(conn, item_id)
-    except items.ItemError as exc:
-        return _items_redirect(str(exc))
-    finally:
-        conn.close()
-    return _items_redirect()
-
-
-@app.post("/items/{item_id}/reactivate")
-def post_item_reactivate(request: Request, item_id: int):
-    conn = get_conn()
-    try:
-        items.reactivate_item(conn, item_id)
-    except items.ItemError as exc:
-        return _items_redirect(str(exc))
-    finally:
-        conn.close()
-    return _items_redirect()
+# --- Manage Items (app/routers/habits.py, #24 cut 2) -----------------------
+# Mounted with no prefix, at the position those routes used to occupy.
+app.include_router(items_router)
 
 
 # --- Retro (docs/retro-spec.md, issue #49) ---------------------------------
