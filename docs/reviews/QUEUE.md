@@ -217,7 +217,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `docs/reviews/` commit — the merged application code is exactly the
   reviewed tree. The restart gate for this entry is open.
 
-- [ ] 2026-07-29 — `eabb9bb` on `fix/84-learning-output-style` —
+- [ ] 2026-07-29 — `eabb9bb` and `f7f2877` on `fix/84-learning-output-style`,
+  with queue-only bookkeeping in between; the entry stays current with the
+  branch and the merge commit is appended before any restart —
   `app/services/lessons.py`, `app/services/bundle_schema.py`,
   `docs/learn-bundle-spec.md`, `tests/test_010_platform_ui.py`,
   `docs/reviews/QUEUE.md` — issue #84 adds a third generated file to the
@@ -260,7 +262,13 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   started in a directory outside any git repository, `claude doctor` names
   that directory's `.claude/settings.json` under "Invalid settings" when the
   file is malformed JSON, and identical `--print` prompts answer under the
-  style named by the file in that directory. Host verification at `eabb9bb`:
+  style named by the file in that directory. `f7f2877` carries the two Low
+  findings of the independent correctness re-check: the preview-surface
+  regression now builds a v1 manifest bundle, because the previous one ran
+  against a v2 bundle whose declared-page allowlist refuses an undeclared
+  path with or without the reserved name, and this entry's v2 compatibility
+  account was corrected to the one above. No application code changed in that
+  commit. Host verification at `f7f2877`:
   pytest 9 passed, verify_restore 28 passed, public hygiene clean. Python
   only; the merge does not change what the live process runs. No merge or
   restart was performed.
