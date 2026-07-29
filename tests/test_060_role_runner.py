@@ -14,7 +14,7 @@ import threading
 from datetime import date as _vdate
 from pathlib import Path
 
-from conftest import ROOT, check, events_of, item_row
+from conftest import ROOT, events_of, item_row
 
 
 
@@ -40,19 +40,19 @@ def test_role_runner(client, suite_state):
     lessons_svc = suite_state["lessons_svc"]
     ws_info = suite_state["ws_info"]
     # --- E3: closed role selector + concurrent agent/learner integration -----
-    check("E3 role enum is closed and absent selector preserves E2 semantics",
-          _terminal._TERMINAL_ROLES == (
-              "plain", "lesson-agent", "lesson-learner",
-          )
-          and _terminal._select_create_role(None, None) == "plain"
-          and _terminal._select_create_role(_lt["slug"], None) == "lesson-agent")
+    assert (
+        _terminal._TERMINAL_ROLES == (
+            "plain", "lesson-agent", "lesson-learner",
+        )
+        and _terminal._select_create_role(None, None) == "plain"
+        and _terminal._select_create_role(_lt["slug"], None) == "lesson-agent"
+    ), "E3 role enum is closed and absent selector preserves E2 semantics"
     _plain_lesson_refused = False
     try:
         _terminal._select_create_role(_lt["slug"], "plain")
     except _terminal._SessionRequestError:
         _plain_lesson_refused = True
-    check("E3 explicit plain cannot bypass the sandboxed lesson boundary",
-          _plain_lesson_refused)
+    assert _plain_lesson_refused, "E3 explicit plain cannot bypass the sandboxed lesson boundary"
     _selector_refusals = 0
     for _lesson_arg, _role_arg in (
         (None, "lesson-learner"),
@@ -74,11 +74,12 @@ def test_role_runner(client, suite_state):
                 _terminal, "_create_session",
                 new=_sandbox_mock.AsyncMock()) as _sid_role_create:
         _asyncio.run(_terminal._serve_ws(_sid_role_ws))
-    check("E3 selector validation refuses no-lesson, unknown, and sid attach",
-          _selector_refusals == 2
-          and _sid_role_create.call_count == 0
-          and _sid_role_ws.accepted and _sid_role_ws.closed
-          and b"invalid session request" in b"".join(_sid_role_ws.sent_bytes))
+    assert (
+        _selector_refusals == 2
+        and _sid_role_create.call_count == 0
+        and _sid_role_ws.accepted and _sid_role_ws.closed
+        and b"invalid session request" in b"".join(_sid_role_ws.sent_bytes)
+    ), "E3 selector validation refuses no-lesson, unknown, and sid attach"
 
     async def _e3_invalid_selector_at_capacity():
         with _sandbox_mock.patch.object(_terminal, "_MAX_SESSIONS", 0), \
@@ -91,8 +92,7 @@ def test_role_runner(client, suite_state):
                 refused = False
         return refused and reap.call_count == 0
 
-    check("E3 invalid selector cannot evict a detached session at capacity",
-          _asyncio.run(_e3_invalid_selector_at_capacity()))
+    assert _asyncio.run(_e3_invalid_selector_at_capacity()), "E3 invalid selector cannot evict a detached session at capacity"
     with _sandbox_mock.patch.dict(os.environ, {
         "SSH_AUTH_SOCK": "/run/user/1000/agent.sock",
         "XDG_RUNTIME_DIR": "/run/user/1000",
@@ -106,19 +106,20 @@ def test_role_runner(client, suite_state):
     }):
         _agent_socket_env = _terminal._child_env("lesson-agent")
         _learner_socket_env = _terminal._child_env("lesson-learner")
-    check("E3 learner child env strips inherited host-socket discovery paths",
-          _agent_socket_env.get("SSH_AUTH_SOCK") == "/run/user/1000/agent.sock"
-          and _agent_socket_env.get("XDG_RUNTIME_DIR") == "/run/user/1000"
-          and "SSH_AUTH_SOCK" not in _learner_socket_env
-          and "XDG_RUNTIME_DIR" not in _learner_socket_env
-          and _learner_socket_env.get("HOME") == _sandbox.USER_HOME
-          and _learner_socket_env.get("SHELL") == "/bin/bash"
-          and _learner_socket_env.get("PATH")
-              == "/home/aina/.local/bin:/usr/local/bin:/usr/bin:/bin"
-          and not any(name in _learner_socket_env for name in (
-              "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
-              "XDG_STATE_HOME",
-          )))
+    assert (
+        _agent_socket_env.get("SSH_AUTH_SOCK") == "/run/user/1000/agent.sock"
+        and _agent_socket_env.get("XDG_RUNTIME_DIR") == "/run/user/1000"
+        and "SSH_AUTH_SOCK" not in _learner_socket_env
+        and "XDG_RUNTIME_DIR" not in _learner_socket_env
+        and _learner_socket_env.get("HOME") == _sandbox.USER_HOME
+        and _learner_socket_env.get("SHELL") == "/bin/bash"
+        and _learner_socket_env.get("PATH")
+            == "/home/aina/.local/bin:/usr/local/bin:/usr/bin:/bin"
+        and not any(name in _learner_socket_env for name in (
+            "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+        ))
+    ), "E3 learner child env strips inherited host-socket discovery paths"
     with tempfile.TemporaryDirectory(prefix="ephemeris-e3-mask-") as _mask_tmp:
         _mask_base = Path(_mask_tmp)
         _mask_target = _mask_base / "resolved-private"
@@ -145,12 +146,13 @@ def test_role_runner(client, suite_state):
             db_path=_db_link,
             repo_root=_terminal._REPO_ROOT,
         )
-    check("E3 private masks include lexical symlinks and resolved targets",
-          _mask_spellings == (str(_mask_link), str(_mask_target))
-          and str(_lesson_store_link) in _db_mask_spellings
-          and str(_lesson_store_target) in _db_mask_spellings
-          and str(_db_link_dir) in _db_mask_spellings
-          and str(_db_target_dir) in _db_mask_spellings)
+    assert (
+        _mask_spellings == (str(_mask_link), str(_mask_target))
+        and str(_lesson_store_link) in _db_mask_spellings
+        and str(_lesson_store_target) in _db_mask_spellings
+        and str(_db_link_dir) in _db_mask_spellings
+        and str(_db_target_dir) in _db_mask_spellings
+    ), "E3 private masks include lexical symlinks and resolved targets"
 
     async def _e3_db_in_bundle_refusal():
         workspace = {"dir": ws_info["dir"], "slug": _lt["slug"], "title": "demo"}
@@ -177,8 +179,7 @@ def test_role_runner(client, suite_state):
                 workspace["dir"], outside_db)
         )
 
-    check("E3 learner refuses a DB override inside the writable bundle",
-          _asyncio.run(_e3_db_in_bundle_refusal()))
+    assert _asyncio.run(_e3_db_in_bundle_refusal()), "E3 learner refuses a DB override inside the writable bundle"
     _external_private = "/srv/invented-ephemeris-private"
     _external_lessons = f"{_external_private}/lessons"
     _external_bundle = f"{_external_lessons}/invented-bundle"
@@ -192,13 +193,14 @@ def test_role_runner(client, suite_state):
         for i, value in enumerate(_external_learner_argv)
         if value == "--tmpfs"
     ]
-    check("E3 learner masks runtime sockets and external private instance root",
-          _sandbox.RUNTIME_DIR in _external_tmpfs
-          and _external_private in _external_tmpfs
-          and _external_learner_argv.index(_external_private)
-              < _external_learner_argv.index("--bind")
-          and _sb_mounts(_external_learner_argv, "--bind")
-              == [(_external_bundle, _external_bundle)])
+    assert (
+        _sandbox.RUNTIME_DIR in _external_tmpfs
+        and _external_private in _external_tmpfs
+        and _external_learner_argv.index(_external_private)
+            < _external_learner_argv.index("--bind")
+        and _sb_mounts(_external_learner_argv, "--bind")
+            == [(_external_bundle, _external_bundle)]
+    ), "E3 learner masks runtime sockets and external private instance root"
     _nested_private = "/home/aina/go/invented-ephemeris-private"
     _nested_lessons = f"{_nested_private}/lessons"
     _nested_bundle = f"{_nested_lessons}/invented-bundle"
@@ -215,14 +217,15 @@ def test_role_runner(client, suite_state):
         for i, value in enumerate(_nested_learner_argv)
         if value == "--tmpfs"
     ]
-    check("E3 learner masks cache-nested data, DB override, and external checkout",
-          _nested_private in _nested_tmpfs
-          and _db_override_root in _nested_tmpfs
-          and _checkout_root in _nested_tmpfs
-          and _nested_learner_argv.index("/home/aina/go")
-              < _nested_learner_argv.index(_nested_private)
-          and _nested_learner_argv.index(_db_override_root)
-              < _nested_learner_argv.index("--bind"))
+    assert (
+        _nested_private in _nested_tmpfs
+        and _db_override_root in _nested_tmpfs
+        and _checkout_root in _nested_tmpfs
+        and _nested_learner_argv.index("/home/aina/go")
+            < _nested_learner_argv.index(_nested_private)
+        and _nested_learner_argv.index(_db_override_root)
+            < _nested_learner_argv.index("--bind")
+    ), "E3 learner masks cache-nested data, DB override, and external checkout"
 
     async def _e3_learner_plumbing():
         workspace = {"dir": ws_info["dir"], "slug": _lt["slug"], "title": "demo"}
@@ -258,8 +261,7 @@ def test_role_runner(client, suite_state):
         os.close(session.master_fd)
         return result
 
-    check("E3 learner spawn plumbs only its private masks and no socket/proxy env",
-          _asyncio.run(_e3_learner_plumbing()))
+    assert _asyncio.run(_e3_learner_plumbing()), "E3 learner spawn plumbs only its private masks and no socket/proxy env"
 
     try:
         _sandbox.require_sandbox_runtime()
@@ -287,31 +289,29 @@ def test_role_runner(client, suite_state):
         except (TypeError, ValueError):
             _e3_probe = {}
         _e3_extra = _e3_probe_run.stderr.strip() or _e3_probe_run.stdout.strip()
-        check("E3 host probe: ?role= wire has all three required refusals",
-              _e3_probe_run.returncode == 0
-              and _e3_probe.get("wire_param") == "role"
-              and _e3_probe.get("selector_without_lesson_refused") is True
-              and _e3_probe.get("unknown_role_refused") is True
-              and _e3_probe.get("selector_with_sid_refused") is True
-              and not _e3_override_sentinel.exists(),
-              _e3_extra)
-        check("E3 host probe: concurrent WS sessions echo both roles",
-              _e3_probe.get("agent_role_echoed") is True
-              and _e3_probe.get("learner_role_echoed") is True
-              and _e3_probe.get("both_shells_live") is True
-              and _e3_probe.get("stale_learner_sid_refused") is True,
-              _e3_extra)
-        check("E3 host probe: learner leaves both briefs untouched",
-              _e3_probe.get("briefs_unchanged") is True, _e3_extra)
-        check("E3 host probe: agent network; learner no network/proxy/socket env",
-              _e3_probe.get("agent_network") is True
-              and _e3_probe.get("learner_no_network") is True
-              and _e3_probe.get("learner_no_proxy_env") is True
-              and _e3_probe.get("learner_no_socket_env") is True,
-              _e3_extra)
+        assert (
+            _e3_probe_run.returncode == 0
+            and _e3_probe.get("wire_param") == "role"
+            and _e3_probe.get("selector_without_lesson_refused") is True
+            and _e3_probe.get("unknown_role_refused") is True
+            and _e3_probe.get("selector_with_sid_refused") is True
+            and not _e3_override_sentinel.exists()
+        ), f"E3 host probe: ?role= wire has all three required refusals: {_e3_extra}"
+        assert (
+            _e3_probe.get("agent_role_echoed") is True
+            and _e3_probe.get("learner_role_echoed") is True
+            and _e3_probe.get("both_shells_live") is True
+            and _e3_probe.get("stale_learner_sid_refused") is True
+        ), f"E3 host probe: concurrent WS sessions echo both roles: {_e3_extra}"
+        assert _e3_probe.get("briefs_unchanged") is True, f"E3 host probe: learner leaves both briefs untouched: {_e3_extra}"
+        assert (
+            _e3_probe.get("agent_network") is True
+            and _e3_probe.get("learner_no_network") is True
+            and _e3_probe.get("learner_no_proxy_env") is True
+            and _e3_probe.get("learner_no_socket_env") is True
+        ), f"E3 host probe: agent network; learner no network/proxy/socket env: {_e3_extra}"
     else:
-        check("E3 host probe skipped when sandbox runtime is unavailable",
-              True, _e3_runtime_detail)
+        assert True, f"E3 host probe skipped when sandbox runtime is unavailable: {_e3_runtime_detail}"
 
     # --- F3: fixed runner registry, sandbox limits, job owner, host matrix ---
     from app import runner as _runner
@@ -320,17 +320,18 @@ def test_role_runner(client, suite_state):
     _registry_source = (ROOT / "app/services/runner_registry.py").read_text(
         encoding="utf-8"
     )
-    check("F3 registry is a pure leaf with the two frozen v1 runners",
-          "from app" not in _registry_source
-          and set(_runner_registry.RUNNER_REGISTRY) == {
-              "python-script-v1", "go-run-v1",
-          }
-          and _runner_registry.RUNNER_REGISTRY["python-script-v1"].argv == (
-              "/usr/bin/python3", _runner_registry.SNAPSHOT_PATH,
-          )
-          and _runner_registry.RUNNER_REGISTRY["go-run-v1"].argv == (
-              "/usr/local/go/bin/go", "run", _runner_registry.SNAPSHOT_PATH,
-          ))
+    assert (
+        "from app" not in _registry_source
+        and set(_runner_registry.RUNNER_REGISTRY) == {
+            "python-script-v1", "go-run-v1",
+        }
+        and _runner_registry.RUNNER_REGISTRY["python-script-v1"].argv == (
+            "/usr/bin/python3", _runner_registry.SNAPSHOT_PATH,
+        )
+        and _runner_registry.RUNNER_REGISTRY["go-run-v1"].argv == (
+            "/usr/local/go/bin/go", "run", _runner_registry.SNAPSHOT_PATH,
+        )
+    ), "F3 registry is a pure leaf with the two frozen v1 runners"
     _f3_specs_valid = all(
         spec.argv.count(_runner_registry.SNAPSHOT_PATH) == 1
         and 1 <= spec.wall_seconds <= _runner_registry.MAX_WALL_SECONDS
@@ -341,10 +342,11 @@ def test_role_runner(client, suite_state):
         _f3_bad_spec_refused = False
     except ValueError:
         _f3_bad_spec_refused = True
-    check("F3 registry argv has one placeholder and bounded pure data only",
-          _f3_specs_valid and _f3_bad_spec_refused
-          and _runner_registry.RUNNER_REGISTRY["python-script-v1"].accepts("demo.py")
-          and not _runner_registry.RUNNER_REGISTRY["python-script-v1"].accepts("demo.go"))
+    assert (
+        _f3_specs_valid and _f3_bad_spec_refused
+        and _runner_registry.RUNNER_REGISTRY["python-script-v1"].accepts("demo.py")
+        and not _runner_registry.RUNNER_REGISTRY["python-script-v1"].accepts("demo.go")
+    ), "F3 registry argv has one placeholder and bounded pure data only"
 
     _f3_manifest = {
         "schema_version": 2,
@@ -365,10 +367,11 @@ def test_role_runner(client, suite_state):
     _f3_incompatible = bschema.read_manifest_text(
         json.dumps(_f3_manifest), runner_registry=_runner_registry.RUNNER_REGISTRY
     )
-    check("F3 manifest runner suffix gates Run but retains the editor",
-          _f3_compatible.blocks[0]["run_enabled"] is True
-          and _f3_incompatible.blocks[0]["run_enabled"] is False
-          and "incompatible-runner" in _f3_incompatible.codes())
+    assert (
+        _f3_compatible.blocks[0]["run_enabled"] is True
+        and _f3_incompatible.blocks[0]["run_enabled"] is False
+        and "incompatible-runner" in _f3_incompatible.codes()
+    ), "F3 manifest runner suffix gates Run but retains the editor"
     _f3_manifest["blocks"][0]["file"] = "attempts/blk_demo/main.py"
     _f3_legacy_manifest = json.loads(json.dumps(_f3_manifest))
     _f3_legacy_manifest.pop("runtime")
@@ -382,28 +385,29 @@ def test_role_runner(client, suite_state):
         json.dumps(_f3_rejected_manifest),
         runner_registry=_runner_registry.RUNNER_REGISTRY,
     )
-    check("F3 fail-closed manifests never grant the Run affordance",
-          _f3_legacy.effective_profile == bschema.PROFILE_LEGACY
-          and _f3_legacy.blocks[0]["run_enabled"] is False
-          and _f3_rejected.rejected
-          and _f3_rejected.blocks[0]["run_enabled"] is False)
+    assert (
+        _f3_legacy.effective_profile == bschema.PROFILE_LEGACY
+        and _f3_legacy.blocks[0]["run_enabled"] is False
+        and _f3_rejected.rejected
+        and _f3_rejected.blocks[0]["run_enabled"] is False
+    ), "F3 fail-closed manifests never grant the Run affordance"
     import inspect as _inspect
     _ensure_source = _inspect.getsource(lessons_svc._ensure_bundle_manifest)
-    check("F3 lesson manifest reads use the real registry at both call sites",
-          _ensure_source.count("runner_registry=RUNNER_REGISTRY") == 2)
+    assert _ensure_source.count("runner_registry=RUNNER_REGISTRY") == 2, "F3 lesson manifest reads use the real registry at both call sites"
 
     def _f3_argv_digest(argv):
         return hashlib.sha256(
             json.dumps(argv, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
 
-    check("F3 sandbox amendments keep agent/learner argv byte-identical",
-          _f3_argv_digest(_sandbox.build_sandbox_argv(
-              "lesson-agent", _sb_bundle, bundle_root=_sb_root
-          )) == "a0a6b85c4d66389748fd17572dc7f5f2bbfb69c92414d9fb21732dde5a0acf5a"
-          and _f3_argv_digest(_sandbox.build_sandbox_argv(
-              "lesson-learner", _sb_bundle, bundle_root=_sb_root
-          )) == "a77d4eeef5689810b8a10cd123fe5600dbe8332b994072c1d09fdd605ce8301f")
+    assert (
+        _f3_argv_digest(_sandbox.build_sandbox_argv(
+            "lesson-agent", _sb_bundle, bundle_root=_sb_root
+        )) == "a0a6b85c4d66389748fd17572dc7f5f2bbfb69c92414d9fb21732dde5a0acf5a"
+        and _f3_argv_digest(_sandbox.build_sandbox_argv(
+            "lesson-learner", _sb_bundle, bundle_root=_sb_root
+        )) == "a77d4eeef5689810b8a10cd123fe5600dbe8332b994072c1d09fdd605ce8301f"
+    ), "F3 sandbox amendments keep agent/learner argv byte-identical"
     _f3_private = "/srv/invented-private"
     _f3_root = f"{_f3_private}/lessons"
     _f3_bundle = f"{_f3_root}/invented-bundle"
@@ -420,26 +424,28 @@ def test_role_runner(client, suite_state):
         _f3_runner_argv[i + 1] for i, arg in enumerate(_f3_runner_argv)
         if arg == "--tmpfs"
     ]
-    check("F3 runner argv has sized scratch/home, /run, and late private masks",
-          ["--size", str(_sandbox.RUNNER_SCRATCH_BYTES), "--tmpfs", "/tmp"]
-              == _f3_runner_argv[_f3_runner_argv.index("--size"):
-                                 _f3_runner_argv.index("--size") + 4]
-          and ["--size", str(_sandbox.RUNNER_HOME_BYTES), "--tmpfs", _sandbox.USER_HOME]
-              in [_f3_runner_argv[i:i + 4] for i in range(len(_f3_runner_argv) - 3)]
-          and _sandbox.RUNTIME_DIR in _f3_tmpfs
-          and _f3_private in _f3_tmpfs
-          and "/opt/invented-private-db" in _f3_tmpfs
-          and _f3_runner_argv.index(_f3_private) < _f3_runner_argv.index(_f3_bundle))
-    check("F3 runner argv injects one 0444 fd snapshot and only the ro Go module cache",
-          ["--perms", "0444", "--ro-bind-data", "7",
-           f"{_sandbox.RUNNER_WORKDIR}/main.py"]
-              in [_f3_runner_argv[i:i + 5] for i in range(len(_f3_runner_argv) - 4)]
-          and ("8", "/home/aina/go/pkg/mod")
-              in _sb_mounts(_f3_runner_argv, "--ro-bind-fd")
-          and "/home/aina/.cache/go-build" not in _f3_runner_argv
-          and _sb_mounts(_f3_runner_argv, "--ro-bind")[-1]
-              == (_f3_bundle, _f3_bundle)
-          and _f3_runner_argv[-2:] == ["--chdir", _sandbox.RUNNER_WORKDIR])
+    assert (
+        ["--size", str(_sandbox.RUNNER_SCRATCH_BYTES), "--tmpfs", "/tmp"]
+            == _f3_runner_argv[_f3_runner_argv.index("--size"):
+                               _f3_runner_argv.index("--size") + 4]
+        and ["--size", str(_sandbox.RUNNER_HOME_BYTES), "--tmpfs", _sandbox.USER_HOME]
+            in [_f3_runner_argv[i:i + 4] for i in range(len(_f3_runner_argv) - 3)]
+        and _sandbox.RUNTIME_DIR in _f3_tmpfs
+        and _f3_private in _f3_tmpfs
+        and "/opt/invented-private-db" in _f3_tmpfs
+        and _f3_runner_argv.index(_f3_private) < _f3_runner_argv.index(_f3_bundle)
+    ), "F3 runner argv has sized scratch/home, /run, and late private masks"
+    assert (
+        ["--perms", "0444", "--ro-bind-data", "7",
+         f"{_sandbox.RUNNER_WORKDIR}/main.py"]
+            in [_f3_runner_argv[i:i + 5] for i in range(len(_f3_runner_argv) - 4)]
+        and ("8", "/home/aina/go/pkg/mod")
+            in _sb_mounts(_f3_runner_argv, "--ro-bind-fd")
+        and "/home/aina/.cache/go-build" not in _f3_runner_argv
+        and _sb_mounts(_f3_runner_argv, "--ro-bind")[-1]
+            == (_f3_bundle, _f3_bundle)
+        and _f3_runner_argv[-2:] == ["--chdir", _sandbox.RUNNER_WORKDIR]
+    ), "F3 runner argv injects one 0444 fd snapshot and only the ro Go module cache"
     try:
         _sandbox.build_sandbox_argv(
             "lesson-runner", _f3_bundle, bundle_root=_f3_root,
@@ -450,8 +456,7 @@ def test_role_runner(client, suite_state):
         _f3_overlap_refused = False
     except ValueError:
         _f3_overlap_refused = True
-    check("F3 runner fails closed when a private mask is inside the mounted bundle",
-          _f3_overlap_refused)
+    assert _f3_overlap_refused, "F3 runner fails closed when a private mask is inside the mounted bundle"
     try:
         _sandbox.build_sandbox_argv(
             "lesson-runner", _f3_bundle, bundle_root=_f3_root,
@@ -467,13 +472,14 @@ def test_role_runner(client, suite_state):
             private_root=_f3_private,
             module_cache_fd=8,
         )
-    check("F3 runner requires private authority and masks an external checkout",
-          _f3_missing_private_refused
-          and "/workspace/invented-checkout" in [
-              _f3_external_checkout_argv[i + 1]
-              for i, arg in enumerate(_f3_external_checkout_argv)
-              if arg == "--tmpfs"
-          ])
+    assert (
+        _f3_missing_private_refused
+        and "/workspace/invented-checkout" in [
+            _f3_external_checkout_argv[i + 1]
+            for i, arg in enumerate(_f3_external_checkout_argv)
+            if arg == "--tmpfs"
+        ]
+    ), "F3 runner requires private authority and masks an external checkout"
     with tempfile.TemporaryDirectory(
         prefix="ephemeris-f3-cache-link-", dir="/tmp"
     ) as _f3_cache_raw:
@@ -505,16 +511,14 @@ def test_role_runner(client, suite_state):
                 _f3_cache_parent_link_refused = False
             except OSError:
                 _f3_cache_parent_link_refused = True
-    check("F3 runner refuses symlinks in the Go module-cache authority path",
-          _f3_cache_link_refused and _f3_cache_parent_link_refused)
+    assert _f3_cache_link_refused and _f3_cache_parent_link_refused, "F3 runner refuses symlinks in the Go module-cache authority path"
     with _sandbox_mock.patch.object(_sandbox, "RUNNER_FILE_BYTES", 8):
         try:
             _sandbox._snapshot_memfd(b"123456789")
             _f3_oversized_memfd_refused = False
         except ValueError:
             _f3_oversized_memfd_refused = True
-    check("F3 snapshot creation enforces the file-size ceiling",
-          _f3_oversized_memfd_refused)
+    assert _f3_oversized_memfd_refused, "F3 snapshot creation enforces the file-size ceiling"
 
     async def _f3_snapshot_spawn_contract():
         observed = {}
@@ -652,28 +656,29 @@ def test_role_runner(client, suite_state):
         ]
         and _killpg.call_args.args == (778899, _runner.signal.SIGKILL)
     )
-    check("F3 snapshot fd is 0444, passed once, and closed on success/failure",
-          _f3_snapshot_spawn["mode"] == 0o444
-          and _f3_snapshot_spawn["closed_success"]
-          and _f3_snapshot_spawn["cache_closed_success"]
-          and _f3_snapshot_spawn["closed_failure"]
-          and _f3_snapshot_spawn["new_session"] is True)
-    check("F3 runner refuses symlinked bundle/private authorities before spawn",
-          _f3_symlink_authority_refused)
-    check("F3 spawn is scope-wrapped and clears wrapper-only environment in bwrap",
-          _f3_snapshot_spawn["argv"][:len(_sandbox.RUNNER_SCOPE_PREFIX)]
-              == list(_sandbox.RUNNER_SCOPE_PREFIX)
-          and "--unit=ephemeris-runner-test" in _f3_snapshot_spawn["argv"]
-          and "--property=RuntimeMaxSec=35s" in _f3_snapshot_spawn["argv"]
-          and "--property=KillMode=control-group" in _f3_snapshot_spawn["argv"]
-          and _f3_scope_kill
-          and "--clearenv" in _f3_snapshot_spawn["argv"]
-          and ["--setenv", "PWD", _sandbox.RUNNER_WORKDIR]
-              in [_f3_snapshot_spawn["argv"][i:i + 3]
-                  for i in range(len(_f3_snapshot_spawn["argv"]) - 2)]
-          and set(_f3_snapshot_spawn["env"]) <= {
-              *set(_runner.RUNNER_ENV), "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
-          })
+    assert (
+        _f3_snapshot_spawn["mode"] == 0o444
+        and _f3_snapshot_spawn["closed_success"]
+        and _f3_snapshot_spawn["cache_closed_success"]
+        and _f3_snapshot_spawn["closed_failure"]
+        and _f3_snapshot_spawn["new_session"] is True
+    ), "F3 snapshot fd is 0444, passed once, and closed on success/failure"
+    assert _f3_symlink_authority_refused, "F3 runner refuses symlinked bundle/private authorities before spawn"
+    assert (
+        _f3_snapshot_spawn["argv"][:len(_sandbox.RUNNER_SCOPE_PREFIX)]
+            == list(_sandbox.RUNNER_SCOPE_PREFIX)
+        and "--unit=ephemeris-runner-test" in _f3_snapshot_spawn["argv"]
+        and "--property=RuntimeMaxSec=35s" in _f3_snapshot_spawn["argv"]
+        and "--property=KillMode=control-group" in _f3_snapshot_spawn["argv"]
+        and _f3_scope_kill
+        and "--clearenv" in _f3_snapshot_spawn["argv"]
+        and ["--setenv", "PWD", _sandbox.RUNNER_WORKDIR]
+            in [_f3_snapshot_spawn["argv"][i:i + 3]
+                for i in range(len(_f3_snapshot_spawn["argv"]) - 2)]
+        and set(_f3_snapshot_spawn["env"]) <= {
+            *set(_runner.RUNNER_ENV), "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+        }
+    ), "F3 spawn is scope-wrapped and clears wrapper-only environment in bwrap"
 
     with _sandbox_mock.patch.object(
             _resource_mod, "getrlimit",
@@ -683,21 +688,22 @@ def test_role_runner(client, suite_state):
             "lesson-runner", runner_wall_seconds=60
         )
     _f3_limit_calls = dict(call.args for call in _setlimit.call_args_list)
-    check("F3 runner preexec applies CPU/AS/NOFILE/NPROC/FSIZE backstops",
-          _f3_limit_calls == {
-              _resource_mod.RLIMIT_CPU: (60, 60),
-              _resource_mod.RLIMIT_AS: (
-                  _sandbox.RUNNER_ADDRESS_SPACE_BYTES,
-                  _sandbox.RUNNER_ADDRESS_SPACE_BYTES,
-              ),
-              _resource_mod.RLIMIT_NOFILE: (256, 256),
-              _resource_mod.RLIMIT_NPROC: (
-                  _sandbox.RUNNER_NPROC, _sandbox.RUNNER_NPROC,
-              ),
-              _resource_mod.RLIMIT_FSIZE: (
-                  _sandbox.RUNNER_FILE_BYTES, _sandbox.RUNNER_FILE_BYTES,
-              ),
-          })
+    assert (
+        _f3_limit_calls == {
+            _resource_mod.RLIMIT_CPU: (60, 60),
+            _resource_mod.RLIMIT_AS: (
+                _sandbox.RUNNER_ADDRESS_SPACE_BYTES,
+                _sandbox.RUNNER_ADDRESS_SPACE_BYTES,
+            ),
+            _resource_mod.RLIMIT_NOFILE: (256, 256),
+            _resource_mod.RLIMIT_NPROC: (
+                _sandbox.RUNNER_NPROC, _sandbox.RUNNER_NPROC,
+            ),
+            _resource_mod.RLIMIT_FSIZE: (
+                _sandbox.RUNNER_FILE_BYTES, _sandbox.RUNNER_FILE_BYTES,
+            ),
+        }
+    ), "F3 runner preexec applies CPU/AS/NOFILE/NPROC/FSIZE backstops"
 
     _runner._cached_runner_health.cache_clear()
     with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
@@ -707,10 +713,11 @@ def test_role_runner(client, suite_state):
             _sandbox_mock.patch.object(_runner, "_probe_result", return_value="") as _allprobe:
         _f3_health_a = _runner.runner_health()
         _f3_health_b = _runner.runner_health()
-    check("F3 health probes bwrap/ro-bind-data/scope/tools once per process",
-          _f3_health_a.available and _f3_health_b.available
-          and _scopeprobe.call_count == 1 and _roprobe.call_count == 1
-          and _cacheprobe.call_count == 1 and _allprobe.call_count == 2)
+    assert (
+        _f3_health_a.available and _f3_health_b.available
+        and _scopeprobe.call_count == 1 and _roprobe.call_count == 1
+        and _cacheprobe.call_count == 1 and _allprobe.call_count == 2
+    ), "F3 health probes bwrap/ro-bind-data/scope/tools once per process"
 
     _runner._cached_runner_health.cache_clear()
     _f3_health_workers = 4
@@ -748,10 +755,11 @@ def test_role_runner(client, suite_state):
         _f3_health_release.set()
         for _thread in _f3_health_threads:
             _thread.join(timeout=2)
-    check("F3 concurrent cold health callers share one process-lifetime probe",
-          len(_f3_health_entries) == 1
-          and len(_f3_health_results) == _f3_health_workers
-          and all(result.available for result in _f3_health_results))
+    assert (
+        len(_f3_health_entries) == 1
+        and len(_f3_health_results) == _f3_health_workers
+        and all(result.available for result in _f3_health_results)
+    ), "F3 concurrent cold health callers share one process-lifetime probe"
     _runner._cached_runner_health.cache_clear()
     with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
             _sandbox_mock.patch.object(_runner, "_probe_ro_bind_data", return_value="unsupported"):
@@ -773,8 +781,7 @@ def test_role_runner(client, suite_state):
             _f3_cache_refusal = False
         except _runner.RunnerUnavailableError as exc:
             _f3_cache_refusal = "module cache absent" in str(exc)
-    check("F3 unhealthy runner refuses visibly with no degraded spawn",
-          _f3_health_refusal and _f3_cache_refusal)
+    assert _f3_health_refusal and _f3_cache_refusal, "F3 unhealthy runner refuses visibly with no degraded spawn"
     _runner._cached_runner_health.cache_clear()
 
     class _F3Process:
@@ -1270,30 +1277,31 @@ def test_role_runner(client, suite_state):
         return result
 
     _f3_service = _asyncio.run(_f3_service_contracts())
-    check("F3 state machine reaches FINISHED only after reap/EOF with split UTF-8 intact",
-          _f3_service.get("starting") and _f3_service.get("running")
-          and _f3_service.get("normal"), str(_f3_service))
-    check("F3 admission refuses a missing private authority before spawn",
-          _f3_service.get("missing_private")
-          and _f3_service.get("oversized_snapshot"), str(_f3_service))
-    check("F3 first terminal cause wins and releases capacity exactly once",
-          _f3_service.get("first_cause_release")
-            and _f3_service.get("spawn_failure"), str(_f3_service))
-    check("F3 cancel tree kills leave the event loop and service lock responsive",
-          _f3_service.get("cancel_off_loop"), str(_f3_service))
-    check("F3 cold health probes leave the event loop and service lock responsive",
-          _f3_service.get("health_off_loop"), str(_f3_service))
-    check("F3 a reaped natural exit cannot be relabelled by late cancel",
-          _f3_service.get("natural_exit_beats_cancel"), str(_f3_service))
-    check("F3 one-lock admission closes races and refunds busy rate charges",
-          _f3_service.get("per_lesson_race")
-          and _f3_service.get("global_race"), str(_f3_service))
-    check("F3 idempotency precedes rate/capacity and terminal retention is bounded",
-          _f3_service.get("idempotency_first")
-          and _f3_service.get("retention")
-          and _f3_service.get("reader_cap"), str(_f3_service))
-    check("F3 shutdown stops jobs through the same exact-release path",
-          _f3_service.get("shutdown"), str(_f3_service))
+    assert (
+        _f3_service.get("starting") and _f3_service.get("running")
+        and _f3_service.get("normal")
+    ), f"F3 state machine reaches FINISHED only after reap/EOF with split UTF-8 intact: {str(_f3_service)}"
+    assert (
+        _f3_service.get("missing_private")
+        and _f3_service.get("oversized_snapshot")
+    ), f"F3 admission refuses a missing private authority before spawn: {str(_f3_service)}"
+    assert (
+        _f3_service.get("first_cause_release")
+          and _f3_service.get("spawn_failure")
+    ), f"F3 first terminal cause wins and releases capacity exactly once: {str(_f3_service)}"
+    assert _f3_service.get("cancel_off_loop"), f"F3 cancel tree kills leave the event loop and service lock responsive: {str(_f3_service)}"
+    assert _f3_service.get("health_off_loop"), f"F3 cold health probes leave the event loop and service lock responsive: {str(_f3_service)}"
+    assert _f3_service.get("natural_exit_beats_cancel"), f"F3 a reaped natural exit cannot be relabelled by late cancel: {str(_f3_service)}"
+    assert (
+        _f3_service.get("per_lesson_race")
+        and _f3_service.get("global_race")
+    ), f"F3 one-lock admission closes races and refunds busy rate charges: {str(_f3_service)}"
+    assert (
+        _f3_service.get("idempotency_first")
+        and _f3_service.get("retention")
+        and _f3_service.get("reader_cap")
+    ), f"F3 idempotency precedes rate/capacity and terminal retention is bounded: {str(_f3_service)}"
+    assert _f3_service.get("shutdown"), f"F3 shutdown stops jobs through the same exact-release path: {str(_f3_service)}"
 
     async def _f4_terminal_cause_matrix():
         results = {}
@@ -1337,21 +1345,21 @@ def test_role_runner(client, suite_state):
         return results
 
     _f4_causes = _asyncio.run(_f4_terminal_cause_matrix())
-    check("F4 every terminal cause emits one exit and releases capacity once",
-          set(_f4_causes) == set(_runner.TERMINAL_CAUSES)
-          and all(_f4_causes.values()), str(_f4_causes))
-    check("F4 concurrent starts preserve per-lesson and global caps",
-          _f3_service.get("per_lesson_race")
-          and _f3_service.get("global_race"), str(_f3_service))
-    check("F4 retention tombstones and the two-reader cap stay bounded",
-          _f3_service.get("retention")
-          and _f3_service.get("reader_cap"), str(_f3_service))
-    check("F4 retention pruning preserves attached streams until detach",
-          _f3_service.get("reader_retention"), str(_f3_service))
-    check("F4 reader leases are idempotent and distinct-job protection is bounded",
-          _f3_service.get("reader_global_bound"), str(_f3_service))
-    check("F4 both SSE readers wake and a raced terminal event is drained",
-          _f3_service.get("reader_notifications"), str(_f3_service))
+    assert (
+        set(_f4_causes) == set(_runner.TERMINAL_CAUSES)
+        and all(_f4_causes.values())
+    ), f"F4 every terminal cause emits one exit and releases capacity once: {str(_f4_causes)}"
+    assert (
+        _f3_service.get("per_lesson_race")
+        and _f3_service.get("global_race")
+    ), f"F4 concurrent starts preserve per-lesson and global caps: {str(_f3_service)}"
+    assert (
+        _f3_service.get("retention")
+        and _f3_service.get("reader_cap")
+    ), f"F4 retention tombstones and the two-reader cap stay bounded: {str(_f3_service)}"
+    assert _f3_service.get("reader_retention"), f"F4 retention pruning preserves attached streams until detach: {str(_f3_service)}"
+    assert _f3_service.get("reader_global_bound"), f"F4 reader leases are idempotent and distinct-job protection is bounded: {str(_f3_service)}"
+    assert _f3_service.get("reader_notifications"), f"F4 both SSE readers wake and a raced terminal event is drained: {str(_f3_service)}"
 
     async def _f4_disconnect_before_body_contract():
         from starlette.requests import Request as _StarletteRequest
@@ -1402,8 +1410,7 @@ def test_role_runner(client, suite_state):
             app.state.runner_service = original_service
 
     _f4_disconnect_readers = _asyncio.run(_f4_disconnect_before_body_contract())
-    check("F4 disconnect before SSE body iteration releases its reader lease",
-          _f4_disconnect_readers == 0, str(_f4_disconnect_readers))
+    assert _f4_disconnect_readers == 0, f"F4 disconnect before SSE body iteration releases its reader lease: {str(_f4_disconnect_readers)}"
 
     try:
         _runner.require_runner_health()
@@ -1426,50 +1433,51 @@ def test_role_runner(client, suite_state):
         except (TypeError, ValueError):
             _f3_probe = {}
         _f3_probe_extra = _f3_probe_run.stderr.strip() or _f3_probe_run.stdout.strip()
-        check("F3 host matrix: success, syntax error, timeout, and file backstop",
-              _f3_probe_run.returncode == 0
-              and _f3_probe.get("success", {}).get("exit_code") == 0
-              and _f3_probe.get("syntax_error", {}).get("stderr_has_syntax_error") is True
-              and _f3_probe.get("timeout", {}).get("cause") == "timeout"
-              and _f3_probe.get("file_limit", {}).get("failed") is True,
-              _f3_probe_extra)
-        check("F3 host matrix: raw-byte overflow kills at exactly 1 MiB",
-              _f3_probe.get("output_overflow") == {
-                  "cause": "output-limit", "output_bytes": 1024 * 1024,
-                  "state": "FINISHED", "truncated": True,
-              }, _f3_probe_extra)
-        check("F3 host matrix: descendant cleanup and shutdown both reap to EOF",
-              _f3_probe.get("descendant_cleanup", {}).get("both_eof") is True
-              and _f3_probe.get("descendant_cleanup", {}).get("cause") == "cancelled"
-              and _f3_probe.get("shutdown", {}).get("cause") == "shutdown"
-              and _f3_probe.get("shutdown", {}).get("active_total") == 0,
-              _f3_probe_extra)
+        assert (
+            _f3_probe_run.returncode == 0
+            and _f3_probe.get("success", {}).get("exit_code") == 0
+            and _f3_probe.get("syntax_error", {}).get("stderr_has_syntax_error") is True
+            and _f3_probe.get("timeout", {}).get("cause") == "timeout"
+            and _f3_probe.get("file_limit", {}).get("failed") is True
+        ), f"F3 host matrix: success, syntax error, timeout, and file backstop: {_f3_probe_extra}"
+        assert (
+            _f3_probe.get("output_overflow") == {
+                "cause": "output-limit", "output_bytes": 1024 * 1024,
+                "state": "FINISHED", "truncated": True,
+            }
+        ), f"F3 host matrix: raw-byte overflow kills at exactly 1 MiB: {_f3_probe_extra}"
+        assert (
+            _f3_probe.get("descendant_cleanup", {}).get("both_eof") is True
+            and _f3_probe.get("descendant_cleanup", {}).get("cause") == "cancelled"
+            and _f3_probe.get("shutdown", {}).get("cause") == "shutdown"
+            and _f3_probe.get("shutdown", {}).get("active_total") == 0
+        ), f"F3 host matrix: descendant cleanup and shutdown both reap to EOF: {_f3_probe_extra}"
         _f3_isolation = _f3_probe.get("isolation", {})
-        check("F3 host isolation: repo/private/other bundles/run/network are absent",
-              all(_f3_isolation.get(name) is True for name in (
-                  "repo_absent", "private_sentinel_absent", "other_bundle_absent",
-                  "run_empty", "network_absent",
-              )), _f3_probe_extra)
-        check("F3 host isolation: bundle/module cache ro; scratch/GOCACHE rw; snapshot 0444",
-              all(_f3_isolation.get(name) is True for name in (
-                  "bundle_readable", "bundle_read_only", "module_cache_read_only",
-                  "scratch_writable", "gocache_writable",
-              ))
-              and _f3_isolation.get("snapshot_mode") == "0o444"
-              and _f3_isolation.get("home_entries") == [".cache", "go"]
-              and set(_f3_isolation.get("runner_env", ())) == set(_runner.RUNNER_ENV),
-              _f3_probe_extra)
-        check("F3 cold Go and warm-within-job/repeat/change/compile-error matrix passes",
-              _f3_probe.get("cold_go", {}).get("exit_code") == 0
-              and _f3_probe.get("cold_go", {}).get("warm_child_reported") is True
-              and _f3_probe.get("cold_go", {}).get("wall_ms", 60001) < 60000
-              and _f3_probe.get("go_repeated_and_changed", {}).get("repeat_ok") is True
-              and _f3_probe.get("go_repeated_and_changed", {}).get("changed_source_observed") is True
-              and _f3_probe.get("go_compile_error", {}).get("stderr_has_undefined") is True,
-              _f3_probe_extra)
+        assert (
+            all(_f3_isolation.get(name) is True for name in (
+                "repo_absent", "private_sentinel_absent", "other_bundle_absent",
+                "run_empty", "network_absent",
+            ))
+        ), f"F3 host isolation: repo/private/other bundles/run/network are absent: {_f3_probe_extra}"
+        assert (
+            all(_f3_isolation.get(name) is True for name in (
+                "bundle_readable", "bundle_read_only", "module_cache_read_only",
+                "scratch_writable", "gocache_writable",
+            ))
+            and _f3_isolation.get("snapshot_mode") == "0o444"
+            and _f3_isolation.get("home_entries") == [".cache", "go"]
+            and set(_f3_isolation.get("runner_env", ())) == set(_runner.RUNNER_ENV)
+        ), f"F3 host isolation: bundle/module cache ro; scratch/GOCACHE rw; snapshot 0444: {_f3_probe_extra}"
+        assert (
+            _f3_probe.get("cold_go", {}).get("exit_code") == 0
+            and _f3_probe.get("cold_go", {}).get("warm_child_reported") is True
+            and _f3_probe.get("cold_go", {}).get("wall_ms", 60001) < 60000
+            and _f3_probe.get("go_repeated_and_changed", {}).get("repeat_ok") is True
+            and _f3_probe.get("go_repeated_and_changed", {}).get("changed_source_observed") is True
+            and _f3_probe.get("go_compile_error", {}).get("stderr_has_undefined") is True
+        ), f"F3 cold Go and warm-within-job/repeat/change/compile-error matrix passes: {_f3_probe_extra}"
     else:
-        check("F3 host matrix skipped when full runner runtime is unavailable",
-              True, _f3_runtime_detail)
+        assert True, f"F3 host matrix skipped when full runner runtime is unavailable: {_f3_runtime_detail}"
 
     suite_state.update({
         name: value for name, value in locals().items()
