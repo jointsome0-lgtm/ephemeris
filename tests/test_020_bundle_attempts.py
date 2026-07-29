@@ -14,7 +14,7 @@ import threading
 from datetime import date as _vdate
 from pathlib import Path
 
-from conftest import ROOT, check, events_of, item_row
+from conftest import ROOT, events_of, item_row
 
 
 
@@ -38,12 +38,18 @@ def test_bundle_attempts(client, suite_state):
     for _case in _fx_cases["cases"]:
         _fx_text = (_fx_dir / _case["file"]).read_text(encoding="utf-8")
         _fx_read = bschema.read_manifest_text(_fx_text, runner_registry=_fx_registry)
-        check(f"fixture {_case['file']}: {_case['expect']}, read as {_case['read_as']}",
-              _fx_read.outcome == _case["expect"]
-              and _fx_read.version == _case["read_as"]
-              and set(_case["findings"]) <= _fx_read.codes(),
-              f"outcome={_fx_read.outcome} version={_fx_read.version} "
-              f"codes={sorted(_fx_read.codes())}")
+        assert (
+            _fx_read.outcome == _case["expect"]
+            and _fx_read.version == _case["read_as"]
+            and set(_case["findings"]) <= _fx_read.codes()
+        ), (
+            f"fixture {_case['file']}: {_case['expect']}, read as {_case['read_as']}"
+            + "  -- "
+            + (
+                f"outcome={_fx_read.outcome} version={_fx_read.version} "
+                f"codes={sorted(_fx_read.codes())}"
+            )
+        )
 
     # §9.3: round-tripping a canonical manifest is byte-identical
     _fx_roundtrips = [
@@ -54,8 +60,9 @@ def test_bundle_attempts(client, suite_state):
         for _fx_file in sorted(_fx_dir.glob("*.json"))
         if _fx_file.name != "cases.json"
     ]
-    check("canonical writer round-trips all 10 fixture manifests byte-identically",
-          len(_fx_roundtrips) == 10 and all(_fx_roundtrips))
+    assert (
+        len(_fx_roundtrips) == 10 and all(_fx_roundtrips)
+    ), "canonical writer round-trips all 10 fixture manifests byte-identically"
 
     # duplicate ids are raw-declaration facts: an id repeated on an item that
     # is dropped for its path still rejects the manifest (PR-48 round 2)
@@ -68,9 +75,10 @@ def test_bundle_attempts(client, suite_state):
             {"id": "pg_maskdup01", "path": "index.html"},
         ],
     }))
-    check("duplicate page id behind a dropped path still rejects",
-          _dup_masked.outcome == "rejected"
-          and {"duplicate-id", "invalid-path"} <= _dup_masked.codes())
+    assert (
+        _dup_masked.outcome == "rejected"
+        and {"duplicate-id", "invalid-path"} <= _dup_masked.codes()
+    ), "duplicate page id behind a dropped path still rejects"
 
     # block page/kind/root checks are independent (§9.2 aggregation): every
     # violation of the declaration is recorded before the block is dropped
@@ -87,8 +95,9 @@ def test_bundle_attempts(client, suite_state):
             "file": "scratch/work.py",
         }],
     }))
-    check("dropped block reports dangling page, unknown kind, and outside-root together",
-          {"dangling-ref", "unknown-kind", "outside-root"} <= _blk_masked.codes())
+    assert (
+        {"dangling-ref", "unknown-kind", "outside-root"} <= _blk_masked.codes()
+    ), "dropped block reports dangling page, unknown kind, and outside-root together"
 
     # §4.1: a path the request-cleaning layer would strip (edge whitespace)
     # is invalid, not repaired — the reader and the disk resolver would
@@ -102,10 +111,11 @@ def test_bundle_attempts(client, suite_state):
             {"id": "pg_spacepad02", "path": " spaced.html"},
         ],
     }))
-    check("v2 page path with edge whitespace is invalid-path, not repaired",
-          _sp_read.outcome == "degraded"
-          and "invalid-path" in _sp_read.codes()
-          and " spaced.html" not in _sp_read.page_paths())
+    assert (
+        _sp_read.outcome == "degraded"
+        and "invalid-path" in _sp_read.codes()
+        and " spaced.html" not in _sp_read.page_paths()
+    ), "v2 page path with edge whitespace is invalid-path, not repaired"
 
     # lesson identity (§3): minted once at creation, echoed in manifest + event
     _uid_conn = get_conn()
@@ -115,30 +125,35 @@ def test_bundle_attempts(client, suite_state):
         _uid_lesson = lessons_svc.get_lesson(_uid_conn, _uid_id)
     finally:
         _uid_conn.close()
-    check("create_lesson mints a lesson uid",
-          bool(_uid_lesson["uid"])
-          and bschema.UUID_RE.match(_uid_lesson["uid"]) is not None)
+    assert (
+        bool(_uid_lesson["uid"])
+        and bschema.UUID_RE.match(_uid_lesson["uid"]) is not None
+    ), "create_lesson mints a lesson uid"
     _uid_manifest_path = Path(lessons_svc.LESSONS_DIR) / _uid_lesson["slug"] / "lesson.json"
     _uid_manifest_text = _uid_manifest_path.read_text(encoding="utf-8")
     _uid_manifest = json.loads(_uid_manifest_text)
-    check("create_lesson writes the v2 skeleton manifest (§5)",
-          _uid_manifest.get("schema_version") == 2
-          and _uid_manifest.get("lesson_uid") == _uid_lesson["uid"]
-          and _uid_manifest.get("entry") == "index.html"
-          and [p.get("path") for p in _uid_manifest.get("pages", [])] == ["index.html"]
-          and bschema.PAGE_ID_RE.match(_uid_manifest["pages"][0]["id"]) is not None
-          and _uid_manifest.get("runtime") == {"profile": "interactive-local-v1"}
-          and _uid_manifest.get("artifact_roots") == ["attempts"]
-          and _uid_manifest.get("source_url") == "https://learning.example/uid-demo")
-    check("v2 skeleton is canonical on disk",
-          bschema.canonical_dumps(_uid_manifest) == _uid_manifest_text)
-    check("v2 bundle gets its default artifact root dir",
-          (Path(lessons_svc.LESSONS_DIR) / _uid_lesson["slug"] / "attempts").is_dir())
+    assert (
+        _uid_manifest.get("schema_version") == 2
+        and _uid_manifest.get("lesson_uid") == _uid_lesson["uid"]
+        and _uid_manifest.get("entry") == "index.html"
+        and [p.get("path") for p in _uid_manifest.get("pages", [])] == ["index.html"]
+        and bschema.PAGE_ID_RE.match(_uid_manifest["pages"][0]["id"]) is not None
+        and _uid_manifest.get("runtime") == {"profile": "interactive-local-v1"}
+        and _uid_manifest.get("artifact_roots") == ["attempts"]
+        and _uid_manifest.get("source_url") == "https://learning.example/uid-demo"
+    ), "create_lesson writes the v2 skeleton manifest (§5)"
+    assert (
+        bschema.canonical_dumps(_uid_manifest) == _uid_manifest_text
+    ), "v2 skeleton is canonical on disk"
+    assert (
+        (Path(lessons_svc.LESSONS_DIR) / _uid_lesson["slug"] / "attempts").is_dir()
+    ), "v2 bundle gets its default artifact root dir"
     _uid_created = json.loads(events_of("lesson_created")[-1]["payload_json"])
-    check("lesson_created event echoes lesson_uid, never title (§8)",
-          _uid_created.get("lesson_uid") == _uid_lesson["uid"]
-          and _uid_created.get("lesson_id") == _uid_id
-          and "title" not in _uid_created)
+    assert (
+        _uid_created.get("lesson_uid") == _uid_lesson["uid"]
+        and _uid_created.get("lesson_id") == _uid_id
+        and "title" not in _uid_created
+    ), "lesson_created event echoes lesson_uid, never title (§8)"
 
     # rename churn never re-mints (§3): uid survives title+slug change,
     # backfill rerun is a no-op, a NULL-uid row (stale pre-v11 writer) heals
@@ -162,10 +177,12 @@ def test_bundle_attempts(client, suite_state):
             "SELECT uid FROM lessons WHERE slug='stale-writer-demo'").fetchone()["uid"]
     finally:
         _uid_conn.close()
-    check("rename does not change the lesson uid",
-          _restamped == 0 and _uid_after["uid"] == _uid_lesson["uid"])
-    check("uid backfill stamps exactly the NULL-uid rows",
-          _healed == 1 and _stale_uid and bschema.UUID_RE.match(_stale_uid) is not None)
+    assert (
+        _restamped == 0 and _uid_after["uid"] == _uid_lesson["uid"]
+    ), "rename does not change the lesson uid"
+    assert (
+        _healed == 1 and _stale_uid and bschema.UUID_RE.match(_stale_uid) is not None
+    ), "uid backfill stamps exactly the NULL-uid rows"
 
     # v10→v11 renumbering hazard: a DB that ran the uid step while it was
     # numbered v10 sits at user_version=10 WITHOUT retro_entries, and the
@@ -180,9 +197,10 @@ def test_bundle_attempts(client, suite_state):
         "SELECT name FROM sqlite_master WHERE type='table'")}
     _ren_uid = _ren.execute("SELECT uid FROM lessons").fetchone()["uid"]
     _ren.close()
-    check("v11 on a branch-v10 DB creates retro_entries and backfills uids",
-          "retro_entries" in _ren_tabs and _ren_uid
-          and bschema.UUID_RE.match(_ren_uid) is not None)
+    assert (
+        "retro_entries" in _ren_tabs and _ren_uid
+        and bschema.UUID_RE.match(_ren_uid) is not None
+    ), "v11 on a branch-v10 DB creates retro_entries and backfills uids"
 
     # v2 read path: declared pages only (§4.2), unknown fields preserved (§9.3)
     _v2_conn = get_conn()
@@ -200,27 +218,32 @@ def test_bundle_attempts(client, suite_state):
     (_v2_dir / "related" / "01-stage.html").write_text(
         "<html>Vera Example stage</html>", encoding="utf-8")
     _v2_view = lessons_svc.with_bundle_info(_v2)
-    check("v2 bundle lists exactly the declared pages, in order",
-          [p["entry"] for p in _v2_view["pages"]] == ["index.html", "related/01-stage.html"]
-          and _v2_view["bundle"]["schema_version"] == 2
-          and _v2_view["bundle"]["outcome"] == "ok"
-          and _v2_view["bundle"]["profile"] == "interactive-local-v1")
+    assert (
+        [p["entry"] for p in _v2_view["pages"]] == ["index.html", "related/01-stage.html"]
+        and _v2_view["bundle"]["schema_version"] == 2
+        and _v2_view["bundle"]["outcome"] == "ok"
+        and _v2_view["bundle"]["profile"] == "interactive-local-v1"
+    ), "v2 bundle lists exactly the declared pages, in order"
     _v2_ghost = lessons_svc.bundle_info(_v2, entry="related/99-ghost.html")
-    check("v2 undeclared selection falls back to the manifest entry (§4.2)",
-          _v2_ghost["entry"] == "index.html"
-          and all(p["entry"] != "related/99-ghost.html" for p in _v2_ghost["pages"]))
-    check("stale selection degrades the top-level bundle outcome too",
-          _v2_ghost["outcome"] == "degraded"
-          and any(f["code"] == "invalid-entry" for f in _v2_ghost["findings"]))
+    assert (
+        _v2_ghost["entry"] == "index.html"
+        and all(p["entry"] != "related/99-ghost.html" for p in _v2_ghost["pages"])
+    ), "v2 undeclared selection falls back to the manifest entry (§4.2)"
+    assert (
+        _v2_ghost["outcome"] == "degraded"
+        and any(f["code"] == "invalid-entry" for f in _v2_ghost["findings"])
+    ), "stale selection degrades the top-level bundle outcome too"
     _v2_ghost_meta = c.get(
         f"/learn/lessons/{_v2_id}/preview-meta",
         params={"entry": "related/99-ghost.html"}).json()
-    check("stale v2 selection surfaces invalid-entry, never a silent ok (§4.2)",
-          _v2_ghost_meta["outcome"] == "degraded"
-          and any(f["code"] == "invalid-entry" for f in _v2_ghost_meta["findings"]))
-    check("unknown manifest fields survive the canonical writer",
-          json.loads((_v2_dir / "lesson.json").read_text(encoding="utf-8"))
-          .get("x_note") == {"keep": ["me"]})
+    assert (
+        _v2_ghost_meta["outcome"] == "degraded"
+        and any(f["code"] == "invalid-entry" for f in _v2_ghost_meta["findings"])
+    ), "stale v2 selection surfaces invalid-entry, never a silent ok (§4.2)"
+    assert (
+        json.loads((_v2_dir / "lesson.json").read_text(encoding="utf-8"))
+        .get("x_note") == {"keep": ["me"]}
+    ), "unknown manifest fields survive the canonical writer"
     _v2_conn = get_conn()
     try:
         _v2_refused = False
@@ -233,11 +256,13 @@ def test_bundle_attempts(client, suite_state):
     finally:
         _v2_conn.close()
     _v2_entry_event = json.loads(events_of("lesson_entry_changed")[-1]["payload_json"])
-    check("set_current_entry refuses an undeclared v2 page",
-          _v2_refused and _v2_after["current_entry"] == "related/01-stage.html")
-    check("lesson_entry_changed event echoes lesson_uid",
-          _v2_entry_event.get("lesson_uid") == _v2["uid"]
-          and _v2_entry_event.get("to_entry") == "related/01-stage.html")
+    assert (
+        _v2_refused and _v2_after["current_entry"] == "related/01-stage.html"
+    ), "set_current_entry refuses an undeclared v2 page"
+    assert (
+        _v2_entry_event.get("lesson_uid") == _v2["uid"]
+        and _v2_entry_event.get("to_entry") == "related/01-stage.html"
+    ), "lesson_entry_changed event echoes lesson_uid"
 
     # a page removed from the manifest AFTER being selected leaves a stale
     # stored selection: the render falls back visibly, the fallback is NOT
@@ -253,19 +278,22 @@ def test_bundle_attempts(client, suite_state):
         _v2_kept = lessons_svc.get_lesson(_v2_conn, _v2_id)["current_entry"]
     finally:
         _v2_conn.close()
-    check("stale stored selection is exposed and never silently persisted",
-          _v2_stale["stale_selection"] == "related/01-stage.html"
-          and _v2_stale["entry"] == "index.html"
-          and _v2_kept == "related/01-stage.html")
-    check("preview-meta poll URL keeps the stale candidate, not the fallback",
-          "preview-meta?entry=related%2F01-stage.html" in _learn_html)
+    assert (
+        _v2_stale["stale_selection"] == "related/01-stage.html"
+        and _v2_stale["entry"] == "index.html"
+        and _v2_kept == "related/01-stage.html"
+    ), "stale stored selection is exposed and never silently persisted"
+    assert (
+        "preview-meta?entry=related%2F01-stage.html" in _learn_html
+    ), "preview-meta poll URL keeps the stale candidate, not the fallback"
     _v2_stale_meta = c.get(
         f"/learn/lessons/{_v2_id}/preview-meta",
         params={"entry": "related/01-stage.html"}).json()
-    check("polling the stale candidate re-surfaces invalid-entry each time",
-          _v2_stale_meta["outcome"] == "degraded"
-          and any(f["code"] == "invalid-entry" for f in _v2_stale_meta["findings"])
-          and _v2_stale_meta["exists"] is True)
+    assert (
+        _v2_stale_meta["outcome"] == "degraded"
+        and any(f["code"] == "invalid-entry" for f in _v2_stale_meta["findings"])
+        and _v2_stale_meta["exists"] is True
+    ), "polling the stale candidate re-surfaces invalid-entry each time"
     # restore the two-page manifest — later sections rely on it
     bschema.write_manifest(_v2_dir / "lesson.json", _v2_raw)
 
@@ -280,33 +308,38 @@ def test_bundle_attempts(client, suite_state):
     _rej_path.write_text('{"schema_version": 2, "broken', encoding="utf-8")
     _rej_meta = c.get(f"/learn/lessons/{_rej_id}/preview-meta").json()
     _rej_prev = c.get(f"/learn/lessons/{_rej_id}/preview")
-    check("corrupt manifest is a visible reject, not a silent default",
-          _rej_meta["outcome"] == "rejected"
-          and any(f["code"] == "manifest-unreadable" for f in _rej_meta["findings"])
-          and "lesson.json is not readable JSON." in _rej_prev.text
-          and _rej_path.read_text(encoding="utf-8") == '{"schema_version": 2, "broken')
-    check("GET /learn stays 200 with a rejected manifest selected",
-          c.get(f"/learn?lesson={_rej_id}").status_code == 200)
+    assert (
+        _rej_meta["outcome"] == "rejected"
+        and any(f["code"] == "manifest-unreadable" for f in _rej_meta["findings"])
+        and "lesson.json is not readable JSON." in _rej_prev.text
+        and _rej_path.read_text(encoding="utf-8") == '{"schema_version": 2, "broken'
+    ), "corrupt manifest is a visible reject, not a silent default"
+    assert (
+        c.get(f"/learn?lesson={_rej_id}").status_code == 200
+    ), "GET /learn stays 200 with a rejected manifest selected"
     _rej_path.write_text(
         json.dumps({"schema_version": 99, "entry": "index.html"}) + "\n", encoding="utf-8")
     _rej_meta2 = c.get(f"/learn/lessons/{_rej_id}/preview-meta").json()
     _rej_prev2 = c.get(f"/learn/lessons/{_rej_id}/preview")
-    check("unsupported manifest version rejects visibly",
-          _rej_meta2["outcome"] == "rejected"
-          and any(f["code"] == "unsupported-version" for f in _rej_meta2["findings"])
-          and "Unsupported manifest version." in _rej_prev2.text)
+    assert (
+        _rej_meta2["outcome"] == "rejected"
+        and any(f["code"] == "unsupported-version" for f in _rej_meta2["findings"])
+        and "Unsupported manifest version." in _rej_prev2.text
+    ), "unsupported manifest version rejects visibly"
     # placeholder-to-placeholder transitions are visible to the live-reload
     # poller: the version token tracks the manifest state, not a flat "0"
-    check("placeholder version tokens track the manifest state",
-          _rej_meta["version"].startswith("rejected:")
-          and _rej_meta2["version"].startswith("rejected:")
-          and _rej_meta["version"] != _rej_meta2["version"]
-          and _mf_meta["version"].startswith("missing:"))
+    assert (
+        _rej_meta["version"].startswith("rejected:")
+        and _rej_meta2["version"].startswith("rejected:")
+        and _rej_meta["version"] != _rej_meta2["version"]
+        and _mf_meta["version"].startswith("missing:")
+    ), "placeholder version tokens track the manifest state"
     # rejected means NO page render — direct file fetches included (§9.2)
     (Path(lessons_svc.LESSONS_DIR) / _rej["slug"] / "index.html").write_text(
         "<html>Vera Example orphan page</html>", encoding="utf-8")
-    check("rejected manifest blocks direct bundle file renders too (§9.2)",
-          c.get(f"/learn/lessons/{_rej_id}/files/index.html").status_code == 404)
+    assert (
+        c.get(f"/learn/lessons/{_rej_id}/files/index.html").status_code == 404
+    ), "rejected manifest blocks direct bundle file renders too (§9.2)"
 
     # v1 manifests dual-read unchanged (§9.2) and are never rewritten (§9.1)
     _v1_conn = get_conn()
@@ -320,15 +353,17 @@ def test_bundle_attempts(client, suite_state):
     (_v1_dir / "lesson.json").write_text(_v1_text, encoding="utf-8")
     (_v1_dir / "index.html").write_text("<html>Vera Example v1</html>", encoding="utf-8")
     _v1_view = lessons_svc.with_bundle_info(_v1)
-    check("v1 manifest dual-reads with entry + related pages, legacy profile",
-          _v1_view["bundle"]["schema_version"] == 1
-          and [p["entry"] for p in _v1_view["pages"]]
-          == ["index.html", "related/01-gravity-gradient.html",
-              "related/02-spring-and-neap.html"]
-          and _v1_view["bundle"]["profile"] == "legacy-display"
-          and _v1_view["bundle"]["outcome"] == "ok")
-    check("v1 manifest is never rewritten by the read path",
-          (_v1_dir / "lesson.json").read_text(encoding="utf-8") == _v1_text)
+    assert (
+        _v1_view["bundle"]["schema_version"] == 1
+        and [p["entry"] for p in _v1_view["pages"]]
+        == ["index.html", "related/01-gravity-gradient.html",
+            "related/02-spring-and-neap.html"]
+        and _v1_view["bundle"]["profile"] == "legacy-display"
+        and _v1_view["bundle"]["outcome"] == "ok"
+    ), "v1 manifest dual-reads with entry + related pages, legacy profile"
+    assert (
+        (_v1_dir / "lesson.json").read_text(encoding="utf-8") == _v1_text
+    ), "v1 manifest is never rewritten by the read path"
 
     # profile-keyed CSP enforcement (§5, D1): interactive-local-v1 serves
     # under the strict local-only policy, legacy-display keeps the historical
@@ -342,41 +377,46 @@ def test_bundle_attempts(client, suite_state):
     _d1_file = c.get(f"/learn/lessons/{_v2_id}/files/index.html")
     _d1_prev = c.get(f"/learn/lessons/{_v2_id}/preview")
     _d1_csp = _d1_file.headers.get("content-security-policy", "")
-    check("v2 interactive pages serve under the strict D1 CSP (files + preview)",
-          _d1_file.status_code == 200 and _d1_csp == _CSP_INT
-          and _d1_prev.headers.get("content-security-policy") == _CSP_INT)
-    check("strict CSP: no network, no eval, no forms/popups/downloads",
-          "connect-src 'none'" in _d1_csp
-          and "webrtc 'block'" in _d1_csp
-          and "default-src 'none'" in _d1_csp
-          and "form-action 'none'" in _d1_csp
-          and "base-uri 'none'" in _d1_csp
-          and "https:" not in _d1_csp
-          and "unsafe-eval" not in _d1_csp
-          and "sandbox allow-scripts;" in _d1_csp
-          and "allow-forms" not in _d1_csp
-          and "allow-popups" not in _d1_csp
-          and "allow-downloads" not in _d1_csp)
+    assert (
+        _d1_file.status_code == 200 and _d1_csp == _CSP_INT
+        and _d1_prev.headers.get("content-security-policy") == _CSP_INT
+    ), "v2 interactive pages serve under the strict D1 CSP (files + preview)"
+    assert (
+        "connect-src 'none'" in _d1_csp
+        and "webrtc 'block'" in _d1_csp
+        and "default-src 'none'" in _d1_csp
+        and "form-action 'none'" in _d1_csp
+        and "base-uri 'none'" in _d1_csp
+        and "https:" not in _d1_csp
+        and "unsafe-eval" not in _d1_csp
+        and "sandbox allow-scripts;" in _d1_csp
+        and "allow-forms" not in _d1_csp
+        and "allow-popups" not in _d1_csp
+        and "allow-downloads" not in _d1_csp
+    ), "strict CSP: no network, no eval, no forms/popups/downloads"
     _d1_meta = c.get(f"/learn/lessons/{_v2_id}/preview-meta").json()
-    check("preview-meta surfaces interactive profile + bridge eligibility",
-          _d1_meta["profile"] == "interactive-local-v1"
-          and _d1_meta["bridge"] is True
-          and lessons_svc.bundle_info(_v2)["bridge"] is True)
+    assert (
+        _d1_meta["profile"] == "interactive-local-v1"
+        and _d1_meta["bridge"] is True
+        and lessons_svc.bundle_info(_v2)["bridge"] is True
+    ), "preview-meta surfaces interactive profile + bridge eligibility"
     # degraded v2 findings keep profile and bridge — identity stays valid,
     # D2 gates per page; only fail-closed-to-legacy paths revoke them
     _d1_stale = c.get(
         f"/learn/lessons/{_v2_id}/preview-meta",
         params={"entry": "related/99-ghost.html"}).json()
-    check("degraded v2 read keeps profile + bridge",
-          _d1_stale["outcome"] == "degraded"
-          and _d1_stale["profile"] == "interactive-local-v1"
-          and _d1_stale["bridge"] is True)
+    assert (
+        _d1_stale["outcome"] == "degraded"
+        and _d1_stale["profile"] == "interactive-local-v1"
+        and _d1_stale["bridge"] is True
+    ), "degraded v2 read keeps profile + bridge"
     _d1_v1 = c.get(f"/learn/lessons/{_v1_id}/files/index.html")
     _d1_v1_meta = c.get(f"/learn/lessons/{_v1_id}/preview-meta").json()
-    check("v1 bundle keeps the legacy CSP and never gets the bridge",
-          _d1_v1.headers.get("content-security-policy") == _CSP_LEG
-          and _d1_v1_meta["profile"] == "legacy-display"
-          and _d1_v1_meta["bridge"] is False)
+    assert (
+        _d1_v1.headers.get("content-security-policy") == _CSP_LEG
+        and _d1_v1_meta["profile"] == "legacy-display"
+        and _d1_v1_meta["bridge"] is False
+    ), "v1 bundle keeps the legacy CSP and never gets the bridge"
     # unknown profile fails closed: forced legacy-display, no bridge; the
     # wide policy is only ever reached via the *registered* legacy profile
     bschema.write_manifest(
@@ -384,22 +424,25 @@ def test_bundle_attempts(client, suite_state):
         dict(_v2_raw, runtime={"profile": "interactive-local-v2"}))
     _d1_unk_meta = c.get(f"/learn/lessons/{_v2_id}/preview-meta").json()
     _d1_unk_file = c.get(f"/learn/lessons/{_v2_id}/files/index.html")
-    check("unknown profile fails closed to legacy-display without bridge",
-          _d1_unk_meta["profile"] == "legacy-display"
-          and _d1_unk_meta["bridge"] is False
-          and any(f["code"] == "unknown-profile" for f in _d1_unk_meta["findings"])
-          and _d1_unk_file.headers.get("content-security-policy") == _CSP_LEG)
+    assert (
+        _d1_unk_meta["profile"] == "legacy-display"
+        and _d1_unk_meta["bridge"] is False
+        and any(f["code"] == "unknown-profile" for f in _d1_unk_meta["findings"])
+        and _d1_unk_file.headers.get("content-security-policy") == _CSP_LEG
+    ), "unknown profile fails closed to legacy-display without bridge"
     bschema.write_manifest(_v2_dir / "lesson.json", _v2_raw)  # restore
     _d1_rej_meta = c.get(f"/learn/lessons/{_rej_id}/preview-meta").json()
     _d1_rej_prev = c.get(f"/learn/lessons/{_rej_id}/preview")
-    check("rejected manifest: legacy profile, no bridge, placeholder CSP",
-          _d1_rej_meta["profile"] == "legacy-display"
-          and _d1_rej_meta["bridge"] is False
-          and _d1_rej_prev.headers.get("content-security-policy") == _CSP_LEG)
-    check("an unregistered profile value selects the narrow policy",
-          _csp_for("weird-unregistered") == _CSP_INT
-          and _csp_for("legacy-display") == _CSP_LEG
-          and _csp_for("interactive-local-v1") == _CSP_INT)
+    assert (
+        _d1_rej_meta["profile"] == "legacy-display"
+        and _d1_rej_meta["bridge"] is False
+        and _d1_rej_prev.headers.get("content-security-policy") == _CSP_LEG
+    ), "rejected manifest: legacy profile, no bridge, placeholder CSP"
+    assert (
+        _csp_for("weird-unregistered") == _CSP_INT
+        and _csp_for("legacy-display") == _CSP_LEG
+        and _csp_for("interactive-local-v1") == _CSP_INT
+    ), "an unregistered profile value selects the narrow policy"
     # drain C1: an effective-profile transition must invalidate the open
     # page's reload token in BOTH directions, page bytes untouched — the
     # displayed document must have been served under the CSP the metadata
@@ -411,12 +454,13 @@ def test_bundle_attempts(client, suite_state):
     _d1_leg_file = c.get(f"/learn/lessons/{_v2_id}/files/index.html")
     bschema.write_manifest(_v2_dir / "lesson.json", _v2_raw)  # restore
     _d1_v_back = c.get(f"/learn/lessons/{_v2_id}/preview-meta").json()["version"]
-    check("profile flip changes the reload token both ways, bytes untouched",
-          _d1_leg_meta["version"] != _d1_v_int
-          and _d1_v_back == _d1_v_int
-          and _d1_leg_meta["profile"] == "legacy-display"
-          and _d1_leg_meta["bridge"] is False
-          and _d1_leg_file.headers.get("content-security-policy") == _CSP_LEG)
+    assert (
+        _d1_leg_meta["version"] != _d1_v_int
+        and _d1_v_back == _d1_v_int
+        and _d1_leg_meta["profile"] == "legacy-display"
+        and _d1_leg_meta["bridge"] is False
+        and _d1_leg_file.headers.get("content-security-policy") == _CSP_LEG
+    ), "profile flip changes the reload token both ways, bytes untouched"
     # identity-mismatch (opus pass): a v2 manifest whose lesson_uid disagrees
     # with the DB row is forced legacy — profile and bridge revoke together
     bschema.write_manifest(
@@ -424,10 +468,11 @@ def test_bundle_attempts(client, suite_state):
         dict(_v2_raw, lesson_uid="00000000-0000-4000-8000-000000000000"))
     _d1_mid_meta = c.get(f"/learn/lessons/{_v2_id}/preview-meta").json()
     bschema.write_manifest(_v2_dir / "lesson.json", _v2_raw)  # restore
-    check("identity-mismatch forces legacy profile and revokes the bridge",
-          any(f["code"] == "identity-mismatch" for f in _d1_mid_meta["findings"])
-          and _d1_mid_meta["profile"] == "legacy-display"
-          and _d1_mid_meta["bridge"] is False)
+    assert (
+        any(f["code"] == "identity-mismatch" for f in _d1_mid_meta["findings"])
+        and _d1_mid_meta["profile"] == "legacy-display"
+        and _d1_mid_meta["bridge"] is False
+    ), "identity-mismatch forces legacy profile and revokes the bridge"
     # PR-bot round 3: a v2 parse can assign the interactive profile and only
     # afterwards reject (no-pages) — the rejected metadata must still report
     # the forced legacy profile, never the parsed interactive value
@@ -435,12 +480,13 @@ def test_bundle_attempts(client, suite_state):
     _d1_rejp_meta = c.get(f"/learn/lessons/{_v2_id}/preview-meta").json()
     _d1_rejp_prev = c.get(f"/learn/lessons/{_v2_id}/preview")
     bschema.write_manifest(_v2_dir / "lesson.json", _v2_raw)  # restore
-    check("late-rejected interactive manifest reports legacy, no bridge",
-          _d1_rejp_meta["outcome"] == "rejected"
-          and any(f["code"] == "no-pages" for f in _d1_rejp_meta["findings"])
-          and _d1_rejp_meta["profile"] == "legacy-display"
-          and _d1_rejp_meta["bridge"] is False
-          and _d1_rejp_prev.headers.get("content-security-policy") == _CSP_LEG)
+    assert (
+        _d1_rejp_meta["outcome"] == "rejected"
+        and any(f["code"] == "no-pages" for f in _d1_rejp_meta["findings"])
+        and _d1_rejp_meta["profile"] == "legacy-display"
+        and _d1_rejp_meta["bridge"] is False
+        and _d1_rejp_prev.headers.get("content-security-policy") == _CSP_LEG
+    ), "late-rejected interactive manifest reports legacy, no bridge"
 
     # ---- D2: bridge page identity + sandbox tokens (§6.3, ABI doc) ----
     # The metadata is what the parent runtime (learn-bridge.ts) binds its
@@ -453,26 +499,28 @@ def test_bundle_attempts(client, suite_state):
     _d2_meta = c.get(
         f"/learn/lessons/{_v2_id}/preview-meta",
         params={"entry": "index.html"}).json()
-    check("preview-meta carries parent-derived bridge identity for an eligible page",
-          _d2_meta["bridge"] is True
-          and _d2_meta["bridge_page"] == {
-              "lesson_uid": _v2["uid"],
-              "page_id": _v2_raw["pages"][0]["id"],
-              "page_rev": "sha256:" + hashlib.sha256(
-                  (_v2_dir / "index.html").read_bytes()).hexdigest(),
-              # D5: declared questions ride the identity (none on this page)
-              "questions": [],
-              # F1: declared editor/run identities ride the armed page too.
-              "blocks": [],
-          }
-          and _d2_meta["sandbox"] == "allow-scripts")
+    assert (
+        _d2_meta["bridge"] is True
+        and _d2_meta["bridge_page"] == {
+            "lesson_uid": _v2["uid"],
+            "page_id": _v2_raw["pages"][0]["id"],
+            "page_rev": "sha256:" + hashlib.sha256(
+                (_v2_dir / "index.html").read_bytes()).hexdigest(),
+            # D5: declared questions ride the identity (none on this page)
+            "questions": [],
+            # F1: declared editor/run identities ride the armed page too.
+            "blocks": [],
+        }
+        and _d2_meta["sandbox"] == "allow-scripts"
+    ), "preview-meta carries parent-derived bridge identity for an eligible page"
     _d2_meta_p2 = c.get(
         f"/learn/lessons/{_v2_id}/preview-meta",
         params={"entry": "related/01-stage.html"}).json()
-    check("bridge identity is per page: second declared page gets its own id + rev",
-          _d2_meta_p2["bridge_page"]["page_id"] == _v2_raw["pages"][1]["id"]
-          and _d2_meta_p2["bridge_page"]["page_rev"] == "sha256:" + hashlib.sha256(
-              (_v2_dir / "related" / "01-stage.html").read_bytes()).hexdigest())
+    assert (
+        _d2_meta_p2["bridge_page"]["page_id"] == _v2_raw["pages"][1]["id"]
+        and _d2_meta_p2["bridge_page"]["page_rev"] == "sha256:" + hashlib.sha256(
+            (_v2_dir / "related" / "01-stage.html").read_bytes()).hexdigest()
+    ), "bridge identity is per page: second declared page gets its own id + rev"
     # a page edit moves the reload token AND page_rev together — the parent
     # re-binds on the token, so the identity it arms always describes the
     # bytes the displayed document was served from
@@ -482,10 +530,11 @@ def test_bundle_attempts(client, suite_state):
         f"/learn/lessons/{_v2_id}/preview-meta",
         params={"entry": "index.html"}).json()
     (_v2_dir / "index.html").write_bytes(_d2_orig)  # restore
-    check("page edit moves reload token and page_rev together",
-          _d2_meta_ed["version"] != _d2_meta["version"]
-          and _d2_meta_ed["bridge_page"]["page_rev"] == "sha256:" + hashlib.sha256(
-              b"<html>Vera Example index edited</html>").hexdigest())
+    assert (
+        _d2_meta_ed["version"] != _d2_meta["version"]
+        and _d2_meta_ed["bridge_page"]["page_rev"] == "sha256:" + hashlib.sha256(
+            b"<html>Vera Example index edited</html>").hexdigest()
+    ), "page edit moves reload token and page_rev together"
     # drain D2 L2: a byte replacement that RESTORES the old mtime must still
     # move the token — for bridge pages it is content-bound (digest folded
     # in), so the client's version-equality check tracks bytes, not a
@@ -497,87 +546,99 @@ def test_bundle_attempts(client, suite_state):
         f"/learn/lessons/{_v2_id}/preview-meta",
         params={"entry": "index.html"}).json()
     (_v2_dir / "index.html").write_bytes(_d2_orig)  # restore
-    check("mtime-preserving byte swap still moves the reload token",
-          _d2_meta_swp["version"] != _d2_meta["version"]
-          and _d2_meta_swp["version"].startswith(f"{_d2_st.st_mtime_ns}:")
-          and _d2_meta_swp["bridge_page"]["page_rev"] == "sha256:" + hashlib.sha256(
-              b"<html>Vera Example mtime-preserved swap</html>").hexdigest())
+    assert (
+        _d2_meta_swp["version"] != _d2_meta["version"]
+        and _d2_meta_swp["version"].startswith(f"{_d2_st.st_mtime_ns}:")
+        and _d2_meta_swp["bridge_page"]["page_rev"] == "sha256:" + hashlib.sha256(
+            b"<html>Vera Example mtime-preserved swap</html>").hexdigest()
+    ), "mtime-preserving byte swap still moves the reload token"
     # the Learn page's data-version must be the same content-bound token the
     # poll answers with, or every bridge page would reload on its first poll
     _d2_meta_now = c.get(
         f"/learn/lessons/{_v2_id}/preview-meta",
         params={"entry": "related/01-stage.html"}).json()
-    check("rendered data-version equals the poll's content-bound token",
-          f'data-version="{_d2_meta_now["version"]}"' in c.get(
-              f"/learn?lesson={_v2_id}").text)
+    assert (
+        f'data-version="{_d2_meta_now["version"]}"' in c.get(
+        f"/learn?lesson={_v2_id}").text
+    ), "rendered data-version equals the poll's content-bound token"
     # a stale selection falls back to a DECLARED page (§4.2), so the identity
     # in the metadata describes the fallback actually rendered, never the
     # requested ghost
     _d2_ghost = c.get(
         f"/learn/lessons/{_v2_id}/preview-meta",
         params={"entry": "related/99-ghost.html"}).json()
-    check("stale selection: identity describes the rendered fallback page",
-          _d2_ghost["bridge"] is True
-          and _d2_ghost["bridge_page"]["page_id"] == _v2_raw["pages"][0]["id"])
+    assert (
+        _d2_ghost["bridge"] is True
+        and _d2_ghost["bridge_page"]["page_id"] == _v2_raw["pages"][0]["id"]
+    ), "stale selection: identity describes the rendered fallback page"
     # every no-bridge path carries no identity, and the sandbox tokens follow
     # the effective profile (legacy stays the historical token set)
     _d2_v1_meta = c.get(f"/learn/lessons/{_v1_id}/preview-meta").json()
     _d2_rej_meta = c.get(f"/learn/lessons/{_rej_id}/preview-meta").json()
-    check("v1 and rejected bundles: no bridge identity, legacy sandbox tokens",
-          _d2_v1_meta["bridge_page"] is None
-          and _d2_v1_meta["sandbox"] == _SANDBOX_LEG
-          and _d2_rej_meta["bridge_page"] is None
-          and _d2_rej_meta["sandbox"] == _SANDBOX_LEG)
-    check("unregistered profile selects the narrow sandbox tokens",
-          _sandbox_for("weird-unregistered") == "allow-scripts"
-          and _sandbox_for("legacy-display") == _SANDBOX_LEG
-          and _sandbox_for("interactive-local-v1") == "allow-scripts")
+    assert (
+        _d2_v1_meta["bridge_page"] is None
+        and _d2_v1_meta["sandbox"] == _SANDBOX_LEG
+        and _d2_rej_meta["bridge_page"] is None
+        and _d2_rej_meta["sandbox"] == _SANDBOX_LEG
+    ), "v1 and rejected bundles: no bridge identity, legacy sandbox tokens"
+    assert (
+        _sandbox_for("weird-unregistered") == "allow-scripts"
+        and _sandbox_for("legacy-display") == _SANDBOX_LEG
+        and _sandbox_for("interactive-local-v1") == "allow-scripts"
+    ), "unregistered profile selects the narrow sandbox tokens"
     # the Learn page renders the iframe sandbox attribute from the profile
     # and loads the Learn-only bridge runtime as a module
     _d2_learn_int = c.get(f"/learn?lesson={_v2_id}").text
     _d2_learn_leg = c.get(f"/learn?lesson={_v1_id}").text
-    check("learn.html: iframe sandbox attribute follows the profile",
-          'sandbox="allow-scripts"' in _d2_learn_int
-          and f'sandbox="{_SANDBOX_LEG}"' in _d2_learn_leg)
-    check("learn.html loads learn-bridge.js as a module",
-          'type="module"' in _d2_learn_int
-          and "learn-bridge.js" in _d2_learn_int)
+    assert (
+        'sandbox="allow-scripts"' in _d2_learn_int
+        and f'sandbox="{_SANDBOX_LEG}"' in _d2_learn_leg
+    ), "learn.html: iframe sandbox attribute follows the profile"
+    assert (
+        'type="module"' in _d2_learn_int
+        and "learn-bridge.js" in _d2_learn_int
+    ), "learn.html loads learn-bridge.js as a module"
     # the inline early-load observer must sit in the document so the late-
     # fetched module can distinguish a settled document from a pending
     # initial navigation (PR-55 round 2)
-    check("learn.html carries the inline early-load observer",
-          "this.dataset.loaded" in _d2_learn_int
-          and 'addEventListener("load"' in _d2_learn_int)
+    assert (
+        "this.dataset.loaded" in _d2_learn_int
+        and 'addEventListener("load"' in _d2_learn_int
+    ), "learn.html carries the inline early-load observer"
     # the poll moved out of app.js — one runtime owns reload AND handshake
     _d2_appjs = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
-    check("app.js no longer touches the preview frame",
-          "lesson-preview-frame" not in _d2_appjs)
+    assert (
+        "lesson-preview-frame" not in _d2_appjs
+    ), "app.js no longer touches the preview frame"
     # structural anchors in the parent runtime: source-of-truth .ts and the
     # committed tsc emit (#42) both carry the membrane's key guards
     _d2_ts = (ROOT / "app" / "static" / "src" / "learn-bridge.ts").read_text(encoding="utf-8")
     _d2_js = (ROOT / "app" / "static" / "learn-bridge.js").read_text(encoding="utf-8")
     for _d2_name, _d2_text in (("learn-bridge.ts", _d2_ts), ("learn-bridge.js", _d2_js)):
-        check(f"{_d2_name}: handshake membrane anchors",
-              "GENERATED-SOURCE NOTICE" in _d2_text
-              and "ev.source !== child" in _d2_text
-              and "new MessageChannel()" in _d2_text
-              and "ABI_VERSION = 1" in _d2_text
-              and 'msg["ephemeris"] !== "lesson-bridge"' in _d2_text
-              and 'want.includes("attempts")' in _d2_text
-              and "MAX_PORT_BYTES = 512 * 1024" in _d2_text
-              and "serializedByteLength" in _d2_text
-              and "new TextEncoder()" in _d2_text)
-    check(".gitattributes marks both emitted runtimes as generated",
-          "app/static/learn-bridge.js linguist-generated=true"
-          in (ROOT / ".gitattributes").read_text(encoding="utf-8")
-          and "app/static/terminal.js linguist-generated=true"
-          in (ROOT / ".gitattributes").read_text(encoding="utf-8"))
+        assert (
+            "GENERATED-SOURCE NOTICE" in _d2_text
+            and "ev.source !== child" in _d2_text
+            and "new MessageChannel()" in _d2_text
+            and "ABI_VERSION = 1" in _d2_text
+            and 'msg["ephemeris"] !== "lesson-bridge"' in _d2_text
+            and 'want.includes("attempts")' in _d2_text
+            and "MAX_PORT_BYTES = 512 * 1024" in _d2_text
+            and "serializedByteLength" in _d2_text
+            and "new TextEncoder()" in _d2_text
+        ), f"{_d2_name}: handshake membrane anchors"
+    assert (
+        "app/static/learn-bridge.js linguist-generated=true"
+        in (ROOT / ".gitattributes").read_text(encoding="utf-8")
+        and "app/static/terminal.js linguist-generated=true"
+        in (ROOT / ".gitattributes").read_text(encoding="utf-8")
+    ), ".gitattributes marks both emitted runtimes as generated"
     _ci_workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
         encoding="utf-8")
     _ci_npm = _ci_workflow.find("run: npm ci")
     _ci_verify = _ci_workflow.find("run: uv run pytest")
-    check("CI installs the pinned TypeScript toolchain before verification",
-          0 <= _ci_npm < _ci_verify)
+    assert (
+        0 <= _ci_npm < _ci_verify
+    ), "CI installs the pinned TypeScript toolchain before verification"
     # committed emit freshness: recompile to a scratch dir and byte-compare.
     # Clean CI installs the lockfile before this point. A local Python-only run
     # may still omit the dev toolchain, but CI must never silently skip the
@@ -588,15 +649,27 @@ def test_bundle_attempts(client, suite_state):
         _d2_cp = subprocess.run(
             [str(_d2_tsc), "-p", str(ROOT), "--outDir", str(_d2_out)],
             cwd=ROOT, capture_output=True, text=True, timeout=180)
-        check("committed learn-bridge.js matches a fresh tsc emit (#42)",
-              _d2_cp.returncode == 0
-              and (_d2_out / "learn-bridge.js").read_bytes() == _d2_js.encode("utf-8"),
-              extra=_d2_cp.stdout + _d2_cp.stderr)
-        check("committed terminal.js matches a fresh tsc emit (#42)",
-              _d2_cp.returncode == 0
-              and (_d2_out / "terminal.js").read_bytes()
-              == terminal_js.encode("utf-8"),
-              extra=_d2_cp.stdout + _d2_cp.stderr)
+        assert (
+            _d2_cp.returncode == 0
+            and (_d2_out / "learn-bridge.js").read_bytes() == _d2_js.encode("utf-8")
+        ), (
+            "committed learn-bridge.js matches a fresh tsc emit (#42)"
+            + "  -- "
+            + (
+                _d2_cp.stdout + _d2_cp.stderr
+            )
+        )
+        assert (
+            _d2_cp.returncode == 0
+            and (_d2_out / "terminal.js").read_bytes()
+            == terminal_js.encode("utf-8")
+        ), (
+            "committed terminal.js matches a fresh tsc emit (#42)"
+            + "  -- "
+            + (
+                _d2_cp.stdout + _d2_cp.stderr
+            )
+        )
         _d2_mjs = _d2_out / "learn-bridge.mjs"
         _d2_mjs.write_text(_d2_js, encoding="utf-8")
         _d2_sha_cp = subprocess.run(
@@ -621,14 +694,27 @@ process.stdout.write(JSON.stringify([
             hashlib.sha256(value).hexdigest()
             for value in (b"", b"abc", "🪐 orbit".encode("utf-8"), b"x" * 70000)
         ]
-        check("emitted dependency-free SHA-256 matches standard vectors",
-              _d2_sha_cp.returncode == 0
-              and json.loads(_d2_sha_cp.stdout) == _d2_sha_expected,
-              extra=_d2_sha_cp.stdout + _d2_sha_cp.stderr)
+        assert (
+            _d2_sha_cp.returncode == 0
+            and json.loads(_d2_sha_cp.stdout) == _d2_sha_expected
+        ), (
+            "emitted dependency-free SHA-256 matches standard vectors"
+            + "  -- "
+            + (
+                _d2_sha_cp.stdout + _d2_sha_cp.stderr
+            )
+        )
     else:
         if os.environ.get("CI"):
-            check("CI has the repo-local TypeScript compiler for emit freshness",
-                  False, extra="node_modules/.bin/tsc missing; run npm ci before verify.py")
+            assert (
+                False
+            ), (
+                "CI has the repo-local TypeScript compiler for emit freshness"
+                + "  -- "
+                + (
+                    "node_modules/.bin/tsc missing; run npm ci before verify.py"
+                )
+            )
         else:
             print("[info] tsc not installed; emit-freshness check skipped (npm ci to enable)")
 
@@ -678,10 +764,11 @@ process.stdout.write(JSON.stringify([
     # projection appended synchronously
     _at_r1 = c.post(_at_url, json=_at_body)
     _at_j1 = _at_r1.json()
-    check("attempt recorded: durable + projected, fresh revision is not stale",
-          _at_r1.status_code == 200 and _at_j1["result"] == "recorded"
-          and _at_j1["stale"] is False and _at_j1["projection"] == "projected"
-          and _at_j1["attempt_number"] == 1)
+    assert (
+        _at_r1.status_code == 200 and _at_j1["result"] == "recorded"
+        and _at_j1["stale"] is False and _at_j1["projection"] == "projected"
+        and _at_j1["attempt_number"] == 1
+    ), "attempt recorded: durable + projected, fresh revision is not stale"
     def _at_events():
         _c = get_conn()
         try:
@@ -694,44 +781,49 @@ process.stdout.write(JSON.stringify([
     _at_row1 = _at_rows()[0]
     _at_ev = _at_events()
     _at_ev1 = json.loads(_at_ev[-1]["payload_json"])
-    check("attempt row and lesson_attempt event share one txn + event uuid (B4)",
-          len(_at_ev) == 1 and _at_ev[-1]["uuid"] == _at_row1["event_uuid"]
-          and _at_row1["attempt_id"] == _at_j1["attempt_id"])
-    check("lesson_attempt event payload follows the §8 echo policy",
-          _at_ev1["lesson_uid"] == _at["uid"] and _at_ev1["lesson_id"] == _at_id
-          and _at_ev1["slug"] == _at["slug"]
-          and _at_ev1["attempt_id"] == _at_j1["attempt_id"]
-          and _at_ev1["page_id"] == _at_pg and _at_ev1["question_id"] == "q_atpredict1"
-          and _at_ev1["page_rev"] == _at_rev and _at_ev1["stale"] is False
-          and "title" not in _at_ev1 and "pages" not in _at_ev1)
+    assert (
+        len(_at_ev) == 1 and _at_ev[-1]["uuid"] == _at_row1["event_uuid"]
+        and _at_row1["attempt_id"] == _at_j1["attempt_id"]
+    ), "attempt row and lesson_attempt event share one txn + event uuid (B4)"
+    assert (
+        _at_ev1["lesson_uid"] == _at["uid"] and _at_ev1["lesson_id"] == _at_id
+        and _at_ev1["slug"] == _at["slug"]
+        and _at_ev1["attempt_id"] == _at_j1["attempt_id"]
+        and _at_ev1["page_id"] == _at_pg and _at_ev1["question_id"] == "q_atpredict1"
+        and _at_ev1["page_rev"] == _at_rev and _at_ev1["stale"] is False
+        and "title" not in _at_ev1 and "pages" not in _at_ev1
+    ), "lesson_attempt event payload follows the §8 echo policy"
     _at_line1 = json.loads(_at_proj.read_text(encoding="utf-8").splitlines()[0])
-    check("projection record carries the §6.2 shape in exact field order",
-          list(_at_line1.keys()) == ["kind", "v", "attempt_id", "event_uuid",
-                                     "lesson_uid", "page_id", "question_id",
-                                     "page_rev", "answer", "created_at", "stale"]
-          and _at_line1["kind"] == "attempt" and _at_line1["v"] == 1
-          and _at_line1["attempt_id"] == _at_row1["attempt_id"]
-          and _at_line1["event_uuid"] == _at_row1["event_uuid"]
-          and _at_line1["created_at"] == _at_row1["created_at"]
-          and _at_line1["created_at"].endswith("+00:00"))
+    assert (
+        list(_at_line1.keys()) == ["kind", "v", "attempt_id", "event_uuid",
+                                   "lesson_uid", "page_id", "question_id",
+                                   "page_rev", "answer", "created_at", "stale"]
+        and _at_line1["kind"] == "attempt" and _at_line1["v"] == 1
+        and _at_line1["attempt_id"] == _at_row1["attempt_id"]
+        and _at_line1["event_uuid"] == _at_row1["event_uuid"]
+        and _at_line1["created_at"] == _at_row1["created_at"]
+        and _at_line1["created_at"].endswith("+00:00")
+    ), "projection record carries the §6.2 shape in exact field order"
 
     # idempotency (§6.3): replay returns the original, writes nothing
     _at_r1b = c.post(_at_url, json=_at_body)
     _at_j1b = _at_r1b.json()
-    check("idempotent replay: duplicate, original attempt_id, nothing written",
-          _at_r1b.status_code == 200 and _at_j1b["result"] == "duplicate"
-          and _at_j1b["attempt_id"] == _at_j1["attempt_id"]
-          and "projection" not in _at_j1b and "attempt_number" not in _at_j1b
-          and len(_at_rows()) == 1 and len(_at_events()) == 1
-          and len(_at_proj.read_text(encoding="utf-8").splitlines()) == 1)
+    assert (
+        _at_r1b.status_code == 200 and _at_j1b["result"] == "duplicate"
+        and _at_j1b["attempt_id"] == _at_j1["attempt_id"]
+        and "projection" not in _at_j1b and "attempt_number" not in _at_j1b
+        and len(_at_rows()) == 1 and len(_at_events()) == 1
+        and len(_at_proj.read_text(encoding="utf-8").splitlines()) == 1
+    ), "idempotent replay: duplicate, original attempt_id, nothing written"
     # same key, different question/page: distinct conflict, never coalesced
     _at_conf = c.post(_at_url, json=dict(
         _at_body, question_id="q_atmoved001", page_id="pg_atsecond01",
         page_rev=_at_rev2))
-    check("idempotency-conflict is distinct and writes nothing",
-          _at_conf.status_code == 409
-          and _at_conf.json()["error"] == "idempotency-conflict"
-          and len(_at_rows()) == 1)
+    assert (
+        _at_conf.status_code == 409
+        and _at_conf.json()["error"] == "idempotency-conflict"
+        and len(_at_rows()) == 1
+    ), "idempotency-conflict is distinct and writes nothing"
     # §6.3 replay precedes record-time refusals (PR-57 round 1): after the
     # question is retired from the manifest, retrying the SAME submission
     # still returns the original durable attempt — only a NEW key sees the
@@ -740,61 +832,69 @@ process.stdout.write(JSON.stringify([
     _at_rp = c.post(_at_url, json=_at_body)
     _at_rp_new = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-ret-1"))
     bschema.write_manifest(_at_dir / "lesson.json", _at_raw)  # restore
-    check("replay survives question retirement; a fresh key rejects",
-          _at_rp.status_code == 200 and _at_rp.json()["result"] == "duplicate"
-          and _at_rp.json()["attempt_id"] == _at_j1["attempt_id"]
-          and _at_rp_new.status_code == 422
-          and _at_rp_new.json()["error"] == "unknown-question")
+    assert (
+        _at_rp.status_code == 200 and _at_rp.json()["result"] == "duplicate"
+        and _at_rp.json()["attempt_id"] == _at_j1["attempt_id"]
+        and _at_rp_new.status_code == 422
+        and _at_rp_new.json()["error"] == "unknown-question"
+    ), "replay survives question retirement; a fresh key rejects"
 
     # slug alias records against the same lesson; uid comes from the DB row
     _at_r2 = c.post(f"/learn/lessons/by-slug/{_at['slug']}/attempts",
                     json=dict(_at_body, idempotency_key="vera-req-2",
                               answer="Vera Example: second thought."))
-    check("slug-alias route records; attempt_number counts per question",
-          _at_r2.status_code == 200 and _at_r2.json()["result"] == "recorded"
-          and _at_r2.json()["attempt_number"] == 2
-          and _at_rows()[-1]["lesson_uid"] == _at["uid"])
+    assert (
+        _at_r2.status_code == 200 and _at_r2.json()["result"] == "recorded"
+        and _at_r2.json()["attempt_number"] == 2
+        and _at_rows()[-1]["lesson_uid"] == _at["uid"]
+    ), "slug-alias route records; attempt_number counts per question"
 
     # §6.4 staleness matrix, server-derived at record time
     (_at_dir / "index.html").write_text(
         "<html>Vera Example attempt page EDITED</html>", encoding="utf-8")
     _at_r3 = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-req-3"))
-    check("edited page bytes: recorded with stale=true, never dropped",
-          _at_r3.status_code == 200 and _at_r3.json()["result"] == "recorded"
-          and _at_r3.json()["stale"] is True)
+    assert (
+        _at_r3.status_code == 200 and _at_r3.json()["result"] == "recorded"
+        and _at_r3.json()["stale"] is True
+    ), "edited page bytes: recorded with stale=true, never dropped"
     _at_r4 = c.post(_at_url, json={
         "question_id": "q_atmoved001", "page_id": "pg_atsecond01",
         "page_rev": _at_rev2, "answer": "Vera Example: bound page, current bytes.",
         "idempotency_key": "vera-req-4"})
-    check("current binding + current bytes on a non-entry page: stale=false",
-          _at_r4.status_code == 200 and _at_r4.json()["stale"] is False)
+    assert (
+        _at_r4.status_code == 200 and _at_r4.json()["stale"] is False
+    ), "current binding + current bytes on a non-entry page: stale=false"
     _at_r5 = c.post(_at_url, json={
         "question_id": "q_atmoved001", "page_id": _at_pg, "page_rev": _at_rev,
         "answer": "Vera Example: I saw this question on the entry page.",
         "idempotency_key": "vera-req-5"})
     _at_row5 = next(r for r in _at_rows()
                     if r["attempt_id"] == _at_r5.json()["attempt_id"])
-    check("question rebound elsewhere: recorded under the SUBMITTED page, stale",
-          _at_r5.status_code == 200 and _at_r5.json()["stale"] is True
-          and _at_row5["page_id"] == _at_pg and _at_row5["page_rev"] == _at_rev)
+    assert (
+        _at_r5.status_code == 200 and _at_r5.json()["stale"] is True
+        and _at_row5["page_id"] == _at_pg and _at_row5["page_rev"] == _at_rev
+    ), "question rebound elsewhere: recorded under the SUBMITTED page, stale"
     (_at_dir / "related" / "01-next.html").unlink()
     _at_r6 = c.post(_at_url, json={
         "question_id": "q_atmoved001", "page_id": "pg_atsecond01",
         "page_rev": _at_rev2, "answer": "Vera Example: file gone now.",
         "idempotency_key": "vera-req-6"})
-    check("bound page file missing: current revision unknowable -> stale=true",
-          _at_r6.status_code == 200 and _at_r6.json()["stale"] is True)
+    assert (
+        _at_r6.status_code == 200 and _at_r6.json()["stale"] is True
+    ), "bound page file missing: current revision unknowable -> stale=true"
 
     # identity that does not exist rejects with the mandated distinct response
     _at_unk = c.post(_at_url, json=dict(
         _at_body, question_id="q_neverwas99", idempotency_key="vera-unk-1"))
-    check("undeclared question: distinct unknown-question reject, nothing written",
-          _at_unk.status_code == 422 and _at_unk.json()["error"] == "unknown-question"
-          and all(r["question_id"] != "q_neverwas99" for r in _at_rows()))
-    check("unknown lesson id and slug both 404",
-          c.post("/learn/lessons/999999/attempts", json=_at_body).status_code == 404
-          and c.post("/learn/lessons/by-slug/no-such-lesson/attempts",
-                     json=_at_body).status_code == 404)
+    assert (
+        _at_unk.status_code == 422 and _at_unk.json()["error"] == "unknown-question"
+        and all(r["question_id"] != "q_neverwas99" for r in _at_rows())
+    ), "undeclared question: distinct unknown-question reject, nothing written"
+    assert (
+        c.post("/learn/lessons/999999/attempts", json=_at_body).status_code == 404
+        and c.post("/learn/lessons/by-slug/no-such-lesson/attempts",
+                   json=_at_body).status_code == 404
+    ), "unknown lesson id and slug both 404"
 
     # eligibility fails closed (§5/§9.2): rejected manifest, v1, legacy
     # profile, identity mismatch — each with its own code, nothing written
@@ -802,45 +902,52 @@ process.stdout.write(JSON.stringify([
                      json=dict(_at_body, idempotency_key="vera-rej-1"))
     _at_v1 = c.post(f"/learn/lessons/{_v1_id}/attempts",
                     json=dict(_at_body, idempotency_key="vera-v1-1"))
-    check("rejected manifest refuses attempt writes (manifest-rejected)",
-          _at_rej.status_code == 409
-          and _at_rej.json()["error"] == "manifest-rejected")
-    check("v1 bundle carries no attempt affordance (attempts-unavailable)",
-          _at_v1.status_code == 409
-          and _at_v1.json()["error"] == "attempts-unavailable")
+    assert (
+        _at_rej.status_code == 409
+        and _at_rej.json()["error"] == "manifest-rejected"
+    ), "rejected manifest refuses attempt writes (manifest-rejected)"
+    assert (
+        _at_v1.status_code == 409
+        and _at_v1.json()["error"] == "attempts-unavailable"
+    ), "v1 bundle carries no attempt affordance (attempts-unavailable)"
     bschema.write_manifest(_at_dir / "lesson.json",
                            dict(_at_raw, runtime={"profile": "legacy-display"}))
     _at_leg = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-leg-1"))
-    check("legacy-display v2 refuses attempts (attempts-unavailable)",
-          _at_leg.status_code == 409
-          and _at_leg.json()["error"] == "attempts-unavailable")
+    assert (
+        _at_leg.status_code == 409
+        and _at_leg.json()["error"] == "attempts-unavailable"
+    ), "legacy-display v2 refuses attempts (attempts-unavailable)"
     bschema.write_manifest(_at_dir / "lesson.json",
                            dict(_at_raw, lesson_uid=str(_uuid4())))
     _at_mid = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-mid-1"))
-    check("manifest uid != DB uid refuses attempts (identity-mismatch)",
-          _at_mid.status_code == 409
-          and _at_mid.json()["error"] == "identity-mismatch")
+    assert (
+        _at_mid.status_code == 409
+        and _at_mid.json()["error"] == "identity-mismatch"
+    ), "manifest uid != DB uid refuses attempts (identity-mismatch)"
     bschema.write_manifest(_at_dir / "lesson.json", _at_raw)  # restore
 
     # body admission + grammar limits (docs/lesson-attempts-api.md)
-    check("attempt route sits behind the B2 write guard (Origin null / cross)",
-          c.post(_at_url, json=_at_body,
-                 headers={"Origin": "null"}).status_code == 403
-          and c.post(_at_url, json=_at_body,
-                     headers={"Origin": "http://evil.example"}).status_code == 403
-          and c.post(_at_url, json=dict(_at_body, idempotency_key="vera-req-1"),
-                     headers={"Origin": "http://testserver"}).status_code == 200)
-    check("non-JSON content type is 415; malformed JSON body is 400",
-          c.post(_at_url, content=b"question_id=x",
-                 headers={"content-type": "application/x-www-form-urlencoded"}
-                 ).status_code == 415
-          and c.post(_at_url, content=b"not json {",
-                     headers={"content-type": "application/json"}
-                     ).status_code == 400
-          and c.post(_at_url, json=[1, 2, 3]).status_code == 400)
-    check("oversized body is 413 before any parsing",
-          c.post(_at_url, content=b"{" + b" " * (300 * 1024),
-                 headers={"content-type": "application/json"}).status_code == 413)
+    assert (
+        c.post(_at_url, json=_at_body,
+               headers={"Origin": "null"}).status_code == 403
+        and c.post(_at_url, json=_at_body,
+                   headers={"Origin": "http://evil.example"}).status_code == 403
+        and c.post(_at_url, json=dict(_at_body, idempotency_key="vera-req-1"),
+                   headers={"Origin": "http://testserver"}).status_code == 200
+    ), "attempt route sits behind the B2 write guard (Origin null / cross)"
+    assert (
+        c.post(_at_url, content=b"question_id=x",
+               headers={"content-type": "application/x-www-form-urlencoded"}
+               ).status_code == 415
+        and c.post(_at_url, content=b"not json {",
+                   headers={"content-type": "application/json"}
+                   ).status_code == 400
+        and c.post(_at_url, json=[1, 2, 3]).status_code == 400
+    ), "non-JSON content type is 415; malformed JSON body is 400"
+    assert (
+        c.post(_at_url, content=b"{" + b" " * (300 * 1024),
+        headers={"content-type": "application/json"}).status_code == 413
+    ), "oversized body is 413 before any parsing"
 
     # Exercise the ASGI app directly so parser-specific Content-Length /
     # Transfer-Encoding behavior cannot hide a dishonest declared length. The
@@ -897,64 +1004,72 @@ process.stdout.write(JSON.stringify([
         _at_direct_asgi(_at_url, 1, _at_chunks))
     _at_stream_slug = _at_asyncio.run(_at_direct_asgi(
         f"/learn/lessons/by-slug/{_at['slug']}/attempts", 1, _at_chunks))
-    check("attempt aliases abort dishonest multi-chunk bodies mid-stream",
-          _at_stream_id == (413, 5) and _at_stream_slug == (413, 5))
+    assert (
+        _at_stream_id == (413, 5) and _at_stream_slug == (413, 5)
+    ), "attempt aliases abort dishonest multi-chunk bodies mid-stream"
 
     _at_negative_id = _at_asyncio.run(
         _at_direct_asgi(_at_url, -1, [b"{}"]))
     _at_negative_slug = _at_asyncio.run(_at_direct_asgi(
         f"/learn/lessons/by-slug/{_at['slug']}/attempts", -1, [b"{}"]))
-    check("attempt aliases reject negative Content-Length before body reads",
-          _at_negative_id == (400, 0) and _at_negative_slug == (400, 0))
+    assert (
+        _at_negative_id == (400, 0) and _at_negative_slug == (400, 0)
+    ), "attempt aliases reject negative Content-Length before body reads"
 
     # deep nesting under the byte cap raises RecursionError inside json.loads
     # (PR-57 round 4) — still the documented invalid-json 400, never a 500
     _at_deep = c.post(_at_url, content=b"[" * 20000 + b"]" * 20000,
                       headers={"content-type": "application/json"})
-    check("deeply nested JSON body is invalid-json, not a crash",
-          _at_deep.status_code == 400
-          and _at_deep.json()["error"] == "invalid-json")
+    assert (
+        _at_deep.status_code == 400
+        and _at_deep.json()["error"] == "invalid-json"
+    ), "deeply nested JSON body is invalid-json, not a crash"
     _at_badrev = c.post(_at_url, json=dict(
         _at_body, page_rev="sha256:nothex", idempotency_key="vera-bad-1"))
     _at_badkey = c.post(_at_url, json=dict(
         _at_body, idempotency_key="ctrl\x01char"))
-    check("grammar violations get their own codes",
-          _at_badrev.status_code == 400
-          and _at_badrev.json()["error"] == "invalid-page-rev"
-          and _at_badkey.status_code == 400
-          and _at_badkey.json()["error"] == "invalid-idempotency-key")
+    assert (
+        _at_badrev.status_code == 400
+        and _at_badrev.json()["error"] == "invalid-page-rev"
+        and _at_badkey.status_code == 400
+        and _at_badkey.json()["error"] == "invalid-idempotency-key"
+    ), "grammar violations get their own codes"
     # $-anchored .match accepts a trailing newline (PR-57 round 8): the id
     # grammars are \Z-anchored, so "pg_x\n"-style identities never reach the
     # row or the projection
-    check("trailing newline in identity fields is rejected by the grammar",
-          c.post(_at_url, json=dict(_at_body, page_id=_at_pg + "\n",
-                                    idempotency_key="vera-nl-1")
-                 ).json().get("error") == "invalid-page-id"
-          and c.post(_at_url, json=dict(_at_body, page_rev=_at_rev + "\n",
-                                        idempotency_key="vera-nl-2")
-                     ).json().get("error") == "invalid-page-rev"
-          and c.post(_at_url, json=dict(_at_body,
-                                        question_id="q_atpredict1\n",
-                                        idempotency_key="vera-nl-3")
-                     ).json().get("error") == "invalid-question-id")
-    check("answer over 32 KiB UTF-8 is answer-too-large",
-          c.post(_at_url, json=dict(
-              _at_body, answer="x" * (attempts_svc.MAX_ANSWER_BYTES + 1),
-              idempotency_key="vera-big-1")).json().get("error") == "answer-too-large")
+    assert (
+        c.post(_at_url, json=dict(_at_body, page_id=_at_pg + "\n",
+                                  idempotency_key="vera-nl-1")
+               ).json().get("error") == "invalid-page-id"
+        and c.post(_at_url, json=dict(_at_body, page_rev=_at_rev + "\n",
+                                      idempotency_key="vera-nl-2")
+                   ).json().get("error") == "invalid-page-rev"
+        and c.post(_at_url, json=dict(_at_body,
+                                      question_id="q_atpredict1\n",
+                                      idempotency_key="vera-nl-3")
+                   ).json().get("error") == "invalid-question-id"
+    ), "trailing newline in identity fields is rejected by the grammar"
+    assert (
+        c.post(_at_url, json=dict(
+        _at_body, answer="x" * (attempts_svc.MAX_ANSWER_BYTES + 1),
+        idempotency_key="vera-big-1")).json().get("error") == "answer-too-large"
+    ), "answer over 32 KiB UTF-8 is answer-too-large"
     # §6.2 whole-line bound: a within-budget answer whose JSON escaping blows
     # the 64 KiB projection line is refused, not recorded-then-unprojectable
-    check("answer that escapes past the 64 KiB line bound is refused",
-          c.post(_at_url, json=dict(
-              _at_body, answer="\n" * 32700,
-              idempotency_key="vera-line-1")).json().get("error") == "answer-too-large")
+    assert (
+        c.post(_at_url, json=dict(
+        _at_body, answer="\n" * 32700,
+        idempotency_key="vera-line-1")).json().get("error") == "answer-too-large"
+    ), "answer that escapes past the 64 KiB line bound is refused"
     # a lone surrogate survives json.loads but can never be written as UTF-8
     _at_sur = json.dumps(dict(_at_body, answer="SURROGATE",
                               idempotency_key="vera-sur-1")).replace(
         '"SURROGATE"', '"\\ud800"')
-    check("lone-surrogate answer is invalid-answer, not a crash",
-          c.post(_at_url, content=_at_sur.encode("utf-8"),
-                 headers={"content-type": "application/json"}
-                 ).json().get("error") == "invalid-answer")
+    assert (
+        c.post(_at_url, content=_at_sur.encode("utf-8"),
+        headers={"content-type": "application/json"}
+        ).json().get("error") == "invalid-answer"
+    ), "lone-surrogate answer is invalid-answer, not a crash"
 
     # crash boundaries: the authority write survives a dead projection, the
     # response says so, and the next write reconciles the file from SQLite.
@@ -981,33 +1096,37 @@ process.stdout.write(JSON.stringify([
         _at_pend = c.post(_at_url, json=dict(
             _at_body, idempotency_key="vera-pend-1",
             answer="Vera Example: projection is down."))
-    check("projection failure: attempt durable, response says pending",
-          _at_pend.status_code == 200 and _at_pend.json()["result"] == "recorded"
-          and _at_pend.json()["projection"] == "pending"
-          and any(r["attempt_id"] == _at_pend.json()["attempt_id"]
-                  for r in _at_rows()))
+    assert (
+        _at_pend.status_code == 200 and _at_pend.json()["result"] == "recorded"
+        and _at_pend.json()["projection"] == "pending"
+        and any(r["attempt_id"] == _at_pend.json()["attempt_id"]
+                for r in _at_rows())
+    ), "projection failure: attempt durable, response says pending"
     _at_heal = c.post(_at_url, json=dict(
         _at_body, idempotency_key="vera-heal-1",
         answer="Vera Example: back online."))
     _at_lines = _at_proj.read_text(encoding="utf-8").splitlines()
-    check("next write reconciles: projection again equals the authority",
-          _at_heal.json()["projection"] == "projected"
-          and len(_at_lines) == len(_at_rows())
-          and [json.loads(l)["attempt_id"] for l in _at_lines]
-          == [r["attempt_id"] for r in _at_rows()])
+    assert (
+        _at_heal.json()["projection"] == "projected"
+        and len(_at_lines) == len(_at_rows())
+        and [json.loads(l)["attempt_id"] for l in _at_lines]
+        == [r["attempt_id"] for r in _at_rows()]
+    ), "next write reconciles: projection again equals the authority"
     # crash between commit and append (file vanished) and a torn tail
     # (truncated mid-line) both trigger the rebuild instead of a blind append
     _at_proj.unlink()
     c.post(_at_url, json=dict(_at_body, idempotency_key="vera-gone-1"))
-    check("missing projection file is rebuilt in full",
-          len(_at_proj.read_text(encoding="utf-8").splitlines()) == len(_at_rows()))
+    assert (
+        len(_at_proj.read_text(encoding="utf-8").splitlines()) == len(_at_rows())
+    ), "missing projection file is rebuilt in full"
     _at_whole = _at_proj.read_bytes()
     _at_proj.write_bytes(_at_whole[: len(_at_whole) // 2])  # torn mid-line
     c.post(_at_url, json=dict(_at_body, idempotency_key="vera-torn-1"))
     _at_lines2 = _at_proj.read_text(encoding="utf-8").splitlines()
-    check("truncated projection is rebuilt: every line parses, counts match",
-          len(_at_lines2) == len(_at_rows())
-          and all(json.loads(l)["kind"] == "attempt" for l in _at_lines2))
+    assert (
+        len(_at_lines2) == len(_at_rows())
+        and all(json.loads(l)["kind"] == "attempt" for l in _at_lines2)
+    ), "truncated projection is rebuilt: every line parses, counts match"
     # the public reconcile entry point rebuilds from scratch, idempotently
     _at_proj.write_text("junk that is not jsonl\n", encoding="utf-8")
     _at_conn = get_conn()
@@ -1018,16 +1137,19 @@ process.stdout.write(JSON.stringify([
     finally:
         _at_conn.close()
     _at_rec_after = _at_proj.read_text(encoding="utf-8")
-    check("reconcile_projection rebuilds from the authority and is idempotent",
-          _at_rec_ok and _at_rec_ok2
-          and _at_rec_text == _at_rec_after
-          and len(_at_rec_text.splitlines()) == len(_at_rows()),
-          # this one went red once on a merge commit whose tree had passed on
-          # its branch (CI 5ebdc78, green on rerun), and the composite hid
-          # which half moved: name it, so a second sighting is diagnosable
-          f"ok={_at_rec_ok} ok2={_at_rec_ok2} "
-          f"stable={_at_rec_text == _at_rec_after} "
-          f"lines={len(_at_rec_text.splitlines())} rows={len(_at_rows())}")
+    assert (
+        _at_rec_ok and _at_rec_ok2
+        and _at_rec_text == _at_rec_after
+        and len(_at_rec_text.splitlines()) == len(_at_rows())
+    ), (
+        "reconcile_projection rebuilds from the authority and is idempotent"
+        + "  -- "
+        + (
+            f"ok={_at_rec_ok} ok2={_at_rec_ok2} "
+            f"stable={_at_rec_text == _at_rec_after} "
+            f"lines={len(_at_rec_text.splitlines())} rows={len(_at_rows())}"
+        )
+    )
 
     # Issue #25: fcntl is imported at the point of use, so a platform without it
     # must read as an unavailable lock, not a crash. The attempt row is committed
@@ -1061,10 +1183,11 @@ process.stdout.write(JSON.stringify([
                             if not isinstance(f, _NoFcntlFinder)]
         if _at_saved_fcntl is not None:
             sys.modules["fcntl"] = _at_saved_fcntl
-    check("no fcntl: projection degrades to pending, never a 500 over a saved attempt",
-          _at_nofcntl_lock == "oserror"
-          and _at_nofcntl_project is False
-          and _at_nofcntl_reconcile is False)
+    assert (
+        _at_nofcntl_lock == "oserror"
+        and _at_nofcntl_project is False
+        and _at_nofcntl_reconcile is False
+    ), "no fcntl: projection degrades to pending, never a 500 over a saved attempt"
 
     # A public reconcile must never publish caller-local uncommitted rows.
     # Rejecting an active transaction leaves the prior projection untouched;
@@ -1093,9 +1216,10 @@ process.stdout.write(JSON.stringify([
             _at_conn, _at)
     finally:
         _at_conn.close()
-    check("reconcile refuses an active transaction's uncommitted authority",
-          _at_uncommitted_refused and _at_committed_reconcile
-          and _at_proj.read_bytes() == _at_before_uncommitted)
+    assert (
+        _at_uncommitted_refused and _at_committed_reconcile
+        and _at_proj.read_bytes() == _at_before_uncommitted
+    ), "reconcile refuses an active transaction's uncommitted authority"
 
     # a short write(2) must complete the line, never report `projected` over
     # a torn tail (PR-57 round 1): force the first os.write to land half
@@ -1115,10 +1239,11 @@ process.stdout.write(JSON.stringify([
             answer="Vera Example: complete a short append."))
     _at_lines3 = _at_proj.read_text(encoding="utf-8").splitlines()
     _at_last = _at_rows()[-1]
-    check("short write(2) is completed by the append loop, file stays whole",
-          _at_short.json().get("projection") == "projected" and _at_split["done"]
-          and len(_at_lines3) == len(_at_rows())
-          and json.loads(_at_lines3[-1])["attempt_id"] == _at_last["attempt_id"])
+    assert (
+        _at_short.json().get("projection") == "projected" and _at_split["done"]
+        and len(_at_lines3) == len(_at_rows())
+        and json.loads(_at_lines3[-1])["attempt_id"] == _at_last["attempt_id"]
+    ), "short write(2) is completed by the append loop, file stays whole"
 
     # §6.1 order guard (PR-57 round 2): a row that does not sort strictly
     # after the projection tail is never blind-appended — the fast path
@@ -1130,12 +1255,13 @@ process.stdout.write(JSON.stringify([
             _at_body, idempotency_key="vera-backdated-1",
             answer="Vera Example: clock stepped backwards."))
     _at_lines4 = _at_proj.read_text(encoding="utf-8").splitlines()
-    check("out-of-order append is caught: projection rebuilt in §6.1 order",
-          _at_backdated.json().get("projection") == "projected"
-          and [json.loads(l)["attempt_id"] for l in _at_lines4]
-          == [r["attempt_id"] for r in _at_rows()]
-          and json.loads(_at_lines4[0])["created_at"]
-          == "2000-01-01T00:00:00.000000+00:00")
+    assert (
+        _at_backdated.json().get("projection") == "projected"
+        and [json.loads(l)["attempt_id"] for l in _at_lines4]
+        == [r["attempt_id"] for r in _at_rows()]
+        and json.loads(_at_lines4[0])["created_at"]
+        == "2000-01-01T00:00:00.000000+00:00"
+    ), "out-of-order append is caught: projection rebuilt in §6.1 order"
 
     # a planted DIRECTORY at the projection name is a deterministic §6.1
     # collision (PR-57 round 10): empty dirs are removed, non-empty moved
@@ -1143,22 +1269,24 @@ process.stdout.write(JSON.stringify([
     _at_proj.unlink()
     _at_proj.mkdir()
     _at_dircol1 = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-dir-1"))
-    check("empty directory at attempts.jsonl is removed and rebuilt over",
-          _at_dircol1.json().get("projection") == "projected"
-          and _at_proj.is_file()
-          and len(_at_proj.read_text(encoding="utf-8").splitlines())
-          == len(_at_rows()))
+    assert (
+        _at_dircol1.json().get("projection") == "projected"
+        and _at_proj.is_file()
+        and len(_at_proj.read_text(encoding="utf-8").splitlines())
+        == len(_at_rows())
+    ), "empty directory at attempts.jsonl is removed and rebuilt over"
     _at_proj.unlink()
     _at_proj.mkdir()
     (_at_proj / "junk.txt").write_text("agent artifact", encoding="utf-8")
     _at_dircol2 = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-dir-2"))
     _at_aside = list(_at_dir.glob("attempts.jsonl.collision-*"))
-    check("non-empty directory collision is moved aside, content preserved",
-          _at_dircol2.json().get("projection") == "projected"
-          and _at_proj.is_file()
-          and len(_at_aside) == 1
-          and (_at_aside[0] / "junk.txt").read_text(encoding="utf-8")
-          == "agent artifact")
+    assert (
+        _at_dircol2.json().get("projection") == "projected"
+        and _at_proj.is_file()
+        and len(_at_aside) == 1
+        and (_at_aside[0] / "junk.txt").read_text(encoding="utf-8")
+        == "agent artifact"
+    ), "non-empty directory collision is moved aside, content preserved"
     import shutil as _at_shutil
     _at_shutil.rmtree(_at_aside[0])
 
@@ -1174,12 +1302,13 @@ process.stdout.write(JSON.stringify([
     _at_link_other = _at_dir / "outside-copy.txt"
     _os.link(_at_proj, _at_link_other)  # projection inode now has 2 names
     _at_hl = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-hl-1"))
-    check("hard-linked projection is replaced, append never leaks through",
-          _at_hl.json().get("projection") == "projected"
-          and _at_link_other.read_bytes() == _at_linked
-          and _os.stat(_at_proj).st_nlink == 1
-          and len(_at_proj.read_text(encoding="utf-8").splitlines())
-          == len(_at_rows()))
+    assert (
+        _at_hl.json().get("projection") == "projected"
+        and _at_link_other.read_bytes() == _at_linked
+        and _os.stat(_at_proj).st_nlink == 1
+        and len(_at_proj.read_text(encoding="utf-8").splitlines())
+        == len(_at_rows())
+    ), "hard-linked projection is replaced, append never leaks through"
     _at_link_other.unlink()
 
     # content-verified fast path (PR-57 round 6): the right line COUNT with
@@ -1198,9 +1327,10 @@ process.stdout.write(JSON.stringify([
             _at_conn, _at, _at_rows()[-1])
     finally:
         _at_conn.close()
-    check("forged earlier line with matching count forces the rebuild",
-          _at_content_ok
-          and _at_proj.read_text(encoding="utf-8") == "".join(_at_good))
+    assert (
+        _at_content_ok
+        and _at_proj.read_text(encoding="utf-8") == "".join(_at_good)
+    ), "forged earlier line with matching count forces the rebuild"
 
     # A same-inode rewrite between the append descriptor's final fstat and
     # the name seal must not be blessed by the sidecar. The full seal mismatch
@@ -1229,12 +1359,13 @@ process.stdout.write(JSON.stringify([
         json.loads(line)["attempt_id"]
         for line in _at_proj.read_text(encoding="utf-8").splitlines()
     ]
-    check("post-append same-inode rewrite cannot be sealed as projected",
-          _at_same_inode["mutated"]
-          and _at_same_inode_response.json().get("projection") == "projected"
-          and _at_same_inode_ids == [
-              row["attempt_id"] for row in _at_rows()
-          ])
+    assert (
+        _at_same_inode["mutated"]
+        and _at_same_inode_response.json().get("projection") == "projected"
+        and _at_same_inode_ids == [
+            row["attempt_id"] for row in _at_rows()
+        ]
+    ), "post-append same-inode rewrite cannot be sealed as projected"
 
     # A rewrite immediately after the append helper returns must also be
     # detected: _write_all returns its immediate descriptor seal, so fsync's
@@ -1259,13 +1390,14 @@ process.stdout.write(JSON.stringify([
         _at_append_race = c.post(_at_url, json=dict(
             _at_body, idempotency_key="vera-append-race-1",
             answer="Vera Example: append publication raced."))
-    check("append-time same-inode rewrite cannot advance the cursor",
-          _at_append_mutation["done"]
-          and _at_append_race.json().get("projection") == "projected"
-          and [
-              json.loads(line)["attempt_id"]
-              for line in _at_proj.read_text(encoding="utf-8").splitlines()
-          ] == [row["attempt_id"] for row in _at_rows()])
+    assert (
+        _at_append_mutation["done"]
+        and _at_append_race.json().get("projection") == "projected"
+        and [
+            json.loads(line)["attempt_id"]
+            for line in _at_proj.read_text(encoding="utf-8").splitlines()
+        ] == [row["attempt_id"] for row in _at_rows()]
+    ), "append-time same-inode rewrite cannot advance the cursor"
 
     # close(2) surfacing a delayed write error (PR-57 round 3): target the
     # append descriptor specifically now that the cursor sidecar also opens
@@ -1320,22 +1452,28 @@ process.stdout.write(JSON.stringify([
             answer="Vera Example: delayed close failure."))
     _at_lines5 = _at_proj.read_text(encoding="utf-8").splitlines()
     _at_last3 = _at_rows()[-1]
-    check("close(2) failure never fails the attempt: rebuild covers the append",
-          _at_close.json().get("projection") == "projected"
-          and _at_close_state["raised"]
-          and _at_close_state["close_before_reopen"] == 0
-          and len(_at_lines5) == len(_at_rows())
-          and json.loads(_at_lines5[-1])["attempt_id"] == _at_last3["attempt_id"],
-          extra=str({
-              "response": _at_close.json(),
-              "raised": _at_close_state["raised"],
-              "target_reopened": _at_close_state["target_reopened"],
-              "close_before_reopen": _at_close_state["close_before_reopen"],
-              "projection_lines": len(_at_lines5),
-              "authority_rows": len(_at_rows()),
-              "projection_last": json.loads(_at_lines5[-1])["attempt_id"],
-              "authority_last": _at_last3["attempt_id"],
-          }))
+    assert (
+        _at_close.json().get("projection") == "projected"
+        and _at_close_state["raised"]
+        and _at_close_state["close_before_reopen"] == 0
+        and len(_at_lines5) == len(_at_rows())
+        and json.loads(_at_lines5[-1])["attempt_id"] == _at_last3["attempt_id"]
+    ), (
+        "close(2) failure never fails the attempt: rebuild covers the append"
+        + "  -- "
+        + (
+            str({
+                "response": _at_close.json(),
+                "raised": _at_close_state["raised"],
+                "target_reopened": _at_close_state["target_reopened"],
+                "close_before_reopen": _at_close_state["close_before_reopen"],
+                "projection_lines": len(_at_lines5),
+                "authority_rows": len(_at_rows()),
+                "projection_last": json.loads(_at_lines5[-1])["attempt_id"],
+                "authority_last": _at_last3["attempt_id"],
+            })
+        )
+    )
 
     # Malformed private state is repair input, never a post-commit 500. A
     # recursively nested document stays under the fixed 4-KiB read cap but
@@ -1345,11 +1483,12 @@ process.stdout.write(JSON.stringify([
     _at_recursive_state = c.post(_at_url, json=dict(
         _at_body, idempotency_key="vera-recursive-state-1",
         answer="Vera Example: malformed cursor heals."))
-    check("recursive projection cursor state falls back to rebuild",
-          _at_recursive_state.status_code == 200
-          and _at_recursive_state.json().get("projection") == "projected"
-          and len(_at_proj.read_text(encoding="utf-8").splitlines())
-          == len(_at_rows()))
+    assert (
+        _at_recursive_state.status_code == 200
+        and _at_recursive_state.json().get("projection") == "projected"
+        and len(_at_proj.read_text(encoding="utf-8").splitlines())
+        == len(_at_rows())
+    ), "recursive projection cursor state falls back to rebuild"
 
     # A slow sibling projector never holds the HTTP request indefinitely:
     # lock contention returns pending after the authority commit, then the
@@ -1362,12 +1501,13 @@ process.stdout.write(JSON.stringify([
     _at_busy_heal = c.post(_at_url, json=dict(
         _at_body, idempotency_key="vera-busy-heal-1",
         answer="Vera Example: projection lock is free."))
-    check("busy projection lock returns pending and the next append heals",
-          _at_busy.status_code == 200
-          and _at_busy.json().get("projection") == "pending"
-          and _at_busy_heal.json().get("projection") == "projected"
-          and len(_at_proj.read_text(encoding="utf-8").splitlines())
-          == len(_at_rows()))
+    assert (
+        _at_busy.status_code == 200
+        and _at_busy.json().get("projection") == "pending"
+        and _at_busy_heal.json().get("projection") == "projected"
+        and len(_at_proj.read_text(encoding="utf-8").splitlines())
+        == len(_at_rows())
+    ), "busy projection lock returns pending and the next append heals"
 
     # A database restore can leave the private cursor numerically ahead of
     # SQLite. Both the max-id row identity and the projection sort-tail anchor
@@ -1383,14 +1523,15 @@ process.stdout.write(JSON.stringify([
         answer="Vera Example: restored authority wins."))
     _at_repaired_state = json.loads(
         _at_state_path.read_text(encoding="ascii"))
-    check("cursor ahead of restored SQLite authority forces rebuild",
-          _at_ahead.json().get("projection") == "projected"
-          and _at_repaired_state["cursor_id"]
-          == max(row["id"] for row in _at_rows())
-          and [
-              json.loads(line)["attempt_id"]
-              for line in _at_proj.read_text(encoding="utf-8").splitlines()
-          ] == [row["attempt_id"] for row in _at_rows()])
+    assert (
+        _at_ahead.json().get("projection") == "projected"
+        and _at_repaired_state["cursor_id"]
+        == max(row["id"] for row in _at_rows())
+        and [
+            json.loads(line)["attempt_id"]
+            for line in _at_proj.read_text(encoding="utf-8").splitlines()
+        ] == [row["attempt_id"] for row in _at_rows()]
+    ), "cursor ahead of restored SQLite authority forces rebuild"
 
     # Rebuild keeps the rendered temp descriptor open across replace. A
     # same-inode rewrite immediately after publication changes its post-replace
@@ -1426,14 +1567,15 @@ process.stdout.write(JSON.stringify([
     _at_rebuild_heal = c.post(_at_url, json=dict(
         _at_body, idempotency_key="vera-rebuild-heal-1",
         answer="Vera Example: rebuild race healed."))
-    check("rebuild cannot seal a post-replace same-inode rewrite",
-          _at_rebuild_mutation["done"]
-          and _at_rebuild_race.json().get("projection") == "pending"
-          and _at_rebuild_heal.json().get("projection") == "projected"
-          and [
-              json.loads(line)["attempt_id"]
-              for line in _at_proj.read_text(encoding="utf-8").splitlines()
-          ] == [row["attempt_id"] for row in _at_rows()])
+    assert (
+        _at_rebuild_mutation["done"]
+        and _at_rebuild_race.json().get("projection") == "pending"
+        and _at_rebuild_heal.json().get("projection") == "projected"
+        and [
+            json.loads(line)["attempt_id"]
+            for line in _at_proj.read_text(encoding="utf-8").splitlines()
+        ] == [row["attempt_id"] for row in _at_rows()]
+    ), "rebuild cannot seal a post-replace same-inode rewrite"
 
     # §6.3 replay wins over refusals even mid-race (PR-57 round 2): a retry
     # whose original is still in flight sees the key uncommitted at the early
@@ -1457,10 +1599,11 @@ process.stdout.write(JSON.stringify([
     finally:
         _at_conn.close()
         bschema.write_manifest(_at_dir / "lesson.json", _at_raw)  # restore
-    check("racing retry beats a manifest refusal: committed duplicate wins",
-          _at_race["result"] == "duplicate"
-          and _at_race["attempt_id"] == _at_row1["attempt_id"]
-          and _at_roc_calls["n"] == 2)
+    assert (
+        _at_race["result"] == "duplicate"
+        and _at_race["attempt_id"] == _at_row1["attempt_id"]
+        and _at_roc_calls["n"] == 2
+    ), "racing retry beats a manifest refusal: committed duplicate wins"
 
     # the same re-check covers the rate limit (PR-57 round 11): an original
     # that committed after the early check wins over an exhausted window
@@ -1481,10 +1624,11 @@ process.stdout.write(JSON.stringify([
         _at_conn.close()
         attempts_svc.RATE_MAX_PER_WINDOW = _at_rate_saved
         attempts_svc._reset_rate_limit()
-    check("racing retry beats an exhausted window: committed duplicate wins",
-          _at_race429["result"] == "duplicate"
-          and _at_race429["attempt_id"] == _at_row1["attempt_id"]
-          and _at_roc_calls["n"] == 2)
+    assert (
+        _at_race429["result"] == "duplicate"
+        and _at_race429["attempt_id"] == _at_row1["attempt_id"]
+        and _at_roc_calls["n"] == 2
+    ), "racing retry beats an exhausted window: committed duplicate wins"
 
     # a duplicate resolved only at the LOCKED re-check refunds its window
     # slot (PR-57 round 12): retries racing a slow original are not new
@@ -1504,10 +1648,11 @@ process.stdout.write(JSON.stringify([
         _at_conn.close()
         attempts_svc.RATE_MAX_PER_WINDOW = _at_rate_saved
         attempts_svc._reset_rate_limit()
-    check("late-resolved duplicate refunds its rate-limit slot",
-          _at_refund["result"] == "duplicate"
-          and _at_roc_calls["n"] == 2
-          and _at_window_after == 0)
+    assert (
+        _at_refund["result"] == "duplicate"
+        and _at_roc_calls["n"] == 2
+        and _at_window_after == 0
+    ), "late-resolved duplicate refunds its rate-limit slot"
 
     # rate limit: sliding per-lesson window, distinct code + Retry-After;
     # fresh keys spend budget, replays never do (PR-57 round 9) — a retry of
@@ -1526,13 +1671,15 @@ process.stdout.write(JSON.stringify([
     finally:
         attempts_svc.RATE_MAX_PER_WINDOW = _at_rate_saved
         attempts_svc._reset_rate_limit()
-    check("rate limit: 429 rate-limited with Retry-After past the window",
-          _at_rl_ok.status_code == 200 and _at_rl_hit.status_code == 429
-          and _at_rl_hit.json()["error"] == "rate-limited"
-          and _at_rl_hit.headers.get("retry-after") is not None)
-    check("replay bypasses an exhausted window: duplicate, not 429",
-          _at_rl_replay.status_code == 200
-          and _at_rl_replay.json()["result"] == "duplicate")
+    assert (
+        _at_rl_ok.status_code == 200 and _at_rl_hit.status_code == 429
+        and _at_rl_hit.json()["error"] == "rate-limited"
+        and _at_rl_hit.headers.get("retry-after") is not None
+    ), "rate limit: 429 rate-limited with Retry-After past the window"
+    assert (
+        _at_rl_replay.status_code == 200
+        and _at_rl_replay.json()["result"] == "duplicate"
+    ), "replay bypasses an exhausted window: duplicate, not 429"
 
     # Issue #58 growth proof: build a separate, invented 200-row authority
     # whose answers reproduce the review's multi-megabyte historical prefix.
@@ -1659,19 +1806,26 @@ process.stdout.write(JSON.stringify([
                     side_effect=_at_count_projection_line):
             _at_growth_fast = attempts_svc._project_attempt(
                 _at_growth_conn, _at_growth, _at_growth_next)
-        check("projection reconcile streams authority rows in bounded memory",
-              _at_growth_streamed
-              and _at_growth_proj.stat().st_size > 6 * 1024 * 1024)
-        check("one projection append has history-independent reads and rendering",
-              _at_growth_fast
-              and _at_growth_cost["read_bytes"]
-              <= attempts_svc.PROJECTION_STATE_MAX_BYTES
-              and _at_growth_cost["pread_bytes"]
-              <= attempts_svc.MAX_LINE_BYTES
-              and _at_growth_cost["render_calls"] == 1
-              and _at_growth_cost["render_bytes"]
-              <= attempts_svc.MAX_LINE_BYTES,
-              extra=str(_at_growth_cost))
+        assert (
+            _at_growth_streamed
+            and _at_growth_proj.stat().st_size > 6 * 1024 * 1024
+        ), "projection reconcile streams authority rows in bounded memory"
+        assert (
+            _at_growth_fast
+            and _at_growth_cost["read_bytes"]
+            <= attempts_svc.PROJECTION_STATE_MAX_BYTES
+            and _at_growth_cost["pread_bytes"]
+            <= attempts_svc.MAX_LINE_BYTES
+            and _at_growth_cost["render_calls"] == 1
+            and _at_growth_cost["render_bytes"]
+            <= attempts_svc.MAX_LINE_BYTES
+        ), (
+            "one projection append has history-independent reads and rendering"
+            + "  -- "
+            + (
+                str(_at_growth_cost)
+            )
+        )
 
         # Hold the per-lesson projection lock at the actual append write. A
         # second SQLite connection must still commit an unrelated row before
@@ -1733,10 +1887,11 @@ process.stdout.write(JSON.stringify([
             finally:
                 _at_projection_release.set()
             _at_projection_thread.join(10)
-        check("projection append does not hold SQLite's global writer lock",
-              _at_held_ok and _at_unrelated_ok
-              and not _at_projection_thread.is_alive()
-              and _at_projection_result.get("ok") is True)
+        assert (
+            _at_held_ok and _at_unrelated_ok
+            and not _at_projection_thread.is_alive()
+            and _at_projection_result.get("ok") is True
+        ), "projection append does not hold SQLite's global writer lock"
 
         # Reproduce the round-10 interleaving: projector A begins a rebuild
         # snapshot, row B commits while A is paused, then projector B waits on
@@ -1796,11 +1951,12 @@ process.stdout.write(JSON.stringify([
             _at_growth_projection_ids = [
                 json.loads(line)["attempt_id"] for line in _at_growth_fh
             ]
-        check("private uid lock prevents the round-10 stale-rebuild race",
-              _at_snapshot_ok and _at_b_returned_pending
-              and not _at_race_a.is_alive() and not _at_race_b.is_alive()
-              and _at_race_results == {"b": False, "a": True, "c": True}
-              and _at_growth_projection_ids == _at_growth_authority_ids)
+        assert (
+            _at_snapshot_ok and _at_b_returned_pending
+            and not _at_race_a.is_alive() and not _at_race_b.is_alive()
+            and _at_race_results == {"b": False, "a": True, "c": True}
+            and _at_growth_projection_ids == _at_growth_authority_ids
+        ), "private uid lock prevents the round-10 stale-rebuild race"
     finally:
         _at_growth_conn.close()
 
