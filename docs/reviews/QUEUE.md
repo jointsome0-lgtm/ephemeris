@@ -318,7 +318,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   holding a learner artifact in a v1 bundle survives the first regen as an
   aside copy — plus the no-accumulation rule and both squatter kinds
   preserved rather than unlinked, with the symlink moved without being
-  followed. PR-bot round 1 makes an unreadable file of the constant's size a
+  followed. Merged into `main` as `7e8a850` (PR #112) at branch tip
+  `0a74699`; the merged tree is byte-identical to that tip (both trees
+  `28058dd`). PR-bot round 1 makes an unreadable file of the constant's size a
   non-match rather than an error: `read_bytes` on a `chmod 000` node raised
   `PermissionError`, which `prepare_terminal_workspace` catches as a refusal
   of the whole workspace, so a lesson lost its terminal over one unreadable
