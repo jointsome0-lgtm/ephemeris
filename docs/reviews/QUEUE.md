@@ -24,6 +24,16 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
+- [ ] 2026-07-29 — `88071f3` on `fix/109-projection-tick-flake` —
+  `app/services/attempts.py` — issue #109: `_rebuild_projection`'s
+  publication check no longer compares the renamed file's `st_ctime_ns`
+  with the parent directory's `st_mtime_ns` (two inodes receive separate
+  coarse-clock stamps inside one rename, so a timer tick between them
+  failed legitimate publications). Instead the rendered lines are hashed
+  during the rebuild and the published bytes are re-read through the
+  same descriptor and compared; the descriptor-tuple check, the captured
+  seal and the name-level seal check are unchanged.
+
 - [x] 2026-07-28 — `a0ae9dd`, `981400a`, `c91d002`, `18d4195`, `b8b3e02`,
   `5bcd585`, `89f0b77`, with queue-only bookkeeping through `ce2ad38` and the
   PR-bot round-6 through round-8 repairs at the current
