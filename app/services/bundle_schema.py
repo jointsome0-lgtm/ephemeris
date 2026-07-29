@@ -32,7 +32,7 @@ DEFAULT_ENTRY = "index.html"
 DEFAULT_ARTIFACT_ROOT = "attempts"
 RESERVED_NAMES = (
     "lesson.json", "attempts.jsonl", "assessments.jsonl", "AGENTS.md",
-    "CLAUDE.md",
+    "CLAUDE.md", ".claude",
 )
 
 MAX_MANIFEST_BYTES = 256 * 1024

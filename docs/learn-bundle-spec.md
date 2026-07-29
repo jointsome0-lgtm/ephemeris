@@ -52,11 +52,20 @@ data/lessons/<slug>/
   assessments.jsonl   app-owned projection of the tutor's active record (§6.5)
   AGENTS.md        app-generated agent brief — regenerated, never authored
   CLAUDE.md        app-generated shim for AGENTS.md — regenerated
+  .claude/         app-generated agent-harness config for the bundle
+    settings.json  constant `{"outputStyle": "Learning"}` — regenerated
 ```
 
 Reserved names, which no page, block file, or artifact root may claim:
 `lesson.json`, `attempts.jsonl`, `assessments.jsonl`, `AGENTS.md`,
-`CLAUDE.md`.
+`CLAUDE.md`, `.claude`.
+
+`AGENTS.md`, `CLAUDE.md` and everything the app writes under `.claude/` are
+regenerated, never authored: the app rewrites them on every lesson-agent
+terminal open and an edit to them does not survive. `.claude/settings.json`
+holds a constant — no lesson metadata is interpolated into it — and the app
+owns that file only, not the rest of a `.claude/` directory that already
+exists.
 
 Symlink policy (whole bundle, all consumers): symlinks are never followed —
 not for the bundle directory itself, not for any file inside it. A path that

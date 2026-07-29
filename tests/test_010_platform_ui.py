@@ -732,12 +732,89 @@ def test_002_ui_and_workspace(client, suite_state):
     assert (
         claude_text.startswith("@AGENTS.md") and "overwritten" in claude_text
     ), "lesson CLAUDE.md shim @-includes AGENTS.md for Claude Code"
+
+    # --- #84: the bundle-scoped Learning output style -------------------------
+    # A bundle lives outside any repository, so Claude Code resolves
+    # `.claude/settings.json` from the session's own directory; scoping the
+    # style there leaves lesson-authoring sessions elsewhere on Default.
+    _settings_path = Path(ws_info["dir"]) / ".claude" / "settings.json"
+    _settings_text = _settings_path.read_text(encoding="utf-8")
+    assert (
+        _settings_path.is_file()
+        and not _settings_path.is_symlink()
+        and json.loads(_settings_text) == {"outputStyle": "Learning"}
+        and _settings_text == '{\n  "outputStyle": "Learning"\n}\n'
+    ), "workspace regen writes the constant .claude/settings.json"
+    assert (
+        _lt["title"] not in _settings_text and _lt["slug"] not in _settings_text
+        and _lt["uid"] not in _settings_text
+    ), "the generated settings file interpolates no lesson metadata"
+    # Regenerated, never authored: a learner edit does not survive the next open.
+    _settings_path.write_text('{"outputStyle": "Default"}\n', encoding="utf-8")
+    assert lessons_svc.prepare_terminal_workspace(_lt["slug"]) is not None
+    assert (
+        _settings_path.read_text(encoding="utf-8") == _settings_text
+    ), "workspace regen overwrites a modified .claude/settings.json"
+    # The directory is app-owned only for that one file.
+    _other_setting = _settings_path.parent / "keep-me.json"
+    _other_setting.write_text("{}\n", encoding="utf-8")
+    assert lessons_svc.prepare_terminal_workspace(_lt["slug"]) is not None
+    assert (
+        _other_setting.is_file()
+        and _settings_path.read_text(encoding="utf-8") == _settings_text
+    ), "regen owns settings.json only, not the rest of .claude/"
+    # Reserved everywhere the §4.1 path grammar and the v1 serving surface look.
+    from app.services import bundle_schema as _bschema_84
+    assert (
+        ".claude" in _bschema_84.RESERVED_NAMES
+        and not _bschema_84.valid_v2_path(".claude")
+        and not _bschema_84.valid_v2_path(".claude/settings.json")
+        and not _bschema_84.valid_v2_path(".claude/output-styles/x.md")
+    ), "no page, block file or artifact root may claim .claude"
+    # Reserving the name also takes the file off the v1 preview surface, which
+    # serves any non-reserved bundle-relative ref. `_lt` carries a v2 manifest,
+    # whose positive allowlist would refuse an undeclared path anyway — so the
+    # v1 branch needs a v1 bundle of its own to be exercised at all, with a
+    # non-reserved sibling as the control that keeps the surface itself live.
+    _v1s_conn = get_conn()
+    try:
+        _v1s_id = lessons_svc.create_lesson(_v1s_conn, "V1 Reserved Claude Demo")
+        _v1s = lessons_svc.get_lesson(_v1s_conn, _v1s_id)
+    finally:
+        _v1s_conn.close()
+    _v1s_dir = Path(lessons_svc.prepare_terminal_workspace(_v1s["slug"])["dir"])
+    (_v1s_dir / "lesson.json").write_text(json.dumps({
+        "schema_version": 1,
+        "slug": _v1s["slug"],
+        "title": "Vera Example: A v1 Bundle",
+        "entry": "index.html",
+    }), encoding="utf-8")
+    (_v1s_dir / "index.html").write_text("<html>Vera Example v1</html>", encoding="utf-8")
+    _v1s_view = lessons_svc.with_bundle_info(_v1s)
+    assert (
+        _v1s_view["bundle"]["schema_version"] == 1
+        and (_v1s_dir / ".claude" / "settings.json").is_file()
+        and lessons_svc.bundle_resource_info(_v1s, "index.html")["exists"]
+        and not lessons_svc.bundle_resource_info(
+            _v1s, ".claude/settings.json")["exists"]
+    ), "the v1 preview surface serves an ordinary file but not .claude/"
+    _spec_84 = (ROOT / "docs" / "learn-bundle-spec.md").read_text(encoding="utf-8")
+    assert (
+        "`CLAUDE.md`, `.claude`." in _spec_84
+        and ".claude/         app-generated agent-harness config" in _spec_84
+        and 'constant `{"outputStyle": "Learning"}`' in _spec_84
+        and "regenerated, never authored: the app rewrites them" in _spec_84
+    ), "spec §2 reserves .claude and states its regenerated-never-authored rule"
+
     assert (
         lessons_svc.prepare_terminal_workspace("../evil") is None
         and lessons_svc.prepare_terminal_workspace("no-such-lesson-slug") is None
         and lessons_svc.prepare_terminal_workspace(None) is None
     ), "prepare_terminal_workspace rejects junk/unknown slugs"
-    _brief_paths = [Path(ws_info["dir"]) / name for name in ("AGENTS.md", "CLAUDE.md")]
+    _brief_paths = [
+        Path(ws_info["dir"]) / name
+        for name in ("AGENTS.md", "CLAUDE.md", ".claude/settings.json")
+    ]
     _brief_before = [(path.stat().st_mtime_ns, path.read_bytes()) for path in _brief_paths]
     _learner_ws = lessons_svc.resolve_terminal_workspace(_lt["slug"])
     _brief_after = [(path.stat().st_mtime_ns, path.read_bytes()) for path in _brief_paths]
@@ -926,6 +1003,30 @@ def test_002_ui_and_workspace(client, suite_state):
         and _sym_claude_path.is_file() and not _sym_claude_path.is_symlink()
         and _sym_claude_path.read_text(encoding="utf-8") == claude_text
     ), "prepare_terminal_workspace replaces a symlinked CLAUDE.md safely"
+
+    # A link or plain file squatting on `.claude` is replaced, not written through.
+    for _squat in ("symlink-to-dir", "plain-file"):
+        _sq_conn = get_conn()
+        try:
+            _sq_id = lessons_svc.create_lesson(_sq_conn, f"Claude Dir {_squat} Demo")
+            _sq = lessons_svc.get_lesson(_sq_conn, _sq_id)
+        finally:
+            _sq_conn.close()
+        _sq_dir = Path(lessons_svc.LESSONS_DIR) / _sq["slug"]
+        _sq_dir.mkdir(parents=True, exist_ok=True)
+        _sq_path = _sq_dir / ".claude"
+        if _squat == "symlink-to-dir":
+            _os.symlink(_decoy, _sq_path)
+        else:
+            _sq_path.write_text("not a directory", encoding="utf-8")
+        _sq_res = lessons_svc.prepare_terminal_workspace(_sq["slug"])
+        assert (
+            _sq_res is not None
+            and _sq_path.is_dir() and not _sq_path.is_symlink()
+            and (_sq_path / "settings.json").read_text(encoding="utf-8")
+            == _settings_text
+            and not (_decoy / "settings.json").exists()
+        ), f"prepare_terminal_workspace replaces a {_squat} at .claude/"
 
     # A hard link at the final path is replaced, leaving its other name untouched.
     _hard_conn = get_conn()
