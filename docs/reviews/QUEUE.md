@@ -217,6 +217,46 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `docs/reviews/` commit — the merged application code is exactly the
   reviewed tree. The restart gate for this entry is open.
 
+- [ ] 2026-07-29 — `eabb9bb` on `fix/84-learning-output-style` —
+  `app/services/lessons.py`, `app/services/bundle_schema.py`,
+  `docs/learn-bundle-spec.md`, `tests/test_010_platform_ui.py`,
+  `docs/reviews/QUEUE.md` — issue #84 adds a third generated file to the
+  lesson-agent workspace. `prepare_terminal_workspace` now writes
+  `<bundle>/.claude/settings.json` after the two existing briefs, through the
+  same `_write_brief` writer: a `tempfile.mkstemp` 0600 file in the
+  destination directory, `write` + `flush` + `os.fsync`, then `os.replace`
+  onto the name, with the destination never opened and the temporary file
+  unlinked on any exception. The content is the constant
+  `{\n  "outputStyle": "Learning"\n}\n`; nothing from the lesson row or the
+  manifest is interpolated into it. A new `_ensure_settings_dir` supplies the
+  parent: it calls `os.unlink` when `<bundle>/.claude` is a symlink or an
+  existing non-directory, then `os.mkdir(path, 0o700)`; on `FileExistsError`
+  it re-tests the name and raises `NotADirectoryError` unless the name is now
+  a non-symlink directory. `prepare_terminal_workspace` already catches
+  `OSError` and answers `None`, so both the unlink failure and that raise
+  return "no workspace". An existing real directory is kept and only
+  `settings.json` inside it is written. `resolve_terminal_workspace` (the
+  learner path) still writes nothing. `bundle_schema.RESERVED_NAMES` gains
+  `.claude`, which `valid_v2_path` compares against the first path segment
+  (equal to, or nested under, a reserved name) and which
+  `lessons.bundle_resource_info` consults on its v1 branch — the v1 preview
+  surface, which serves any non-reserved bundle-relative ref, therefore stops
+  serving refs under `.claude`; the v2 branch is a declared-page plus
+  `assets/` allowlist and never admitted them. Spec §2 gains the `.claude/`
+  layout lines, `.claude` in the reserved-name list, and a paragraph stating
+  the regenerated-never-authored rule and the app-owns-one-file-only scope.
+  No schema migration, route, HTTP contract, sandbox profile, terminal trust
+  gate, WS protocol, bridge ABI, `_AGENTS_TEMPLATE` text, `CLAUDE.md` shim,
+  manifest schema v2 parsing, attempts or assessments machinery changed.
+  Empirical basis recorded in the PR: with `claude` 2.1.220 and a session
+  started in a directory outside any git repository, `claude doctor` names
+  that directory's `.claude/settings.json` under "Invalid settings" when the
+  file is malformed JSON, and identical `--print` prompts answer under the
+  style named by the file in that directory. Host verification at `eabb9bb`:
+  pytest 9 passed, verify_restore 28 passed, public hygiene clean. Python
+  only; the merge does not change what the live process runs. No merge or
+  restart was performed.
+
 ## Done
 
 - [x] 2026-07-28 — `f40bc2f`, `76b2021`, `3706562`, `419ccbc`, `2cef3b4` on
