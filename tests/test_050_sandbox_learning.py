@@ -757,7 +757,8 @@ def test_sandbox_learning(client, suite_state):
 
     from starlette.requests import Request as _s4_Request
 
-    from app.main import _record_panel as _s4_panel, templates as _s4_templates
+    from app.routers.learn import _record_panel as _s4_panel
+    from app.templating import templates as _s4_templates
     from app.services import focus as _s4_focus
 
     def _s4_rows(lesson_id):
@@ -1530,12 +1531,12 @@ def test_sandbox_learning(client, suite_state):
     # final manifest read. That read must be the single authority for bundle
     # metadata, selection persistence, and the record: the response falls
     # back visibly and the removed page is never stored as current_entry.
-    _s4_main = sys.modules["app.main"]
+    _s4_learn = sys.modules["app.routers.learn"]
     _s4_ensure_real = lessons_svc._ensure_bundle_manifest
     _s4_readonly_real = lessons_svc.read_bundle_readonly
     _s4_mark_opened_real = lessons_svc.mark_opened
-    _s4_db_state_real = _s4_main._record_panel_db_state
-    _s4_panel_real = _s4_main._record_panel
+    _s4_db_state_real = _s4_learn._record_panel_db_state
+    _s4_panel_real = _s4_learn._record_panel
     _s4_read_order = []
     _s4_ensured_reads = []
     _s4_readonly_reads = []
@@ -1592,8 +1593,8 @@ def test_sandbox_learning(client, suite_state):
     lessons_svc._ensure_bundle_manifest = _s4_ensure_once
     lessons_svc.read_bundle_readonly = _s4_readonly_unexpected
     lessons_svc.mark_opened = _s4_mark_opened_spy
-    _s4_main._record_panel_db_state = _s4_db_before_manifest
-    _s4_main._record_panel = _s4_panel_same_read
+    _s4_learn._record_panel_db_state = _s4_db_before_manifest
+    _s4_learn._record_panel = _s4_panel_same_read
     try:
         _s4_same_manifest = c.get(
             f"/learn?lesson={_s4_id}&entry={_s4_swap_path}"
@@ -1603,8 +1604,8 @@ def test_sandbox_learning(client, suite_state):
         lessons_svc._ensure_bundle_manifest = _s4_ensure_real
         lessons_svc.read_bundle_readonly = _s4_readonly_real
         lessons_svc.mark_opened = _s4_mark_opened_real
-        _s4_main._record_panel_db_state = _s4_db_state_real
-        _s4_main._record_panel = _s4_panel_real
+        _s4_learn._record_panel_db_state = _s4_db_state_real
+        _s4_learn._record_panel = _s4_panel_real
     _s4_conn = get_conn()
     try:
         _s4_entry_after_swap = lessons_svc.get_lesson(

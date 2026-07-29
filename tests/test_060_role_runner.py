@@ -1363,7 +1363,7 @@ def test_role_runner(client, suite_state):
 
     async def _f4_disconnect_before_body_contract():
         from starlette.requests import Request as _StarletteRequest
-        from app.main import stream_lesson_run as _stream_lesson_run
+        from app.routers.learn import stream_lesson_run as _stream_lesson_run
 
         service = _runner.RunnerService(health_hook=lambda: None)
         request_data = _runner.RunnerRequest(
