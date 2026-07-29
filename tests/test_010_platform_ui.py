@@ -749,12 +749,36 @@ def test_002_ui_and_workspace(client, suite_state):
         _lt["title"] not in _settings_text and _lt["slug"] not in _settings_text
         and _lt["uid"] not in _settings_text
     ), "the generated settings file interpolates no lesson metadata"
-    # Regenerated, never authored: a learner edit does not survive the next open.
+    # Regenerated, never authored: a learner edit does not survive the next
+    # open at that path — but its bytes are moved aside, never destroyed. A
+    # bundle authored before `.claude` was reserved could hold a real file
+    # there under the older contract (drain 2026-07-29 M1).
     _settings_path.write_text('{"outputStyle": "Default"}\n', encoding="utf-8")
     assert lessons_svc.prepare_terminal_workspace(_lt["slug"]) is not None
+    _asides = sorted(_settings_path.parent.glob("settings.json.collision-*"))
     assert (
         _settings_path.read_text(encoding="utf-8") == _settings_text
-    ), "workspace regen overwrites a modified .claude/settings.json"
+        and len(_asides) == 1
+        and _asides[0].read_text(encoding="utf-8") == '{"outputStyle": "Default"}\n'
+    ), "workspace regen replaces a modified settings.json, keeping its bytes aside"
+    # The app's own output is republished in place: no aside piles up per open.
+    assert lessons_svc.prepare_terminal_workspace(_lt["slug"]) is not None
+    assert (
+        sorted(_settings_path.parent.glob("settings.json.collision-*")) == _asides
+        and _settings_path.read_text(encoding="utf-8") == _settings_text
+    ), "an unmodified settings.json is rewritten without a new aside copy"
+    # An unreadable file of the right size cannot be confirmed as ours, so it
+    # is moved aside rather than costing the lesson its whole terminal.
+    _settings_path.chmod(0o000)
+    if not os.access(_settings_path, os.R_OK):  # skipped when running as root
+        assert lessons_svc.prepare_terminal_workspace(_lt["slug"]) is not None
+        assert (
+            len(sorted(_settings_path.parent.glob("settings.json.collision-*")))
+            == len(_asides) + 1
+            and _settings_path.read_text(encoding="utf-8") == _settings_text
+        ), "an unreadable settings.json is moved aside, not a workspace refusal"
+    else:
+        _settings_path.chmod(0o600)
     # The directory is app-owned only for that one file.
     _other_setting = _settings_path.parent / "keep-me.json"
     _other_setting.write_text("{}\n", encoding="utf-8")
@@ -790,6 +814,19 @@ def test_002_ui_and_workspace(client, suite_state):
         "entry": "index.html",
     }), encoding="utf-8")
     (_v1s_dir / "index.html").write_text("<html>Vera Example v1</html>", encoding="utf-8")
+    # The drain's M1 scenario end to end: a bundle authored before `.claude`
+    # was reserved keeps a learner artifact there. Opening it now loses the
+    # manifest binding (invalid-path) but never the bytes.
+    _old_artifact = _v1s_dir / ".claude" / "settings.json"
+    _old_artifact.write_text("Vera Example learner artifact\n", encoding="utf-8")
+    assert lessons_svc.prepare_terminal_workspace(_v1s["slug"]) is not None
+    _old_aside = sorted(_old_artifact.parent.glob("settings.json.collision-*"))
+    assert (
+        _old_artifact.read_text(encoding="utf-8") == _settings_text
+        and len(_old_aside) == 1
+        and _old_aside[0].read_text(encoding="utf-8")
+        == "Vera Example learner artifact\n"
+    ), "a pre-reservation .claude/settings.json survives the first regen"
     _v1s_view = lessons_svc.with_bundle_info(_v1s)
     assert (
         _v1s_view["bundle"]["schema_version"] == 1
@@ -1020,6 +1057,7 @@ def test_002_ui_and_workspace(client, suite_state):
         else:
             _sq_path.write_text("not a directory", encoding="utf-8")
         _sq_res = lessons_svc.prepare_terminal_workspace(_sq["slug"])
+        _sq_aside = sorted(_sq_dir.glob(".claude.collision-*"))
         assert (
             _sq_res is not None
             and _sq_path.is_dir() and not _sq_path.is_symlink()
@@ -1027,6 +1065,13 @@ def test_002_ui_and_workspace(client, suite_state):
             == _settings_text
             and not (_decoy / "settings.json").exists()
         ), f"prepare_terminal_workspace replaces a {_squat} at .claude/"
+        # Moved aside, not destroyed — and a symlink is moved without being
+        # followed, so the decoy directory it named is untouched.
+        assert (
+            len(_sq_aside) == 1
+            and (_sq_aside[0].is_symlink() if _squat == "symlink-to-dir"
+                 else _sq_aside[0].read_text(encoding="utf-8") == "not a directory")
+        ), f"a {_squat} at .claude/ is preserved as a collision copy"
 
     # A hard link at the final path is replaced, leaving its other name untouched.
     _hard_conn = get_conn()

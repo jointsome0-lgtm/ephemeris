@@ -1353,6 +1353,8 @@ _SETTINGS_TEMPLATE = """\
 }
 """
 
+_SETTINGS_BYTES = _SETTINGS_TEMPLATE.encode("utf-8")
+
 
 def _bundle_dir_is_safe(lesson_dir: Path) -> bool:
     """Refuse a lesson dir reached through a symlink, so a pre-planted link at
@@ -1402,18 +1404,59 @@ def _write_brief(path: Path, text: str) -> None:
         raise
 
 
+def _preserve_foreign(path: Path, expected: bytes | None = None) -> None:
+    """Move whatever sits at `path` and did not come from this writer aside,
+    keeping its bytes under `<name>.collision-<hex>`.
+
+    Spec §2 reserves `.claude`, but a bundle authored before that reservation
+    could hold an ordinary file there under the older contract, and
+    regenerating over it must not destroy it. Same rule and same aside name as
+    the assessment projection uses for its own reserved name.
+
+    A node that is not an ordinary single-link file is moved aside unread, so a
+    planted link or special file is neither followed nor opened. An ordinary
+    file matching `expected` is left alone — that is this writer's own output,
+    which :func:`_write_brief` then republishes in place rather than piling up
+    an aside copy on every terminal open. The comparison reads only a file
+    whose size already equals `expected`. `expected=None` matches nothing,
+    which is what the directory name wants.
+    """
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    ours = (
+        expected is not None
+        and stat_module.S_ISREG(st.st_mode)
+        and st.st_nlink == 1
+        and st.st_size == len(expected)
+    )
+    if ours:
+        try:
+            ours = path.read_bytes() == expected
+        except OSError:
+            # Unreadable is not "ours". Falling through moves it aside, which
+            # the bundle directory permits without opening the file — refusing
+            # the whole workspace over one unreadable generated file would cost
+            # the lesson its terminal for nothing.
+            ours = False
+    if ours:
+        return
+    os.rename(path, path.with_name(f"{path.name}.collision-{uuid4().hex[:8]}"))
+
+
 def _ensure_settings_dir(lesson_dir: Path) -> Path:
     """Return the bundle's `.claude/` directory, creating it if needed.
 
     Same posture as :func:`_write_brief` one level up: a pre-planted link or
-    special file on the name is replaced rather than followed, so a link at
+    special file on the name is moved aside rather than followed, so a link at
     `<bundle>/.claude` cannot redirect the settings write outside the bundle.
     A real directory already there is kept — the app owns only `settings.json`
     inside it, never the directory's other contents.
     """
     path = lesson_dir / CLAUDE_DIR_NAME
     if path.is_symlink() or (path.exists() and not path.is_dir()):
-        os.unlink(path)  # incl. a dangling link: exists() follows and says False
+        _preserve_foreign(path)  # incl. a dangling link: exists() follows, says False
     try:
         os.mkdir(path, 0o700)
     except FileExistsError:
@@ -1525,10 +1568,9 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
         _ensure_bundle_manifest(lesson)
         _write_brief(lesson_dir / AGENTS_FILENAME, _AGENTS_TEMPLATE)
         _write_brief(lesson_dir / CLAUDE_FILENAME, _CLAUDE_TEMPLATE)
-        _write_brief(
-            _ensure_settings_dir(lesson_dir) / SETTINGS_FILENAME,
-            _SETTINGS_TEMPLATE,
-        )
+        settings_path = _ensure_settings_dir(lesson_dir) / SETTINGS_FILENAME
+        _preserve_foreign(settings_path, _SETTINGS_BYTES)
+        _write_brief(settings_path, _SETTINGS_TEMPLATE)
     except (OSError, sqlite3.Error, LessonError):
         return None
     # After the briefs: the workspace is ready either way, and a projection

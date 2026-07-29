@@ -293,6 +293,44 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   compatibility/versioning, non-destructive collision handling or migration,
   and exact v1/v2 regressions before this restart gate can open. No application
   code, merge, or restart was performed by the drain.
+  The repair is on `fix/84-settings-collision`, carried by its own PR, and the
+  owner took both decisions the drain asked for. Non-destructive handling:
+  `_preserve_foreign` moves whatever sits at `<bundle>/.claude` or
+  `<bundle>/.claude/settings.json` and did not come from this writer to
+  `<name>.collision-<hex>` before the write — the same aside name and
+  deterministic rule `app/services/assessments.py` already applies to its own
+  reserved name. A node that is not an ordinary single-link file is moved
+  unread, so a planted link or special file is neither followed nor opened;
+  the previous `os.unlink` of such a node at `.claude` is gone. An ordinary
+  file is compared with the constant and left in place when it matches, and
+  the comparison reads only a file whose size already equals the constant's —
+  so the writer's own output is republished in place and no aside accumulates
+  per terminal open. Versioning: the reservation stays in v2 and is recorded
+  as a named exception rather than driving a v3. Spec §2 states the aside
+  rule, §9.2 records the v1 serving change as the second deliberate v1
+  behavior change, and §9.3 records the reservation as one named exception to
+  its own "a meaning change requires v3" rule, with the reason a v3 would not
+  serve the purpose (the app writes into every bundle it prepares) and the
+  statement that a bundle carrying the older shape loses a manifest binding,
+  never its bytes. No schema, route, HTTP contract, sandbox profile, terminal
+  trust gate, template or other application file changed. Coverage exercises
+  the report's own scenario — a pre-reservation `.claude/settings.json`
+  holding a learner artifact in a v1 bundle survives the first regen as an
+  aside copy — plus the no-accumulation rule and both squatter kinds
+  preserved rather than unlinked, with the symlink moved without being
+  followed. PR-bot round 1 makes an unreadable file of the constant's size a
+  non-match rather than an error: `read_bytes` on a `chmod 000` node raised
+  `PermissionError`, which `prepare_terminal_workspace` catches as a refusal
+  of the whole workspace, so a lesson lost its terminal over one unreadable
+  generated file; the read is now guarded and a failure falls through to the
+  rename the writable bundle directory permits without opening the file. The
+  same round removes a contradiction the repair introduced into the spec:
+  §9.2's corrupt-manifest sentence called itself "the one deliberate v1
+  behavior change" while the new paragraph called the reservation the second,
+  so the earlier sentence now names itself the first and points at the other.
+  Host verification at the round-1 branch state: pytest 9 passed,
+  verify_restore 28 passed, public hygiene clean. The entry stays Pending for
+  the owner's re-drain; no merge or restart was performed.
 
 ## Done
 

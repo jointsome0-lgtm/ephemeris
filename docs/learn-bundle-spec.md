@@ -65,7 +65,10 @@ regenerated, never authored: the app rewrites them on every lesson-agent
 terminal open and an edit to them does not survive. `.claude/settings.json`
 holds a constant — no lesson metadata is interpolated into it — and the app
 owns that file only, not the rest of a `.claude/` directory that already
-exists.
+exists. Regenerating never destroys what it finds: a foreign node at
+`.claude` or at `.claude/settings.json` is moved aside as
+`<name>.collision-<hex>` (§6.5's rule) before the app writes. §9.2 and §9.3
+record this reservation as a deliberate, named compatibility break.
 
 Symlink policy (whole bundle, all consumers): symlinks are never followed —
 not for the bundle directory itself, not for any file inside it. A path that
@@ -628,7 +631,8 @@ outcome). This is why one fixture can require several codes at once.
 | `duplicate-concept`  | info      | §4.5; deduped |
 
 `manifest-unreadable` and `manifest-too-large` apply to v1 reads too — this
-is the one deliberate v1 behavior change: a corrupt manifest becomes a
+is the first deliberate v1 behavior change (the second is the `.claude`
+reservation, below): a corrupt manifest becomes a
 visible reject instead of silently rendering an empty default (#39's
 "silent projection" complaint). A *missing* manifest keeps today's behavior
 (a fresh default is created — creation, not repair).
@@ -653,6 +657,12 @@ C3 readers SHOULD emit the matching findings (`invalid-entry`,
 `invalid-path`, `duplicate-path`) for v1 instead of dropping silently;
 behavior (what renders) is unchanged.
 
+The second deliberate v1 behavior change is the `.claude` reservation (§2,
+2026-07-29, [#84](https://github.com/jointsome0-lgtm/ephemeris/issues/84)):
+the v1 preview surface serves any non-reserved bundle-relative file, so a
+file under `.claude/` that a v1 bundle previously served is no longer
+servable. Everything else about what a v1 bundle renders is unchanged.
+
 ### 9.3 Unknown fields
 
 Unknown fields — top-level or nested — are ignored by readers and preserved
@@ -663,6 +673,21 @@ byte preservation of a non-canonical input is not promised — parsing and
 re-dumping cannot provide it. Additive evolution inside v2 means new
 OPTIONAL fields; any change to the meaning of an existing field requires
 v3.
+
+One named exception, taken deliberately rather than through v3: adding
+`.claude` to the §2 reserved names (2026-07-29,
+[#84](https://github.com/jointsome0-lgtm/ephemeris/issues/84)) narrows what
+`entry`, `pages[].path`, `blocks[].file` and `artifact_roots[]` accept
+without a version bump. A v2 manifest declaring a path whose first segment is
+`.claude` was valid before that date and now takes `invalid-path` (or
+`invalid-entry`), and a manifest whose only page was such a path becomes
+rejected with `no-pages`. The reason a v3 would not serve the purpose: the
+app writes `.claude/settings.json` into every bundle it prepares, so the
+directory cannot stay author-addressable in any version a current reader
+opens. The app never destroys what it finds there — a foreign node at an
+app-owned name is moved aside as `<name>.collision-<hex>` (§6.5's rule,
+applied to this name too), so a bundle carrying the older shape loses a
+manifest binding, never its bytes.
 
 Canonical serialization, exactly: Python's
 `json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"`, UTF-8 — the
