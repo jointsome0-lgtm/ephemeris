@@ -1,6 +1,7 @@
 """Platform, chrome, and initial Learn workspace verification."""
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import importlib.abc as _importlib_abc
 import json
@@ -185,6 +186,61 @@ def test_001_platform_probes(suite_state):
             for d in _pd_dates
         )
     ), "date helper: byte-identical to the strftime(\"%-d\") formats it replaced"
+
+    # --- #24 cut 5: typed settings own the environment contract -------------
+    # The env-var names, their defaults, and the one required variable moved out
+    # of app/db.py into app/settings.py. These probes pin the contract itself, so
+    # a later tidy-up cannot quietly rename a variable or invent a fallback for
+    # ACTIVITY_DATA_DIR.
+    from app import settings as _cfg
+    from app.db import DATA_DIR as _cfg_data, DB_PATH as _cfg_db
+    from app.db import EXPORTS_DIR as _cfg_exports
+
+    _cfg_full = _cfg.load({
+        "ACTIVITY_DATA_DIR": "/probe/data",
+        "ACTIVITY_DB": "/probe/elsewhere.sqlite",
+        "APP_TIMEZONE": "Europe/Moscow",
+    })
+    assert (
+        _cfg_full.data_dir == Path("/probe/data")
+        and _cfg_full.db_path == Path("/probe/elsewhere.sqlite")
+        and _cfg_full.exports_dir == Path("/probe/data/exports")
+        and _cfg_full.timezone == "Europe/Moscow"
+    ), "settings: every documented variable is read, ACTIVITY_DB overrides the path"
+    _cfg_bare = _cfg.load({"ACTIVITY_DATA_DIR": "/probe/data"})
+    assert (
+        _cfg_bare.db_path == Path("/probe/data/activity.sqlite")
+        and _cfg_bare.exports_dir == Path("/probe/data/exports")
+        and _cfg_bare.timezone is None
+    ), "settings: defaults are <data_dir>/activity.sqlite, <data_dir>/exports, host zone"
+
+    _cfg_refused = []
+    for _cfg_bad in ({}, {"ACTIVITY_DATA_DIR": ""}):
+        try:
+            _cfg.load(_cfg_bad)
+        except RuntimeError as exc:
+            _cfg_refused.append(str(exc))
+    assert (
+        len(_cfg_refused) == 2
+        and all(m == _cfg_refused[0] for m in _cfg_refused)
+        and _cfg_refused[0].startswith("ACTIVITY_DATA_DIR is required")
+        and "outside the public checkout" in _cfg_refused[0]
+        and "docs/instance.md" in _cfg_refused[0]
+    ), "settings: unset and empty ACTIVITY_DATA_DIR both fail with the same message"
+
+    try:
+        _cfg_full.data_dir = Path("/probe/mutated")
+        _cfg_frozen = False
+    except dataclasses.FrozenInstanceError:
+        _cfg_frozen = True
+    assert _cfg_frozen, "settings: resolved configuration is frozen after startup"
+
+    assert (
+        _cfg_data == _cfg.settings.data_dir
+        and _cfg_db == _cfg.settings.db_path
+        and _cfg_exports == _cfg.settings.exports_dir
+    ), "settings: app.db re-exports the live settings, so both spellings agree"
+
     suite_state.update({
         name: value for name, value in locals().items()
         if name not in {"client", "suite_state"}

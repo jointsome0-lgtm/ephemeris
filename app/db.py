@@ -9,28 +9,23 @@ audit/derived feed (sec14.1).
 from __future__ import annotations
 
 import json
-import os
 import re
 import sqlite3
 from datetime import date, datetime
-from pathlib import Path
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from .settings import settings
+
 # --- paths -----------------------------------------------------------------
+# app/settings.py owns the environment lookups (and the hard failure when
+# ACTIVITY_DATA_DIR is unset — importing it is what raises, exactly as the
+# inline check here used to). These names stay: they are what the rest of the
+# app and the scripts import, and they carry the same values as before.
 
-_data_dir = os.environ.get("ACTIVITY_DATA_DIR")
-if not _data_dir:
-    raise RuntimeError(
-        "ACTIVITY_DATA_DIR is required: the destination must be an explicitly "
-        "configured private path outside the public checkout (for example, "
-        "~/.local/share/ephemeris); see "
-        "https://github.com/jointsome0-lgtm/selfos/blob/main/docs/instance.md"
-    )
-
-DATA_DIR = Path(_data_dir)
-DB_PATH = Path(os.environ.get("ACTIVITY_DB", DATA_DIR / "activity.sqlite"))
-EXPORTS_DIR = DATA_DIR / "exports"
+DATA_DIR = settings.data_dir
+DB_PATH = settings.db_path
+EXPORTS_DIR = settings.exports_dir
 
 # --- status enum (sec13.2) -------------------------------------------------
 
@@ -41,7 +36,7 @@ STATUSES = ("full_done", "light_done", "skipped", "failed")
 
 def app_tz() -> ZoneInfo | None:
     """Configured APP_TIMEZONE, or None to mean 'host local zone'."""
-    name = os.environ.get("APP_TIMEZONE")
+    name = settings.timezone
     return ZoneInfo(name) if name else None
 
 
