@@ -282,6 +282,17 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   incoming change touches them. Host verification on merged `main` at
   `6209fa3`: pytest 9 passed, verify_restore 28 passed, public hygiene clean.
   No restart was performed.
+  Diagnosis-only drain 2026-07-29 →
+  `2026-07-29-lesson-learning-output-style-review.md`: one Medium finding
+  remains open, so this entry stays Pending for a separate reviewed repair PR.
+  The frozen contract previously allowed `.claude` as an ordinary v1 file area
+  and as a v2 artifact root; an invented v2 bundle accepted by the exact
+  pre-#84 reader used `.claude/settings.json` as a block file, and the current
+  real workspace open silently replaced those bytes with the generated
+  Learning output-style JSON. The repair needs an owner decision on
+  compatibility/versioning, non-destructive collision handling or migration,
+  and exact v1/v2 regressions before this restart gate can open. No application
+  code, merge, or restart was performed by the drain.
 
 ## Done
 
