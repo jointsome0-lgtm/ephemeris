@@ -631,7 +631,8 @@ outcome). This is why one fixture can require several codes at once.
 | `duplicate-concept`  | info      | §4.5; deduped |
 
 `manifest-unreadable` and `manifest-too-large` apply to v1 reads too — this
-is the one deliberate v1 behavior change: a corrupt manifest becomes a
+is the first deliberate v1 behavior change (the second is the `.claude`
+reservation, below): a corrupt manifest becomes a
 visible reject instead of silently rendering an empty default (#39's
 "silent projection" complaint). A *missing* manifest keeps today's behavior
 (a fresh default is created — creation, not repair).

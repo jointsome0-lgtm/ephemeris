@@ -1425,13 +1425,22 @@ def _preserve_foreign(path: Path, expected: bytes | None = None) -> None:
         st = os.lstat(path)
     except FileNotFoundError:
         return
-    if (
+    ours = (
         expected is not None
         and stat_module.S_ISREG(st.st_mode)
         and st.st_nlink == 1
         and st.st_size == len(expected)
-        and path.read_bytes() == expected
-    ):
+    )
+    if ours:
+        try:
+            ours = path.read_bytes() == expected
+        except OSError:
+            # Unreadable is not "ours". Falling through moves it aside, which
+            # the bundle directory permits without opening the file — refusing
+            # the whole workspace over one unreadable generated file would cost
+            # the lesson its terminal for nothing.
+            ours = False
+    if ours:
         return
     os.rename(path, path.with_name(f"{path.name}.collision-{uuid4().hex[:8]}"))
 

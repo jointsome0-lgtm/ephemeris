@@ -767,6 +767,18 @@ def test_002_ui_and_workspace(client, suite_state):
         sorted(_settings_path.parent.glob("settings.json.collision-*")) == _asides
         and _settings_path.read_text(encoding="utf-8") == _settings_text
     ), "an unmodified settings.json is rewritten without a new aside copy"
+    # An unreadable file of the right size cannot be confirmed as ours, so it
+    # is moved aside rather than costing the lesson its whole terminal.
+    _settings_path.chmod(0o000)
+    if not os.access(_settings_path, os.R_OK):  # skipped when running as root
+        assert lessons_svc.prepare_terminal_workspace(_lt["slug"]) is not None
+        assert (
+            len(sorted(_settings_path.parent.glob("settings.json.collision-*")))
+            == len(_asides) + 1
+            and _settings_path.read_text(encoding="utf-8") == _settings_text
+        ), "an unreadable settings.json is moved aside, not a workspace refusal"
+    else:
+        _settings_path.chmod(0o600)
     # The directory is app-owned only for that one file.
     _other_setting = _settings_path.parent / "keep-me.json"
     _other_setting.write_text("{}\n", encoding="utf-8")

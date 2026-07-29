@@ -318,7 +318,17 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   holding a learner artifact in a v1 bundle survives the first regen as an
   aside copy — plus the no-accumulation rule and both squatter kinds
   preserved rather than unlinked, with the symlink moved without being
-  followed. Host verification at the repair branch state: pytest 9 passed,
+  followed. PR-bot round 1 makes an unreadable file of the constant's size a
+  non-match rather than an error: `read_bytes` on a `chmod 000` node raised
+  `PermissionError`, which `prepare_terminal_workspace` catches as a refusal
+  of the whole workspace, so a lesson lost its terminal over one unreadable
+  generated file; the read is now guarded and a failure falls through to the
+  rename the writable bundle directory permits without opening the file. The
+  same round removes a contradiction the repair introduced into the spec:
+  §9.2's corrupt-manifest sentence called itself "the one deliberate v1
+  behavior change" while the new paragraph called the reservation the second,
+  so the earlier sentence now names itself the first and points at the other.
+  Host verification at the round-1 branch state: pytest 9 passed,
   verify_restore 28 passed, public hygiene clean. The entry stays Pending for
   the owner's re-drain; no merge or restart was performed.
 
