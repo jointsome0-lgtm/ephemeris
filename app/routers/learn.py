@@ -15,16 +15,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from datetime import datetime
 from urllib.parse import quote, urlencode
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import (
     FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse,
 )
 from starlette.concurrency import run_in_threadpool
 
-from ..db import get_conn, pretty_date
+from ..db import get_conn, get_db, pretty_date
 from ..request_body import PayloadTooLarge, read_capped
 from .. import runner as runner_core
 from ..security import browser_origin_rejection
@@ -44,49 +45,46 @@ def get_learn(
     lesson: int | None = None,
     entry: str | None = None,
     flash: str | None = None,
+    conn: sqlite3.Connection = Depends(get_db),
 ):
     show_archived = bool(archived)
-    conn = get_conn()
     try:
-        try:
-            rows = lessons.list_lessons(conn, status=status, archived_only=show_archived)
-        except lessons.LessonError:
-            status = None
-            rows = lessons.list_lessons(conn, archived_only=show_archived)
-        counts = lessons.counts(conn)
-        selected = None
-        selected_entry = None
-        if lesson is not None:
-            selected = next((row for row in rows if row["id"] == lesson), None)
-            if selected is not None:
-                selected_entry = entry
-        if selected is None and rows:
-            selected = rows[0]
-        if selected:
-            # Lesson agents write the manifest before they can POST an attempt
-            # against its question. Capture the DB state first, then take the
-            # single FINAL manifest read used by bundle metadata, selection
-            # persistence, and the record:
-            # a newly committed attempt can therefore never be classified
-            # against an older declaration set.
-            record_db_state = _record_panel_db_state(conn, selected["id"])
-            selected, selected_manifest = lessons.with_bundle_info_read(
-                selected, entry=selected_entry
-            )
-            # A rejected manifest has no selectable entry — show the
-            # placeholder without persisting a selection. A stale v2
-            # selection (§4.2) keeps its stored/requested candidate too:
-            # persisting the fallback would make the very next read report
-            # `ok` and erase the finding.
-            if (selected["entry"]
-                    and not selected["bundle"]["stale_selection"]):
-                lessons.mark_opened(conn, selected["id"], selected["entry"])
-            selected["record"] = _record_panel(
-                conn, selected, manifest_read=selected_manifest,
-                db_state=record_db_state,
-            )
-    finally:
-        conn.close()
+        rows = lessons.list_lessons(conn, status=status, archived_only=show_archived)
+    except lessons.LessonError:
+        status = None
+        rows = lessons.list_lessons(conn, archived_only=show_archived)
+    counts = lessons.counts(conn)
+    selected = None
+    selected_entry = None
+    if lesson is not None:
+        selected = next((row for row in rows if row["id"] == lesson), None)
+        if selected is not None:
+            selected_entry = entry
+    if selected is None and rows:
+        selected = rows[0]
+    if selected:
+        # Lesson agents write the manifest before they can POST an attempt
+        # against its question. Capture the DB state first, then take the
+        # single FINAL manifest read used by bundle metadata, selection
+        # persistence, and the record:
+        # a newly committed attempt can therefore never be classified
+        # against an older declaration set.
+        record_db_state = _record_panel_db_state(conn, selected["id"])
+        selected, selected_manifest = lessons.with_bundle_info_read(
+            selected, entry=selected_entry
+        )
+        # A rejected manifest has no selectable entry — show the
+        # placeholder without persisting a selection. A stale v2
+        # selection (§4.2) keeps its stored/requested candidate too:
+        # persisting the fallback would make the very next read report
+        # `ok` and erase the finding.
+        if (selected["entry"]
+                and not selected["bundle"]["stale_selection"]):
+            lessons.mark_opened(conn, selected["id"], selected["entry"])
+        selected["record"] = _record_panel(
+            conn, selected, manifest_read=selected_manifest,
+            db_state=record_db_state,
+        )
     selected_id = selected["id"] if selected else None
     for row in rows:
         row["selected"] = row["id"] == selected_id
@@ -529,6 +527,12 @@ _STALE_SNAPSHOT_HTML = """<!doctype html>
 
 @router.get("/learn/lessons/{lesson_id}/files/{resource:path}")
 def get_lesson_bundle_file(lesson_id: int, resource: str, v: str | None = None):
+    # NOT Depends(get_db) (#24 cut 5): this route can answer with a
+    # FileResponse, which streams the bundle file from disk AFTER the handler
+    # returns. A dependency's finally runs only once the response completes, so
+    # it would pin this connection for the whole transfer — a slow client would
+    # hold it open indefinitely. The database is needed only to resolve the
+    # lesson, so the connection is scoped to exactly that, as it was before.
     conn = get_conn()
     try:
         lesson = _lesson_or_404(conn, lesson_id)
@@ -573,16 +577,13 @@ def get_lesson_bundle_file(lesson_id: int, resource: str, v: str | None = None):
 
 
 @router.get("/learn/lessons/{lesson_id}/preview")
-def get_lesson_preview(lesson_id: int, entry: str | None = None):
-    conn = get_conn()
+def get_lesson_preview(lesson_id: int, entry: str | None = None,
+                       conn: sqlite3.Connection = Depends(get_db)):
+    lesson = _lesson_or_404(conn, lesson_id)
     try:
-        lesson = _lesson_or_404(conn, lesson_id)
-        try:
-            html, info = lessons.preview_html(lesson, entry)
-        except lessons.LessonError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-    finally:
-        conn.close()
+        html, info = lessons.preview_html(lesson, entry)
+    except lessons.LessonError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Response(
         content=html,
         media_type="text/html; charset=utf-8",
@@ -596,16 +597,13 @@ def get_lesson_preview(lesson_id: int, entry: str | None = None):
 
 
 @router.get("/learn/lessons/{lesson_id}/preview-meta")
-def get_lesson_preview_meta(lesson_id: int, entry: str | None = None):
-    conn = get_conn()
+def get_lesson_preview_meta(lesson_id: int, entry: str | None = None,
+                            conn: sqlite3.Connection = Depends(get_db)):
+    lesson = _lesson_or_404(conn, lesson_id)
     try:
-        lesson = _lesson_or_404(conn, lesson_id)
-        try:
-            info = lessons.lesson_file_info(lesson, entry)
-        except lessons.LessonError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-    finally:
-        conn.close()
+        info = lessons.lesson_file_info(lesson, entry)
+    except lessons.LessonError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return JSONResponse({
         "ok": True,
         "exists": info["exists"],
@@ -661,16 +659,13 @@ def _artifact_lesson(
 
 
 def _get_artifact(
-    block_id: str, *, lesson_id: int | None = None, slug: str | None = None
+    conn, block_id: str, *, lesson_id: int | None = None, slug: str | None = None
 ) -> JSONResponse:
-    conn = get_conn()
     try:
         lesson = _artifact_lesson(conn, lesson_id=lesson_id, slug=slug)
         result = artifacts.get_artifact(lesson, block_id)
     except artifacts.ArtifactError as exc:
         return _artifact_refusal(exc)
-    finally:
-        conn.close()
     return JSONResponse({"ok": True, **result}, headers={"Cache-Control": "no-store"})
 
 
@@ -708,6 +703,12 @@ async def _save_artifact(
         ))
 
     def work() -> dict:
+        # NOT Depends(get_db) (#24 cut 5): this runs in a threadpool worker,
+        # and sqlite3 connections are thread-affine (check_same_thread). A
+        # dependency-provided connection is opened in whichever worker
+        # resolved the dependency, so using it here would raise as soon as
+        # the two threads differ. The connection must be born in the thread
+        # that uses it.
         conn = get_conn()
         try:
             lesson = _artifact_lesson(conn, lesson_id=lesson_id, slug=slug)
@@ -724,8 +725,9 @@ async def _save_artifact(
 
 # Registered before the {lesson_id} routes so "by-slug" is not parsed as id.
 @router.get("/learn/lessons/by-slug/{slug}/blocks/{block_id}/file")
-def get_lesson_artifact_by_slug(slug: str, block_id: str):
-    return _get_artifact(block_id, slug=slug)
+def get_lesson_artifact_by_slug(slug: str, block_id: str,
+                                conn: sqlite3.Connection = Depends(get_db)):
+    return _get_artifact(conn, block_id, slug=slug)
 
 
 @router.post("/learn/lessons/by-slug/{slug}/blocks/{block_id}/file")
@@ -734,8 +736,9 @@ async def post_lesson_artifact_by_slug(request: Request, slug: str, block_id: st
 
 
 @router.get("/learn/lessons/{lesson_id}/blocks/{block_id}/file")
-def get_lesson_artifact(lesson_id: int, block_id: str):
-    return _get_artifact(block_id, lesson_id=lesson_id)
+def get_lesson_artifact(lesson_id: int, block_id: str,
+                        conn: sqlite3.Connection = Depends(get_db)):
+    return _get_artifact(conn, block_id, lesson_id=lesson_id)
 
 
 @router.post("/learn/lessons/{lesson_id}/blocks/{block_id}/file")
@@ -813,6 +816,12 @@ async def _start_run(
         return _run_refusal("invalid-json", 400, "body must be a JSON object")
 
     def load_lesson() -> dict | None:
+        # NOT Depends(get_db) (#24 cut 5): this runs in a threadpool worker,
+        # and sqlite3 connections are thread-affine (check_same_thread). A
+        # dependency-provided connection is opened in whichever worker
+        # resolved the dependency, so using it here would raise as soon as
+        # the two threads differ. The connection must be born in the thread
+        # that uses it.
         conn = get_conn()
         try:
             return (
@@ -1042,6 +1051,12 @@ async def _record_attempt_request(
         return _attempt_refusal("invalid-json", 400, "body must be a JSON object")
 
     def work() -> dict:
+        # NOT Depends(get_db) (#24 cut 5): this runs in a threadpool worker,
+        # and sqlite3 connections are thread-affine (check_same_thread). A
+        # dependency-provided connection is opened in whichever worker
+        # resolved the dependency, so using it here would raise as soon as
+        # the two threads differ. The connection must be born in the thread
+        # that uses it.
         conn = get_conn()
         try:
             if slug is not None:
@@ -1147,6 +1162,12 @@ async def _record_assessment_request(
         return _assessment_refusal("invalid-json", 400, "body must be a JSON object")
 
     def work() -> dict:
+        # NOT Depends(get_db) (#24 cut 5): this runs in a threadpool worker,
+        # and sqlite3 connections are thread-affine (check_same_thread). A
+        # dependency-provided connection is opened in whichever worker
+        # resolved the dependency, so using it here would raise as soon as
+        # the two threads differ. The connection must be born in the thread
+        # that uses it.
         conn = get_conn()
         try:
             if slug is not None:
@@ -1189,16 +1210,14 @@ def post_lesson_create(
     title: str = Form(...),
     source_url: str = Form(""),
     return_to: str = Form("/learn"),
+    conn: sqlite3.Connection = Depends(get_db),
 ):
-    conn = get_conn()
     try:
         lesson_id = lessons.create_lesson(conn, title, source_url)
     except lessons.LessonError as exc:
         return RedirectResponse(
             _with_flash(_safe_return(return_to, "/learn"), str(exc)), status_code=303
         )
-    finally:
-        conn.close()
     return RedirectResponse(f"/learn?lesson={lesson_id}", status_code=303)
 
 
@@ -1208,8 +1227,8 @@ def post_lesson_entry(
     lesson_id: int,
     entry: str = Form(...),
     return_to: str = Form("/learn"),
+    conn: sqlite3.Connection = Depends(get_db),
 ):
-    conn = get_conn()
     try:
         lessons.set_current_entry(conn, lesson_id, entry)
     except lessons.LessonError as exc:
@@ -1217,8 +1236,6 @@ def post_lesson_entry(
             _with_flash(_safe_return(return_to, f"/learn?lesson={lesson_id}"), str(exc)),
             status_code=303,
         )
-    finally:
-        conn.close()
     return RedirectResponse(_safe_return(return_to, f"/learn?lesson={lesson_id}"), status_code=303)
 
 
@@ -1228,42 +1245,36 @@ def post_lesson_status(
     lesson_id: int,
     status: str = Form(...),
     return_to: str = Form("/learn"),
+    conn: sqlite3.Connection = Depends(get_db),
 ):
-    conn = get_conn()
     try:
         lessons.set_status(conn, lesson_id, status)
     except lessons.LessonError as exc:
         return RedirectResponse(
             _with_flash(_safe_return(return_to, "/learn"), str(exc)), status_code=303
         )
-    finally:
-        conn.close()
     return RedirectResponse(_safe_return(return_to, "/learn"), status_code=303)
 
 
 @router.post("/learn/lessons/{lesson_id}/archive")
-def post_lesson_archive(request: Request, lesson_id: int, return_to: str = Form("/learn")):
-    conn = get_conn()
+def post_lesson_archive(request: Request, lesson_id: int, return_to: str = Form("/learn"),
+                        conn: sqlite3.Connection = Depends(get_db)):
     try:
         lessons.archive_lesson(conn, lesson_id)
     except lessons.LessonError as exc:
         return RedirectResponse(
             _with_flash(_safe_return(return_to, "/learn"), str(exc)), status_code=303
         )
-    finally:
-        conn.close()
     return RedirectResponse(_safe_return(return_to, "/learn"), status_code=303)
 
 
 @router.post("/learn/lessons/{lesson_id}/restore")
-def post_lesson_restore(request: Request, lesson_id: int, return_to: str = Form("/learn")):
-    conn = get_conn()
+def post_lesson_restore(request: Request, lesson_id: int, return_to: str = Form("/learn"),
+                        conn: sqlite3.Connection = Depends(get_db)):
     try:
         lessons.restore_lesson(conn, lesson_id)
     except lessons.LessonError as exc:
         return RedirectResponse(
             _with_flash(_safe_return(return_to, "/learn"), str(exc)), status_code=303
         )
-    finally:
-        conn.close()
     return RedirectResponse(_safe_return(return_to, "/learn"), status_code=303)

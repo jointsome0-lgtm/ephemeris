@@ -7,10 +7,12 @@ registration order are unchanged.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+import sqlite3
+
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
 
-from ..db import get_conn
+from ..db import get_db
 from ..services import export
 from ..templating import templates
 
@@ -18,13 +20,9 @@ router = APIRouter()  # GET /export, POST /export/jsonl
 
 
 @router.get("/export")
-def get_export(request: Request):
+def get_export(request: Request, conn: sqlite3.Connection = Depends(get_db)):
     """One-button export page: shows the event count + recent export files."""
-    conn = get_conn()
-    try:
-        count = export.event_count(conn)
-    finally:
-        conn.close()
+    count = export.event_count(conn)
     return templates.TemplateResponse(request,
         "export.html",
         {"request": request, "rail": "export",
@@ -33,13 +31,10 @@ def get_export(request: Request):
 
 
 @router.post("/export/jsonl")
-def post_export_jsonl(request: Request):
+def post_export_jsonl(request: Request,
+                      conn: sqlite3.Connection = Depends(get_db)):
     """Write data/exports/events-<stamp>.jsonl AND stream it back as a download."""
-    conn = get_conn()
-    try:
-        path, text, _count = export.export_events(conn)
-    finally:
-        conn.close()
+    path, text, _count = export.export_events(conn)
     return Response(
         content=text,
         media_type="application/x-ndjson",

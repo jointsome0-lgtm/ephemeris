@@ -1,13 +1,14 @@
-"""Ephemeris FastAPI app — daily execution surface + write contract.
+"""Ephemeris FastAPI app — lifespan and assembly.
 
 Implements system-design.md sec15 (routes), sec16.4 (status & note write
 contract — Mode A no-JS forms + Mode B fetch), and sec20 (security: same-origin
 guard, Jinja autoescape only, no-auth LAN warning).
 
-The Today and History screens share one day-view renderer; the week strip moves
-between days. UI patterns follow docs/reference/ux-primitives.md (P2 sections
-with counts, P3 one primary affordance per row, P10 bottom tabs) — pattern-level
-only, our own styling/assets (sec7.3).
+Every route now lives in app/routers/ (#24, cuts 1-5). What is left here is the
+assembly: the startup/shutdown lifespan, the app object, the request perimeter,
+the static mount, and the `include_router` calls in the exact order the handlers
+used to be defined in — that order is the routing contract, so each router is
+mounted at the position its own block occupied, never regrouped by feature.
 """
 from __future__ import annotations
 
@@ -15,7 +16,6 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .db import get_conn, init_db
@@ -26,14 +26,15 @@ from .routers.habits import (
     detail_router as habit_detail_router, items_router, router as habits_router,
     write_router as habit_write_router,
 )
-from .routers.learn import router as learn_router, _learn_url
+from .routers.learn import router as learn_router
 from .routers.retro import router as retro_router
+from .routers.site import favicon_router, palette_router
 from .routers.tasks import (
     history_router as tasks_history_router, views_router as tasks_views_router,
     write_router as tasks_write_router,
 )
 from .security import install_security
-from .services import checkins, items, lessons, lists, runs, tasks
+from .services import checkins, lists, runs, tasks
 from .templating import BASE_DIR, templates
 from .terminal import client_is_local, setup_terminal, shutdown_terminal
 
@@ -82,120 +83,24 @@ templates.env.globals.update(
 setup_terminal(app)
 
 
-# --- security / validation (sec20, sec13.3) --------------------------------
-# The same-origin write guard is no longer a per-route call: app/security.py
-# enforces it in middleware for every unsafe-method request, so a new POST
-# route is covered without remembering anything.
-
-
 # --- routes ----------------------------------------------------------------
+# Every router is mounted with no prefix, at the position its own block of
+# handlers occupied while they all lived here. The same-origin write guard is
+# not a per-route call: app/security.py enforces it in middleware for every
+# unsafe-method request (sec20, sec13.3), so a new POST route is covered
+# without remembering anything.
 
-
-@app.get("/favicon.ico")
-def favicon() -> Response:
-    return Response(status_code=204)
-
-
-# --- Tasks + day views (app/routers/tasks.py, #24 cut 3) -------------------
-# Mounted with no prefix, at the position those routes used to occupy.
-app.include_router(tasks_views_router)
-
-
-# --- command palette (Ctrl/⌘K) index ----------------------------------------
-_PALETTE_VIEWS = [
-    {"label": "Tasks", "href": "/today", "icon": "tasks"},
-    {"label": "Calendar", "href": "/calendar", "icon": "calendar"},
-    {"label": "Focus", "href": "/focus", "icon": "focus"},
-    {"label": "Habits", "href": "/habits", "icon": "habit"},
-    {"label": "Learn", "href": "/learn", "icon": "learn"},
-    {"label": "Retro", "href": "/retro", "icon": "retro"},
-    {"label": "Search", "href": "/search", "icon": "search"},
-    {"label": "Export", "href": "/export", "icon": "download"},
-]
-_PALETTE_ACTIONS = [
-    {"label": "New task", "hint": "n", "shortcut": "n"},
-    {"label": "Toggle theme", "hint": "t", "shortcut": "t"},
-    {"label": "Keyboard shortcuts", "hint": "?", "shortcut": "?"},
-]
-
-
-@app.get("/palette.json")
-def get_palette():
-    """Index the command palette pulls at open: views, lists, habits, lessons, actions."""
-    conn = get_conn()
-    try:
-        list_rows = lists.list_lists(conn)
-        habit_rows = [r for r in items.list_items(conn) if r["active"]]
-        try:
-            lesson_rows = lessons.list_lessons(conn)
-        except lessons.LessonError:
-            lesson_rows = []
-    finally:
-        conn.close()
-    return JSONResponse({
-        "views": _PALETTE_VIEWS,
-        "lists": [{"label": r["name"], "href": f"/list/{r['id']}",
-                   "emoji": r["emoji"], "count": r["open_count"]} for r in list_rows],
-        "habits": [{"label": r["title"], "href": f"/habit/{r['id']}",
-                    "emoji": r["emoji"]} for r in habit_rows],
-        "lessons": [{"label": r["title"], "href": _learn_url(lesson_id=r["id"])}
-                    for r in lesson_rows],
-        "actions": _PALETTE_ACTIONS,
-    })
-
-
-# --- Calendar (app/routers/calendar.py, #24 cut 2) -------------------------
-# Mounted with no prefix, at the position those routes used to occupy.
-app.include_router(calendar_router)
-
-
-# --- Learn (app/routers/learn.py, #24 cut 1) --------------------------------
-# Mounted with no prefix, at the position those routes used to occupy: the URLs
-# and the registration order are exactly what defining them here produced.
-app.include_router(learn_router)
-
-
-# --- Focus (app/routers/focus.py, #24 cut 4) -------------------------------
-# Mounted with no prefix, at the position those routes used to occupy.
-app.include_router(focus_router)
-
-
-# --- Export (app/routers/export.py, #24 cut 4) -----------------------------
-# Mounted with no prefix, at the position those routes used to occupy.
-app.include_router(export_router)
-
-
-# --- Habit tab (app/routers/habits.py, #24 cut 2) --------------------------
-# Mounted with no prefix, at the position those routes used to occupy.
-app.include_router(habits_router)
-
-
-# --- GET /history (app/routers/tasks.py, #24 cut 3) ------------------------
-# It renders through _render_day, so it moved with the day view; mounted at
-# its original position, between the Habit tab and the habit detail routes.
-app.include_router(tasks_history_router)
-
-
-# --- Habit detail + check-in writes (app/routers/habits.py, #24 cut 2) -----
-# Mounted with no prefix, at the position those routes used to occupy.
-app.include_router(habit_detail_router)
-
-
-# --- Tasks write contract (app/routers/tasks.py, #24 cut 3) ----------------
-# Mounted with no prefix, at the position those routes used to occupy.
-app.include_router(tasks_write_router)
-
-
-# --- Habit tab writes (app/routers/habits.py, #24 cut 2) -------------------
-# Mounted with no prefix, at the position those routes used to occupy.
-app.include_router(habit_write_router)
-
-
-# --- Manage Items (app/routers/habits.py, #24 cut 2) -----------------------
-# Mounted with no prefix, at the position those routes used to occupy.
-app.include_router(items_router)
-
-
-# --- Retro (app/routers/retro.py, #24 cut 4) -------------------------------
-# Mounted with no prefix, at the position those routes used to occupy.
-app.include_router(retro_router)
+app.include_router(favicon_router)        # app/routers/site.py     (#24 cut 5)
+app.include_router(tasks_views_router)    # app/routers/tasks.py    (#24 cut 3)
+app.include_router(palette_router)        # app/routers/site.py     (#24 cut 5)
+app.include_router(calendar_router)       # app/routers/calendar.py (#24 cut 2)
+app.include_router(learn_router)          # app/routers/learn.py    (#24 cut 1)
+app.include_router(focus_router)          # app/routers/focus.py    (#24 cut 4)
+app.include_router(export_router)         # app/routers/export.py   (#24 cut 4)
+app.include_router(habits_router)         # app/routers/habits.py   (#24 cut 2)
+app.include_router(tasks_history_router)  # app/routers/tasks.py    (#24 cut 3)
+app.include_router(habit_detail_router)   # app/routers/habits.py   (#24 cut 2)
+app.include_router(tasks_write_router)    # app/routers/tasks.py    (#24 cut 3)
+app.include_router(habit_write_router)    # app/routers/habits.py   (#24 cut 2)
+app.include_router(items_router)          # app/routers/habits.py   (#24 cut 2)
+app.include_router(retro_router)          # app/routers/retro.py    (#24 cut 4)

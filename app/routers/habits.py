@@ -9,13 +9,14 @@ are unchanged.
 """
 from __future__ import annotations
 
+import sqlite3
 from datetime import date as _date
 from urllib.parse import quote
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from ..db import get_conn, pretty_date, today_str
+from ..db import get_db, pretty_date, today_str
 from ..services import checkins, items, stats
 from ..templating import (
     _enrich_groups, _habit_detail_ctx, _safe_return, _validated_write_date,
@@ -51,32 +52,29 @@ def _habit_selection_ctx(conn, request: Request, sel: str | None, month: str | N
     return ctx
 
 
-def _render_habits(request: Request, sel=None, month=None, edit=False, flash=None):
-    conn = get_conn()
-    try:
-        today = today_str()
-        raw_groups = checkins.today_view(conn, today)
-        strip = _week_strip(conn, today)
-        hist = stats.all_histories(conn)
-        groups = _enrich_groups(raw_groups, hist, strip, _date.fromisoformat(today))
-        ctx = {
-            "request": request, "rail": "habit", "date": today, "today": today,
-            "pretty_date": pretty_date(_date.fromisoformat(today)),
-            "week": strip, "groups": groups, "flash": flash,
-            "daily_note": checkins.get_daily_note(conn, today),
-            "sections": items.list_sections(conn),
-            "default_section": (groups[0][0] if groups else items.DEFAULT_GROUP),
-        }
-        ctx.update(_habit_selection_ctx(conn, request, sel, month, edit))
-        return templates.TemplateResponse(request,"habits.html", ctx)
-    finally:
-        conn.close()
+def _render_habits(request: Request, conn, sel=None, month=None, edit=False, flash=None):
+    today = today_str()
+    raw_groups = checkins.today_view(conn, today)
+    strip = _week_strip(conn, today)
+    hist = stats.all_histories(conn)
+    groups = _enrich_groups(raw_groups, hist, strip, _date.fromisoformat(today))
+    ctx = {
+        "request": request, "rail": "habit", "date": today, "today": today,
+        "pretty_date": pretty_date(_date.fromisoformat(today)),
+        "week": strip, "groups": groups, "flash": flash,
+        "daily_note": checkins.get_daily_note(conn, today),
+        "sections": items.list_sections(conn),
+        "default_section": (groups[0][0] if groups else items.DEFAULT_GROUP),
+    }
+    ctx.update(_habit_selection_ctx(conn, request, sel, month, edit))
+    return templates.TemplateResponse(request,"habits.html", ctx)
 
 
 @router.get("/habits")
 def get_habits(request: Request, sel: str | None = None, month: str | None = None,
-               edit: int = 0, flash: str | None = None):
-    return _render_habits(request, sel=sel, month=month, edit=bool(edit), flash=flash)
+               edit: int = 0, flash: str | None = None,
+               conn: sqlite3.Connection = Depends(get_db)):
+    return _render_habits(request, conn, sel=sel, month=month, edit=bool(edit), flash=flash)
 
 
 def _redirect_for(date: str, anchor: str, flash: str | None = None) -> str:
@@ -88,17 +86,14 @@ def _redirect_for(date: str, anchor: str, flash: str | None = None) -> str:
 
 
 @detail_router.get("/habit/{item_id}")
-def get_habit(request: Request, item_id: int, month: str | None = None):
+def get_habit(request: Request, item_id: int, month: str | None = None,
+              conn: sqlite3.Connection = Depends(get_db)):
     """Per-item detail page (sec16.6): stat cards + monthly heatmap + habit log.
 
     Mirrors TickTick's habit detail pane in PATTERN only; uses our four-status
     model so the heatmap is richer than a binary done/not-done grid (sec7.3).
     The same partial renders inline on the tasks view via ?sel=habit-{id}."""
-    conn = get_conn()
-    try:
-        ctx = _habit_detail_ctx(conn, item_id, month, f"/habit/{item_id}")
-    finally:
-        conn.close()
+    ctx = _habit_detail_ctx(conn, item_id, month, f"/habit/{item_id}")
     if ctx is None:
         raise HTTPException(status_code=404, detail="unknown item")
     ctx.update(request=request, rail="habit")
@@ -130,6 +125,7 @@ def post_checkin(
     status: str | None = Form(None),
     note: str | None = Form(None),
     return_to: str | None = Form(None),
+    conn: sqlite3.Connection = Depends(get_db),
 ):
     date = _validated_write_date(date)
     anchor = f"item-{routine_item_id}"
@@ -143,7 +139,6 @@ def post_checkin(
             return f"{_with_flash(url, flash) if flash else url}#{anchor}"
         return _redirect_for(date, anchor, flash=flash)
 
-    conn = get_conn()
     try:
         if status is not None and status != "":
             checkins.apply_status(conn, date, routine_item_id, status)
@@ -157,8 +152,6 @@ def post_checkin(
         if json_mode:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
         return RedirectResponse(dest(str(exc)), status_code=303)
-    finally:
-        conn.close()
     return RedirectResponse(dest(), status_code=303)
 
 
@@ -167,13 +160,10 @@ def post_daily_note(
     request: Request,
     date: str = Form(...),
     text: str = Form(""),
+    conn: sqlite3.Connection = Depends(get_db),
 ):
     date = _validated_write_date(date)
-    conn = get_conn()
-    try:
-        checkins.upsert_daily_note(conn, date, text)
-    finally:
-        conn.close()
+    checkins.upsert_daily_note(conn, date, text)
     if _wants_json(request):
         return JSONResponse({"ok": True, "date": date})
     return RedirectResponse(_redirect_for(date, "daily-note"), status_code=303)
@@ -195,8 +185,8 @@ def post_habit_create(
     reminder: str = Form(""),
     constant_reminder: str | None = Form(None),
     return_to: str = Form("/habits"),
+    conn: sqlite3.Connection = Depends(get_db),
 ):
-    conn = get_conn()
     try:
         items.create_item(
             conn, title, group_name, emoji=emoji, frequency=frequency, goal=goal,
@@ -205,8 +195,6 @@ def post_habit_create(
         )
     except items.ItemError as exc:
         return RedirectResponse(_with_flash(_safe_return(return_to), str(exc)), status_code=303)
-    finally:
-        conn.close()
     return RedirectResponse(_safe_return(return_to), status_code=303)
 
 
@@ -224,8 +212,8 @@ def post_habit_edit(
     reminder: str = Form(""),
     constant_reminder: str | None = Form(None),
     return_to: str = Form("/habits"),
+    conn: sqlite3.Connection = Depends(get_db),
 ):
-    conn = get_conn()
     try:
         items.update_item(
             conn, item_id, title, group_name, emoji=emoji, frequency=frequency,
@@ -234,32 +222,26 @@ def post_habit_edit(
         )
     except items.ItemError as exc:
         return RedirectResponse(_with_flash(_safe_return(return_to), str(exc)), status_code=303)
-    finally:
-        conn.close()
     return RedirectResponse(_safe_return(return_to), status_code=303)
 
 
 @write_router.post("/habits/{item_id}/archive")
-def post_habit_archive(request: Request, item_id: int, return_to: str = Form("/habits")):
-    conn = get_conn()
+def post_habit_archive(request: Request, item_id: int, return_to: str = Form("/habits"),
+                       conn: sqlite3.Connection = Depends(get_db)):
     try:
         items.deactivate_item(conn, item_id)  # soft retire; history kept
     except items.ItemError as exc:
         return RedirectResponse(_with_flash(_safe_return(return_to), str(exc)), status_code=303)
-    finally:
-        conn.close()
     return RedirectResponse(_safe_return(return_to), status_code=303)
 
 
 @write_router.post("/habits/{item_id}/delete")
-def post_habit_delete(request: Request, item_id: int, return_to: str = Form("/habits")):
-    conn = get_conn()
+def post_habit_delete(request: Request, item_id: int, return_to: str = Form("/habits"),
+                      conn: sqlite3.Connection = Depends(get_db)):
     try:
         items.delete_item(conn, item_id)  # hard delete (events keep the audit trail)
     except items.ItemError as exc:
         return RedirectResponse(_with_flash(_safe_return(return_to), str(exc)), status_code=303)
-    finally:
-        conn.close()
     return RedirectResponse(_safe_return(return_to), status_code=303)
 
 
@@ -272,12 +254,9 @@ def _items_redirect(flash: str | None = None) -> RedirectResponse:
 
 
 @items_router.get("/items")
-def get_items(request: Request, flash: str | None = None):
-    conn = get_conn()
-    try:
-        rows = items.list_items(conn)
-    finally:
-        conn.close()
+def get_items(request: Request, flash: str | None = None,
+              conn: sqlite3.Connection = Depends(get_db)):
+    rows = items.list_items(conn)
     groups: list[tuple[str, list]] = []
     index: dict[str, list] = {}
     for r in rows:
@@ -305,48 +284,41 @@ def get_items(request: Request, flash: str | None = None):
 
 
 @items_router.post("/items")
-def post_item_create(request: Request, title: str = Form(...), group_name: str = Form("")):
-    conn = get_conn()
+def post_item_create(request: Request, title: str = Form(...), group_name: str = Form(""),
+                     conn: sqlite3.Connection = Depends(get_db)):
     try:
         items.create_item(conn, title, group_name)
     except items.ItemError as exc:
         return _items_redirect(str(exc))
-    finally:
-        conn.close()
     return _items_redirect()
 
 
 @items_router.post("/items/{item_id}/edit")
-def post_item_edit(request: Request, item_id: int, title: str = Form(...), group_name: str = Form("")):
-    conn = get_conn()
+def post_item_edit(request: Request, item_id: int, title: str = Form(...),
+                   group_name: str = Form(""),
+                   conn: sqlite3.Connection = Depends(get_db)):
     try:
         items.update_item(conn, item_id, title, group_name)
     except items.ItemError as exc:
         return _items_redirect(str(exc))
-    finally:
-        conn.close()
     return _items_redirect()
 
 
 @items_router.post("/items/{item_id}/deactivate")
-def post_item_deactivate(request: Request, item_id: int):
-    conn = get_conn()
+def post_item_deactivate(request: Request, item_id: int,
+                         conn: sqlite3.Connection = Depends(get_db)):
     try:
         items.deactivate_item(conn, item_id)
     except items.ItemError as exc:
         return _items_redirect(str(exc))
-    finally:
-        conn.close()
     return _items_redirect()
 
 
 @items_router.post("/items/{item_id}/reactivate")
-def post_item_reactivate(request: Request, item_id: int):
-    conn = get_conn()
+def post_item_reactivate(request: Request, item_id: int,
+                         conn: sqlite3.Connection = Depends(get_db)):
     try:
         items.reactivate_item(conn, item_id)
     except items.ItemError as exc:
         return _items_redirect(str(exc))
-    finally:
-        conn.close()
     return _items_redirect()

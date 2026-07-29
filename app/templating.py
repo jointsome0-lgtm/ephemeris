@@ -17,7 +17,7 @@ from urllib.parse import quote
 from fastapi import HTTPException, Request
 from fastapi.templating import Jinja2Templates
 
-from .db import get_conn, is_not_future, is_valid_date, pretty_date, today_str
+from .db import is_not_future, is_valid_date, pretty_date, today_str
 from .services import checkins, lists, stats, tasks
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -284,16 +284,12 @@ templates.env.globals.update(
 # --- day view (shared by Today + History) ----------------------------------
 
 
-def _render_day(request: Request, date: str, nav_active: str, flash: str | None,
+def _render_day(request: Request, conn, date: str, nav_active: str, flash: str | None,
                 rail: str = "habit"):
-    conn = get_conn()
-    try:
-        raw_groups = checkins.today_view(conn, date)
-        daily_note = checkins.get_daily_note(conn, date)
-        strip = _week_strip(conn, date)
-        hist = stats.all_histories(conn)
-    finally:
-        conn.close()
+    raw_groups = checkins.today_view(conn, date)
+    daily_note = checkins.get_daily_note(conn, date)
+    strip = _week_strip(conn, date)
+    hist = stats.all_histories(conn)
     d = _date.fromisoformat(date)
     groups = _enrich_groups(raw_groups, hist, strip, _date.fromisoformat(today_str()))
     total = sum(len(items) for _, items in groups)

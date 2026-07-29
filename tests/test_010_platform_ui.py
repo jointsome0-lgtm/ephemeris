@@ -1,6 +1,7 @@
 """Platform, chrome, and initial Learn workspace verification."""
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import importlib.abc as _importlib_abc
 import json
@@ -185,6 +186,127 @@ def test_001_platform_probes(suite_state):
             for d in _pd_dates
         )
     ), "date helper: byte-identical to the strftime(\"%-d\") formats it replaced"
+
+    # --- #24 cut 5: typed settings own the environment contract -------------
+    # The env-var names, their defaults, and the one required variable moved out
+    # of app/db.py into app/settings.py. These probes pin the contract itself, so
+    # a later tidy-up cannot quietly rename a variable or invent a fallback for
+    # ACTIVITY_DATA_DIR.
+    from app import settings as _cfg
+    from app.db import DATA_DIR as _cfg_data, DB_PATH as _cfg_db
+    from app.db import EXPORTS_DIR as _cfg_exports
+
+    _cfg_full = _cfg.load({
+        "ACTIVITY_DATA_DIR": "/probe/data",
+        "ACTIVITY_DB": "/probe/elsewhere.sqlite",
+        "APP_TIMEZONE": "Europe/Moscow",
+    })
+    assert (
+        _cfg_full.data_dir == Path("/probe/data")
+        and _cfg_full.db_path == Path("/probe/elsewhere.sqlite")
+        and _cfg_full.exports_dir == Path("/probe/data/exports")
+        and _cfg_full.timezone == "Europe/Moscow"
+    ), "settings: every documented variable is read, ACTIVITY_DB overrides the path"
+    _cfg_bare = _cfg.load({"ACTIVITY_DATA_DIR": "/probe/data"})
+    assert (
+        _cfg_bare.db_path == Path("/probe/data/activity.sqlite")
+        and _cfg_bare.exports_dir == Path("/probe/data/exports")
+        and _cfg_bare.timezone is None
+    ), "settings: defaults are <data_dir>/activity.sqlite, <data_dir>/exports, host zone"
+
+    _cfg_refused = []
+    for _cfg_bad in ({}, {"ACTIVITY_DATA_DIR": ""}):
+        try:
+            _cfg.load(_cfg_bad)
+        except RuntimeError as exc:
+            _cfg_refused.append(str(exc))
+    assert (
+        len(_cfg_refused) == 2
+        and all(m == _cfg_refused[0] for m in _cfg_refused)
+        and _cfg_refused[0].startswith("ACTIVITY_DATA_DIR is required")
+        and "outside the public checkout" in _cfg_refused[0]
+        and "docs/instance.md" in _cfg_refused[0]
+    ), "settings: unset and empty ACTIVITY_DATA_DIR both fail with the same message"
+
+    try:
+        _cfg_full.data_dir = Path("/probe/mutated")
+        _cfg_frozen = False
+    except dataclasses.FrozenInstanceError:
+        _cfg_frozen = True
+    assert _cfg_frozen, "settings: resolved configuration is frozen after startup"
+
+    assert (
+        _cfg_data == _cfg.settings.data_dir
+        and _cfg_db == _cfg.settings.db_path
+        and _cfg_exports == _cfg.settings.exports_dir
+    ), "settings: app.db re-exports the live settings, so both spellings agree"
+
+    # --- #24 cut 5: get_db is the request-scoped connection ----------------
+    # The FastAPI dependency replaced the hand-written try/finally in every
+    # route handler, so the two things worth pinning are that it still closes on
+    # BOTH paths, and that it survives CONCURRENT requests.
+    from app.db import get_db as _gdb
+
+    _gdb_ok = _gdb()
+    _gdb_conn = next(_gdb_ok)
+    _gdb_conn.execute("SELECT 1").fetchone()
+    next(_gdb_ok, None)                     # exhaust: runs the generator's finally
+    try:
+        _gdb_conn.execute("SELECT 1")
+        _gdb_closed_ok = False
+    except sqlite3.ProgrammingError:
+        _gdb_closed_ok = True
+
+    _gdb_boom = _gdb()
+    _gdb_conn2 = next(_gdb_boom)
+    try:
+        _gdb_boom.throw(RuntimeError("handler exploded"))
+        _gdb_raised = False
+    except RuntimeError:
+        _gdb_raised = True
+    try:
+        _gdb_conn2.execute("SELECT 1")
+        _gdb_closed_boom = False
+    except sqlite3.ProgrammingError:
+        _gdb_closed_boom = True
+    assert (
+        _gdb_closed_ok and _gdb_raised and _gdb_closed_boom
+    ), "get_db closes the connection on success and when the handler raises"
+
+    # Regression guard for the defect this conversion first shipped: FastAPI
+    # resolves a sync generator dependency's setup and its teardown as two
+    # SEPARATE threadpool tasks, so get_db's conn is routinely closed on a
+    # different worker thread than the one that opened it. With sqlite3's
+    # default check_same_thread that raised ProgrammingError on most requests
+    # under load — invisible to a sequential suite, which is why this probe
+    # drives real concurrent requests instead of asserting on the flag.
+    import concurrent.futures as _gdb_futures
+
+    from fastapi import Depends as _gdb_Depends, FastAPI as _gdb_FastAPI
+    from fastapi.testclient import TestClient as _gdb_TestClient
+
+    _gdb_app = _gdb_FastAPI()
+
+    @_gdb_app.get("/probe")
+    def _gdb_probe(conn: sqlite3.Connection = _gdb_Depends(_gdb)):
+        conn.execute("SELECT 1").fetchone()
+        threading.Event().wait(0.05)   # hold the worker so siblings take others
+        return {"ok": True}
+
+    with _gdb_TestClient(_gdb_app) as _gdb_client:
+        def _gdb_hit(_):
+            try:
+                return _gdb_client.get("/probe").status_code
+            except Exception as exc:            # thread-affinity refusal
+                return f"{type(exc).__name__}: {exc}"
+        with _gdb_futures.ThreadPoolExecutor(max_workers=12) as _gdb_pool:
+            _gdb_codes = list(_gdb_pool.map(_gdb_hit, range(48)))
+    assert all(code == 200 for code in _gdb_codes), (
+        "get_db survives concurrent requests (open and close land on different "
+        "threadpool workers) -- "
+        + str(next((c for c in _gdb_codes if c != 200), ""))[:160]
+    )
+
     suite_state.update({
         name: value for name, value in locals().items()
         if name not in {"client", "suite_state"}
