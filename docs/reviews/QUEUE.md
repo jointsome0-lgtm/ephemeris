@@ -270,8 +270,18 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   account was corrected to the one above. No application code changed in that
   commit. Host verification at `f7f2877`:
   pytest 9 passed, verify_restore 28 passed, public hygiene clean. Python
-  only; the merge does not change what the live process runs. No merge or
-  restart was performed.
+  only; the merge does not change what the live process runs. Merged into
+  `main` as `6209fa3` (PR #106) at branch tip `f4501d4`. The merged tree is
+  NOT byte-identical to that tip: `main` advanced while the PR was open, by
+  PR #103's Learn-router extraction and PR #110's attempts fix, so this was a
+  real three-way merge. The five files this entry covers —
+  `app/services/lessons.py`, `app/services/bundle_schema.py`,
+  `docs/learn-bundle-spec.md`, `tests/test_010_platform_ui.py`,
+  `docs/reviews/QUEUE.md` — are byte-identical between `f4501d4` and
+  `6209fa3` (`git diff` over exactly those paths is empty), and neither
+  incoming change touches them. Host verification on merged `main` at
+  `6209fa3`: pytest 9 passed, verify_restore 28 passed, public hygiene clean.
+  No restart was performed.
 
 ## Done
 
