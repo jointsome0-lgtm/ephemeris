@@ -14,7 +14,7 @@ import threading
 from datetime import date as _vdate
 from pathlib import Path
 
-from conftest import ROOT, check, events_of, item_row
+from conftest import ROOT, events_of, item_row
 
 
 
@@ -88,19 +88,21 @@ def test_run_api(client, suite_state):
                 break
             _time.sleep(0.01)
         _f4_status_json = _f4_status.json()
-        check("F4 start stays behind B2 and executes the one verified snapshot",
-              _f4_guarded.status_code == 403
-              and _f4_started.status_code == 200
-              and _f4_started_json.get("replayed") is False
-              and len(_f4_observed_jobs) == 1
-              and _f4_observed_jobs[0].request.snapshot == _f4_source
-              and _f4_observed_jobs[0].request.file_rev == _f4_file_rev)
-        check("F4 terminal status waits for honest best-effort event state",
-              _f4_status.status_code == 200
-              and _f4_status_json.get("state") == _runner.FINISHED
-              and _f4_status_json.get("cause") == "exit"
-              and _f4_status_json.get("exit_code") == 0
-              and _f4_status_json.get("event_recorded") is True)
+        assert (
+            _f4_guarded.status_code == 403
+            and _f4_started.status_code == 200
+            and _f4_started_json.get("replayed") is False
+            and len(_f4_observed_jobs) == 1
+            and _f4_observed_jobs[0].request.snapshot == _f4_source
+            and _f4_observed_jobs[0].request.file_rev == _f4_file_rev
+        ), "F4 start stays behind B2 and executes the one verified snapshot"
+        assert (
+            _f4_status.status_code == 200
+            and _f4_status_json.get("state") == _runner.FINISHED
+            and _f4_status_json.get("cause") == "exit"
+            and _f4_status_json.get("exit_code") == 0
+            and _f4_status_json.get("event_recorded") is True
+        ), "F4 terminal status waits for honest best-effort event state"
 
         _f4_stream = c.get(f"/learn/runs/{_f4_job_id}/stream")
         _f4_ids = [
@@ -115,21 +117,23 @@ def test_run_api(client, suite_state):
             int(line.split(":", 1)[1].strip())
             for line in _f4_resumed.text.splitlines() if line.startswith("id:")
         ]
-        check("F4 SSE resumes strictly after cursor with one terminal exit",
-              _f4_stream.status_code == 200
-              and _f4_ids == sorted(set(_f4_ids))
-              and _f4_resumed_ids == _f4_ids[1:]
-              and all(seq > _f4_after for seq in _f4_resumed_ids)
-              and _f4_stream.text.count("event: exit") == 1
-              and _f4_resumed.text.count("event: exit") == 1)
+        assert (
+            _f4_stream.status_code == 200
+            and _f4_ids == sorted(set(_f4_ids))
+            and _f4_resumed_ids == _f4_ids[1:]
+            and all(seq > _f4_after for seq in _f4_resumed_ids)
+            and _f4_stream.text.count("event: exit") == 1
+            and _f4_resumed.text.count("event: exit") == 1
+        ), "F4 SSE resumes strictly after cursor with one terminal exit"
         _f4_cross_stream = c.get(
             f"/learn/runs/{_f4_job_id}/stream",
             headers={"Origin": "http://evil.example"},
         )
-        check("F4 cross-origin SSE is refused before reserving a reader slot",
-              _f4_cross_stream.status_code == 403
-              and _f4_cross_stream.json().get("error") == "forbidden"
-              and _f4_service._jobs[_f4_job_id].reader_count == 0)
+        assert (
+            _f4_cross_stream.status_code == 403
+            and _f4_cross_stream.json().get("error") == "forbidden"
+            and _f4_service._jobs[_f4_job_id].reader_count == 0
+        ), "F4 cross-origin SSE is refused before reserving a reader slot"
 
         _f4_replay = c.post(_f4_alias_url, json=_f4_payload)
         _f4_conflict = c.post(_f4_run_url, json={
@@ -149,32 +153,35 @@ def test_run_api(client, suite_state):
             })
         finally:
             _f4_missing_hold.rename(_f1_file)
-        check("F4 identical replay returns one job; changed identity conflicts",
-              _f4_replay.status_code == 200
-              and _f4_replay.json().get("job_id") == _f4_job_id
-              and _f4_replay.json().get("replayed") is True
-              and _f4_conflict.status_code == 409
-              and _f4_conflict.json().get("error") == "idempotency-conflict"
-              and len(_f4_observed_jobs) == 1)
-        check("F4 start requires the current saved bytes exactly once",
-              _f4_revision_conflict.status_code == 409
-              and _f4_revision_conflict.json().get("error") == "file-conflict"
-              and _f4_revision_conflict.json().get("file_rev") == _f4_file_rev
-              and _f4_missing.status_code == 409
-              and _f4_missing.json().get("error") == "file-missing"
-              and len(_f4_observed_jobs) == 1)
+        assert (
+            _f4_replay.status_code == 200
+            and _f4_replay.json().get("job_id") == _f4_job_id
+            and _f4_replay.json().get("replayed") is True
+            and _f4_conflict.status_code == 409
+            and _f4_conflict.json().get("error") == "idempotency-conflict"
+            and len(_f4_observed_jobs) == 1
+        ), "F4 identical replay returns one job; changed identity conflicts"
+        assert (
+            _f4_revision_conflict.status_code == 409
+            and _f4_revision_conflict.json().get("error") == "file-conflict"
+            and _f4_revision_conflict.json().get("file_rev") == _f4_file_rev
+            and _f4_missing.status_code == 409
+            and _f4_missing.json().get("error") == "file-missing"
+            and len(_f4_observed_jobs) == 1
+        ), "F4 start requires the current saved bytes exactly once"
 
         _f4_run_events = events_of("lesson_run")
         _f4_event = json.loads(_f4_run_events[-1]["payload_json"])
-        check("F4 terminal job records one body-free lesson_run event",
-              len(_f4_run_events) == _f4_events_before + 1
-              and _f4_event["lesson_uid"] == _f1["uid"]
-              and _f4_event["block_id"] == "blk_editor01"
-              and _f4_event["file_rev"] == _f4_file_rev
-              and _f4_event["cause"] == "exit"
-              and "output" not in _f4_event
-              and "stdout" not in _f4_event
-              and "stderr" not in _f4_event)
+        assert (
+            len(_f4_run_events) == _f4_events_before + 1
+            and _f4_event["lesson_uid"] == _f1["uid"]
+            and _f4_event["block_id"] == "blk_editor01"
+            and _f4_event["file_rev"] == _f4_file_rev
+            and _f4_event["cause"] == "exit"
+            and "output" not in _f4_event
+            and "stdout" not in _f4_event
+            and "stderr" not in _f4_event
+        ), "F4 terminal job records one body-free lesson_run event"
 
         def _f4_bundle_state():
             return [
@@ -194,11 +201,12 @@ def test_run_api(client, suite_state):
             f"/learn/runs/{_f4_job_id}/stream",
             headers={"Last-Event-ID": str(_f4_ids[-1])},
         )
-        check("F4 status/stream GETs mutate no bundle or ledger state",
-              _f4_pure_status.status_code == 200
-              and _f4_pure_stream.status_code == 200
-              and _f4_bundle_state() == _f4_pure_before
-              and len(events_of("lesson_run")) == _f4_event_count_before_gets)
+        assert (
+            _f4_pure_status.status_code == 200
+            and _f4_pure_stream.status_code == 200
+            and _f4_bundle_state() == _f4_pure_before
+            and len(events_of("lesson_run")) == _f4_event_count_before_gets
+        ), "F4 status/stream GETs mutate no bundle or ledger state"
 
         def _f4_unhealthy():
             raise _runner.RunnerUnavailableError("invented unavailable runtime")
@@ -225,14 +233,15 @@ def test_run_api(client, suite_state):
         finally:
             _runs.RATE_MAX_PER_WINDOW = _f4_unhealthy_rate_max
             _runs._reset_rate_limit()
-        check("F4 unhealthy runner refuses visibly and refunds rate permits",
-              all(
-                  response.status_code == 409
-                  and response.json().get("error") == "runner-unavailable"
-                  for response in _f4_unhealthy_responses
-              )
-              and _f4_unhealthy_rate_size == 0
-              and len(_f4_observed_jobs) == 1)
+        assert (
+            all(
+                response.status_code == 409
+                and response.json().get("error") == "runner-unavailable"
+                for response in _f4_unhealthy_responses
+            )
+            and _f4_unhealthy_rate_size == 0
+            and len(_f4_observed_jobs) == 1
+        ), "F4 unhealthy runner refuses visibly and refunds rate permits"
 
         _f4_cancel_processes = []
 
@@ -280,17 +289,18 @@ def test_run_api(client, suite_state):
                     break
                 _time.sleep(0.01)
             _f4_cancel_again = c.post(f"/learn/runs/{_f4_cancel_id}/cancel")
-        check("F4 cancel is guarded, idempotent, and still emits cancelled exit",
-              _f4_cancel_start.status_code == 200
-              and _f4_cancel_guard.status_code == 403
-              and _f4_cancel.status_code == 200
-              and _f4_cancel_status.json().get("cause") == "cancelled"
-              and _f4_cancel_again.status_code == 200
-              and _f4_cancel_again.json().get("cause") == "cancelled"
-              and sum(
-                  event["event"] == "exit"
-                  for event in _f4_cancel_service._jobs[_f4_cancel_id].events
-              ) == 1)
+        assert (
+            _f4_cancel_start.status_code == 200
+            and _f4_cancel_guard.status_code == 403
+            and _f4_cancel.status_code == 200
+            and _f4_cancel_status.json().get("cause") == "cancelled"
+            and _f4_cancel_again.status_code == 200
+            and _f4_cancel_again.json().get("cause") == "cancelled"
+            and sum(
+                event["event"] == "exit"
+                for event in _f4_cancel_service._jobs[_f4_cancel_id].events
+            ) == 1
+        ), "F4 cancel is guarded, idempotent, and still emits cancelled exit"
 
         _f4_rate_max = _runs.RATE_MAX_PER_WINDOW
         _runs.RATE_MAX_PER_WINDOW = 1
@@ -317,20 +327,22 @@ def test_run_api(client, suite_state):
         finally:
             _runs.RATE_MAX_PER_WINDOW = _f4_rate_max
             _runs._reset_rate_limit()
-        check("F4 validation refusals charge; rate-limited itself is uncharged",
-              _f4_bad_grammar.status_code == 400
-              and _f4_bad_grammar.json().get("error") == "invalid-file-rev"
-              and _f4_rate_hit.status_code == 429
-              and _f4_rate_hit.json().get("error") == "rate-limited"
-              and _f4_rate_hit.headers.get("retry-after") is not None
-              and _f4_rate_snapshot_reads == 0
-              and _f4_rate_size == 1)
+        assert (
+            _f4_bad_grammar.status_code == 400
+            and _f4_bad_grammar.json().get("error") == "invalid-file-rev"
+            and _f4_rate_hit.status_code == 429
+            and _f4_rate_hit.json().get("error") == "rate-limited"
+            and _f4_rate_hit.headers.get("retry-after") is not None
+            and _f4_rate_snapshot_reads == 0
+            and _f4_rate_size == 1
+        ), "F4 validation refusals charge; rate-limited itself is uncharged"
 
         _f4_learn = c.get(f"/learn?lesson={_f1_id}").text
-        check("F4 Learn template advertises the guarded runs route prefix",
-              f'data-runs-url="/learn/lessons/{_f1_id}/blocks"' in _f4_learn
-              and "{% if selected.runs_url is defined %}"
-                  in (ROOT / "app/templates/learn.html").read_text())
+        assert (
+            f'data-runs-url="/learn/lessons/{_f1_id}/blocks"' in _f4_learn
+            and "{% if selected.runs_url is defined %}"
+                in (ROOT / "app/templates/learn.html").read_text()
+        ), "F4 Learn template advertises the guarded runs route prefix"
     finally:
         app.state.runner_service = _f4_original_service
         _runs.RATE_MAX_PER_WINDOW = 10
