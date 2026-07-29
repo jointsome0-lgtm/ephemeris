@@ -7,12 +7,13 @@ exactly what defining them in main.py produced.
 """
 from __future__ import annotations
 
+import sqlite3
 from datetime import date as _date, timedelta
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from ..db import get_conn, is_valid_date, now_iso, pretty_date, today_str
+from ..db import get_db, is_valid_date, now_iso, pretty_date, today_str
 from ..services import calendar_events, lists, tasks
 from ..templating import (
     _parse_month, _safe_return, _sunday_of, _wants_json, _with_flash, templates,
@@ -96,16 +97,13 @@ def _event_modal_ctx(conn, self_url: str, ev: str | None, on: str | None,
 
 @router.get("/calendar")
 def get_calendar(request: Request, month: str | None = None, ev: str | None = None,
-                 on: str | None = None, flash: str | None = None):
+                 on: str | None = None, flash: str | None = None,
+                 conn: sqlite3.Connection = Depends(get_db)):
     year, mon = _parse_month(month)
     first = _date(year, mon, 1)
     self_url = f"/calendar?month={first.strftime('%Y-%m')}"
-    conn = get_conn()
-    try:
-        weeks = _month_grid(conn, year, mon)
-        modal = _event_modal_ctx(conn, self_url, ev, on)
-    finally:
-        conn.close()
+    weeks = _month_grid(conn, year, mon)
+    modal = _event_modal_ctx(conn, self_url, ev, on)
     prev_first = (first - timedelta(days=1)).replace(day=1)
     next_first = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
     return templates.TemplateResponse(request,
@@ -206,15 +204,12 @@ def _parse_date(s: str | None) -> _date:
 @router.get("/calendar/week")
 def get_calendar_week(request: Request, date: str | None = None, ev: str | None = None,
                       on: str | None = None, add: str | None = None,
-                      at: str | None = None, flash: str | None = None):
+                      at: str | None = None, flash: str | None = None,
+                      conn: sqlite3.Connection = Depends(get_db)):
     sun = _sunday_of(_parse_date(date))
     self_url = f"/calendar/week?date={sun.isoformat()}"
-    conn = get_conn()
-    try:
-        ctx = _week_ctx(conn, sun)
-        ctx.update(_event_modal_ctx(conn, self_url, ev, on, add, at), flash=flash)
-    finally:
-        conn.close()
+    ctx = _week_ctx(conn, sun)
+    ctx.update(_event_modal_ctx(conn, self_url, ev, on, add, at), flash=flash)
     last = sun + timedelta(days=6)
     if sun.month == last.month:
         label = f"{sun.strftime('%b')} {sun.day}–{last.day}, {sun.year}"
@@ -261,8 +256,8 @@ def post_event_create(
     start_date: str = Form(...),
     end_date: str = Form(""),
     return_to: str = Form("/calendar"),
+    conn: sqlite3.Connection = Depends(get_db),
 ):
-    conn = get_conn()
     try:
         calendar_events.create_event(
             conn, title, start_date=start_date, freq=freq, byweekday=_wd_mask(wd),
@@ -271,8 +266,6 @@ def post_event_create(
         )
     except calendar_events.CalendarEventError as exc:
         return _events_redirect(return_to, str(exc))
-    finally:
-        conn.close()
     return _events_redirect(return_to)
 
 
@@ -293,10 +286,10 @@ def post_event_update(
     start_date: str = Form(...),
     end_date: str = Form(""),
     return_to: str = Form("/calendar"),
+    conn: sqlite3.Connection = Depends(get_db),
 ):
     """Update the whole series ("All events" — v1 has no per-occurrence override;
     use Skip for one day). exdates survive the edit (the service preserves them)."""
-    conn = get_conn()
     try:
         calendar_events.update_event(
             conn, event_id, title=title, emoji=emoji, list_id=list_id, note=note,
@@ -306,55 +299,48 @@ def post_event_update(
         )
     except calendar_events.CalendarEventError as exc:
         return _events_redirect(return_to, str(exc))
-    finally:
-        conn.close()
     return _events_redirect(return_to)
 
 
 @router.post("/calendar/events/{event_id}/archive")
-def post_event_archive(request: Request, event_id: int, return_to: str = Form("/calendar")):
-    conn = get_conn()
+def post_event_archive(request: Request, event_id: int,
+                       return_to: str = Form("/calendar"),
+                       conn: sqlite3.Connection = Depends(get_db)):
     try:
         calendar_events.archive_event(conn, event_id)  # soft: series stays in the ledger
     except calendar_events.CalendarEventError as exc:
         return _events_redirect(return_to, str(exc))
-    finally:
-        conn.close()
     return _events_redirect(return_to)
 
 
 @router.post("/calendar/events/{event_id}/skip")
 def post_event_skip(request: Request, event_id: int, date: str = Form(...),
-                    return_to: str = Form("/calendar")):
-    conn = get_conn()
+                    return_to: str = Form("/calendar"),
+                    conn: sqlite3.Connection = Depends(get_db)):
     try:
         calendar_events.skip_occurrence(conn, event_id, date)
     except calendar_events.CalendarEventError as exc:
         return _events_redirect(return_to, str(exc))
-    finally:
-        conn.close()
     return _events_redirect(return_to)
 
 
 @router.post("/calendar/events/{event_id}/unskip")
 def post_event_unskip(request: Request, event_id: int, date: str = Form(...),
-                      return_to: str = Form("/calendar")):
-    conn = get_conn()
+                      return_to: str = Form("/calendar"),
+                      conn: sqlite3.Connection = Depends(get_db)):
     try:
         calendar_events.unskip_occurrence(conn, event_id, date)
     except calendar_events.CalendarEventError as exc:
         return _events_redirect(return_to, str(exc))
-    finally:
-        conn.close()
     return _events_redirect(return_to)
 
 
 @router.post("/calendar/events/{event_id}/move")
 def post_event_move(request: Request, event_id: int, date: str = Form(...),
-                    return_to: str = Form("/calendar")):
+                    return_to: str = Form("/calendar"),
+                    conn: sqlite3.Connection = Depends(get_db)):
     """Drag-and-drop a non-recurring event to another day (Mode A/B)."""
     json_mode = _wants_json(request)
-    conn = get_conn()
     try:
         calendar_events.move_event(conn, event_id, date)
         if json_mode:
@@ -363,6 +349,4 @@ def post_event_move(request: Request, event_id: int, date: str = Form(...),
         if json_mode:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
         return _events_redirect(return_to, str(exc))
-    finally:
-        conn.close()
     return _events_redirect(return_to)

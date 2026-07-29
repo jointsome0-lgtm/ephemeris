@@ -130,10 +130,16 @@ def append_event(
 # --- connections (sec13.3 connection policy) -------------------------------
 
 
-def get_conn() -> sqlite3.Connection:
-    """A configured SQLite connection. PRAGMAs are set before any transaction."""
+def get_conn(*, check_same_thread: bool = True) -> sqlite3.Connection:
+    """A configured SQLite connection. PRAGMAs are set before any transaction.
+
+    `check_same_thread` defaults to sqlite3's own strict setting and should stay
+    that way for everything that opens, uses and closes a connection inside one
+    call — the lifespan, the services, the scripts, the terminal. Only `get_db`
+    relaxes it, for the reason documented there.
+    """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     # foreign_keys is OFF by default in SQLite and is per-connection; required
     # for the checkins -> routine_items FK. journal_mode=WAL lets the phone read
@@ -142,6 +148,37 @@ def get_conn() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
     return conn
+
+
+def get_db():
+    """Request-scoped connection, for `conn = Depends(get_db)` (#24 cut 5).
+
+    One owner of the open/close plumbing every route handler used to spell out
+    by hand. Deliberately FastAPI-free — it is an ordinary generator, so this
+    module keeps no web-framework import and the contract is testable without
+    a request.
+
+    NOT for long-lived responses. A dependency's `finally` runs only after the
+    response has finished, so a streaming or long-polling route would pin its
+    connection for the whole stream; those keep an explicit `get_conn()` scoped
+    to the work that actually needs the database. `get_conn` also stays the way
+    in for non-request contexts: the lifespan, the services, and the scripts.
+
+    `check_same_thread=False` is load-bearing, not a loosened default. FastAPI
+    dispatches a sync generator dependency's setup and its teardown as two
+    SEPARATE threadpool tasks, so the `conn.close()` below routinely runs on a
+    different worker thread than the `get_conn()` above — under concurrency,
+    most requests. The hand-written try/finally this replaced was immune
+    because open, use and close all happened in one handler call on one thread.
+    Relaxing the check is safe HERE and only here: the connection is per
+    request and never escapes it, and setup, handler and teardown run strictly
+    one after another, so no two threads ever touch it at the same time.
+    """
+    conn = get_conn(check_same_thread=False)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------

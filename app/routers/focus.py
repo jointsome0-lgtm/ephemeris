@@ -6,10 +6,12 @@ registration order are unchanged.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Form, Request
+import sqlite3
+
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from ..db import get_conn
+from ..db import get_db
 from ..services import focus, lessons
 from ..templating import _safe_return, _wants_json, _with_flash, templates
 
@@ -17,16 +19,12 @@ router = APIRouter()  # GET /focus, POST /focus/session
 
 
 @router.get("/focus")
-def get_focus(request: Request):
-    conn = get_conn()
-    try:
-        ov = focus.overview(conn)
-        records = focus.recent_sessions(conn)
-        lesson_opts = lessons.list_lessons(conn)
-        daily = focus.daily_totals(conn)
-        lesson_focus = focus.lesson_totals(conn)
-    finally:
-        conn.close()
+def get_focus(request: Request, conn: sqlite3.Connection = Depends(get_db)):
+    ov = focus.overview(conn)
+    records = focus.recent_sessions(conn)
+    lesson_opts = lessons.list_lessons(conn)
+    daily = focus.daily_totals(conn)
+    lesson_focus = focus.lesson_totals(conn)
     return templates.TemplateResponse(request,
         "focus.html",
         {"request": request, "rail": "focus", "ov": ov, "records": records,
@@ -43,10 +41,10 @@ def post_focus_session(
     note: str = Form(""),
     lesson_id: str = Form(""),
     return_to: str = Form("/focus"),
+    conn: sqlite3.Connection = Depends(get_db),
 ):
     """Record a finished Pomodoro / stopwatch span. Mode B returns refreshed stats."""
     json_mode = _wants_json(request)
-    conn = get_conn()
     try:
         sid = focus.record_session(conn, mode, seconds, note=note, lesson_id=lesson_id)
         if json_mode:
@@ -61,6 +59,4 @@ def post_focus_session(
         return RedirectResponse(
             _with_flash(_safe_return(return_to, "/focus"), str(exc)), status_code=303
         )
-    finally:
-        conn.close()
     return RedirectResponse(_safe_return(return_to, "/focus"), status_code=303)

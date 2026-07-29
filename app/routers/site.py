@@ -12,10 +12,12 @@ there is no cycle.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter
+import sqlite3
+
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, Response
 
-from ..db import get_conn
+from ..db import get_db
 from ..services import items, lessons, lists
 from .learn import _learn_url
 
@@ -47,18 +49,14 @@ _PALETTE_ACTIONS = [
 
 
 @palette_router.get("/palette.json")
-def get_palette():
+def get_palette(conn: sqlite3.Connection = Depends(get_db)):
     """Index the command palette pulls at open: views, lists, habits, lessons, actions."""
-    conn = get_conn()
+    list_rows = lists.list_lists(conn)
+    habit_rows = [r for r in items.list_items(conn) if r["active"]]
     try:
-        list_rows = lists.list_lists(conn)
-        habit_rows = [r for r in items.list_items(conn) if r["active"]]
-        try:
-            lesson_rows = lessons.list_lessons(conn)
-        except lessons.LessonError:
-            lesson_rows = []
-    finally:
-        conn.close()
+        lesson_rows = lessons.list_lessons(conn)
+    except lessons.LessonError:
+        lesson_rows = []
     return JSONResponse({
         "views": _PALETTE_VIEWS,
         "lists": [{"label": r["name"], "href": f"/list/{r['id']}",
