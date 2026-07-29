@@ -879,6 +879,8 @@ def get_lesson_by_slug(conn: sqlite3.Connection, slug: str) -> dict | None:
 
 AGENTS_FILENAME = "AGENTS.md"
 CLAUDE_FILENAME = "CLAUDE.md"
+CLAUDE_DIR_NAME = ".claude"
+SETTINGS_FILENAME = "settings.json"
 
 _AGENTS_TEMPLATE = """\
 # Lesson workspace
@@ -1338,6 +1340,20 @@ _CLAUDE_TEMPLATE = """\
 """
 
 
+# Claude Code resolves `.claude/settings.json` from the directory the session
+# starts in when that directory sits outside any repository — which is exactly
+# where a bundle lives (the data dir is outside the checkout). Scoping the
+# style to the bundle keeps lesson-authoring sessions elsewhere on Default.
+# The file is a constant: no lesson metadata is interpolated into a file an
+# agent harness reads as configuration (#84, same rule as the constant brief).
+# Strict JSON, no comment — Claude Code rejects a malformed settings file.
+_SETTINGS_TEMPLATE = """\
+{
+  "outputStyle": "Learning"
+}
+"""
+
+
 def _bundle_dir_is_safe(lesson_dir: Path) -> bool:
     """Refuse a lesson dir reached through a symlink, so a pre-planted link at
     data/lessons/<slug> can't redirect the manifest/AGENTS.md write or the shell
@@ -1358,9 +1374,11 @@ def _bundle_dir_is_safe(lesson_dir: Path) -> bool:
 
 
 def _write_brief(path: Path, text: str) -> None:
-    """Atomically replace a generated brief (AGENTS.md / CLAUDE.md).
+    """Atomically replace a generated agent-facing file (AGENTS.md, CLAUDE.md,
+    `.claude/settings.json`).
 
-    Write and fsync a mode-0600 temporary file in the verified bundle directory,
+    Write and fsync a mode-0600 temporary file in the verified destination
+    directory,
     then replace the destination entry without ever opening it. Pre-planted links
     and special files are replaced rather than followed or opened.
     """
@@ -1382,6 +1400,29 @@ def _write_brief(path: Path, text: str) -> None:
         except OSError:
             pass
         raise
+
+
+def _ensure_settings_dir(lesson_dir: Path) -> Path:
+    """Return the bundle's `.claude/` directory, creating it if needed.
+
+    Same posture as :func:`_write_brief` one level up: a pre-planted link or
+    special file on the name is replaced rather than followed, so a link at
+    `<bundle>/.claude` cannot redirect the settings write outside the bundle.
+    A real directory already there is kept — the app owns only `settings.json`
+    inside it, never the directory's other contents.
+    """
+    path = lesson_dir / CLAUDE_DIR_NAME
+    if path.is_symlink() or (path.exists() and not path.is_dir()):
+        os.unlink(path)  # incl. a dangling link: exists() follows and says False
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        # Something took the name between the check and the create. Refuse
+        # rather than write through it; the caller turns this into "no
+        # workspace", which is the safe answer for a bundle under mutation.
+        if path.is_symlink() or not path.is_dir():
+            raise NotADirectoryError(f"{CLAUDE_DIR_NAME} is not a directory")
+    return path
 
 
 def _resolve_terminal_lesson(
@@ -1484,6 +1525,10 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
         _ensure_bundle_manifest(lesson)
         _write_brief(lesson_dir / AGENTS_FILENAME, _AGENTS_TEMPLATE)
         _write_brief(lesson_dir / CLAUDE_FILENAME, _CLAUDE_TEMPLATE)
+        _write_brief(
+            _ensure_settings_dir(lesson_dir) / SETTINGS_FILENAME,
+            _SETTINGS_TEMPLATE,
+        )
     except (OSError, sqlite3.Error, LessonError):
         return None
     # After the briefs: the workspace is ready either way, and a projection
