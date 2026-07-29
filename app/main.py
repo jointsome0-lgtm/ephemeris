@@ -14,24 +14,27 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .db import get_conn, init_db
 from .routers.calendar import router as calendar_router
+from .routers.export import router as export_router
+from .routers.focus import router as focus_router
 from .routers.habits import (
     detail_router as habit_detail_router, items_router, router as habits_router,
     write_router as habit_write_router,
 )
 from .routers.learn import router as learn_router, _learn_url
+from .routers.retro import router as retro_router
 from .routers.tasks import (
     history_router as tasks_history_router, views_router as tasks_views_router,
     write_router as tasks_write_router,
 )
 from .security import install_security
-from .services import checkins, export, focus, items, lessons, lists, retro, runs, tasks
-from .templating import BASE_DIR, _safe_return, _wants_json, _with_flash, templates
+from .services import checkins, items, lessons, lists, runs, tasks
+from .templating import BASE_DIR, templates
 from .terminal import client_is_local, setup_terminal, shutdown_terminal
 
 log = logging.getLogger("activity_ledger")
@@ -152,87 +155,14 @@ app.include_router(calendar_router)
 app.include_router(learn_router)
 
 
-@app.get("/focus")
-def get_focus(request: Request):
-    conn = get_conn()
-    try:
-        ov = focus.overview(conn)
-        records = focus.recent_sessions(conn)
-        lesson_opts = lessons.list_lessons(conn)
-        daily = focus.daily_totals(conn)
-        lesson_focus = focus.lesson_totals(conn)
-    finally:
-        conn.close()
-    return templates.TemplateResponse(request,
-        "focus.html",
-        {"request": request, "rail": "focus", "ov": ov, "records": records,
-         "lessons": lesson_opts, "daily": daily, "lesson_focus": lesson_focus,
-         "focus_streak": focus.focus_day_streak(daily)},
-    )
+# --- Focus (app/routers/focus.py, #24 cut 4) -------------------------------
+# Mounted with no prefix, at the position those routes used to occupy.
+app.include_router(focus_router)
 
 
-@app.post("/focus/session")
-def post_focus_session(
-    request: Request,
-    mode: str = Form("pomo"),
-    seconds: int = Form(...),
-    note: str = Form(""),
-    lesson_id: str = Form(""),
-    return_to: str = Form("/focus"),
-):
-    """Record a finished Pomodoro / stopwatch span. Mode B returns refreshed stats."""
-    json_mode = _wants_json(request)
-    conn = get_conn()
-    try:
-        sid = focus.record_session(conn, mode, seconds, note=note, lesson_id=lesson_id)
-        if json_mode:
-            return JSONResponse({
-                "ok": True,
-                "overview": focus.overview(conn),
-                "record": focus.get_session_view(conn, sid),
-            })
-    except focus.FocusError as exc:
-        if json_mode:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
-        return RedirectResponse(
-            _with_flash(_safe_return(return_to, "/focus"), str(exc)), status_code=303
-        )
-    finally:
-        conn.close()
-    return RedirectResponse(_safe_return(return_to, "/focus"), status_code=303)
-
-
-# --- Export (sec15.4 / sec18.1): event stream + calendar series JSONL backup -
-
-
-@app.get("/export")
-def get_export(request: Request):
-    """One-button export page: shows the event count + recent export files."""
-    conn = get_conn()
-    try:
-        count = export.event_count(conn)
-    finally:
-        conn.close()
-    return templates.TemplateResponse(request,
-        "export.html",
-        {"request": request, "rail": "export",
-         "event_count": count, "recent": export.recent_exports()},
-    )
-
-
-@app.post("/export/jsonl")
-def post_export_jsonl(request: Request):
-    """Write data/exports/events-<stamp>.jsonl AND stream it back as a download."""
-    conn = get_conn()
-    try:
-        path, text, _count = export.export_events(conn)
-    finally:
-        conn.close()
-    return Response(
-        content=text,
-        media_type="application/x-ndjson",
-        headers={"Content-Disposition": f'attachment; filename="{path.name}"'},
-    )
+# --- Export (app/routers/export.py, #24 cut 4) -----------------------------
+# Mounted with no prefix, at the position those routes used to occupy.
+app.include_router(export_router)
 
 
 # --- Habit tab (app/routers/habits.py, #24 cut 2) --------------------------
@@ -266,122 +196,6 @@ app.include_router(habit_write_router)
 app.include_router(items_router)
 
 
-# --- Retro (docs/retro-spec.md, issue #49) ---------------------------------
-# Owner-typed retrospectives over approximate periods; every write journals a
-# full-snapshot event, which is what the future selfos→exp2res adapter consumes
-# from the JSONL export. Write contract follows sec16.4 (Mode A form + Mode B
-# fetch), same as /daily-note.
-
-
-def _retro_redirect(archived: bool = False, flash: str | None = None) -> RedirectResponse:
-    url = "/retro" + ("?archived=1" if archived else "")
-    return RedirectResponse(_with_flash(url, flash) if flash else url, status_code=303)
-
-
-@app.get("/retro")
-def get_retro(request: Request, archived: int = 0, edit: int | None = None,
-              flash: str | None = None):
-    show_archived = bool(archived)
-    conn = get_conn()
-    try:
-        rows = retro.list_entries(conn, include_archived=show_archived)
-        editing = retro.get_entry(conn, edit) if edit is not None else None
-    finally:
-        conn.close()
-    if show_archived:
-        rows = [r for r in rows if r["archived_at"] is not None]
-    return templates.TemplateResponse(request, "retro.html", {
-        "request": request,
-        "rail": "retro",
-        "rows": rows,
-        "show_archived": show_archived,
-        "editing": editing,
-        "precisions": retro.PRECISIONS,
-        "confidences": retro.CONFIDENCES,
-        "flash": flash,
-    })
-
-
-@app.post("/retro")
-def post_retro_create(
-    request: Request,
-    period: str = Form(""),
-    precision: str = Form("month"),
-    confidence: str = Form("medium"),
-    project: str = Form(""),
-    text: str = Form(""),
-):
-    json_mode = _wants_json(request)
-    conn = get_conn()
-    try:
-        row = retro.create_entry(conn, period=period, precision=precision,
-                                 confidence=confidence, project=project, text=text)
-    except retro.RetroError as exc:
-        if json_mode:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
-        return _retro_redirect(flash=str(exc))
-    finally:
-        conn.close()
-    if json_mode:
-        return JSONResponse({"ok": True, "id": row["id"], "uuid": row["uuid"]})
-    return _retro_redirect()
-
-
-@app.post("/retro/{entry_id}/edit")
-def post_retro_edit(
-    request: Request,
-    entry_id: int,
-    period: str = Form(""),
-    precision: str = Form("month"),
-    confidence: str = Form("medium"),
-    project: str = Form(""),
-    text: str = Form(""),
-):
-    json_mode = _wants_json(request)
-    conn = get_conn()
-    try:
-        row = retro.update_entry(conn, entry_id, period=period, precision=precision,
-                                 confidence=confidence, project=project, text=text)
-    except retro.RetroError as exc:
-        if json_mode:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
-        return _retro_redirect(flash=str(exc))
-    finally:
-        conn.close()
-    if json_mode:
-        return JSONResponse({"ok": True, "id": row["id"], "uuid": row["uuid"]})
-    return _retro_redirect()
-
-
-@app.post("/retro/{entry_id}/archive")
-def post_retro_archive(request: Request, entry_id: int):
-    json_mode = _wants_json(request)
-    conn = get_conn()
-    try:
-        retro.archive_entry(conn, entry_id)
-    except retro.RetroError as exc:
-        if json_mode:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
-        return _retro_redirect(flash=str(exc))
-    finally:
-        conn.close()
-    if json_mode:
-        return JSONResponse({"ok": True})
-    return _retro_redirect()
-
-
-@app.post("/retro/{entry_id}/unarchive")
-def post_retro_unarchive(request: Request, entry_id: int):
-    json_mode = _wants_json(request)
-    conn = get_conn()
-    try:
-        retro.unarchive_entry(conn, entry_id)
-    except retro.RetroError as exc:
-        if json_mode:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
-        return _retro_redirect(archived=True, flash=str(exc))
-    finally:
-        conn.close()
-    if json_mode:
-        return JSONResponse({"ok": True})
-    return _retro_redirect(archived=True)
+# --- Retro (app/routers/retro.py, #24 cut 4) -------------------------------
+# Mounted with no prefix, at the position those routes used to occupy.
+app.include_router(retro_router)
