@@ -1,10 +1,12 @@
 """Templating, redirect and shared view helpers used by app/main.py and the routers.
 
 The Jinja environment has one owner so every surface renders with the same
-globals: main.py registers them (`templates.env.globals.update(...)`) and the
-routers import the same object. `_with_flash` / `_safe_return` live here for the
-same reason — the redirect tails of the write contract (sec16.4) are used by
-routes on both sides of the split (#24).
+globals: this module registers them (`templates.env.globals.update(...)`, #24
+cut 3) and the routers import the same object. `client_is_local` is the one
+global still registered by main.py — it comes from app.terminal, which this
+module deliberately does not import. `_with_flash` / `_safe_return` live here
+for the same reason as the rest — the redirect tails of the write contract
+(sec16.4) are used by routes on both sides of the split (#24).
 """
 from __future__ import annotations
 
@@ -15,8 +17,8 @@ from urllib.parse import quote
 from fastapi import HTTPException, Request
 from fastapi.templating import Jinja2Templates
 
-from .db import is_not_future, is_valid_date, today_str
-from .services import checkins, stats
+from .db import get_conn, is_not_future, is_valid_date, pretty_date, today_str
+from .services import checkins, lists, stats, tasks
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -169,3 +171,209 @@ def _habit_detail_ctx(conn, item_id: int, month: str | None, base: str) -> dict 
         "today_note": (today_row["note"] if today_row else "") or "",
         "pane_return": base,
     }
+
+
+# --- shared view helpers + Jinja globals (#24 cut 3) -----------------------
+# Moved verbatim from app/main.py. The display helpers below are registered as
+# Jinja globals right here, so the environment has exactly one owner; the sole
+# exception is `client_is_local`, which comes from app.terminal and is still
+# registered by main.py — this module must not import that surface.
+
+
+def static_url(path: str) -> str:
+    """Versioned URL for a static asset: /static/<path>?v=<mtime>. StaticFiles
+    sends no Cache-Control, so browsers cache heuristically; keying the URL on the
+    file's own mtime forces a refetch after an edit/deploy. A render-time call
+    (not a frozen global), so it stays fresh on a running server, and each asset
+    gets its own token — adding one needs no registry, just {{ static_url(...) }}."""
+    try:
+        v = int((BASE_DIR / "static" / path).stat().st_mtime)
+    except OSError:
+        v = 0
+    return f"/static/{path}?v={v}"
+
+
+# Status display metadata (sec16.5): a distinct glyph per status so state reads
+# without color too. Order = how positive→negative the outcome is.
+STATUS_META = [
+    {"key": "full_done", "label": "Full", "glyph": "✓"},
+    {"key": "light_done", "label": "Light", "glyph": "◐"},
+    {"key": "skipped", "label": "Skip", "glyph": "–"},
+    {"key": "failed", "label": "Fail", "glyph": "✕"},
+]
+_GLYPH = {s["key"]: s["glyph"] for s in STATUS_META}
+
+# Short human description shown as a row's meta line once it's been logged
+# (replaces the redundant group name — the section header already shows that).
+STATUS_DESC = {
+    "full_done": "Done",
+    "light_done": "Light · chain kept",
+    "skipped": "Skipped",
+    "failed": "Missed",
+}
+
+
+def status_glyph(status: str | None) -> str:
+    return _GLYPH.get(status or "", "")
+
+
+def status_desc(status: str | None) -> str:
+    return STATUS_DESC.get(status or "", "")
+
+
+# Emoji avatars derived from the item title (our own mapping; no copied assets).
+_EMOJI_MAP = [
+    (("sleep", "rest", "bed"), "😴"),
+    (("food", "eat", "meal", "breakfast", "lunch", "dinner"), "🍽️"),
+    (("sport", "gym", "workout", "train", "exercise", "show up"), "🏋️"),
+    (("walk",), "🚶"),
+    (("run", "jog"), "🏃"),
+    (("output", "write", "writ", "code", "coding", "build", "ship"), "💻"),
+    (("clean", "tidy", "chore"), "🧹"),
+    (("read", "book"), "📖"),
+    (("study", "learn", "course", "rustlings", "rust", "typescript", "codecrafters"), "📚"),
+    (("water", "hydrate", "drink"), "💧"),
+    (("medit", "mindful", "calm", "breath"), "🧘"),
+    (("journal", "reflect", "review"), "📓"),
+]
+
+
+def item_avatar(title: str) -> dict:
+    """Return an emoji avatar, or a colored letter avatar when nothing matches."""
+    t = title.lower()
+    for keys, emoji in _EMOJI_MAP:
+        if any(k in t for k in keys):
+            return {"emoji": emoji, "letter": None, "hue": 0}
+    letter = (title.strip()[:1] or "?").upper()
+    hue = sum(ord(c) for c in title) % 360
+    return {"emoji": None, "letter": letter, "hue": hue}
+
+
+def due_label(date_str: str | None, today: str | None = None) -> str:
+    """Friendly relative due date for a task row, e.g. Today / Tomorrow / Mon."""
+    if not date_str:
+        return ""
+    today = today or today_str()
+    d = _date.fromisoformat(date_str)
+    delta = (d - _date.fromisoformat(today)).days
+    if delta == 0:
+        return "Today"
+    if delta == 1:
+        return "Tomorrow"
+    if delta == -1:
+        return "Yesterday"
+    if -7 < delta < 0:
+        return f"{-delta}d ago"
+    if 1 < delta <= 7:
+        return d.strftime("%a")
+    if d.year == _date.fromisoformat(today).year:
+        return pretty_date(d)
+    return pretty_date(d, year=True)
+
+
+templates.env.globals.update(
+    static_url=static_url,
+    avatar=item_avatar,
+    status_glyph=status_glyph,
+    status_desc=status_desc,
+    status_meta=STATUS_META,
+    due_label=due_label,
+)
+
+
+# --- day view (shared by Today + History) ----------------------------------
+
+
+def _render_day(request: Request, date: str, nav_active: str, flash: str | None,
+                rail: str = "habit"):
+    conn = get_conn()
+    try:
+        raw_groups = checkins.today_view(conn, date)
+        daily_note = checkins.get_daily_note(conn, date)
+        strip = _week_strip(conn, date)
+        hist = stats.all_histories(conn)
+    finally:
+        conn.close()
+    d = _date.fromisoformat(date)
+    groups = _enrich_groups(raw_groups, hist, strip, _date.fromisoformat(today_str()))
+    total = sum(len(items) for _, items in groups)
+    done = sum(
+        1 for _, items in groups for it in items
+        if it["status"] in ("full_done", "light_done")
+    )
+    return templates.TemplateResponse(request,
+        "habit_day.html",
+        {
+            "request": request,
+            "date": date,
+            "weekday": d.strftime("%A"),
+            "pretty_date": pretty_date(d),
+            "is_today": date == today_str(),
+            "groups": groups,
+            "daily_note": daily_note,
+            "week": strip,
+            "done": done,
+            "total": total,
+            "flash": flash,
+            "nav_active": nav_active,
+            "rail": rail,
+        },
+    )
+
+
+# --- tasks view (Today / lists / smart lists, sec21) -----------------------
+
+
+def _selection_ctx(conn, request: Request, sel: str | None, month: str | None) -> dict:
+    """Parse ?sel=task-N / habit-N into the detail-pane context (or empty)."""
+    none = {"sel": None, "sel_id": None}
+    if not sel:
+        return none
+    kind, _, raw = sel.partition("-")
+    try:
+        sid = int(raw)
+    except ValueError:
+        return none
+    if kind == "task":
+        task = tasks.get_task(conn, sid)
+        if task is None:
+            return none
+        return {"sel": "task", "sel_id": sid, "task": task, "close_url": request.url.path}
+    if kind == "habit":
+        ctx = _habit_detail_ctx(conn, sid, month, f"{request.url.path}?sel=habit-{sid}")
+        if ctx is None:
+            return none
+        ctx.update(sel="habit", sel_id=sid, pane=True, close_url=request.url.path)
+        return ctx
+    return none
+
+
+def _render_tasks(request: Request, conn, *, page_title: str, active: str, sections: list,
+                  show_add: bool, add_list_id=None, add_list_name: str = "",
+                  add_due: str | None = None, add_kind: str = "task",
+                  sel: str | None = None, month: str | None = None,
+                  flash: str | None = None, rail: str = "tasks", pulse=None):
+    """Render tasks.html: list-sidebar + sections + (optional) detail pane."""
+    ctx = {
+        "request": request,
+        "rail": rail,
+        "active": active,
+        "page_title": page_title,
+        "pulse": pulse,
+        "sections": sections,
+        "show_add": show_add,
+        "add_list_id": add_list_id,
+        "add_list_name": add_list_name,
+        "add_due": add_due,
+        "add_kind": add_kind,
+        "today": today_str(),
+        "cur_path": request.url.path,
+        "in_list": active.startswith("list-"),
+        "flash": flash,
+        # list-sidebar
+        "lists": lists.list_lists(conn),
+        "today_count": tasks.today_count(conn),
+        "next7_count": tasks.next7_count(conn),
+    }
+    ctx.update(_selection_ctx(conn, request, sel, month))
+    return templates.TemplateResponse(request,"tasks.html", ctx)
