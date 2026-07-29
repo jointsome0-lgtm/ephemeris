@@ -14,7 +14,7 @@ import threading
 from datetime import date as _vdate
 from pathlib import Path
 
-from conftest import ROOT, check, events_of, item_row
+from conftest import ROOT, events_of, item_row
 
 
 
@@ -78,15 +78,16 @@ def test_assessment_artifact_migration(client, suite_state):
             "PRAGMA user_version").fetchone()[0]
     finally:
         _as_schema_conn.close()
-    check("schema v14 adds lesson_assessments with the D-S1-1 columns",
-          _as_user_version == SCHEMA_VERSION >= 14
-          and _as_cols == {
-              "id", "assessment_id", "event_uuid", "lesson_id", "lesson_uid",
-              "sitting_id", "mode", "idempotency_key", "fingerprint", "kind",
-              "level", "basis", "attempt_id", "question_id", "concepts_json",
-              "note", "next_action", "supersedes", "created_at"}
-          and {"idx_assessments_lesson_kind",
-               "idx_assessments_lesson_seq"} <= _as_indexes)
+    assert (
+        _as_user_version == SCHEMA_VERSION >= 14
+        and _as_cols == {
+            "id", "assessment_id", "event_uuid", "lesson_id", "lesson_uid",
+            "sitting_id", "mode", "idempotency_key", "fingerprint", "kind",
+            "level", "basis", "attempt_id", "question_id", "concepts_json",
+            "note", "next_action", "supersedes", "created_at"}
+        and {"idx_assessments_lesson_kind",
+             "idx_assessments_lesson_seq"} <= _as_indexes
+    ), "schema v14 adds lesson_assessments with the D-S1-1 columns"
 
     # The per-kind CHECKs are schema-level self-enforcement (S-M1): the typed
     # authority must stay structurally valid under restore tooling or a future
@@ -165,22 +166,29 @@ def test_assessment_artifact_migration(client, suite_state):
             kind="retraction", supersedes=str(_as_uuid4()),
             attempt_id=str(_as_uuid4())),
     }
-    check("per-kind CHECK constraints reject rows violating any stated conjunct",
-          _as_valid_seed == "accepted"
-          and all(outcome == "rejected"
-                  for outcome in _as_check_probes.values()),
-          f"{_as_valid_seed} / "
-          + ", ".join(f"{k}={v}" for k, v in _as_check_probes.items()
-                      if v != "rejected"))
+    assert (
+        _as_valid_seed == "accepted"
+        and all(outcome == "rejected"
+                for outcome in _as_check_probes.values())
+    ), (
+        "per-kind CHECK constraints reject rows violating any stated conjunct"
+        + "  -- "
+        + (
+            f"{_as_valid_seed} / "
+            + ", ".join(f"{k}={v}" for k, v in _as_check_probes.items()
+                        if v != "rejected")
+        )
+    )
     _as_taken_uuid = str(_as_uuid4())
     _as_taken_ref = str(_as_uuid4())
-    check("UNIQUE(lesson_id, idempotency_key), event_uuid and assessment_id hold",
-          _as_raw_insert(idempotency_key="raw-dup") == "accepted"
-          and _as_raw_insert(idempotency_key="raw-dup") == "rejected"
-          and _as_raw_insert(event_uuid=_as_taken_uuid) == "accepted"
-          and _as_raw_insert(event_uuid=_as_taken_uuid) == "rejected"
-          and _as_raw_insert(assessment_id=_as_taken_ref) == "accepted"
-          and _as_raw_insert(assessment_id=_as_taken_ref) == "rejected")
+    assert (
+        _as_raw_insert(idempotency_key="raw-dup") == "accepted"
+        and _as_raw_insert(idempotency_key="raw-dup") == "rejected"
+        and _as_raw_insert(event_uuid=_as_taken_uuid) == "accepted"
+        and _as_raw_insert(event_uuid=_as_taken_uuid) == "rejected"
+        and _as_raw_insert(assessment_id=_as_taken_ref) == "accepted"
+        and _as_raw_insert(assessment_id=_as_taken_ref) == "rejected"
+    ), "UNIQUE(lesson_id, idempotency_key), event_uuid and assessment_id hold"
 
     # one recorded attempt to diagnose: the lesson needs a declared question
     _as_dir = Path(lessons_svc.LESSONS_DIR) / _as["slug"]
@@ -228,24 +236,27 @@ def test_assessment_artifact_migration(client, suite_state):
     _as_r1 = c.post(_as_url, json=_as_review_body)
     _as_j1 = _as_r1.json()
     _as_row1 = _as_rows()[0]
-    check("review recorded: durable row, seq is the rowid, state projected",
-          _as_r1.status_code == 200 and _as_j1["result"] == "recorded"
-          and _as_j1["assessment_id"] == _as_row1["assessment_id"]
-          and _as_j1["seq"] == _as_row1["id"]
-          and _as_j1["projection"] == "projected"
-          and _as_row1["fingerprint"].startswith("sha256:")
-          and _as_row1["mode"] == "tutoring"
-          and _as_row1["created_at"].endswith("+00:00")
-          and len(_as_row1["created_at"].split(".")[-1]) == len("000000+00:00"))
-    check("question_id is copied from the attempt row; sitting_id stays NULL",
-          _as_row1["question_id"] == "q_asfirst001"
-          and _as_row1["attempt_id"] == _as_attempt_id
-          and _as_row1["sitting_id"] is None
-          and _as_row1["lesson_uid"] == _as["uid"])
+    assert (
+        _as_r1.status_code == 200 and _as_j1["result"] == "recorded"
+        and _as_j1["assessment_id"] == _as_row1["assessment_id"]
+        and _as_j1["seq"] == _as_row1["id"]
+        and _as_j1["projection"] == "projected"
+        and _as_row1["fingerprint"].startswith("sha256:")
+        and _as_row1["mode"] == "tutoring"
+        and _as_row1["created_at"].endswith("+00:00")
+        and len(_as_row1["created_at"].split(".")[-1]) == len("000000+00:00")
+    ), "review recorded: durable row, seq is the rowid, state projected"
+    assert (
+        _as_row1["question_id"] == "q_asfirst001"
+        and _as_row1["attempt_id"] == _as_attempt_id
+        and _as_row1["sitting_id"] is None
+        and _as_row1["lesson_uid"] == _as["uid"]
+    ), "question_id is copied from the attempt row; sitting_id stays NULL"
     _as_ev = _as_events()
     _as_ev1 = json.loads(_as_ev[-1]["payload_json"])
-    check("row and lesson_assessment event share one txn + event uuid",
-          len(_as_ev) == 1 and _as_ev[-1]["uuid"] == _as_row1["event_uuid"])
+    assert (
+        len(_as_ev) == 1 and _as_ev[-1]["uuid"] == _as_row1["event_uuid"]
+    ), "row and lesson_assessment event share one txn + event uuid"
     # ...and the transaction is real in both directions: a failing ledger append
     # must leave no orphan authority row (a matching uuid alone would also hold
     # if the row were committed first)
@@ -260,32 +271,35 @@ def test_assessment_artifact_migration(client, suite_state):
                 "idempotency_key": "vera-as-atomic-1"})
         except sqlite3.OperationalError as exc:
             _as_atomic_raised = exc
-    check("a failing ledger append rolls the assessment row back",
-          all(r["idempotency_key"] != "vera-as-atomic-1" for r in _as_rows())
-          and len(_as_rows()) == 1 and len(_as_events()) == 1)
-    check("lesson_assessment payload echoes the full D-S1-1 field list",
-          list(_as_ev1.keys()) == [
-              "lesson_uid", "lesson_id", "slug", "assessment_id", "seq",
-              "kind", "mode", "sitting_id", "level", "basis", "attempt_id",
-              "question_id", "concepts", "note", "next_action", "supersedes",
-              "created_at"]
-          and _as_ev1["lesson_uid"] == _as["uid"] and _as_ev1["lesson_id"] == _as_id
-          and _as_ev1["slug"] == _as["slug"] and _as_ev1["seq"] == _as_row1["id"]
-          and _as_ev1["question_id"] == "q_asfirst001"
-          and _as_ev1["sitting_id"] is None and _as_ev1["mode"] == "tutoring"
-          and _as_ev1["note"] == _as_review_body["note"]
-          and "title" not in _as_ev1 and "fingerprint" not in _as_ev1)
+    assert (
+        all(r["idempotency_key"] != "vera-as-atomic-1" for r in _as_rows())
+        and len(_as_rows()) == 1 and len(_as_events()) == 1
+    ), "a failing ledger append rolls the assessment row back"
+    assert (
+        list(_as_ev1.keys()) == [
+            "lesson_uid", "lesson_id", "slug", "assessment_id", "seq",
+            "kind", "mode", "sitting_id", "level", "basis", "attempt_id",
+            "question_id", "concepts", "note", "next_action", "supersedes",
+            "created_at"]
+        and _as_ev1["lesson_uid"] == _as["uid"] and _as_ev1["lesson_id"] == _as_id
+        and _as_ev1["slug"] == _as["slug"] and _as_ev1["seq"] == _as_row1["id"]
+        and _as_ev1["question_id"] == "q_asfirst001"
+        and _as_ev1["sitting_id"] is None and _as_ev1["mode"] == "tutoring"
+        and _as_ev1["note"] == _as_review_body["note"]
+        and "title" not in _as_ev1 and "fingerprint" not in _as_ev1
+    ), "lesson_assessment payload echoes the full D-S1-1 field list"
 
     # idempotency (D-S1-3): the fingerprint is the whole validated submission
     _as_replay = c.post(_as_url, json=_as_review_body)
     _as_null_replay = c.post(_as_url, json=dict(
         _as_review_body, basis=None, next_action=None, supersedes=None))
-    check("replay returns the original assessment_id/seq and writes nothing",
-          _as_replay.status_code == 200
-          and _as_replay.json() == dict(_as_j1, result="duplicate")
-          # an explicit null reads as absent, so it fingerprints identically
-          and _as_null_replay.json() == dict(_as_j1, result="duplicate")
-          and len(_as_rows()) == 1 and len(_as_events()) == 1)
+    assert (
+        _as_replay.status_code == 200
+        and _as_replay.json() == dict(_as_j1, result="duplicate")
+        # an explicit null reads as absent, so it fingerprints identically
+        and _as_null_replay.json() == dict(_as_j1, result="duplicate")
+        and len(_as_rows()) == 1 and len(_as_events()) == 1
+    ), "replay returns the original assessment_id/seq and writes nothing"
     # every validated field is part of what the key identifies: a regression
     # that dropped one from the canonical form would silently coalesce a
     # DIFFERENT judgment into the original row
@@ -326,15 +340,21 @@ def test_assessment_artifact_migration(client, suite_state):
         "supersedes": c.post(_as_fp_url, json=dict(
             _as_ev_conflicts["supersedes"], supersedes=_as_j1["assessment_id"])),
     }
-    check("every validated field is in the fingerprint: any change conflicts",
-          all(resp.status_code == 409
-              and resp.json()["error"] == "idempotency-conflict"
-              for resp in list(_as_conflict_out.values())
-              + list(_as_ev_conflict_out.values())),
-          ", ".join(f"{name}={resp.status_code}/{resp.json().get('error')}"
-                    for name, resp in list(_as_conflict_out.items())
-                    + list(_as_ev_conflict_out.items())
-                    if resp.json().get("error") != "idempotency-conflict"))
+    assert (
+        all(resp.status_code == 409
+            and resp.json()["error"] == "idempotency-conflict"
+            for resp in list(_as_conflict_out.values())
+            + list(_as_ev_conflict_out.values()))
+    ), (
+        "every validated field is in the fingerprint: any change conflicts"
+        + "  -- "
+        + (
+            ", ".join(f"{name}={resp.status_code}/{resp.json().get('error')}"
+                      for name, resp in list(_as_conflict_out.items())
+                      + list(_as_ev_conflict_out.items())
+                      if resp.json().get("error") != "idempotency-conflict")
+        )
+    )
 
     # closed vocabularies and per-kind shape: distinct code each, nothing coerced
     def _as_error(body):
@@ -414,13 +434,19 @@ def test_assessment_artifact_migration(client, suite_state):
         "invalid-supersedes (not a uuid)": "invalid-supersedes",
         "invalid-idempotency-key": "invalid-idempotency-key",
     }
-    check("every vocabulary/shape violation gets its own distinct code",
-          all(_as_refusals[label].get("error") == code
-              for label, code in _as_expected.items())
-          and len(_as_rows()) == 1,
-          ", ".join(f"{label}={_as_refusals[label].get('error')}"
-                    for label, code in _as_expected.items()
-                    if _as_refusals[label].get("error") != code))
+    assert (
+        all(_as_refusals[label].get("error") == code
+            for label, code in _as_expected.items())
+        and len(_as_rows()) == 1
+    ), (
+        "every vocabulary/shape violation gets its own distinct code"
+        + "  -- "
+        + (
+            ", ".join(f"{label}={_as_refusals[label].get('error')}"
+                      for label, code in _as_expected.items()
+                      if _as_refusals[label].get("error") != code)
+        )
+    )
     # Drain L1: JSON accepts an escaped lone surrogate in an object key. It is
     # still just an unknown field, and the refusal detail must remain encodable
     # rather than turning JSONResponse construction into an application error.
@@ -435,21 +461,23 @@ def test_assessment_artifact_migration(client, suite_state):
         f"/learn/lessons/by-slug/{_as['slug']}/assessments",
         content=_as_surrogate_body,
         headers={"content-type": "application/json"})
-    check("assessment aliases return a UTF-8-safe unknown-field refusal",
-          _as_surrogate_id.status_code == 400
-          and _as_surrogate_slug.status_code == 400
-          and _as_surrogate_id.json() == _as_surrogate_slug.json()
-          and _as_surrogate_id.json()["error"] == "unknown-field"
-          and _as_surrogate_id.json()["detail"] == r"unknown fields: \ud800"
-          and len(_as_rows()) == 1)
-    check("note over 8 KiB and next_action over 512 B have their own codes",
-          _as_error({"kind": "summary",
-                     "note": "x" * (assess_svc.MAX_NOTE_BYTES + 1)}
-                    ).get("error") == "note-too-large"
-          and _as_error({
-              "kind": "summary", "note": _as_note,
-              "next_action": "x" * (assess_svc.MAX_NEXT_ACTION_BYTES + 1)}
-          ).get("error") == "next-action-too-large")
+    assert (
+        _as_surrogate_id.status_code == 400
+        and _as_surrogate_slug.status_code == 400
+        and _as_surrogate_id.json() == _as_surrogate_slug.json()
+        and _as_surrogate_id.json()["error"] == "unknown-field"
+        and _as_surrogate_id.json()["detail"] == r"unknown fields: \ud800"
+        and len(_as_rows()) == 1
+    ), "assessment aliases return a UTF-8-safe unknown-field refusal"
+    assert (
+        _as_error({"kind": "summary",
+                   "note": "x" * (assess_svc.MAX_NOTE_BYTES + 1)}
+                  ).get("error") == "note-too-large"
+        and _as_error({
+            "kind": "summary", "note": _as_note,
+            "next_action": "x" * (assess_svc.MAX_NEXT_ACTION_BYTES + 1)}
+        ).get("error") == "next-action-too-large"
+    ), "note over 8 KiB and next_action over 512 B have their own codes"
 
     # references are validated against THIS lesson: an attempt or an assessment
     # of another lesson is unknown here, never a cross-lesson write
@@ -461,11 +489,12 @@ def test_assessment_artifact_migration(client, suite_state):
         "note": _as_note})
     _as_unknown_sup = _as_error({
         "kind": "retraction", "supersedes": str(_as_uuid4()), "note": _as_note})
-    check("attempt/supersedes references are scoped to the lesson (422)",
-          _as_foreign.get("error") == "unknown-attempt"
-          and _as_unknown_att.get("error") == "unknown-attempt"
-          and _as_unknown_sup.get("error") == "unknown-supersedes"
-          and len(_as_rows()) == 1)
+    assert (
+        _as_foreign.get("error") == "unknown-attempt"
+        and _as_unknown_att.get("error") == "unknown-attempt"
+        and _as_unknown_sup.get("error") == "unknown-supersedes"
+        and len(_as_rows()) == 1
+    ), "attempt/supersedes references are scoped to the lesson (422)"
 
     # evidence: server-side concept dedup, basis recorded, level from its own
     # vocabulary; `live` grounds any level including `passed` (owner decision 2)
@@ -475,22 +504,24 @@ def test_assessment_artifact_migration(client, suite_state):
         "note": "Vera Example: explained the boundary out loud, unprompted.",
         "idempotency_key": "vera-as-ev-1"})
     _as_ev_row = _as_rows()[-1]
-    check("evidence records basis and deduplicates concepts server-side",
-          _as_ev_resp.status_code == 200
-          and json.loads(_as_ev_row["concepts_json"]) == ["loops", "off-by-one"]
-          and _as_ev_row["basis"] == "live" and _as_ev_row["level"] == "passed"
-          and _as_ev_row["id"] > _as_row1["id"])
+    assert (
+        _as_ev_resp.status_code == 200
+        and json.loads(_as_ev_row["concepts_json"]) == ["loops", "off-by-one"]
+        and _as_ev_row["basis"] == "live" and _as_ev_row["level"] == "passed"
+        and _as_ev_row["id"] > _as_row1["id"]
+    ), "evidence records basis and deduplicates concepts server-side"
     _as_exam = c.post(_as_url, json={
         "kind": "summary", "mode": "exam",
         "concepts": ["loops"],
         "note": "Vera Example: check-up covered iteration bounds.",
         "next_action": "Move on to slices.",
         "idempotency_key": "vera-as-sum-1"})
-    check("summary carries mode=exam and an optional next_action",
-          _as_exam.status_code == 200
-          and _as_rows()[-1]["mode"] == "exam"
-          and _as_rows()[-1]["next_action"] == "Move on to slices."
-          and _as_rows()[-1]["level"] is None)
+    assert (
+        _as_exam.status_code == 200
+        and _as_rows()[-1]["mode"] == "exam"
+        and _as_rows()[-1]["next_action"] == "Move on to slices."
+        and _as_rows()[-1]["level"] is None
+    ), "summary carries mode=exam and an optional next_action"
 
     # NOT bridge-gated (D-S1-4): the legacy and rejected-manifest bundles that
     # refuse ATTEMPT writes must still accept the tutor's memory
@@ -502,18 +533,20 @@ def test_assessment_artifact_migration(client, suite_state):
         "concepts": ["goroutines"],
         "note": "Vera Example: covered in the terminal, manifest is broken.",
         "idempotency_key": "vera-as-rejected-1"})
-    check("legacy and rejected-manifest lessons still record assessments",
-          _as_legacy.status_code == 200
-          and _as_legacy.json()["result"] == "recorded"
-          and _as_rejected.status_code == 200
-          and _as_rejected.json()["result"] == "recorded")
-    check("unknown lesson id and slug both 404",
-          c.post("/learn/lessons/999999/assessments", json={
-              "kind": "summary", "note": _as_note,
-              "idempotency_key": "vera-as-404"}).status_code == 404
-          and c.post("/learn/lessons/by-slug/no-such-lesson/assessments", json={
-              "kind": "summary", "note": _as_note,
-              "idempotency_key": "vera-as-404"}).status_code == 404)
+    assert (
+        _as_legacy.status_code == 200
+        and _as_legacy.json()["result"] == "recorded"
+        and _as_rejected.status_code == 200
+        and _as_rejected.json()["result"] == "recorded"
+    ), "legacy and rejected-manifest lessons still record assessments"
+    assert (
+        c.post("/learn/lessons/999999/assessments", json={
+            "kind": "summary", "note": _as_note,
+            "idempotency_key": "vera-as-404"}).status_code == 404
+        and c.post("/learn/lessons/by-slug/no-such-lesson/assessments", json={
+            "kind": "summary", "note": _as_note,
+            "idempotency_key": "vera-as-404"}).status_code == 404
+    ), "unknown lesson id and slug both 404"
 
     # archived lessons refuse (D-S1-4) — but a replay of an already-durable
     # write still returns its outcome: replay precedes mutable-state refusals
@@ -531,14 +564,15 @@ def test_assessment_artifact_migration(client, suite_state):
     _as_arch_new = c.post(_as_arch_url, json=dict(
         _as_arch_body, idempotency_key="vera-as-arch-2"))
     _as_arch_replay = c.post(_as_arch_url, json=_as_arch_body)
-    check("archived lesson refuses new writes but still answers replays",
-          _as_arch_first.status_code == 200 and _as_arch_view["archived"]
-          and _as_arch_new.status_code == 409
-          and _as_arch_new.json()["error"] == "lesson-archived"
-          and _as_arch_replay.status_code == 200
-          and _as_arch_replay.json() == dict(
-              _as_arch_first.json(), result="duplicate")
-          and len(_as_rows(_as_arch_id)) == 1)
+    assert (
+        _as_arch_first.status_code == 200 and _as_arch_view["archived"]
+        and _as_arch_new.status_code == 409
+        and _as_arch_new.json()["error"] == "lesson-archived"
+        and _as_arch_replay.status_code == 200
+        and _as_arch_replay.json() == dict(
+            _as_arch_first.json(), result="duplicate")
+        and len(_as_rows(_as_arch_id)) == 1
+    ), "archived lesson refuses new writes but still answers replays"
 
     # PR #85 round 1: the caller's lesson view is a snapshot. The archive can
     # commit between the handler's read and the insert (the owner archives in
@@ -560,10 +594,11 @@ def test_assessment_artifact_migration(client, suite_state):
             _as_stale_refusal = exc.code
     finally:
         _as_stale_conn.close()
-    check("a lesson archived after the handler's read still refuses the write",
-          _as_stale_view["archived"] is False
-          and _as_stale_refusal == "lesson-archived"
-          and len(_as_rows(_as_stale_id)) == 0)
+    assert (
+        _as_stale_view["archived"] is False
+        and _as_stale_refusal == "lesson-archived"
+        and len(_as_rows(_as_stale_id)) == 0
+    ), "a lesson archived after the handler's read still refuses the write"
 
     # PR #85 round 1: the fold's deactivation lookup is correlated — without an
     # index on (lesson_id, supersedes) it rescans the lesson's whole history
@@ -574,19 +609,26 @@ def test_assessment_artifact_migration(client, suite_state):
             "EXPLAIN QUERY PLAN " + assess_svc.ACTIVE_ROWS_SQL, (_as_fold_id,))]
     finally:
         _as_plan_conn.close()
-    check("the active fold's supersedes lookup is index-bounded",
-          any("idx_assessments_lesson_supersedes" in detail
-              for detail in _as_plan),
-          " | ".join(_as_plan))
+    assert (
+        any("idx_assessments_lesson_supersedes" in detail
+            for detail in _as_plan)
+    ), (
+        "the active fold's supersedes lookup is index-bounded"
+        + "  -- "
+        + (
+            " | ".join(_as_plan)
+        )
+    )
 
     # slug alias shares the handler
     _as_slug = c.post(f"/learn/lessons/by-slug/{_as['slug']}/assessments", json={
         "kind": "summary", "note": "Vera Example: recorded through the alias.",
         "idempotency_key": "vera-as-slug-1"})
-    check("slug-alias route records against the same lesson",
-          _as_slug.status_code == 200
-          and _as_slug.json()["result"] == "recorded"
-          and _as_rows()[-1]["lesson_uid"] == _as["uid"])
+    assert (
+        _as_slug.status_code == 200
+        and _as_slug.json()["result"] == "recorded"
+        and _as_rows()[-1]["lesson_uid"] == _as["uid"]
+    ), "slug-alias route records against the same lesson"
 
     # active-state fold (D-S1-2) on its own lesson: latest active evidence per
     # concept, latest active review per attempt, latest active summary
@@ -624,19 +666,20 @@ def test_assessment_artifact_migration(client, suite_state):
         _as_active = assess_svc.active_rows(_as_fold_conn, _as_fold_id)
     finally:
         _as_fold_conn.close()
-    check("active fold: retracted/superseded rows drop out, latest wins by seq",
-          [row["assessment_id"] for row in _as_active] == [
-              _as_f_ev1["assessment_id"], _as_f_sum2["assessment_id"],
-              _as_f_retract["assessment_id"], _as_f_ev3["assessment_id"]]
-          and set(_as_state["evidence_by_concept"]) == {"slices", "capacity"}
-          # slices: the later of two ACTIVE rows; capacity: falls back to the
-          # earlier one because the later was retracted
-          and _as_state["evidence_by_concept"]["slices"]["assessment_id"]
-          == _as_f_ev3["assessment_id"]
-          and _as_state["evidence_by_concept"]["capacity"]["assessment_id"]
-          == _as_f_ev1["assessment_id"]
-          and _as_state["summary"]["assessment_id"] == _as_f_sum2["assessment_id"]
-          and _as_state["reviews_by_attempt"] == {})
+    assert (
+        [row["assessment_id"] for row in _as_active] == [
+            _as_f_ev1["assessment_id"], _as_f_sum2["assessment_id"],
+            _as_f_retract["assessment_id"], _as_f_ev3["assessment_id"]]
+        and set(_as_state["evidence_by_concept"]) == {"slices", "capacity"}
+        # slices: the later of two ACTIVE rows; capacity: falls back to the
+        # earlier one because the later was retracted
+        and _as_state["evidence_by_concept"]["slices"]["assessment_id"]
+        == _as_f_ev3["assessment_id"]
+        and _as_state["evidence_by_concept"]["capacity"]["assessment_id"]
+        == _as_f_ev1["assessment_id"]
+        and _as_state["summary"]["assessment_id"] == _as_f_sum2["assessment_id"]
+        and _as_state["reviews_by_attempt"] == {}
+    ), "active fold: retracted/superseded rows drop out, latest wins by seq"
 
     # latest ACTIVE review per attempt, on the lesson that has a real attempt
     _as_rev2 = c.post(_as_url, json={
@@ -653,19 +696,21 @@ def test_assessment_artifact_migration(client, suite_state):
         _as_rev_state = assess_svc.active_state(_as_rev_conn, _as_id)
     finally:
         _as_rev_conn.close()
-    check("latest ACTIVE review per attempt wins over earlier and superseded",
-          set(_as_rev_state["reviews_by_attempt"]) == {_as_attempt_id}
-          and _as_rev_state["reviews_by_attempt"][_as_attempt_id][
-              "assessment_id"] == _as_rev3["assessment_id"]
-          # neither the first review nor the superseded second may win
-          and _as_rev3["assessment_id"] not in (
-              _as_j1["assessment_id"], _as_rev2["assessment_id"]))
-    check("supersedes is validated against the same lesson (422 across lessons)",
-          c.post(_as_fold_url, json={
-              "kind": "retraction", "supersedes": _as_j1["assessment_id"],
-              "note": "Vera Example: wrong lesson.",
-              "idempotency_key": "fold-cross"}).json().get(
-                  "error") == "unknown-supersedes")
+    assert (
+        set(_as_rev_state["reviews_by_attempt"]) == {_as_attempt_id}
+        and _as_rev_state["reviews_by_attempt"][_as_attempt_id][
+            "assessment_id"] == _as_rev3["assessment_id"]
+        # neither the first review nor the superseded second may win
+        and _as_rev3["assessment_id"] not in (
+            _as_j1["assessment_id"], _as_rev2["assessment_id"])
+    ), "latest ACTIVE review per attempt wins over earlier and superseded"
+    assert (
+        c.post(_as_fold_url, json={
+            "kind": "retraction", "supersedes": _as_j1["assessment_id"],
+            "note": "Vera Example: wrong lesson.",
+            "idempotency_key": "fold-cross"}).json().get(
+                "error") == "unknown-supersedes"
+    ), "supersedes is validated against the same lesson (422 across lessons)"
 
     # rate limit + refund table (D-S1-3): replays are not new writes
     _as_rate_url = f"/learn/lessons/{_as_fold_id}/assessments"
@@ -689,18 +734,19 @@ def test_assessment_artifact_migration(client, suite_state):
     _as_rate_replay_over = c.post(_as_rate_url, json={
         "kind": "summary", "note": "Vera Example: rate window seed.",
         "idempotency_key": "rate-seed"})
-    check("rate limit is 30/60s per lesson; replays cost no window budget",
-          _as_rate_first.status_code == 200
-          and _as_rate_replay.json()["result"] == "duplicate"
-          # without the refund this write would have been the 31st charge
-          and _as_rate_last.status_code == 200
-          and _as_rate_last.json()["result"] == "recorded"
-          and _as_rate_over.status_code == 429
-          and _as_rate_over.json()["error"] == "rate-limited"
-          and _as_rate_over.headers.get("Retry-After") == "60"
-          # replay precedes the rate limit: a retry never loses its outcome
-          and _as_rate_replay_over.status_code == 200
-          and _as_rate_replay_over.json()["result"] == "duplicate")
+    assert (
+        _as_rate_first.status_code == 200
+        and _as_rate_replay.json()["result"] == "duplicate"
+        # without the refund this write would have been the 31st charge
+        and _as_rate_last.status_code == 200
+        and _as_rate_last.json()["result"] == "recorded"
+        and _as_rate_over.status_code == 429
+        and _as_rate_over.json()["error"] == "rate-limited"
+        and _as_rate_over.headers.get("Retry-After") == "60"
+        # replay precedes the rate limit: a retry never loses its outcome
+        and _as_rate_replay_over.status_code == 200
+        and _as_rate_replay_over.json()["result"] == "duplicate"
+    ), "rate limit is 30/60s per lesson; replays cost no window budget"
     assess_svc._reset_rate_limit()
 
     # The refund table proper: the checks above only prove that a replay found
@@ -728,57 +774,69 @@ def test_assessment_artifact_migration(client, suite_state):
             assess_svc, "_replay_or_conflict", _as_late_replay):
         _as_refund_late = c.post(_as_url, json=_as_refund_body)
     _as_window_after = len(assess_svc._rate.get(_as_id, ()))
-    check("a replay that only surfaces under the write lock refunds its slot",
-          _as_refund_first.json()["result"] == "recorded"
-          and _as_replay_calls["n"] >= 2
-          and _as_refund_late.status_code == 200
-          and _as_refund_late.json() == dict(
-              _as_refund_first.json(), result="duplicate")
-          and _as_window_before == 1 and _as_window_after == 1,
-          f"calls={_as_replay_calls['n']} "
-          f"window {_as_window_before}->{_as_window_after}")
+    assert (
+        _as_refund_first.json()["result"] == "recorded"
+        and _as_replay_calls["n"] >= 2
+        and _as_refund_late.status_code == 200
+        and _as_refund_late.json() == dict(
+            _as_refund_first.json(), result="duplicate")
+        and _as_window_before == 1 and _as_window_after == 1
+    ), (
+        "a replay that only surfaces under the write lock refunds its slot"
+        + "  -- "
+        + (
+            f"calls={_as_replay_calls['n']} "
+            f"window {_as_window_before}->{_as_window_after}"
+        )
+    )
     assess_svc._reset_rate_limit()
 
     # body admission (64 KiB) and the B2 write guard
-    check("assessment route sits behind the B2 write guard (Origin null / cross)",
-          c.post(_as_url, json=_as_review_body,
-                 headers={"Origin": "null"}).status_code == 403
-          and c.post(_as_url, json=_as_review_body,
-                     headers={"Origin": "http://evil.example"}).status_code == 403
-          and c.post(_as_url, json=_as_review_body,
-                     headers={"Origin": "http://testserver"}).status_code == 200)
-    check("body admission: 415 / 413 / invalid-json / non-object",
-          c.post(_as_url, content=b"kind=summary",
-                 headers={"content-type": "application/x-www-form-urlencoded"}
-                 ).status_code == 415
-          and c.post(_as_url, content=b"{" + b" " * (80 * 1024),
-                     headers={"content-type": "application/json"}
-                     ).status_code == 413
-          and c.post(_as_url, content=b"not json {",
-                     headers={"content-type": "application/json"}
-                     ).json()["error"] == "invalid-json"
-          and c.post(_as_url, json=[1, 2, 3]).json()["error"] == "invalid-json"
-          and c.post(_as_url, content=b"[" * 20000 + b"]" * 20000,
-                     headers={"content-type": "application/json"}
-                     ).json()["error"] == "invalid-json")
+    assert (
+        c.post(_as_url, json=_as_review_body,
+               headers={"Origin": "null"}).status_code == 403
+        and c.post(_as_url, json=_as_review_body,
+                   headers={"Origin": "http://evil.example"}).status_code == 403
+        and c.post(_as_url, json=_as_review_body,
+                   headers={"Origin": "http://testserver"}).status_code == 200
+    ), "assessment route sits behind the B2 write guard (Origin null / cross)"
+    assert (
+        c.post(_as_url, content=b"kind=summary",
+               headers={"content-type": "application/x-www-form-urlencoded"}
+               ).status_code == 415
+        and c.post(_as_url, content=b"{" + b" " * (80 * 1024),
+                   headers={"content-type": "application/json"}
+                   ).status_code == 413
+        and c.post(_as_url, content=b"not json {",
+                   headers={"content-type": "application/json"}
+                   ).json()["error"] == "invalid-json"
+        and c.post(_as_url, json=[1, 2, 3]).json()["error"] == "invalid-json"
+        and c.post(_as_url, content=b"[" * 20000 + b"]" * 20000,
+                   headers={"content-type": "application/json"}
+                   ).json()["error"] == "invalid-json"
+    ), "body admission: 415 / 413 / invalid-json / non-object"
     _as_stream = _at_asyncio.run(_at_direct_asgi(
         _as_url, 1, [b"x" * (16 * 1024) for _ in range(8)]))
     _as_stream_slug = _at_asyncio.run(_at_direct_asgi(
         f"/learn/lessons/by-slug/{_as['slug']}/assessments", 1,
         [b"x" * (16 * 1024) for _ in range(8)]))
     _as_negative = _at_asyncio.run(_at_direct_asgi(_as_url, -1, [b"{}"]))
-    check("assessment aliases abort dishonest bodies mid-stream, reject "
-          "negative Content-Length",
-          _as_stream == (413, 5) and _as_stream_slug == (413, 5)
-          and _as_negative == (400, 0))
+    assert (
+        _as_stream == (413, 5) and _as_stream_slug == (413, 5)
+        and _as_negative == (400, 0)
+    ), (
+        "assessment aliases abort dishonest bodies mid-stream, reject "
+        "negative Content-Length"
+    )
 
     # recovery posture (S-M6): the export is an audit feed, not recovery —
     # restore keeps `lesson_assessment` as audit and never rebuilds the table
     _as_restore_src = (
         ROOT / "scripts" / "restore_from_export.py").read_text(encoding="utf-8")
-    check("restore tooling does not reconstruct lesson_assessments",
-          "lesson_assessment" not in _as_restore_src
-          and "lesson_assessments" not in _as_restore_src)
+    assert (
+        "lesson_assessment" not in _as_restore_src
+        and "lesson_assessments" not in _as_restore_src
+    ), "restore tooling does not reconstruct lesson_assessments"
 
     # ---- S3: the write capability at the endpoint (D-S1-3 / D-S2-2) ---------
     # The registry itself is the terminal module's (its session lifecycle is
@@ -836,18 +894,20 @@ def test_assessment_artifact_migration(client, suite_state):
             "ORDER BY id DESC LIMIT 1").fetchone()["payload_json"])
     finally:
         _s3_ev_conn.close()
-    check("a live capability stamps the sitting server-side, row and event",
-          _s3_recorded["result"] == "recorded"
-          and _s3_stamped["sitting_id"] == "verify-sitting-a"
-          and _s3_event["sitting_id"] == "verify-sitting-a"
-          and _s3_event["assessment_id"] == _s3_recorded["assessment_id"])
+    assert (
+        _s3_recorded["result"] == "recorded"
+        and _s3_stamped["sitting_id"] == "verify-sitting-a"
+        and _s3_event["sitting_id"] == "verify-sitting-a"
+        and _s3_event["assessment_id"] == _s3_recorded["assessment_id"]
+    ), "a live capability stamps the sitting server-side, row and event"
     _s3_body_claim = _s3_post({
         "kind": "summary", "sitting_id": "claimed-by-the-body",
         "note": "Vera Example: body-supplied sitting.",
         "idempotency_key": "vera-s3-claim-1"}, _s3_cap["token"])
-    check("the body can never claim a sitting (unknown field, strict)",
-          _s3_body_claim.status_code == 400
-          and _s3_body_claim.json()["error"] == "unknown-field")
+    assert (
+        _s3_body_claim.status_code == 400
+        and _s3_body_claim.json()["error"] == "unknown-field"
+    ), "the body can never claim a sitting (unknown field, strict)"
     _s3_mismatch = _s3_post({
         "kind": "summary", "note": "Vera Example: wrong lesson.",
         "idempotency_key": "vera-s3-mismatch-1"}, _s3_foreign["token"])
@@ -857,25 +917,27 @@ def test_assessment_artifact_migration(client, suite_state):
     _s3_empty = _s3_post({
         "kind": "summary", "note": "Vera Example: empty header.",
         "idempotency_key": "vera-s3-empty-1"}, "   ")
-    check("a foreign, unknown, or empty capability refuses with its own code",
-          _s3_mismatch.status_code == 409
-          and _s3_mismatch.json()["error"] == "capability-lesson-mismatch"
-          and _s3_unknown.status_code == 403
-          and _s3_unknown.json()["error"] == "invalid-capability"
-          and _s3_empty.status_code == 403
-          and _s3_empty.json()["error"] == "invalid-capability"
-          and all(k not in [r["idempotency_key"] for r in _as_rows(_s3_les_id)]
-                  for k in ("vera-s3-mismatch-1", "vera-s3-unknown-1",
-                            "vera-s3-empty-1")))
+    assert (
+        _s3_mismatch.status_code == 409
+        and _s3_mismatch.json()["error"] == "capability-lesson-mismatch"
+        and _s3_unknown.status_code == 403
+        and _s3_unknown.json()["error"] == "invalid-capability"
+        and _s3_empty.status_code == 403
+        and _s3_empty.json()["error"] == "invalid-capability"
+        and all(k not in [r["idempotency_key"] for r in _as_rows(_s3_les_id)]
+                for k in ("vera-s3-mismatch-1", "vera-s3-unknown-1",
+                          "vera-s3-empty-1"))
+    ), "a foreign, unknown, or empty capability refuses with its own code"
     # The by-slug alias resolves the same capability against the same lesson.
     _s3_slug = _s3_post({
         "kind": "summary", "note": "Vera Example: alias sitting.",
         "idempotency_key": "vera-s3-alias-1"}, _s3_cap["token"],
         url=f"/learn/lessons/by-slug/{_s3_les['slug']}/assessments").json()
-    check("the by-slug alias derives the same sitting",
-          _s3_slug["result"] == "recorded"
-          and _s3_row(_s3_slug["assessment_id"])["sitting_id"]
-          == "verify-sitting-a")
+    assert (
+        _s3_slug["result"] == "recorded"
+        and _s3_row(_s3_slug["assessment_id"])["sitting_id"]
+        == "verify-sitting-a"
+    ), "the by-slug alias derives the same sitting"
     # One ACTIVE summary per sitting: a second must supersede the first.
     _s3_second = _s3_post({
         "kind": "summary", "note": "Vera Example: a second synthesis.",
@@ -885,12 +947,13 @@ def test_assessment_artifact_migration(client, suite_state):
         "next_action": "Re-run the channel exercise.",
         "supersedes": _s3_slug["assessment_id"],
         "idempotency_key": "vera-s3-sum-3"}, _s3_cap["token"])
-    check("one active summary per sitting; the refusal names what to supersede",
-          _s3_second.status_code == 409
-          and _s3_second.json()["error"] == "summary-exists"
-          and _s3_slug["assessment_id"] in _s3_second.json()["detail"]
-          and _s3_superseding.status_code == 200
-          and _s3_superseding.json()["result"] == "recorded")
+    assert (
+        _s3_second.status_code == 409
+        and _s3_second.json()["error"] == "summary-exists"
+        and _s3_slug["assessment_id"] in _s3_second.json()["detail"]
+        and _s3_superseding.status_code == 200
+        and _s3_superseding.json()["result"] == "recorded"
+    ), "one active summary per sitting; the refusal names what to supersede"
     # A different sitting is a different session's synthesis, and a tokenless
     # write has no sitting for the rule to scope to.
     _s3_cap_b = _s3_open_sitting("verify-sitting-b", _s3_les_id, _s3_les["uid"])
@@ -903,10 +966,11 @@ def test_assessment_artifact_migration(client, suite_state):
     _s3_owner_2 = _s3_post({
         "kind": "summary", "note": "Vera Example: owner note two.",
         "idempotency_key": "vera-s3-owner-2"})
-    check("the summary rule is scoped to a sitting, not to the lesson",
-          _s3_other_sitting.status_code == 200
-          and _s3_owner_1.status_code == 200 and _s3_owner_2.status_code == 200
-          and _s3_row(_s3_owner_2.json()["assessment_id"])["sitting_id"] is None)
+    assert (
+        _s3_other_sitting.status_code == 200
+        and _s3_owner_1.status_code == 200 and _s3_owner_2.status_code == 200
+        and _s3_row(_s3_owner_2.json()["assessment_id"])["sitting_id"] is None
+    ), "the summary rule is scoped to a sitting, not to the lesson"
     # A replay carries the same capability; a dead one is never a quiet
     # duplicate — the agent has to learn its provenance is gone.
     _s3_replay = _s3_post({
@@ -923,14 +987,15 @@ def test_assessment_artifact_migration(client, suite_state):
     _s3_after_death = _s3_post({
         "kind": "summary", "note": "Vera Example: after the session ended.",
         "idempotency_key": "vera-s3-dead-1"}, _s3_cap["token"])
-    check("a dead capability refuses even a replay, and never falls back",
-          _s3_replay.json()["result"] == "duplicate"
-          and _s3_replay.json()["assessment_id"]
-          == _s3_recorded["assessment_id"]
-          and _s3_dead_replay.status_code == 403
-          and _s3_after_death.status_code == 403
-          and all(r["idempotency_key"] != "vera-s3-dead-1"
-                  for r in _as_rows(_s3_les_id)))
+    assert (
+        _s3_replay.json()["result"] == "duplicate"
+        and _s3_replay.json()["assessment_id"]
+        == _s3_recorded["assessment_id"]
+        and _s3_dead_replay.status_code == 403
+        and _s3_after_death.status_code == 403
+        and all(r["idempotency_key"] != "vera-s3-dead-1"
+                for r in _as_rows(_s3_les_id))
+    ), "a dead capability refuses even a replay, and never falls back"
     _s3_term._ASSESS_CAPABILITIES.pop(_s3_foreign["token"], None)
     _s3_term._ASSESS_CAPABILITIES.pop(_s3_cap_b["token"], None)
     # The header is read by name: the same live token under any other header is
@@ -942,12 +1007,13 @@ def test_assessment_artifact_migration(client, suite_state):
         headers={"Authorization": f"Bearer {_s3_cap_c['token']}",
                  "X-Assess-Token": _s3_cap_c["token"]})
     _s3_term._ASSESS_CAPABILITIES.pop(_s3_cap_c["token"], None)
-    check("the endpoint reads the capability from its own header, not the body",
-          assess_svc.CAPABILITY_HEADER == "X-Ephemeris-Assess-Token"
-          and _s3_wrong_header.status_code == 200
-          and _s3_row(_s3_wrong_header.json()["assessment_id"])["sitting_id"]
-          is None
-          and "sitting_id" not in assess_svc._FIELDS)
+    assert (
+        assess_svc.CAPABILITY_HEADER == "X-Ephemeris-Assess-Token"
+        and _s3_wrong_header.status_code == 200
+        and _s3_row(_s3_wrong_header.json()["assessment_id"])["sitting_id"]
+        is None
+        and "sitting_id" not in assess_svc._FIELDS
+    ), "the endpoint reads the capability from its own header, not the body"
 
     # ---- S2: assessments.jsonl — the active-state projection ----------------
     # (S-DESIGN D-S1-5/D-S1-6, docs/learn-bundle-spec.md §6.5)
@@ -996,16 +1062,22 @@ def test_assessment_artifact_migration(client, suite_state):
         "note": "Vera Example: rebinds the loop variable each iteration."},
         "s2-1")
     _s2_first_lines = _s2_lines(_s2)
-    check("first write publishes the projection: meta line + one record",
-          _s2_ev1["projection"] == "projected"
-          and len(_s2_first_lines) == 2
-          and _s2_first_lines[0] == {
-              "kind": assess_svc.META_KIND, "v": assess_svc.META_VERSION,
-              "lesson_uid": _s2["uid"], "as_of_seq": _s2_ev1["seq"],
-              "generated_at": _s2_first_lines[0]["generated_at"]}
-          and _s2_first_lines[0]["generated_at"].endswith("+00:00")
-          and _s2_first_lines[1]["assessment_id"] == _s2_ev1["assessment_id"],
-          str(_s2_first_lines))
+    assert (
+        _s2_ev1["projection"] == "projected"
+        and len(_s2_first_lines) == 2
+        and _s2_first_lines[0] == {
+            "kind": assess_svc.META_KIND, "v": assess_svc.META_VERSION,
+            "lesson_uid": _s2["uid"], "as_of_seq": _s2_ev1["seq"],
+            "generated_at": _s2_first_lines[0]["generated_at"]}
+        and _s2_first_lines[0]["generated_at"].endswith("+00:00")
+        and _s2_first_lines[1]["assessment_id"] == _s2_ev1["assessment_id"]
+    ), (
+        "first write publishes the projection: meta line + one record"
+        + "  -- "
+        + (
+            str(_s2_first_lines)
+        )
+    )
 
     _s2_sum1 = _s2_post(_s2_id, {
         "kind": "summary",
@@ -1025,27 +1097,34 @@ def test_assessment_artifact_migration(client, suite_state):
         "s2-5")
     _s2_state_lines = _s2_lines(_s2)
     _s2_state_ids = [line["assessment_id"] for line in _s2_state_lines[1:]]
-    check("the file is the ACTIVE fold: superseded, retracted and retraction "
-          "rows never appear, ascending seq",
-          _s2_state_ids == [
-              _s2_ev1["assessment_id"], _s2_ev2["assessment_id"],
-              _s2_sum2["assessment_id"]]
-          and [line["seq"] for line in _s2_state_lines[1:]]
-          == sorted(line["seq"] for line in _s2_state_lines[1:])
-          # as_of_seq is the authority watermark, not the newest LINE: the
-          # retraction advanced history without leaving a record behind
-          and _s2_state_lines[0]["as_of_seq"] == _s2_sum2["seq"]
-          and _s2_sum1["assessment_id"] not in _s2_state_ids
-          and _s2_retract["assessment_id"] not in _s2_state_ids,
-          str(_s2_state_ids))
+    assert (
+        _s2_state_ids == [
+            _s2_ev1["assessment_id"], _s2_ev2["assessment_id"],
+            _s2_sum2["assessment_id"]]
+        and [line["seq"] for line in _s2_state_lines[1:]]
+        == sorted(line["seq"] for line in _s2_state_lines[1:])
+        # as_of_seq is the authority watermark, not the newest LINE: the
+        # retraction advanced history without leaving a record behind
+        and _s2_state_lines[0]["as_of_seq"] == _s2_sum2["seq"]
+        and _s2_sum1["assessment_id"] not in _s2_state_ids
+        and _s2_retract["assessment_id"] not in _s2_state_ids
+    ), (
+        "the file is the ACTIVE fold: superseded, retracted and retraction "
+        "rows never appear, ascending seq"
+        + "  -- "
+        + (
+            str(_s2_state_ids)
+        )
+    )
     _s2_authority = {row["seq"]: row for row in _s2_rows(_s2_id)}
-    check("each line is the full authority record echo, verbatim",
-          all(line == _s2_authority[line["seq"]]
-              for line in _s2_state_lines[1:])
-          and _s2_state_lines[-1]["next_action"]
-          == "Open the slices page and predict the growth step."
-          and _s2_state_lines[1]["concepts"] == ["closures", "captures"]
-          and _s2_state_lines[1]["basis"] == "attempts")
+    assert (
+        all(line == _s2_authority[line["seq"]]
+            for line in _s2_state_lines[1:])
+        and _s2_state_lines[-1]["next_action"]
+        == "Open the slices page and predict the growth step."
+        and _s2_state_lines[1]["concepts"] == ["closures", "captures"]
+        and _s2_state_lines[1]["basis"] == "attempts"
+    ), "each line is the full authority record echo, verbatim"
 
     # commit-then-project (S-H1): a transaction that rolls back leaves the
     # published file byte-identical — no half-written state, no phantom record
@@ -1057,11 +1136,12 @@ def test_assessment_artifact_migration(client, suite_state):
                 "idempotency_key": "s2-atomic"})
         except sqlite3.OperationalError:
             pass
-    check("a rolled-back write leaves the projection untouched",
-          _s2_path(_s2).read_bytes() == _s2_before_fail
-          and len(_s2_lines(_s2)) == 4
-          and all(row["idempotency_key"] != "s2-atomic"
-                  for row in _as_rows(_s2_id)))
+    assert (
+        _s2_path(_s2).read_bytes() == _s2_before_fail
+        and len(_s2_lines(_s2)) == 4
+        and all(row["idempotency_key"] != "s2-atomic"
+                for row in _as_rows(_s2_id))
+    ), "a rolled-back write leaves the projection untouched"
 
     # the projection entry point refuses an in-transaction connection: no
     # filesystem work may run inside the write transaction
@@ -1083,11 +1163,12 @@ def test_assessment_artifact_migration(client, suite_state):
             _s2_txn_conn, _s2, force=True)
     finally:
         _s2_txn_conn.close()
-    check("reconcile refuses an active transaction and works once committed",
-          _s2_in_txn is False and _s2_after_txn is True
-          and _s2_during_txn == (_s2_before_txn, _s2_before_fail)
-          and _s2_path(_s2).read_bytes() != _s2_before_fail  # rewritten fresh
-          and len(_s2_lines(_s2)) == 4)
+    assert (
+        _s2_in_txn is False and _s2_after_txn is True
+        and _s2_during_txn == (_s2_before_txn, _s2_before_fail)
+        and _s2_path(_s2).read_bytes() != _s2_before_fail  # rewritten fresh
+        and len(_s2_lines(_s2)) == 4
+    ), "reconcile refuses an active transaction and works once committed"
 
     # identity gate (S-H7): a manifest claiming a DIFFERENT lesson blocks
     # publication — the row still commits, the projection stays pending
@@ -1109,15 +1190,16 @@ def test_assessment_artifact_migration(client, suite_state):
         _s2_idm_healed = assess_svc.reconcile_projection(_s2_idm_conn, _s2_idm)
     finally:
         _s2_idm_conn.close()
-    check("a manifest naming another lesson blocks publication, then heals",
-          _s2_idm_first["projection"] == "projected"
-          and _s2_idm_blocked["projection"] == "pending"
-          # the row is durable regardless: only the file waits
-          and len(_s2_rows(_s2_idm_id)) == 2
-          and _s2_idm_still == _s2_idm_published
-          and _s2_idm_healed is True
-          and [line["assessment_id"] for line in _s2_lines(_s2_idm)[1:]]
-          == [_s2_idm_blocked["assessment_id"]])
+    assert (
+        _s2_idm_first["projection"] == "projected"
+        and _s2_idm_blocked["projection"] == "pending"
+        # the row is durable regardless: only the file waits
+        and len(_s2_rows(_s2_idm_id)) == 2
+        and _s2_idm_still == _s2_idm_published
+        and _s2_idm_healed is True
+        and [line["assessment_id"] for line in _s2_lines(_s2_idm)[1:]]
+        == [_s2_idm_blocked["assessment_id"]]
+    ), "a manifest naming another lesson blocks publication, then heals"
     # PR #88 round 1: a REJECTED read carries no trusted identity. The reader
     # assigns lesson_uid before a later finding rejects the manifest, so a
     # foreign uid on a broken manifest must not gate — that would block the
@@ -1130,14 +1212,20 @@ def test_assessment_artifact_migration(client, suite_state):
         "kind": "summary", "note": "Vera Example: foreign uid, broken manifest."},
         "s2-idm-3")
     bschema.write_manifest(_s2_idm_manifest_path, _s2_idm_manifest)
-    check("a rejected manifest never gates the projection, foreign uid or not",
-          _s2_idm_broken_read.rejected
-          and _s2_idm_broken_read.lesson_uid
-          == "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60"
-          and _s2_idm_broken["projection"] == "projected"
-          and [line["assessment_id"] for line in _s2_lines(_s2_idm)[1:]]
-          == [_s2_idm_broken["assessment_id"]],
-          str(_s2_idm_broken_read.codes()))
+    assert (
+        _s2_idm_broken_read.rejected
+        and _s2_idm_broken_read.lesson_uid
+        == "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60"
+        and _s2_idm_broken["projection"] == "projected"
+        and [line["assessment_id"] for line in _s2_lines(_s2_idm)[1:]]
+        == [_s2_idm_broken["assessment_id"]]
+    ), (
+        "a rejected manifest never gates the projection, foreign uid or not"
+        + "  -- "
+        + (
+            str(_s2_idm_broken_read.codes())
+        )
+    )
 
     # PR #88 round 1: the fold and the watermark come from ONE snapshot. A
     # sibling process committing between two autocommit reads would otherwise
@@ -1175,17 +1263,23 @@ def test_assessment_artifact_migration(client, suite_state):
     finally:
         _s2_snap_conn.close()
     _s2_snap_lines = _s2_lines(_s2_idm)
-    check("the fold and its watermark are read from one snapshot",
-          _s2_snap_ok is True and "seq" in _s2_snap_injected
-          # the sibling row landed after the snapshot opened: it is in neither
-          # the lines nor the watermark, so the file stays self-consistent
-          and _s2_snap_lines[0]["as_of_seq"] < _s2_snap_injected["seq"]
-          and _s2_snap_lines[0]["as_of_seq"]
-          == max(line["seq"] for line in _s2_snap_lines[1:])
-          and all(line["seq"] != _s2_snap_injected["seq"]
-                  for line in _s2_snap_lines[1:]),
-          f"as_of={_s2_snap_lines[0]['as_of_seq']} "
-          f"sibling={_s2_snap_injected.get('seq')}")
+    assert (
+        _s2_snap_ok is True and "seq" in _s2_snap_injected
+        # the sibling row landed after the snapshot opened: it is in neither
+        # the lines nor the watermark, so the file stays self-consistent
+        and _s2_snap_lines[0]["as_of_seq"] < _s2_snap_injected["seq"]
+        and _s2_snap_lines[0]["as_of_seq"]
+        == max(line["seq"] for line in _s2_snap_lines[1:])
+        and all(line["seq"] != _s2_snap_injected["seq"]
+                for line in _s2_snap_lines[1:])
+    ), (
+        "the fold and its watermark are read from one snapshot"
+        + "  -- "
+        + (
+            f"as_of={_s2_snap_lines[0]['as_of_seq']} "
+            f"sibling={_s2_snap_injected.get('seq')}"
+        )
+    )
 
     # missing / legacy / rejected manifests publish (D-S1-4): the tutor's
     # memory must work on exactly the bundles that can never record attempts
@@ -1195,19 +1289,21 @@ def test_assessment_artifact_migration(client, suite_state):
         _s2_rej = lessons_svc.get_lesson(_s2_legacy_conn, _rej_id)
     finally:
         _s2_legacy_conn.close()
-    check("legacy and rejected-manifest bundles are projected, not gated",
-          _s2_path(_s2_v1).exists() and _s2_path(_s2_rej).exists()
-          and _s2_lines(_s2_v1)[0]["lesson_uid"] == _s2_v1["uid"]
-          and len(_s2_lines(_s2_rej)) == 2)
+    assert (
+        _s2_path(_s2_v1).exists() and _s2_path(_s2_rej).exists()
+        and _s2_lines(_s2_v1)[0]["lesson_uid"] == _s2_v1["uid"]
+        and len(_s2_lines(_s2_rej)) == 2
+    ), "legacy and rejected-manifest bundles are projected, not gated"
 
     # reconcile trigger (a): the lesson-agent terminal open, where the next
     # reader appears
     _s2_path(_s2).unlink()
     _s2_prepared = lessons_svc.prepare_terminal_workspace(_s2["slug"])
-    check("lesson-agent terminal open reconciles the projection",
-          _s2_prepared is not None
-          and [line["assessment_id"] for line in _s2_lines(_s2)[1:]]
-          == _s2_state_ids)
+    assert (
+        _s2_prepared is not None
+        and [line["assessment_id"] for line in _s2_lines(_s2)[1:]]
+        == _s2_state_ids
+    ), "lesson-agent terminal open reconciles the projection"
     # ...and a lesson that never recorded anything gets no file at all
     _s2_quiet_prepared = lessons_svc.prepare_terminal_workspace(_s2_quiet["slug"])
     _s2_quiet_conn = get_conn()
@@ -1215,9 +1311,10 @@ def test_assessment_artifact_migration(client, suite_state):
         _s2_quiet_ok = assess_svc.reconcile_projection(_s2_quiet_conn, _s2_quiet)
     finally:
         _s2_quiet_conn.close()
-    check("a lesson with no assessments is left without a projection file",
-          _s2_quiet_prepared is not None and _s2_quiet_ok is True
-          and not _s2_path(_s2_quiet).exists())
+    assert (
+        _s2_quiet_prepared is not None and _s2_quiet_ok is True
+        and not _s2_path(_s2_quiet).exists()
+    ), "a lesson with no assessments is left without a projection file"
 
     # reconcile trigger (b): an idempotent replay heals a pending projection —
     # a lost response must not leave the closing summary invisible
@@ -1226,12 +1323,13 @@ def test_assessment_artifact_migration(client, suite_state):
         "kind": "summary", "note": "Vera Example: closures land; slices next.",
         "next_action": "Open the slices page and predict the growth step."},
         "s2-5")
-    check("an idempotent replay reprojects the whole active state",
-          _s2_replay["result"] == "duplicate"
-          and _s2_replay["projection"] == "projected"
-          and _s2_replay["assessment_id"] == _s2_sum2["assessment_id"]
-          and [line["assessment_id"] for line in _s2_lines(_s2)[1:]]
-          == _s2_state_ids)
+    assert (
+        _s2_replay["result"] == "duplicate"
+        and _s2_replay["projection"] == "projected"
+        and _s2_replay["assessment_id"] == _s2_sum2["assessment_id"]
+        and [line["assessment_id"] for line in _s2_lines(_s2)[1:]]
+        == _s2_state_ids
+    ), "an idempotent replay reprojects the whole active state"
     # ...but a replay that would republish identical bytes does no work at all.
     # Replays are outside the rate budget by design (D-S1-3), so an unlimited
     # loop of one duplicate key must not drive unlimited full rewrites. On its
@@ -1254,14 +1352,20 @@ def test_assessment_artifact_migration(client, suite_state):
             "kind": "evidence", "level": "passed", "basis": "mixed",
             "concepts": ["ranges"],
             "note": "Vera Example: ranges are clear now."}, "s2-rep-2")
-    check("repeated replays publish nothing; the next real write does",
-          _s2_rep_a["result"] == "duplicate" and _s2_rep_b["result"] == "duplicate"
-          and _s2_rep_a["projection"] == "projected"
-          and _s2_rep_b["projection"] == "projected"
-          and _s2_rep_new["projection"] == "projected"
-          and len(_s2_publishes) == 1
-          and len(_s2_lines(_s2_rep)) == 3,
-          f"publishes={_s2_publishes}")
+    assert (
+        _s2_rep_a["result"] == "duplicate" and _s2_rep_b["result"] == "duplicate"
+        and _s2_rep_a["projection"] == "projected"
+        and _s2_rep_b["projection"] == "projected"
+        and _s2_rep_new["projection"] == "projected"
+        and len(_s2_publishes) == 1
+        and len(_s2_lines(_s2_rep)) == 3
+    ), (
+        "repeated replays publish nothing; the next real write does"
+        + "  -- "
+        + (
+            f"publishes={_s2_publishes}"
+        )
+    )
     # The cached identity is a full metadata seal, not only inode/size/mtime.
     # A bundle writer can edit in place and restore mtime, but ctime still
     # changes; a replay must detect that and heal instead of falsely reporting
@@ -1281,20 +1385,26 @@ def test_assessment_artifact_migration(client, suite_state):
     with _mock.patch.object(assess_svc, "_publish", _s2_counting_publish):
         _s2_rep_repaired = _s2_post(
             _s2_rep_id, _s2_rep_body, "s2-rep-1")
-    check("same-inode same-size restored-mtime mutation is reprojected",
-          _s2_rep_tampered != _s2_rep_canonical
-          and _s2_rep_before_tamper.st_ino == _s2_rep_after_tamper.st_ino
-          and _s2_rep_before_tamper.st_size == _s2_rep_after_tamper.st_size
-          and _s2_rep_before_tamper.st_mtime_ns
-          == _s2_rep_after_tamper.st_mtime_ns
-          and _s2_rep_before_tamper.st_ctime_ns
-          != _s2_rep_after_tamper.st_ctime_ns
-          and _s2_rep_repaired["result"] == "duplicate"
-          and _s2_rep_repaired["projection"] == "projected"
-          and len(_s2_publishes) == 1
-          and _s2_path(_s2_rep).read_bytes() != _s2_rep_tampered
-          and len(_s2_lines(_s2_rep)) == 3,
-          f"publishes={_s2_publishes}")
+    assert (
+        _s2_rep_tampered != _s2_rep_canonical
+        and _s2_rep_before_tamper.st_ino == _s2_rep_after_tamper.st_ino
+        and _s2_rep_before_tamper.st_size == _s2_rep_after_tamper.st_size
+        and _s2_rep_before_tamper.st_mtime_ns
+        == _s2_rep_after_tamper.st_mtime_ns
+        and _s2_rep_before_tamper.st_ctime_ns
+        != _s2_rep_after_tamper.st_ctime_ns
+        and _s2_rep_repaired["result"] == "duplicate"
+        and _s2_rep_repaired["projection"] == "projected"
+        and len(_s2_publishes) == 1
+        and _s2_path(_s2_rep).read_bytes() != _s2_rep_tampered
+        and len(_s2_lines(_s2_rep)) == 3
+    ), (
+        "same-inode same-size restored-mtime mutation is reprojected"
+        + "  -- "
+        + (
+            f"publishes={_s2_publishes}"
+        )
+    )
     # Terminal creation is another unmetered reconcile trigger. The ordinary
     # seal already detects a missing or changed file, so repeated opens over
     # an intact projection must neither fold nor publish.
@@ -1316,11 +1426,17 @@ def test_assessment_artifact_migration(client, suite_state):
             assess_svc, "active_state", _s2_terminal_state):
         _s2_rep_open_a = lessons_svc.prepare_terminal_workspace(_s2_rep["slug"])
         _s2_rep_open_b = lessons_svc.prepare_terminal_workspace(_s2_rep["slug"])
-    check("repeated terminal opens skip an intact projection",
-          _s2_rep_open_a is not None and _s2_rep_open_b is not None
-          and _s2_terminal_publishes == [] and _s2_terminal_folds == []
-          and len(_s2_lines(_s2_rep)) == 3,
-          f"publishes={_s2_terminal_publishes} folds={_s2_terminal_folds}")
+    assert (
+        _s2_rep_open_a is not None and _s2_rep_open_b is not None
+        and _s2_terminal_publishes == [] and _s2_terminal_folds == []
+        and len(_s2_lines(_s2_rep)) == 3
+    ), (
+        "repeated terminal opens skip an intact projection"
+        + "  -- "
+        + (
+            f"publishes={_s2_terminal_publishes} folds={_s2_terminal_folds}"
+        )
+    )
     # the skip is keyed on what THIS process published, so a projection it
     # never wrote is still rewritten — the heal triggers keep working
     _s2_path(_s2_rep).unlink()
@@ -1331,16 +1447,18 @@ def test_assessment_artifact_migration(client, suite_state):
             _s2_rep_heal_conn, _s2_rep)
     finally:
         _s2_rep_heal_conn.close()
-    check("a projection this process never published is not skipped",
-          _s2_rep_healed is True and len(_s2_lines(_s2_rep)) == 3)
+    assert (
+        _s2_rep_healed is True and len(_s2_lines(_s2_rep)) == 3
+    ), "a projection this process never published is not skipped"
     # ...and the terminal open heals a deleted file at an unchanged watermark:
     # the ordinary metadata seal sees the missing name, no force bypass needed
     _s2_path(_s2_rep).unlink()
     _s2_rep_terminal_healed = lessons_svc.prepare_terminal_workspace(
         _s2_rep["slug"])
-    check("the terminal open heals a missing file at an unchanged watermark",
-          _s2_rep_terminal_healed is not None and _s2_path(_s2_rep).exists()
-          and len(_s2_lines(_s2_rep)) == 3)
+    assert (
+        _s2_rep_terminal_healed is not None and _s2_path(_s2_rep).exists()
+        and len(_s2_lines(_s2_rep)) == 3
+    ), "the terminal open heals a missing file at an unchanged watermark"
     # the identity gate governs the skip too: at an unchanged watermark, a
     # manifest that now names another lesson still answers pending (S-H7)
     _s2_rep_mpath = Path(lessons_svc.LESSONS_DIR) / _s2_rep["slug"] / "lesson.json"
@@ -1361,13 +1479,19 @@ def test_assessment_artifact_migration(client, suite_state):
         _s2_rep_foreign = _s2_post(_s2_rep_id, _s2_rep_body, "s2-rep-1")
     bschema.write_manifest(_s2_rep_mpath, _s2_rep_manifest)
     _s2_rep_restored = _s2_post(_s2_rep_id, _s2_rep_body, "s2-rep-1")
-    check("a skip is refused while the manifest names another lesson",
-          _s2_rep_foreign["result"] == "duplicate"
-          and _s2_rep_foreign["projection"] == "pending"
-          and _s2_rep_folds == []
-          and _s2_rep_restored["projection"] == "projected"
-          and _s2_path(_s2_rep).read_bytes() == _s2_rep_before_swap,
-          f"folds={_s2_rep_folds}")
+    assert (
+        _s2_rep_foreign["result"] == "duplicate"
+        and _s2_rep_foreign["projection"] == "pending"
+        and _s2_rep_folds == []
+        and _s2_rep_restored["projection"] == "projected"
+        and _s2_path(_s2_rep).read_bytes() == _s2_rep_before_swap
+    ), (
+        "a skip is refused while the manifest names another lesson"
+        + "  -- "
+        + (
+            f"folds={_s2_rep_folds}"
+        )
+    )
     # ...and the watermark query itself seeks instead of walking the lesson's
     # history: replays are unmetered, so it must not be linear in lifetime rows
     _s2_plan_conn = get_conn()
@@ -1378,9 +1502,15 @@ def test_assessment_artifact_migration(client, suite_state):
             (_s2_rep_id,)).fetchall()]
     finally:
         _s2_plan_conn.close()
-    check("the projection watermark is served by (lesson_id, id)",
-          any("idx_assessments_lesson_seq" in row for row in _s2_plan),
-          str(_s2_plan))
+    assert (
+        any("idx_assessments_lesson_seq" in row for row in _s2_plan)
+    ), (
+        "the projection watermark is served by (lesson_id, id)"
+        + "  -- "
+        + (
+            str(_s2_plan)
+        )
+    )
 
     # reconcile trigger (c): the first write per lesson per process sweeps even
     # when that write is REFUSED — a restart mid-pending heals on next contact
@@ -1390,11 +1520,12 @@ def test_assessment_artifact_migration(client, suite_state):
         "kind": "retraction", "supersedes": str(_as_uuid4()),
         "note": "Vera Example: retracts a record that does not exist.",
         "idempotency_key": "s2-sweep"})
-    check("the first-write sweep heals a pending projection even on a refusal",
-          _s2_refused.status_code == 422
-          and _s2_refused.json()["error"] == "unknown-supersedes"
-          and [line["assessment_id"] for line in _s2_lines(_s2)[1:]]
-          == _s2_state_ids)
+    assert (
+        _s2_refused.status_code == 422
+        and _s2_refused.json()["error"] == "unknown-supersedes"
+        and [line["assessment_id"] for line in _s2_lines(_s2)[1:]]
+        == _s2_state_ids
+    ), "the first-write sweep heals a pending projection even on a refusal"
 
     # collision (D-S1-5): a foreign object on the name is moved aside, never
     # adopted and never written through
@@ -1409,13 +1540,14 @@ def test_assessment_artifact_migration(client, suite_state):
         _s2_col_conn.close()
     _s2_bundle = Path(lessons_svc.LESSONS_DIR) / _s2["slug"]
     _s2_aside = sorted(_s2_bundle.glob("assessments.jsonl.collision-*"))
-    check("a directory on the projection name is moved aside with its content",
-          _s2_col_dir_ok is True and _s2_path(_s2).is_file()
-          and len(_s2_aside) == 1 and _s2_aside[0].is_dir()
-          and (_s2_aside[0] / "planted.txt").read_text(encoding="utf-8")
-          == "Vera Example: planted"
-          and [line["assessment_id"] for line in _s2_lines(_s2)[1:]]
-          == _s2_state_ids)
+    assert (
+        _s2_col_dir_ok is True and _s2_path(_s2).is_file()
+        and len(_s2_aside) == 1 and _s2_aside[0].is_dir()
+        and (_s2_aside[0] / "planted.txt").read_text(encoding="utf-8")
+        == "Vera Example: planted"
+        and [line["assessment_id"] for line in _s2_lines(_s2)[1:]]
+        == _s2_state_ids
+    ), "a directory on the projection name is moved aside with its content"
     # a symlink is moved aside, and its target keeps its own bytes
     _s2_outside = _s2_bundle / "not-the-projection.txt"
     _s2_outside.write_text("Vera Example: unrelated file\n", encoding="utf-8")
@@ -1426,12 +1558,13 @@ def test_assessment_artifact_migration(client, suite_state):
         _s2_sym_ok = assess_svc.reconcile_projection(_s2_sym_conn, _s2)
     finally:
         _s2_sym_conn.close()
-    check("a symlink on the projection name is replaced, target untouched",
-          _s2_sym_ok is True
-          and not _s2_path(_s2).is_symlink() and _s2_path(_s2).is_file()
-          and _s2_outside.read_text(encoding="utf-8")
-          == "Vera Example: unrelated file\n"
-          and len(_s2_lines(_s2)) == 4)
+    assert (
+        _s2_sym_ok is True
+        and not _s2_path(_s2).is_symlink() and _s2_path(_s2).is_file()
+        and _s2_outside.read_text(encoding="utf-8")
+        == "Vera Example: unrelated file\n"
+        and len(_s2_lines(_s2)) == 4
+    ), "a symlink on the projection name is replaced, target untouched"
     # a hard link never receives the new bytes through its other name
     _s2_other_name = _s2_bundle / "assessments-hardlink.jsonl"
     _os.link(_s2_path(_s2), _s2_other_name)
@@ -1441,11 +1574,12 @@ def test_assessment_artifact_migration(client, suite_state):
         _s2_link_ok = assess_svc.reconcile_projection(_s2_link_conn, _s2)
     finally:
         _s2_link_conn.close()
-    check("a multi-link projection name is replaced, the other name is frozen",
-          _s2_link_ok is True
-          and _s2_other_name.read_bytes() == _s2_before_link
-          and _s2_path(_s2).stat().st_nlink == 1
-          and len(_s2_lines(_s2)) == 4)
+    assert (
+        _s2_link_ok is True
+        and _s2_other_name.read_bytes() == _s2_before_link
+        and _s2_path(_s2).stat().st_nlink == 1
+        and len(_s2_lines(_s2)) == 4
+    ), "a multi-link projection name is replaced, the other name is frozen"
     # ...and the same holds for a link planted on the STAGED temp: publishing it
     # would hand the bundle a second, writable name for the live projection
     _s2_stage_real = assess_svc._stage_temp
@@ -1461,13 +1595,14 @@ def test_assessment_artifact_migration(client, suite_state):
             "kind": "summary",
             "note": "Vera Example: staged while a link was planted."},
             "s2-stage-link")
-    check("a link planted on the staged temp keeps it from being published",
-          _s2_staged["result"] == "recorded"
-          and _s2_staged["projection"] == "pending"
-          and _s2_path(_s2).read_bytes() == _s2_staged_before
-          and _s2_path(_s2).stat().st_nlink == 1
-          and len(sorted(_s2_bundle.glob(".assessments-*.tmp.alias"))) == 1
-          and not sorted(_s2_bundle.glob(".assessments-*.tmp")))
+    assert (
+        _s2_staged["result"] == "recorded"
+        and _s2_staged["projection"] == "pending"
+        and _s2_path(_s2).read_bytes() == _s2_staged_before
+        and _s2_path(_s2).stat().st_nlink == 1
+        and len(sorted(_s2_bundle.glob(".assessments-*.tmp.alias"))) == 1
+        and not sorted(_s2_bundle.glob(".assessments-*.tmp"))
+    ), "a link planted on the staged temp keeps it from being published"
 
     # a busy cross-process lock is an honest pending, and the next write heals
     with assess_svc._projection_file_lock(_s2):
@@ -1478,11 +1613,12 @@ def test_assessment_artifact_migration(client, suite_state):
     _s2_busy_heal = _s2_post(_s2_id, {
         "kind": "summary", "note": "Vera Example: the lock is free again."},
         "s2-busy-2")
-    check("a busy projection lock returns pending; the next write heals",
-          _s2_busy["projection"] == "pending"
-          and _s2_busy_heal["projection"] == "projected"
-          and _s2_busy["assessment_id"] in [
-              line["assessment_id"] for line in _s2_lines(_s2)[1:]])
+    assert (
+        _s2_busy["projection"] == "pending"
+        and _s2_busy_heal["projection"] == "projected"
+        and _s2_busy["assessment_id"] in [
+            line["assessment_id"] for line in _s2_lines(_s2)[1:]]
+    ), "a busy projection lock returns pending; the next write heals"
 
     # the rewrite is bounded by CURRENT state, so it must stay correct at the
     # few hundred active rows a long-running lesson accumulates
@@ -1506,13 +1642,19 @@ def test_assessment_artifact_migration(client, suite_state):
     finally:
         _s2_scale_conn.close()
     _s2_scale_lines = _s2_lines(_s2_scale)
-    check("a few hundred active rows project in one bounded rewrite",
-          _s2_scale_ok is True and len(_s2_scale_lines) == 301
-          and _s2_scale_lines[0]["kind"] == assess_svc.META_KIND
-          and [line["seq"] for line in _s2_scale_lines[1:]]
-          == sorted(line["seq"] for line in _s2_scale_lines[1:])
-          and len({line["assessment_id"] for line in _s2_scale_lines[1:]}) == 300,
-          f"lines={len(_s2_scale_lines)}")
+    assert (
+        _s2_scale_ok is True and len(_s2_scale_lines) == 301
+        and _s2_scale_lines[0]["kind"] == assess_svc.META_KIND
+        and [line["seq"] for line in _s2_scale_lines[1:]]
+        == sorted(line["seq"] for line in _s2_scale_lines[1:])
+        and len({line["assessment_id"] for line in _s2_scale_lines[1:]}) == 300
+    ), (
+        "a few hundred active rows project in one bounded rewrite"
+        + "  -- "
+        + (
+            f"lines={len(_s2_scale_lines)}"
+        )
+    )
 
     # D-S1-6: the reserved name is enforced by the §4.1 path grammar, so no
     # page, block file, or artifact root can claim the projection
@@ -1526,19 +1668,21 @@ def test_assessment_artifact_migration(client, suite_state):
         ],
         "artifact_roots": ["attempts", "assessments.jsonl"],
     }))
-    check("assessments.jsonl is a reserved bundle name (§2/§4.1)",
-          "assessments.jsonl" in bschema.RESERVED_NAMES
-          and not bschema.valid_v2_path("assessments.jsonl")
-          and not bschema.valid_v2_path("assessments.jsonl/notes.html")
-          and "invalid-path" in _s2_reserved_read.codes()
-          and "assessments.jsonl" not in _s2_reserved_read.page_paths()
-          and "assessments.jsonl" not in _s2_reserved_read.artifact_roots)
+    assert (
+        "assessments.jsonl" in bschema.RESERVED_NAMES
+        and not bschema.valid_v2_path("assessments.jsonl")
+        and not bschema.valid_v2_path("assessments.jsonl/notes.html")
+        and "invalid-path" in _s2_reserved_read.codes()
+        and "assessments.jsonl" not in _s2_reserved_read.page_paths()
+        and "assessments.jsonl" not in _s2_reserved_read.artifact_roots
+    ), "assessments.jsonl is a reserved bundle name (§2/§4.1)"
     _s2_spec = (ROOT / "docs" / "learn-bundle-spec.md").read_text(encoding="utf-8")
-    check("the bundle spec records the assessments projection (§2/§6.5/§12)",
-          "assessments.jsonl   app-owned projection" in _s2_spec
-          and "### 6.5 Assessments" in _s2_spec
-          and "| `assessments.jsonl` | owns (projection + reconcile)"
-          in _s2_spec)
+    assert (
+        "assessments.jsonl   app-owned projection" in _s2_spec
+        and "### 6.5 Assessments" in _s2_spec
+        and "| `assessments.jsonl` | owns (projection + reconcile)"
+        in _s2_spec
+    ), "the bundle spec records the assessments projection (§2/§6.5/§12)"
 
     # ---- F1: pure artifact reads + conflict-safe editor backend ------------
     from app.services import artifacts as artifacts_svc
@@ -1589,62 +1733,70 @@ def test_assessment_artifact_migration(client, suite_state):
     _shutil.rmtree(_f1_pure_dir)
     _f1_pure_get = c.get(
         f"/learn/lessons/{_f1_pure_id}/blocks/blk_never0001/file")
-    check("F1 pure GET does not create a missing bundle or manifest",
-          _f1_pure_get.status_code == 409
-          and _f1_pure_get.json()["error"] == "manifest-rejected"
-          and not _f1_pure_dir.exists())
+    assert (
+        _f1_pure_get.status_code == 409
+        and _f1_pure_get.json()["error"] == "manifest-rejected"
+        and not _f1_pure_dir.exists()
+    ), "F1 pure GET does not create a missing bundle or manifest"
 
     _f1_missing = c.get(_f1_url)
-    check("F1 missing artifact GET is side-effect-free",
-          _f1_missing.status_code == 200
-          and _f1_missing.json() == {
-              "ok": True, "exists": False, "content": "", "size": 0,
-          }
-          and not (_f1_dir / "attempts" / "blk_editor01").exists())
-    check("F1 artifact POST stays behind the B2 write guard",
-          c.post(_f1_url, json={"content": "x", "base_rev": "absent"},
-                 headers={"Origin": "null"}).status_code == 403
-          and not (_f1_dir / "attempts" / "blk_editor01").exists())
+    assert (
+        _f1_missing.status_code == 200
+        and _f1_missing.json() == {
+            "ok": True, "exists": False, "content": "", "size": 0,
+        }
+        and not (_f1_dir / "attempts" / "blk_editor01").exists()
+    ), "F1 missing artifact GET is side-effect-free"
+    assert (
+        c.post(_f1_url, json={"content": "x", "base_rev": "absent"},
+               headers={"Origin": "null"}).status_code == 403
+        and not (_f1_dir / "attempts" / "blk_editor01").exists()
+    ), "F1 artifact POST stays behind the B2 write guard"
 
     _f1_body1 = "print('Vera Example')\n"
     _f1_save1 = c.post(
         _f1_url, json={"content": _f1_body1, "base_rev": "absent"})
     _f1_saved1 = _f1_save1.json()
     _f1_file = _f1_dir / "attempts" / "blk_editor01" / "main.py"
-    check("F1 first save publishes mode-safe bytes and records telemetry",
-          _f1_save1.status_code == 200
-          and _f1_saved1["result"] == "saved"
-          and _f1_saved1["event_recorded"] is True
-          and _f1_file.read_text(encoding="utf-8") == _f1_body1
-          and stat_module.S_IMODE(_f1_file.stat().st_mode) == 0o600
-          and _f1_file.stat().st_nlink == 1)
+    assert (
+        _f1_save1.status_code == 200
+        and _f1_saved1["result"] == "saved"
+        and _f1_saved1["event_recorded"] is True
+        and _f1_file.read_text(encoding="utf-8") == _f1_body1
+        and stat_module.S_IMODE(_f1_file.stat().st_mode) == 0o600
+        and _f1_file.stat().st_nlink == 1
+    ), "F1 first save publishes mode-safe bytes and records telemetry"
     _f1_get1 = c.get(_f1_url)
-    check("F1 GET returns strict bytes, size, and their sha256 revision",
-          _f1_get1.status_code == 200
-          and _f1_get1.json()["content"] == _f1_body1
-          and _f1_get1.json()["file_rev"] == _f1_saved1["file_rev"]
-          and _f1_get1.json()["size"] == len(_f1_body1.encode("utf-8")))
+    assert (
+        _f1_get1.status_code == 200
+        and _f1_get1.json()["content"] == _f1_body1
+        and _f1_get1.json()["file_rev"] == _f1_saved1["file_rev"]
+        and _f1_get1.json()["size"] == len(_f1_body1.encode("utf-8"))
+    ), "F1 GET returns strict bytes, size, and their sha256 revision"
     _f1_alias = c.get(
         f"/learn/lessons/by-slug/{_f1['slug']}/blocks/blk_editor01/file")
-    check("F1 by-slug artifact alias is the same descriptor-bound read",
-          _f1_alias.status_code == 200
-          and _f1_alias.json()["file_rev"] == _f1_saved1["file_rev"])
+    assert (
+        _f1_alias.status_code == 200
+        and _f1_alias.json()["file_rev"] == _f1_saved1["file_rev"]
+    ), "F1 by-slug artifact alias is the same descriptor-bound read"
 
     _f1_event_count = len(events_of("lesson_artifact_saved"))
     _f1_conflict = c.post(
         _f1_url, json={"content": "print('changed')\n", "base_rev": "absent"})
     _f1_retry = c.post(
         _f1_url, json={"content": _f1_body1, "base_rev": "absent"})
-    check("F1 conflict returns the current revision without overwriting",
-          _f1_conflict.status_code == 409
-          and _f1_conflict.json()["error"] == "file-conflict"
-          and _f1_conflict.json()["file_rev"] == _f1_saved1["file_rev"]
-          and _f1_file.read_text(encoding="utf-8") == _f1_body1)
-    check("F1 content-equal retry is unchanged with no write or event",
-          _f1_retry.status_code == 200
-          and _f1_retry.json()["result"] == "unchanged"
-          and _f1_retry.json()["event_recorded"] is False
-          and len(events_of("lesson_artifact_saved")) == _f1_event_count)
+    assert (
+        _f1_conflict.status_code == 409
+        and _f1_conflict.json()["error"] == "file-conflict"
+        and _f1_conflict.json()["file_rev"] == _f1_saved1["file_rev"]
+        and _f1_file.read_text(encoding="utf-8") == _f1_body1
+    ), "F1 conflict returns the current revision without overwriting"
+    assert (
+        _f1_retry.status_code == 200
+        and _f1_retry.json()["result"] == "unchanged"
+        and _f1_retry.json()["event_recorded"] is False
+        and len(events_of("lesson_artifact_saved")) == _f1_event_count
+    ), "F1 content-equal retry is unchanged with no write or event"
 
     _f1_body2 = "print('saved revision two')\n"
     _f1_save2 = c.post(
@@ -1653,14 +1805,15 @@ def test_assessment_artifact_migration(client, suite_state):
     )
     _f1_events = events_of("lesson_artifact_saved")
     _f1_event2 = json.loads(_f1_events[-1]["payload_json"])
-    check("F1 save event carries identity and metadata but never content",
-          _f1_save2.status_code == 200
-          and _f1_event2["lesson_uid"] == _f1["uid"]
-          and _f1_event2["block_id"] == "blk_editor01"
-          and _f1_event2["file"] == "attempts/blk_editor01/main.py"
-          and _f1_event2["created"] is False
-          and "content" not in _f1_event2
-          and "title" not in _f1_event2)
+    assert (
+        _f1_save2.status_code == 200
+        and _f1_event2["lesson_uid"] == _f1["uid"]
+        and _f1_event2["block_id"] == "blk_editor01"
+        and _f1_event2["file"] == "attempts/blk_editor01/main.py"
+        and _f1_event2["created"] is False
+        and "content" not in _f1_event2
+        and "title" not in _f1_event2
+    ), "F1 save event carries identity and metadata but never content"
 
     # Event failure is observable but cannot roll back the already-durable file.
     _f1_body3 = "print('telemetry unavailable')\n"
@@ -1672,34 +1825,38 @@ def test_assessment_artifact_migration(client, suite_state):
             json={"content": _f1_body3,
                   "base_rev": _f1_save2.json()["file_rev"]},
         )
-    check("F1 file-first event failure is visible and leaves saved bytes durable",
-          _f1_event_down.status_code == 200
-          and _f1_event_down.json()["result"] == "saved"
-          and _f1_event_down.json()["event_recorded"] is False
-          and _f1_file.read_text(encoding="utf-8") == _f1_body3)
+    assert (
+        _f1_event_down.status_code == 200
+        and _f1_event_down.json()["result"] == "saved"
+        and _f1_event_down.json()["event_recorded"] is False
+        and _f1_file.read_text(encoding="utf-8") == _f1_body3
+    ), "F1 file-first event failure is visible and leaves saved bytes durable"
 
     # Stored bytes are descriptor-bound: over-limit, invalid UTF-8, and a
     # multi-link regular file each have their distinct fail-closed outcomes.
     _f1_file.write_bytes(b"x" * (artifacts_svc.MAX_FILE_BYTES + 1))
-    check("F1 GET refuses an oversized stored artifact before buffering past cap",
-          c.get(_f1_url).status_code == 413
-          and c.get(_f1_url).json()["error"] == "file-too-large")
+    assert (
+        c.get(_f1_url).status_code == 413
+        and c.get(_f1_url).json()["error"] == "file-too-large"
+    ), "F1 GET refuses an oversized stored artifact before buffering past cap"
     _f1_file.write_bytes(b"\xff")
     _f1_invalid = c.get(_f1_url)
-    check("F1 GET refuses invalid UTF-8 without replacement characters",
-          _f1_invalid.status_code == 422
-          and _f1_invalid.json()["error"] == "invalid-encoding"
-          and "content" not in _f1_invalid.json())
+    assert (
+        _f1_invalid.status_code == 422
+        and _f1_invalid.json()["error"] == "invalid-encoding"
+        and "content" not in _f1_invalid.json()
+    ), "F1 GET refuses invalid UTF-8 without replacement characters"
     _f1_bad_rev = "sha256:" + hashlib.sha256(b"\xff").hexdigest()
     _f1_repair = c.post(
         _f1_url, json={"content": _f1_body3, "base_rev": _f1_bad_rev})
     _f1_other = _f1_dir / "attempts" / "linked-copy.py"
     _os.link(_f1_file, _f1_other)
     _f1_linked = c.get(_f1_url)
-    check("F1 safe-file rule refuses a multi-link regular descriptor",
-          _f1_repair.status_code == 200
-          and _f1_linked.status_code == 409
-          and _f1_linked.json()["error"] == "unsafe-file")
+    assert (
+        _f1_repair.status_code == 200
+        and _f1_linked.status_code == 409
+        and _f1_linked.json()["error"] == "unsafe-file"
+    ), "F1 safe-file rule refuses a multi-link regular descriptor"
     _f1_other.unlink()
 
     # A same-inode direct writer can otherwise change the file between read
@@ -1731,8 +1888,9 @@ def test_assessment_artifact_migration(client, suite_state):
             _f1_mid_read_code = None
         except artifacts_svc.ArtifactError as exc:
             _f1_mid_read_code = exc.code
-    check("F1 descriptor read refuses a same-inode mid-read mutation",
-          _f1_mid_read_changed[0] and _f1_mid_read_code == "unsafe-file")
+    assert (
+        _f1_mid_read_changed[0] and _f1_mid_read_code == "unsafe-file"
+    ), "F1 descriptor read refuses a same-inode mid-read mutation"
 
     _f1_outside = _f1_dir.parent / "invented-artifact-outside"
     _f1_outside.mkdir()
@@ -1742,19 +1900,21 @@ def test_assessment_artifact_migration(client, suite_state):
     _f1_link_get = c.get(_f1_link_url)
     _f1_link_post = c.post(
         _f1_link_url, json={"content": "outside?", "base_rev": "absent"})
-    check("F1 no-follow traversal refuses a symlinked parent on GET and save",
-          _f1_link_get.status_code == 409
-          and _f1_link_post.status_code == 409
-          and not (_f1_outside / "main.py").exists())
+    assert (
+        _f1_link_get.status_code == 409
+        and _f1_link_post.status_code == 409
+        and not (_f1_outside / "main.py").exists()
+    ), "F1 no-follow traversal refuses a symlinked parent on GET and save"
     _f1_link_parent.unlink()
 
     _f1_deep_url = f"/learn/lessons/{_f1_id}/blocks/blk_deep0001/file"
     _f1_deep = c.post(
         _f1_deep_url, json={"content": "deep", "base_rev": "absent"})
-    check("F1 depth guard rejects undiscoverable writes without making parents",
-          _f1_deep.status_code == 422
-          and _f1_deep.json()["error"] == "undiscoverable-path"
-          and not (_f1_dir / "attempts" / "a").exists())
+    assert (
+        _f1_deep.status_code == 422
+        and _f1_deep.json()["error"] == "undiscoverable-path"
+        and not (_f1_dir / "attempts" / "a").exists()
+    ), "F1 depth guard rejects undiscoverable writes without making parents"
 
     # Deterministic parent-swap harness: move the checked destination parent,
     # plant a symlink at its former path immediately before replace, and prove
@@ -1785,11 +1945,12 @@ def test_assessment_artifact_migration(client, suite_state):
             f"/learn/lessons/{_f1_id}/blocks/blk_race0001/file",
             json={"content": "print('pinned')\n", "base_rev": "absent"},
         )
-    check("F1 mutation harness never publishes through a raced parent swap",
-          _f1_race.status_code == 200 and _f1_swapped["done"]
-          and (_f1_race_dir / "main.py").read_text(encoding="utf-8")
-              == "print('pinned')\n"
-          and not (_f1_outside / "main.py").exists())
+    assert (
+        _f1_race.status_code == 200 and _f1_swapped["done"]
+        and (_f1_race_dir / "main.py").read_text(encoding="utf-8")
+            == "print('pinned')\n"
+        and not (_f1_outside / "main.py").exists()
+    ), "F1 mutation harness never publishes through a raced parent swap"
 
     # A direct writer changing the current descriptor after compare but before
     # publication is caught by the final identity check; its bytes win.
@@ -1807,11 +1968,12 @@ def test_assessment_artifact_migration(client, suite_state):
             _f1_url,
             json={"content": "api writer loses\n", "base_rev": _f1_current},
         )
-    check("F1 final descriptor identity re-check catches a pre-replace mutation",
-          _f1_identity_conflict.status_code == 409
-          and _f1_identity_conflict.json()["error"] == "file-conflict"
-          and _f1_file.read_text(encoding="utf-8") == "direct writer wins\n"
-          and not list(_f1_file.parent.glob(".artifact-*.tmp")))
+    assert (
+        _f1_identity_conflict.status_code == 409
+        and _f1_identity_conflict.json()["error"] == "file-conflict"
+        and _f1_file.read_text(encoding="utf-8") == "direct writer wins\n"
+        and not list(_f1_file.parent.glob(".artifact-*.tmp"))
+    ), "F1 final descriptor identity re-check catches a pre-replace mutation"
 
     # Admission and semantic caps are separate: one is a streaming body cap,
     # the other is the 64-KiB raw file contract.
@@ -1828,12 +1990,14 @@ def test_assessment_artifact_migration(client, suite_state):
         json={"content": "x" * (artifacts_svc.MAX_FILE_BYTES + 1),
               "base_rev": "absent"},
     )
-    check("F1 capped-stream admission refuses a body over 512 KiB",
-          _f1_huge_body.status_code == 413
-          and _f1_huge_body.json()["error"] == "payload-too-large")
-    check("F1 save refuses content over 64 KiB by raw UTF-8 bytes",
-          _f1_huge_file.status_code == 413
-          and _f1_huge_file.json()["error"] == "file-too-large")
+    assert (
+        _f1_huge_body.status_code == 413
+        and _f1_huge_body.json()["error"] == "payload-too-large"
+    ), "F1 capped-stream admission refuses a body over 512 KiB"
+    assert (
+        _f1_huge_file.status_code == 413
+        and _f1_huge_file.json()["error"] == "file-too-large"
+    ), "F1 save refuses content over 64 KiB by raw UTF-8 bytes"
 
     artifacts_svc._reset_rate_limit()
     _f1_rate_max = artifacts_svc.RATE_MAX_PER_WINDOW
@@ -1854,14 +2018,16 @@ def test_assessment_artifact_migration(client, suite_state):
     finally:
         artifacts_svc.RATE_MAX_PER_WINDOW = _f1_rate_max
         artifacts_svc._reset_rate_limit()
-    check("F1 unchanged saves refund the per-lesson rate slot",
-          _f1_same1.json().get("result") == "unchanged"
-          and _f1_same2.json().get("result") == "unchanged")
-    check("F1 conflicts stay charged and rate-limited itself is uncharged",
-          _f1_charge.status_code == 409
-          and _f1_rate_hit.status_code == 429
-          and _f1_rate_hit.json()["error"] == "rate-limited"
-          and _f1_rate_hit.headers.get("retry-after") is not None)
+    assert (
+        _f1_same1.json().get("result") == "unchanged"
+        and _f1_same2.json().get("result") == "unchanged"
+    ), "F1 unchanged saves refund the per-lesson rate slot"
+    assert (
+        _f1_charge.status_code == 409
+        and _f1_rate_hit.status_code == 429
+        and _f1_rate_hit.json()["error"] == "rate-limited"
+        and _f1_rate_hit.headers.get("retry-after") is not None
+    ), "F1 conflicts stay charged and rate-limited itself is uncharged"
 
     with _mock.patch(
             "app.runner.runner_health",
@@ -1878,18 +2044,20 @@ def test_assessment_artifact_migration(client, suite_state):
             f"/learn/lessons/{_f1_id}/preview-meta",
             params={"entry": "index.html"},
         ).json()
-    check("F1 armed metadata exposes block ids and health-gated run flags only",
-          _f1_meta["bridge_page"]["blocks"][0]
-              == {"id": "blk_editor01", "run": True}
-          and all("file" not in block for block in _f1_meta["bridge_page"]["blocks"])
-          and not any(
-              block["run"]
-              for block in _f1_unhealthy_meta["bridge_page"]["blocks"]
-          ))
-    check("F1 Learn template advertises the guarded artifact route prefix",
-          f'data-artifacts-url="/learn/lessons/{_f1_id}/blocks"' in _f1_learn
-          and "{% if selected.artifacts_url is defined %}"
-              in (ROOT / "app/templates/learn.html").read_text(encoding="utf-8"))
+    assert (
+        _f1_meta["bridge_page"]["blocks"][0]
+            == {"id": "blk_editor01", "run": True}
+        and all("file" not in block for block in _f1_meta["bridge_page"]["blocks"])
+        and not any(
+            block["run"]
+            for block in _f1_unhealthy_meta["bridge_page"]["blocks"]
+        )
+    ), "F1 armed metadata exposes block ids and health-gated run flags only"
+    assert (
+        f'data-artifacts-url="/learn/lessons/{_f1_id}/blocks"' in _f1_learn
+        and "{% if selected.artifacts_url is defined %}"
+            in (ROOT / "app/templates/learn.html").read_text(encoding="utf-8")
+    ), "F1 Learn template advertises the guarded artifact route prefix"
 
     # ---- D5: Check through the bridge — parent derivation surface, byte-
     # bound page serving, attempt operation (lesson-bridge-abi.md §3.1) ----
@@ -1897,23 +2065,26 @@ def test_assessment_artifact_migration(client, suite_state):
     # can refuse undeclared ids before spending a server write
     _d5_meta = c.get(f"/learn/lessons/{_at_id}/preview-meta",
                      params={"entry": "index.html"}).json()
-    check("preview-meta lists the questions declared for the armed page",
-          _d5_meta["bridge"] is True
-          and _d5_meta["bridge_page"]["questions"] == ["q_atpredict1"])
+    assert (
+        _d5_meta["bridge"] is True
+        and _d5_meta["bridge_page"]["questions"] == ["q_atpredict1"]
+    ), "preview-meta lists the questions declared for the armed page"
     # single served-content snapshot (drain D2 L2): a declared v2 page's
     # response body is byte-identical to the digest its version token
     # carries, and the file route's version equals the metadata poll's
     _d5_file = c.get(f"/learn/lessons/{_at_id}/files/index.html")
     _d5_digest = hashlib.sha256(_d5_file.content).hexdigest()
-    check("served page bytes match the content-bound version token",
-          _d5_file.status_code == 200
-          and _d5_file.headers["x-lesson-preview-version"] == _d5_meta["version"]
-          and _d5_meta["version"].endswith(":" + _d5_digest[:16])
-          and _d5_file.content == (_at_dir / "index.html").read_bytes())
+    assert (
+        _d5_file.status_code == 200
+        and _d5_file.headers["x-lesson-preview-version"] == _d5_meta["version"]
+        and _d5_meta["version"].endswith(":" + _d5_digest[:16])
+        and _d5_file.content == (_at_dir / "index.html").read_bytes()
+    ), "served page bytes match the content-bound version token"
     _d5_info = lessons_svc.bundle_resource_info(_at, "index.html")
-    check("bundle_resource_info returns the one-descriptor snapshot for v2 pages",
-          _d5_info["content"] == _d5_file.content
-          and _d5_info["version"] == _d5_meta["version"])
+    assert (
+        _d5_info["content"] == _d5_file.content
+        and _d5_info["version"] == _d5_meta["version"]
+    ), "bundle_resource_info returns the one-descriptor snapshot for v2 pages"
     # serve-time version binding (PR-60 round 1): the parent navigates with
     # ?v=<token>; matching bytes serve, a mismatched token is refused with
     # the self-reloading 409 instead of showing bytes the armed page_rev
@@ -1922,22 +2093,25 @@ def test_assessment_artifact_migration(client, suite_state):
                     params={"v": _d5_meta["version"]})
     _d5_vbad = c.get(f"/learn/lessons/{_at_id}/files/index.html",
                      params={"v": "1:interactive-local-v1:deadbeefdeadbeef"})
-    check("?v binding: matching token serves, mismatched token is a 409 reload",
-          _d5_vok.status_code == 200 and _d5_vok.content == _d5_file.content
-          and _d5_vbad.status_code == 409
-          and "location.reload" in _d5_vbad.text
-          and _d5_vbad.headers.get("x-lesson-preview-version") == _d5_meta["version"])
+    assert (
+        _d5_vok.status_code == 200 and _d5_vok.content == _d5_file.content
+        and _d5_vbad.status_code == 409
+        and "location.reload" in _d5_vbad.text
+        and _d5_vbad.headers.get("x-lesson-preview-version") == _d5_meta["version"]
+    ), "?v binding: matching token serves, mismatched token is a 409 reload"
     from urllib.parse import quote as _d5_quote
-    check("learn.html initial iframe src carries the ?v binding",
-          f'?v={_d5_quote(_d5_meta["version"], safe="")}'
-          in c.get(f"/learn?lesson={_at_id}").text.replace("&amp;", "&"))
+    assert (
+        f'?v={_d5_quote(_d5_meta["version"], safe="")}'
+        in c.get(f"/learn?lesson={_at_id}").text.replace("&amp;", "&")
+    ), "learn.html initial iframe src carries the ?v binding"
     # an asset (undeclared as a page) streams as before: no snapshot, no
     # content-bound token
     (_at_dir / "assets").mkdir(exist_ok=True)
     (_at_dir / "assets" / "probe.css").write_text("body{}", encoding="utf-8")
     _d5_asset = lessons_svc.bundle_resource_info(_at, "assets/probe.css")
-    check("assets are not snapshotted and keep the plain mtime version",
-          _d5_asset["content"] is None and ":" not in _d5_asset["version"])
+    assert (
+        _d5_asset["content"] is None and ":" not in _d5_asset["version"]
+    ), "assets are not snapshotted and keep the plain mtime version"
     # supported page-size bound (drain L3/D5): an oversized declared page
     # renders but carries NO bridge identity — visible finding, never silent
     _d5_orig = (_at_dir / "index.html").read_bytes()
@@ -1946,22 +2120,25 @@ def test_assessment_artifact_migration(client, suite_state):
     _d5_big_meta = c.get(f"/learn/lessons/{_at_id}/preview-meta",
                          params={"entry": "index.html"}).json()
     _d5_big_file = c.get(f"/learn/lessons/{_at_id}/files/index.html")
-    check("oversized page: renders, no bridge identity, page-too-large finding",
-          _d5_big_meta["exists"] is True
-          and _d5_big_meta["bridge_page"] is None
-          and _d5_big_meta["outcome"] == "degraded"
-          and any(f["code"] == "page-too-large" for f in _d5_big_meta["findings"])
-          and _d5_big_file.status_code == 200)
-    check("oversized page: attempts refuse on the server too (stale revision)",
-          c.post(_at_url, json=dict(_at_body, idempotency_key="vera-big-page-1")
-                 ).json().get("stale") is True)
+    assert (
+        _d5_big_meta["exists"] is True
+        and _d5_big_meta["bridge_page"] is None
+        and _d5_big_meta["outcome"] == "degraded"
+        and any(f["code"] == "page-too-large" for f in _d5_big_meta["findings"])
+        and _d5_big_file.status_code == 200
+    ), "oversized page: renders, no bridge identity, page-too-large finding"
+    assert (
+        c.post(_at_url, json=dict(_at_body, idempotency_key="vera-big-page-1")
+               ).json().get("stale") is True
+    ), "oversized page: attempts refuse on the server too (stale revision)"
     # round 2 fail-closed: a declared page that cannot be snapshotted (here:
     # grown past the bound) refuses a versioned request instead of letting
     # the streaming fallback serve bytes the requested token doesn't describe
     _d5_gone = c.get(f"/learn/lessons/{_at_id}/files/index.html",
                      params={"v": _d5_meta["version"]})
-    check("unsnapshottable declared page fails closed on a versioned request",
-          _d5_gone.status_code == 409 and "location.reload" in _d5_gone.text)
+    assert (
+        _d5_gone.status_code == 409 and "location.reload" in _d5_gone.text
+    ), "unsnapshottable declared page fails closed on a versioned request"
     (_at_dir / "index.html").write_bytes(_d5_orig)  # restore
     # round 2 parity: a non-bridge v2 page (legacy-display profile) uses the
     # same mtime:profile token in the metadata and the file route — ?v never
@@ -1972,10 +2149,11 @@ def test_assessment_artifact_migration(client, suite_state):
                          params={"entry": "index.html"}).json()
     _d5_leg_file = c.get(f"/learn/lessons/{_at_id}/files/index.html",
                          params={"v": _d5_leg_meta["version"]})
-    check("legacy v2 page: meta and route tokens agree, ?v serves 200",
-          _d5_leg_meta["bridge"] is False
-          and _d5_leg_meta["version"].endswith(":legacy-display")
-          and _d5_leg_file.status_code == 200)
+    assert (
+        _d5_leg_meta["bridge"] is False
+        and _d5_leg_meta["version"].endswith(":legacy-display")
+        and _d5_leg_file.status_code == 200
+    ), "legacy v2 page: meta and route tokens agree, ?v serves 200"
     bschema.write_manifest(_at_dir / "lesson.json", _at_raw)  # restore
     # rounds 3+5: a page vanishing between is_file() and the lstat size
     # pre-check must fall through to the descriptor-bound hash open — never
@@ -1995,8 +2173,9 @@ def test_assessment_artifact_migration(client, suite_state):
     with _d5_mock.patch.object(Path, "is_file", _van_isfile):
         _van_info = lessons_svc.lesson_file_info(_at, "index.html")
     (_at_dir / "index.html").write_bytes(_van_orig)  # restore
-    check("vanish race in the lstat pre-check fails closed, never a 500",
-          _van_info["exists"] is False and _van_info["bridge_page"] is None)
+    assert (
+        _van_info["exists"] is False and _van_info["bridge_page"] is None
+    ), "vanish race in the lstat pre-check fails closed, never a 500"
     # round 4: a symlink raced in AFTER the path_has_symlink() check (mocked
     # away here) must not have its target sized by the pre-check — lstat +
     # S_ISREG routes it to the O_NOFOLLOW open, which fails closed (§2)
@@ -2015,14 +2194,16 @@ def test_assessment_artifact_migration(client, suite_state):
     (_at_dir / "index.html").unlink()
     (_at_dir / "index.html").write_bytes(_r4_orig)  # restore
     _r4_target.unlink()
-    check("raced-in symlink to an oversized target fails closed, no identity",
-          _r4_info["exists"] is False and _r4_info["bridge_page"] is None
-          and not any(f["code"] == "page-too-large"
-                      for f in _r4_info["findings"]))
+    assert (
+        _r4_info["exists"] is False and _r4_info["bridge_page"] is None
+        and not any(f["code"] == "page-too-large"
+                    for f in _r4_info["findings"])
+    ), "raced-in symlink to an oversized target fails closed, no identity"
     # the digest cache evicts one entry when full, never the whole set
-    check("page digest cache evicts oldest, not clear-all",
-          "_PAGE_DIGEST_CACHE.clear()" not in
-          (ROOT / "app" / "services" / "lessons.py").read_text(encoding="utf-8"))
+    assert (
+        "_PAGE_DIGEST_CACHE.clear()" not in
+        (ROOT / "app" / "services" / "lessons.py").read_text(encoding="utf-8")
+    ), "page digest cache evicts oldest, not clear-all"
     # Drain C1: cache admission must stay at its configured bound when many
     # distinct cold misses arrive together. The custom len() makes the old
     # unsynchronized implementation deterministically observe the same
@@ -2057,7 +2238,7 @@ def test_assessment_artifact_migration(client, suite_state):
             _d5_cache_start.wait()
             lessons_svc._cache_page_digest(
                 Path(f"/invented/cold-{i}.html"), (i,), f"{i + 1000:064x}")
-        except BaseException as exc:  # keep worker failures visible to check()
+        except BaseException as exc:  # keep worker failures visible to the assertion
             _d5_cache_errors.append(exc)
 
     _d5_saved_cache = lessons_svc._PAGE_DIGEST_CACHE
@@ -2079,88 +2260,103 @@ def test_assessment_artifact_migration(client, suite_state):
     finally:
         lessons_svc._PAGE_DIGEST_CACHE = _d5_saved_cache
         lessons_svc._PAGE_DIGEST_CACHE_MAX = _d5_saved_cache_max
-    check("page digest cache stays bounded under concurrent cold misses",
-          not _d5_cache_alive and not _d5_cache_errors
-          and _d5_cache_actual == _d5_cache_max,
-          f"entries={_d5_cache_actual}, errors={_d5_cache_errors!r}")
+    assert (
+        not _d5_cache_alive and not _d5_cache_errors
+        and _d5_cache_actual == _d5_cache_max
+    ), (
+        "page digest cache stays bounded under concurrent cold misses"
+        + "  -- "
+        + (
+            f"entries={_d5_cache_actual}, errors={_d5_cache_errors!r}"
+        )
+    )
     # the Learn page hands the parent runtime the attempt endpoint
-    check("learn.html carries data-attempts-url for the parent runtime",
-          f'data-attempts-url="/learn/lessons/{_at_id}/attempts"'
-          in c.get(f"/learn?lesson={_at_id}").text)
+    assert (
+        f'data-attempts-url="/learn/lessons/{_at_id}/attempts"'
+        in c.get(f"/learn?lesson={_at_id}").text
+    ), "learn.html carries data-attempts-url for the parent runtime"
     # structural anchors for the attempt operation in the parent runtime —
     # source .ts and committed emit alike (#42): capability negotiation,
     # parent-derived submission, per-op re-validation, toast, in-flight cap
     for _d5_name, _d5_text in (("learn-bridge.ts", _d2_ts), ("learn-bridge.js", _d2_js)):
-        check(f"{_d5_name}: attempt operation anchors",
-              "ATTEMPT_OP_VERSION = 1" in _d5_text
-              and 'want.includes("attempts")' in _d5_text
-              and "idempotency_key: requestId" in _d5_text
-              and "page_id: armed.page_id" in _d5_text
-              and "page_rev: armed.page_rev" in _d5_text
-              and '"stale-page"' in _d5_text
-              and '"capability-not-granted"' in _d5_text
-              and "MAX_ATTEMPTS_INFLIGHT" in _d5_text
-              and "ATTEMPT_SETTLE_MS" in _d5_text
-              and "MAX_ANSWER_BYTES = 32 * 1024" in _d5_text
-              and "contentByteLength(answer) > MAX_ANSWER_BYTES" in _d5_text
-              and "attempt #" in _d5_text)
-    check("parent runtime re-validates per operation against fresh metadata",
-          "metaQuestions" in _d2_ts
-          and "await fetchMeta()" in _d2_ts.split("postAttempt")[1])
+        assert (
+            "ATTEMPT_OP_VERSION = 1" in _d5_text
+            and 'want.includes("attempts")' in _d5_text
+            and "idempotency_key: requestId" in _d5_text
+            and "page_id: armed.page_id" in _d5_text
+            and "page_rev: armed.page_rev" in _d5_text
+            and '"stale-page"' in _d5_text
+            and '"capability-not-granted"' in _d5_text
+            and "MAX_ATTEMPTS_INFLIGHT" in _d5_text
+            and "ATTEMPT_SETTLE_MS" in _d5_text
+            and "MAX_ANSWER_BYTES = 32 * 1024" in _d5_text
+            and "contentByteLength(answer) > MAX_ANSWER_BYTES" in _d5_text
+            and "attempt #" in _d5_text
+        ), f"{_d5_name}: attempt operation anchors"
+    assert (
+        "metaQuestions" in _d2_ts
+        and "await fetchMeta()" in _d2_ts.split("postAttempt")[1]
+    ), "parent runtime re-validates per operation against fresh metadata"
 
     # ---- phase F2 frontend: editor capability and artifact membrane ----
     # Source and emitted runtime must carry the same block-specific, fresh-meta
     # guards. This is deliberately the editor-only first commit; run anchors
     # arrive in the next commit so the review history preserves D-FE-1.
     for _fe_name, _fe_text in (("learn-bridge.ts", _d2_ts), ("learn-bridge.js", _d2_js)):
-        check(f"{_fe_name}: editor membrane anchors",
-              'frame.dataset["artifactsUrl"]' in _fe_text
-              and 'want.includes("editor")' in _fe_text
-              and 'capabilities.push("editor")' in _fe_text
-              and 'msg["op"] === "artifact.get"' in _fe_text
-              and 'msg["op"] === "artifact.save"' in _fe_text
-              and "freshBlock" in _fe_text
-              and "metaBlocks" in _fe_text
-              and "MAX_BRIDGE_BLOCKS = 100" in _fe_text
-              and "EDITOR_SETTLE_MS" in _fe_text
-              and "MAX_EDITOR_INFLIGHT" in _fe_text
-              and "contentByteLength(content) > MAX_CONTENT_BYTES" in _fe_text
-              and 'body: JSON.stringify({ content, base_rev: baseRev })' in _fe_text)
+        assert (
+            'frame.dataset["artifactsUrl"]' in _fe_text
+            and 'want.includes("editor")' in _fe_text
+            and 'capabilities.push("editor")' in _fe_text
+            and 'msg["op"] === "artifact.get"' in _fe_text
+            and 'msg["op"] === "artifact.save"' in _fe_text
+            and "freshBlock" in _fe_text
+            and "metaBlocks" in _fe_text
+            and "MAX_BRIDGE_BLOCKS = 100" in _fe_text
+            and "EDITOR_SETTLE_MS" in _fe_text
+            and "MAX_EDITOR_INFLIGHT" in _fe_text
+            and "contentByteLength(content) > MAX_CONTENT_BYTES" in _fe_text
+            and 'body: JSON.stringify({ content, base_rev: baseRev })' in _fe_text
+        ), f"{_fe_name}: editor membrane anchors"
     _fe_template = (ROOT / "app" / "templates" / "learn.html").read_text(encoding="utf-8")
-    check("Learn template feature-detects the artifact endpoint",
-          "selected.artifacts_url is defined" in _fe_template
-          and 'data-artifacts-url="{{ selected.artifacts_url }}"' in _fe_template)
-    check("editor operations revalidate the fresh page block before HTTP",
-          "const freshBlock = async" in _d2_ts
-          and "const meta = await fetchMeta()" in _d2_ts.split("const freshBlock = async", 1)[1]
-          and "blocks.find((candidate) => candidate.id === blockId)" in _d2_ts
-          and _d2_ts[_d2_ts.index("const saveArtifact"):
-                     _d2_ts.index("const runStartEndpoint")].count("await freshBlock") == 2
-          and _d2_ts.rindex("await freshBlock", _d2_ts.index("const saveArtifact"),
-                            _d2_ts.index("const runStartEndpoint"))
-          < _d2_ts.index("method: \"POST\"", _d2_ts.index("const saveArtifact")))
+    assert (
+        "selected.artifacts_url is defined" in _fe_template
+        and 'data-artifacts-url="{{ selected.artifacts_url }}"' in _fe_template
+    ), "Learn template feature-detects the artifact endpoint"
+    assert (
+        "const freshBlock = async" in _d2_ts
+        and "const meta = await fetchMeta()" in _d2_ts.split("const freshBlock = async", 1)[1]
+        and "blocks.find((candidate) => candidate.id === blockId)" in _d2_ts
+        and _d2_ts[_d2_ts.index("const saveArtifact"):
+                   _d2_ts.index("const runStartEndpoint")].count("await freshBlock") == 2
+        and _d2_ts.rindex("await freshBlock", _d2_ts.index("const saveArtifact"),
+                          _d2_ts.index("const runStartEndpoint"))
+        < _d2_ts.index("method: \"POST\"", _d2_ts.index("const saveArtifact"))
+    ), "editor operations revalidate the fresh page block before HTTP"
     _fe_get = _d2_ts[_d2_ts.index("const getArtifact"):
                      _d2_ts.index("const saveArtifact")]
-    check("artifact reads revalidate the page block after GET before disclosure",
-          _fe_get.count("await freshBlock") == 3
-          and _fe_get.index("const rec = await readEndpointJson")
-          < _fe_get.rindex("await freshBlock")
-          < _fe_get.index("boundPort.postMessage(reply)"))
-    check("private artifact reads require sticky parent consent before GET",
-          "let artifactReadConsent: boolean | null = null" in _d2_ts
-          and "artifactReadConsent = null" in _d2_ts
-          and "window.confirm(" in _d2_ts
-          and 'answerError(boundPort, "artifact-read-denied", requestId)' in _fe_get
-          and _fe_get.index("allowArtifactRead()")
-          < _fe_get.index("const rec = await readEndpointJson")
-          and _fe_get.index("allowArtifactRead()")
-          < _fe_get.index("await freshBlock", _fe_get.index("allowArtifactRead()")))
-    check("editor grant refreshes current block metadata at handshake time",
-          "const handleReady = async" in _d2_ts
-          and "const meta = await fetchMeta()" in _d2_ts.split("const handleReady = async", 1)[1]
-          and "armedBlocks = metaBlocks(meta) ?? []" in
-          _d2_ts.split("const handleReady = async", 1)[1]
-          and "grantToken !== token" in _d2_ts)
+    assert (
+        _fe_get.count("await freshBlock") == 3
+        and _fe_get.index("const rec = await readEndpointJson")
+        < _fe_get.rindex("await freshBlock")
+        < _fe_get.index("boundPort.postMessage(reply)")
+    ), "artifact reads revalidate the page block after GET before disclosure"
+    assert (
+        "let artifactReadConsent: boolean | null = null" in _d2_ts
+        and "artifactReadConsent = null" in _d2_ts
+        and "window.confirm(" in _d2_ts
+        and 'answerError(boundPort, "artifact-read-denied", requestId)' in _fe_get
+        and _fe_get.index("allowArtifactRead()")
+        < _fe_get.index("const rec = await readEndpointJson")
+        and _fe_get.index("allowArtifactRead()")
+        < _fe_get.index("await freshBlock", _fe_get.index("allowArtifactRead()"))
+    ), "private artifact reads require sticky parent consent before GET"
+    assert (
+        "const handleReady = async" in _d2_ts
+        and "const meta = await fetchMeta()" in _d2_ts.split("const handleReady = async", 1)[1]
+        and "armedBlocks = metaBlocks(meta) ?? []" in
+        _d2_ts.split("const handleReady = async", 1)[1]
+        and "grantToken !== token" in _d2_ts
+    ), "editor grant refreshes current block metadata at handshake time"
 
     # Byte accounting probes the two expansion classes behind the derived
     # 512 KiB membrane cap: ASCII controls that become six-byte JSON escapes,
@@ -2173,176 +2369,204 @@ def test_assessment_artifact_migration(client, suite_state):
     _fe_multibyte_wire = json.dumps(
         {"op": "artifact.save", "content": _fe_multibyte},
         ensure_ascii=True, separators=(",", ":")).encode("utf-8")
-    check("editor byte bounds admit hostile escaping inside the derived cap",
-          len(_fe_hostile.encode("utf-8")) == 64 * 1024
-          and 384 * 1024 <= len(_fe_hostile_wire) < 512 * 1024)
-    check("editor byte bounds measure multibyte raw and serialized UTF-8",
-          len(_fe_multibyte.encode("utf-8")) == 64 * 1024
-          and len(_fe_multibyte_wire) < 512 * 1024
-          and "UTF8.encode(text).byteLength" in _d2_ts)
+    assert (
+        len(_fe_hostile.encode("utf-8")) == 64 * 1024
+        and 384 * 1024 <= len(_fe_hostile_wire) < 512 * 1024
+    ), "editor byte bounds admit hostile escaping inside the derived cap"
+    assert (
+        len(_fe_multibyte.encode("utf-8")) == 64 * 1024
+        and len(_fe_multibyte_wire) < 512 * 1024
+        and "UTF8.encode(text).byteLength" in _d2_ts
+    ), "editor byte bounds measure multibyte raw and serialized UTF-8"
 
     _fe_fixture = (ROOT / "fixtures" / "lesson-bridge"
                    / "editor-run-conventions.html").read_text(encoding="utf-8")
-    check("editor conventions fixture exercises get/save as text-only data",
-          'want: ["editor", "run"]' in _fe_fixture
-          and 'op: "artifact.get"' in _fe_fixture
-          and 'op: "artifact.save"' in _fe_fixture
-          and "status.textContent = text" in _fe_fixture
-          and "innerHTML" not in _fe_fixture)
-    check("editor conventions authenticate and consume one handshake result",
-          "answered || event.source !== window.parent" in _fe_fixture
-          and "event.origin !== appOrigin" in _fe_fixture
-          and 'message.abi !== 1' in _fe_fixture
-          and "event.ports.length !== 1" in _fe_fixture
-          and "event.ports.length !== 0" in _fe_fixture
-          and "answered = true" in _fe_fixture)
-    check("editor conventions mint lesson-wide ids and fail closed without entropy",
-          "crypto.getRandomValues(words)" in _fe_fixture
-          and "requestNonce" in _fe_fixture
-          and "secure request ids unavailable" in _fe_fixture
-          and "fixture-${kind}-${requestNonce}-${++sequence}" in _fe_fixture
-          and "retry keeps runRequestId" in _fe_fixture)
-    check("editor degradation: no bridge stays useful and read-only",
-          "Read-only preview. Connecting" in _fe_fixture
-          and "bridge unavailable" in _fe_fixture
-          and '<textarea id="source"' in _fe_fixture
-          and " readonly>" in _fe_fixture)
-    check("editor degradation: welcome without grant stays read-only",
-          'message.capabilities.includes("editor")' in _fe_fixture
-          and 'readOnly("editor capability not granted")' in _fe_fixture)
-    check("editor degradation: old backend attrs grant no capability",
-          "selected.artifacts_url is defined" in _fe_template
-          and 'const artifactsUrl = frame.dataset["artifactsUrl"] || null' in _d2_ts
-          and 'artifactsUrl !== null && armedBlocks.length > 0' in _d2_ts)
-    check("editor degradation: direct-open fixture stays read-only",
-          "window.parent === window" in _fe_fixture
-          and 'readOnly("direct open: no parent bridge")' in _fe_fixture)
+    assert (
+        'want: ["editor", "run"]' in _fe_fixture
+        and 'op: "artifact.get"' in _fe_fixture
+        and 'op: "artifact.save"' in _fe_fixture
+        and "status.textContent = text" in _fe_fixture
+        and "innerHTML" not in _fe_fixture
+    ), "editor conventions fixture exercises get/save as text-only data"
+    assert (
+        "answered || event.source !== window.parent" in _fe_fixture
+        and "event.origin !== appOrigin" in _fe_fixture
+        and 'message.abi !== 1' in _fe_fixture
+        and "event.ports.length !== 1" in _fe_fixture
+        and "event.ports.length !== 0" in _fe_fixture
+        and "answered = true" in _fe_fixture
+    ), "editor conventions authenticate and consume one handshake result"
+    assert (
+        "crypto.getRandomValues(words)" in _fe_fixture
+        and "requestNonce" in _fe_fixture
+        and "secure request ids unavailable" in _fe_fixture
+        and "fixture-${kind}-${requestNonce}-${++sequence}" in _fe_fixture
+        and "retry keeps runRequestId" in _fe_fixture
+    ), "editor conventions mint lesson-wide ids and fail closed without entropy"
+    assert (
+        "Read-only preview. Connecting" in _fe_fixture
+        and "bridge unavailable" in _fe_fixture
+        and '<textarea id="source"' in _fe_fixture
+        and " readonly>" in _fe_fixture
+    ), "editor degradation: no bridge stays useful and read-only"
+    assert (
+        'message.capabilities.includes("editor")' in _fe_fixture
+        and 'readOnly("editor capability not granted")' in _fe_fixture
+    ), "editor degradation: welcome without grant stays read-only"
+    assert (
+        "selected.artifacts_url is defined" in _fe_template
+        and 'const artifactsUrl = frame.dataset["artifactsUrl"] || null' in _d2_ts
+        and 'artifactsUrl !== null && armedBlocks.length > 0' in _d2_ts
+    ), "editor degradation: old backend attrs grant no capability"
+    assert (
+        "window.parent === window" in _fe_fixture
+        and 'readOnly("direct open: no parent bridge")' in _fe_fixture
+    ), "editor degradation: direct-open fixture stays read-only"
 
     # ---- phase F5 frontend: composite save/run, owned SSE relay, cancel ----
     for _fr_name, _fr_text in (("learn-bridge.ts", _d2_ts), ("learn-bridge.js", _d2_js)):
-        check(f"{_fr_name}: run membrane anchors",
-              'frame.dataset["runsUrl"]' in _fr_text
-              and 'want.includes("run")' in _fr_text
-              and 'capabilities.push("run")' in _fr_text
-              and 'msg["op"] === "artifact.save_run"' in _fr_text
-              and 'msg["op"] === "run.cancel"' in _fr_text
-              and 'op: "run.output"' in _fr_text
-              and 'op: "run.exit"' in _fr_text
-              and "MAX_OUTPUT_BYTES = 32 * 1024" in _fr_text
-              and "MAX_OWNED_RUNS = 16" in _fr_text
-              and "ownedRuns" in _fr_text
-              and "activeRelay" in _fr_text
-              and "RUN_SETTLE_MS" in _fr_text)
-    check("Learn template feature-detects the run endpoint independently",
-          "selected.runs_url is defined" in _fe_template
-          and 'data-runs-url="{{ selected.runs_url }}"' in _fe_template)
+        assert (
+            'frame.dataset["runsUrl"]' in _fr_text
+            and 'want.includes("run")' in _fr_text
+            and 'capabilities.push("run")' in _fr_text
+            and 'msg["op"] === "artifact.save_run"' in _fr_text
+            and 'msg["op"] === "run.cancel"' in _fr_text
+            and 'op: "run.output"' in _fr_text
+            and 'op: "run.exit"' in _fr_text
+            and "MAX_OUTPUT_BYTES = 32 * 1024" in _fr_text
+            and "MAX_OWNED_RUNS = 16" in _fr_text
+            and "ownedRuns" in _fr_text
+            and "activeRelay" in _fr_text
+            and "RUN_SETTLE_MS" in _fr_text
+        ), f"{_fr_name}: run membrane anchors"
+    assert (
+        "selected.runs_url is defined" in _fe_template
+        and 'data-runs-url="{{ selected.runs_url }}"' in _fe_template
+    ), "Learn template feature-detects the run endpoint independently"
     _fr_save_run = _d2_ts[_d2_ts.index("const saveAndRun"):
                           _d2_ts.index("const cancelRun")]
-    check("save_run saves successfully before starting the returned revision",
-          _fr_save_run.index("artifactEndpoint(blockId)")
-          < _fr_save_run.index("runStartEndpoint(blockId)")
-          and 'saveResult !== "saved" && saveResult !== "unchanged"' in _fr_save_run
-          and "file_rev: fileRev, idempotency_key: idempotencyKey" in _fr_save_run
-          and _fr_save_run.count("await freshBlock") == 4)
-    check("save_run revalidates page/block Run authority after start before relay",
-          _fr_save_run.index("const started = await readEndpointJson")
-          < _fr_save_run.index("const afterStart = await freshBlock")
-          < _fr_save_run.index("rememberOwnedRun")
-          and 'if (!afterStart.run)' in _fr_save_run)
-    check("save_run derives parameter-bound idempotency before artifact mutation",
-          "export const sha256Hex" in _d2_ts
-          and "window.crypto" not in _d2_ts
-          and '"ephemeris:lesson-run:v1", requestId, blockId, content' in _d2_ts
-          and _fr_save_run.index("deriveRunIdempotencyKey")
-          < _fr_save_run.index("artifactEndpoint(blockId)"))
-    check("run ownership gates relay and cancel while navigation only aborts relay",
-          "rememberOwnedRun(runId, { generation: gen, block_id: blockId })" in _d2_ts
-          and "const owner = ownedRuns.get(runId)" in _d2_ts
-          and "owner?.generation === gen && owner.block_id === blockId" in _d2_ts
-          and "if (activeRelay) activeRelay.controller.abort()" in _d2_ts
-          and "ownedRuns = new Map()" in _d2_ts
-          and "service.cancel" not in _d2_ts)
+    assert (
+        _fr_save_run.index("artifactEndpoint(blockId)")
+        < _fr_save_run.index("runStartEndpoint(blockId)")
+        and 'saveResult !== "saved" && saveResult !== "unchanged"' in _fr_save_run
+        and "file_rev: fileRev, idempotency_key: idempotencyKey" in _fr_save_run
+        and _fr_save_run.count("await freshBlock") == 4
+    ), "save_run saves successfully before starting the returned revision"
+    assert (
+        _fr_save_run.index("const started = await readEndpointJson")
+        < _fr_save_run.index("const afterStart = await freshBlock")
+        < _fr_save_run.index("rememberOwnedRun")
+        and 'if (!afterStart.run)' in _fr_save_run
+    ), "save_run revalidates page/block Run authority after start before relay"
+    assert (
+        "export const sha256Hex" in _d2_ts
+        and "window.crypto" not in _d2_ts
+        and '"ephemeris:lesson-run:v1", requestId, blockId, content' in _d2_ts
+        and _fr_save_run.index("deriveRunIdempotencyKey")
+        < _fr_save_run.index("artifactEndpoint(blockId)")
+    ), "save_run derives parameter-bound idempotency before artifact mutation"
+    assert (
+        "rememberOwnedRun(runId, { generation: gen, block_id: blockId })" in _d2_ts
+        and "const owner = ownedRuns.get(runId)" in _d2_ts
+        and "owner?.generation === gen && owner.block_id === blockId" in _d2_ts
+        and "if (activeRelay) activeRelay.controller.abort()" in _d2_ts
+        and "ownedRuns = new Map()" in _d2_ts
+        and "service.cancel" not in _d2_ts
+    ), "run ownership gates relay and cancel while navigation only aborts relay"
     _fr_cancel = _d2_ts[_d2_ts.index("const cancelRun"):
                         _d2_ts.index("const postAttempt")]
-    check("owned run cancel survives block removal but keeps fresh page checks",
-          _fr_cancel.count("await freshBlocks") == 2
-          and "await freshBlock(" not in _fr_cancel
-          and _fr_cancel.index("const owner = ownedRuns.get(runId)")
-          < _fr_cancel.index("await freshBlocks"))
+    assert (
+        _fr_cancel.count("await freshBlocks") == 2
+        and "await freshBlock(" not in _fr_cancel
+        and _fr_cancel.index("const owner = ownedRuns.get(runId)")
+        < _fr_cancel.index("await freshBlocks")
+    ), "owned run cancel survives block removal but keeps fresh page checks"
     _fr_port = _d2_ts[_d2_ts.index("const onPortMessage"):
                       _d2_ts.index("const finishReady")]
-    check("save_run rejects backend-invalid idempotency keys before mutation",
-          'answerError(port, "invalid-idempotency-key", requestId)' in _fr_port
-          and "requestId.charCodeAt" in _fr_port
-          and _fr_port.index("invalid-idempotency-key")
-          < _fr_port.index("void saveAndRun"))
-    check("one document-wide stream refuses a second save_run before HTTP",
-          "activeRelay !== null || runStartToken !== null" in _fr_port
-          and _fr_port.index("activeRelay !== null || runStartToken !== null")
-          < _fr_port.index("void saveAndRun")
-          and 'answerError(port, "busy", requestId)' in _fr_port)
-    check("SSE relay validates sequence, stream, UTF-8 size, and terminal cause",
-          'new TextDecoder("utf-8", { fatal: true })' in _d2_ts
-          and 'payload["seq"] !== seq' in _d2_ts
-          and 'stream !== "stdout" && stream !== "stderr"' in _d2_ts
-          and "contentByteLength(text) > MAX_OUTPUT_BYTES" in _d2_ts
-          and "RUN_CAUSES.has(cause)" in _d2_ts
-          and 'op: "run.error"' in _d2_ts)
+    assert (
+        'answerError(port, "invalid-idempotency-key", requestId)' in _fr_port
+        and "requestId.charCodeAt" in _fr_port
+        and _fr_port.index("invalid-idempotency-key")
+        < _fr_port.index("void saveAndRun")
+    ), "save_run rejects backend-invalid idempotency keys before mutation"
+    assert (
+        "activeRelay !== null || runStartToken !== null" in _fr_port
+        and _fr_port.index("activeRelay !== null || runStartToken !== null")
+        < _fr_port.index("void saveAndRun")
+        and 'answerError(port, "busy", requestId)' in _fr_port
+    ), "one document-wide stream refuses a second save_run before HTTP"
+    assert (
+        'new TextDecoder("utf-8", { fatal: true })' in _d2_ts
+        and 'payload["seq"] !== seq' in _d2_ts
+        and 'stream !== "stdout" && stream !== "stderr"' in _d2_ts
+        and "contentByteLength(text) > MAX_OUTPUT_BYTES" in _d2_ts
+        and "RUN_CAUSES.has(cause)" in _d2_ts
+        and 'op: "run.error"' in _d2_ts
+    ), "SSE relay validates sequence, stream, UTF-8 size, and terminal cause"
     _fr_relay_loop = _d2_ts[_d2_ts.index("while (ownsRelay())"):
                             _d2_ts.index("const saveAndRun")]
-    check("SSE relay drains complete coalesced frames before partial-frame cap",
-          _fr_relay_loop.index('let boundary = buffer.indexOf("\\n\\n")')
-          < _fr_relay_loop.index("UTF8.encode(buffer).byteLength > MAX_PORT_BYTES"))
+    assert (
+        _fr_relay_loop.index('let boundary = buffer.indexOf("\\n\\n")')
+        < _fr_relay_loop.index("UTF8.encode(buffer).byteLength > MAX_PORT_BYTES")
+    ), "SSE relay drains complete coalesced frames before partial-frame cap"
     _fr_output_multibyte = "🪐" * ((32 * 1024) // len("🪐".encode("utf-8")))
     _fr_output_wire = json.dumps(
         {"op": "run.output", "text": _fr_output_multibyte},
         ensure_ascii=True, separators=(",", ":")).encode("utf-8")
-    check("run output keeps its 32 KiB raw limit inside the serialized cap",
-          len(_fr_output_multibyte.encode("utf-8")) == 32 * 1024
-          and len(_fr_output_wire) < 512 * 1024)
-    check("run conventions fixture exercises save_run, cursor relay, and cancel as text",
-          'op: "artifact.save_run"' in _fe_fixture
-          and 'op: "run.cancel"' in _fe_fixture
-          and 'reply.op === "run.output"' in _fe_fixture
-          and 'reply.op === "run.exit"' in _fe_fixture
-          and "after: cursor" in _fe_fixture
-          and "output.textContent += reply.text" in _fe_fixture
-          and "innerHTML" not in _fe_fixture)
-    check("conventions fixture is test-only, not shipped by the Learn template",
-          "editor-run-conventions" not in _fe_template)
+    assert (
+        len(_fr_output_multibyte.encode("utf-8")) == 32 * 1024
+        and len(_fr_output_wire) < 512 * 1024
+    ), "run output keeps its 32 KiB raw limit inside the serialized cap"
+    assert (
+        'op: "artifact.save_run"' in _fe_fixture
+        and 'op: "run.cancel"' in _fe_fixture
+        and 'reply.op === "run.output"' in _fe_fixture
+        and 'reply.op === "run.exit"' in _fe_fixture
+        and "after: cursor" in _fe_fixture
+        and "output.textContent += reply.text" in _fe_fixture
+        and "innerHTML" not in _fe_fixture
+    ), "run conventions fixture exercises save_run, cursor relay, and cancel as text"
+    assert (
+        "editor-run-conventions" not in _fe_template
+    ), "conventions fixture is test-only, not shipped by the Learn template"
     # frozen docs: the ABI carries the attempt op; the lesson brief teaches
     # the child side of it (child sends ONLY v/op/request_id/question_id/answer)
     _d5_abi = (ROOT / "docs" / "lesson-bridge-abi.md").read_text(encoding="utf-8")
-    check("ABI §3.1 freezes the attempt operation",
-          "### 3.1" in _d5_abi
-          and '"op": "attempt", "v": 1' in _d5_abi
-          and "capability-not-granted" in _d5_abi
-          and "32 KiB of raw UTF-8" in _d5_abi)
-    check("ABI §3.2 freezes editor ops and derived byte accounting",
-          "### 3.2" in _d5_abi
-          and '"op": "artifact.get", "v": 1' in _d5_abi
-          and '"op": "artifact.save", "v": 1' in _d5_abi
-          and "512 KiB" in _d5_abi
-          and "6 bytes per input byte" in _d5_abi
-          and "64 KiB raw UTF-8 bytes" in _d5_abi)
-    check("ABI pins authenticated child handshake and fresh logical request ids",
-          "event.origin" in _d5_abi
-          and "exactly one `MessagePort`" in _d5_abi
-          and "first valid result is final" in _d5_abi
-          and "fresh opaque `request_id`" in _d5_abi
-          and "even across reloads and tabs" in _d5_abi)
-    check("ABI §3.3 freezes composite run, relay ownership, and reconnect",
-          "### 3.3" in _d5_abi
-          and '"op": "artifact.save_run", "v": 1' in _d5_abi
-          and '"op": "run.cancel", "v": 1' in _d5_abi
-          and '"op": "run.output"' in _d5_abi
-          and '"op": "run.exit"' in _d5_abi
-          and "There is no bare child-facing run-start operation" in _d5_abi
-          and "**not** call cancel" in _d5_abi)
-    check("lesson brief teaches the frozen attempt call",
-          '{"op": "attempt", "v": 1' in lessons_svc._AGENTS_TEMPLATE
-          and "retry an unanswered submission with the SAME id"
-          in lessons_svc._AGENTS_TEMPLATE)
+    assert (
+        "### 3.1" in _d5_abi
+        and '"op": "attempt", "v": 1' in _d5_abi
+        and "capability-not-granted" in _d5_abi
+        and "32 KiB of raw UTF-8" in _d5_abi
+    ), "ABI §3.1 freezes the attempt operation"
+    assert (
+        "### 3.2" in _d5_abi
+        and '"op": "artifact.get", "v": 1' in _d5_abi
+        and '"op": "artifact.save", "v": 1' in _d5_abi
+        and "512 KiB" in _d5_abi
+        and "6 bytes per input byte" in _d5_abi
+        and "64 KiB raw UTF-8 bytes" in _d5_abi
+    ), "ABI §3.2 freezes editor ops and derived byte accounting"
+    assert (
+        "event.origin" in _d5_abi
+        and "exactly one `MessagePort`" in _d5_abi
+        and "first valid result is final" in _d5_abi
+        and "fresh opaque `request_id`" in _d5_abi
+        and "even across reloads and tabs" in _d5_abi
+    ), "ABI pins authenticated child handshake and fresh logical request ids"
+    assert (
+        "### 3.3" in _d5_abi
+        and '"op": "artifact.save_run", "v": 1' in _d5_abi
+        and '"op": "run.cancel", "v": 1' in _d5_abi
+        and '"op": "run.output"' in _d5_abi
+        and '"op": "run.exit"' in _d5_abi
+        and "There is no bare child-facing run-start operation" in _d5_abi
+        and "**not** call cancel" in _d5_abi
+    ), "ABI §3.3 freezes composite run, relay ownership, and reconnect"
+    assert (
+        '{"op": "attempt", "v": 1' in lessons_svc._AGENTS_TEMPLATE
+        and "retry an unanswered submission with the SAME id"
+        in lessons_svc._AGENTS_TEMPLATE
+    ), "lesson brief teaches the frozen attempt call"
 
     # §2 symlink policy: a page that resolves through a symlink is missing
     _symp_conn = get_conn()
@@ -2357,25 +2581,30 @@ def test_assessment_artifact_migration(client, suite_state):
     _os.symlink(_symp_target, _symp_dir / "index.html")
     _symp_info = lessons_svc.lesson_file_info(_symp)
     _symp_file = c.get(f"/learn/lessons/{_symp_id}/files/index.html")
-    check("symlinked page is treated as missing (§2)",
-          _symp_info["exists"] is False and _symp_file.status_code == 404)
-    check("symlinked page never carries bridge identity (D2)",
-          _symp_info["bridge_page"] is None)
-    check("symlinked page degrades the reported outcome (§9.2)",
-          _symp_info["outcome"] == "degraded"
-          and any(f["code"] == "symlinked-path" for f in _symp_info["findings"]))
+    assert (
+        _symp_info["exists"] is False and _symp_file.status_code == 404
+    ), "symlinked page is treated as missing (§2)"
+    assert (
+        _symp_info["bridge_page"] is None
+    ), "symlinked page never carries bridge identity (D2)"
+    assert (
+        _symp_info["outcome"] == "degraded"
+        and any(f["code"] == "symlinked-path" for f in _symp_info["findings"])
+    ), "symlinked page degrades the reported outcome (§9.2)"
     _symp_bundle = lessons_svc.bundle_info(_symp)
-    check("symlinked current page degrades the TOP-LEVEL bundle_info outcome",
-          _symp_bundle["outcome"] == "degraded"
-          and any(f["code"] == "symlinked-path" for f in _symp_bundle["findings"]))
+    assert (
+        _symp_bundle["outcome"] == "degraded"
+        and any(f["code"] == "symlinked-path" for f in _symp_bundle["findings"])
+    ), "symlinked current page degrades the TOP-LEVEL bundle_info outcome"
     _symp_manifest = _symp_dir / "lesson.json"
     _symp_manifest.unlink()
     _os.symlink(_symp_target, _symp_manifest)
     _symp_meta = c.get(f"/learn/lessons/{_symp_id}/preview-meta").json()
-    check("symlinked lesson.json rejects as symlinked-bundle, no skeleton overwrite",
-          _symp_meta["outcome"] == "rejected"
-          and any(f["code"] == "symlinked-bundle" for f in _symp_meta["findings"])
-          and _symp_manifest.is_symlink())
+    assert (
+        _symp_meta["outcome"] == "rejected"
+        and any(f["code"] == "symlinked-bundle" for f in _symp_meta["findings"])
+        and _symp_manifest.is_symlink()
+    ), "symlinked lesson.json rejects as symlinked-bundle, no skeleton overwrite"
 
     # a DANGLING symlink at the bundle dir rejects visibly, never a 500
     _dang_conn = get_conn()
@@ -2389,11 +2618,12 @@ def test_assessment_artifact_migration(client, suite_state):
     _shutil.rmtree(_dang_dir)
     _os.symlink(Path(lessons_svc.LESSONS_DIR) / "no-such-target-dir", _dang_dir)
     _dang_resp = c.get(f"/learn/lessons/{_dang_id}/preview-meta")
-    check("dangling bundle-dir symlink rejects as symlinked-bundle, not a 500",
-          _dang_resp.status_code == 200
-          and _dang_resp.json()["outcome"] == "rejected"
-          and any(f["code"] == "symlinked-bundle" for f in _dang_resp.json()["findings"])
-          and _dang_dir.is_symlink())
+    assert (
+        _dang_resp.status_code == 200
+        and _dang_resp.json()["outcome"] == "rejected"
+        and any(f["code"] == "symlinked-bundle" for f in _dang_resp.json()["findings"])
+        and _dang_dir.is_symlink()
+    ), "dangling bundle-dir symlink rejects as symlinked-bundle, not a 500"
 
     # a non-regular node at lesson.json rejects visibly — never a 500 — and
     # finding details never leak the absolute runtime path
@@ -2408,44 +2638,51 @@ def test_assessment_artifact_migration(client, suite_state):
     _dirm_path.mkdir()
     _dirm_resp = c.get(f"/learn/lessons/{_dirm_id}/preview-meta")
     _dirm_meta = _dirm_resp.json()
-    check("directory at lesson.json rejects as manifest-unreadable, not a 500",
-          _dirm_resp.status_code == 200
-          and _dirm_meta["outcome"] == "rejected"
-          and any(f["code"] == "manifest-unreadable" for f in _dirm_meta["findings"]))
-    check("finding details never leak the absolute runtime path",
-          str(lessons_svc.LESSONS_DIR) not in _dirm_resp.text)
+    assert (
+        _dirm_resp.status_code == 200
+        and _dirm_meta["outcome"] == "rejected"
+        and any(f["code"] == "manifest-unreadable" for f in _dirm_meta["findings"])
+    ), "directory at lesson.json rejects as manifest-unreadable, not a 500"
+    assert (
+        str(lessons_svc.LESSONS_DIR) not in _dirm_resp.text
+    ), "finding details never leak the absolute runtime path"
 
     # the preview file route serves the preview surface only
-    check("reserved bundle names are not served through /files/",
-          c.get(f"/learn/lessons/{_v2_id}/files/lesson.json").status_code == 404)
+    assert (
+        c.get(f"/learn/lessons/{_v2_id}/files/lesson.json").status_code == 404
+    ), "reserved bundle names are not served through /files/"
     _v2_note = _v2_dir / "attempts" / "note.txt"
     _v2_note.parent.mkdir(exist_ok=True)
     _v2_note.write_text("Vera Example learner note", encoding="utf-8")
-    check("artifact-root files are not served through /files/",
-          c.get(f"/learn/lessons/{_v2_id}/files/attempts/note.txt").status_code == 404)
+    assert (
+        c.get(f"/learn/lessons/{_v2_id}/files/attempts/note.txt").status_code == 404
+    ), "artifact-root files are not served through /files/"
     # v2 serving is a positive allowlist: declared pages + assets/ only
     (_v2_dir / "undeclared-private.html").write_text(
         "<html>Vera Example private draft</html>", encoding="utf-8")
     (_v2_dir / "assets").mkdir(exist_ok=True)
     (_v2_dir / "assets" / "diagram.svg").write_text(
         "<svg xmlns='http://www.w3.org/2000/svg'/>", encoding="utf-8")
-    check("v2 /files/ serves declared pages + assets only",
-          c.get(f"/learn/lessons/{_v2_id}/files/undeclared-private.html").status_code == 404
-          and c.get(f"/learn/lessons/{_v2_id}/files/assets/diagram.svg").status_code == 200
-          and c.get(f"/learn/lessons/{_v2_id}/files/related/01-stage.html").status_code == 200)
+    assert (
+        c.get(f"/learn/lessons/{_v2_id}/files/undeclared-private.html").status_code == 404
+        and c.get(f"/learn/lessons/{_v2_id}/files/assets/diagram.svg").status_code == 200
+        and c.get(f"/learn/lessons/{_v2_id}/files/related/01-stage.html").status_code == 200
+    ), "v2 /files/ serves declared pages + assets only"
     # a declared page stays servable even when a root claims its directory
     _v2_roots_raw = json.loads((_v2_dir / "lesson.json").read_text(encoding="utf-8"))
     _v2_roots_raw["artifact_roots"] = ["related", "attempts"]
     bschema.write_manifest(_v2_dir / "lesson.json", _v2_roots_raw)
-    check("declared page wins over an overlapping artifact root",
-          c.get(f"/learn/lessons/{_v2_id}/files/related/01-stage.html").status_code == 200
-          and c.get(f"/learn/lessons/{_v2_id}/files/attempts/note.txt").status_code == 404)
+    assert (
+        c.get(f"/learn/lessons/{_v2_id}/files/related/01-stage.html").status_code == 200
+        and c.get(f"/learn/lessons/{_v2_id}/files/attempts/note.txt").status_code == 404
+    ), "declared page wins over an overlapping artifact root"
     # ...and so does the assets/ preview area when a root claims it
     _v2_roots_raw["artifact_roots"] = ["assets", "attempts"]
     bschema.write_manifest(_v2_dir / "lesson.json", _v2_roots_raw)
-    check("preview assets win over an overlapping artifact root",
-          c.get(f"/learn/lessons/{_v2_id}/files/assets/diagram.svg").status_code == 200
-          and c.get(f"/learn/lessons/{_v2_id}/files/attempts/note.txt").status_code == 404)
+    assert (
+        c.get(f"/learn/lessons/{_v2_id}/files/assets/diagram.svg").status_code == 200
+        and c.get(f"/learn/lessons/{_v2_id}/files/attempts/note.txt").status_code == 404
+    ), "preview assets win over an overlapping artifact root"
     _v2_roots_raw["artifact_roots"] = ["attempts"]
     bschema.write_manifest(_v2_dir / "lesson.json", _v2_roots_raw)
     # the injected mandatory root joins the overlap pass: a nested root
@@ -2457,10 +2694,11 @@ def test_assessment_artifact_migration(client, suite_state):
         "pages": [{"id": "pg_inject001", "path": "index.html"}],
         "artifact_roots": ["attempts/deep"],
     }))
-    check("injected attempts root keeps the root set disjoint",
-          _inj.artifact_roots == ["attempts"]
-          and {"overlapping-roots", "missing-attempts-root"} <= _inj.codes()
-          and _inj.outcome == "degraded")
+    assert (
+        _inj.artifact_roots == ["attempts"]
+        and {"overlapping-roots", "missing-attempts-root"} <= _inj.codes()
+        and _inj.outcome == "degraded"
+    ), "injected attempts root keeps the root set disjoint"
     # ...and a root intruding into the assets preview area is dropped visibly
     _assets_root = bschema.read_manifest_text(json.dumps({
         "schema_version": 2,
@@ -2469,18 +2707,20 @@ def test_assessment_artifact_migration(client, suite_state):
         "pages": [{"id": "pg_assets001", "path": "index.html"}],
         "artifact_roots": ["assets/work", "attempts"],
     }))
-    check("asset-nested artifact root is dropped with overlapping-roots",
-          _assets_root.artifact_roots == ["attempts"]
-          and "overlapping-roots" in _assets_root.codes()
-          and _assets_root.outcome == "degraded")
+    assert (
+        _assets_root.artifact_roots == ["attempts"]
+        and "overlapping-roots" in _assets_root.codes()
+        and _assets_root.outcome == "degraded"
+    ), "asset-nested artifact root is dropped with overlapping-roots"
 
     # v1 keeps its historical surface: an undeclared page under attempts/
     # (v1 tolerance allows selecting it) still serves
     (_v1_dir / "attempts").mkdir(exist_ok=True)
     (_v1_dir / "attempts" / "extra.html").write_text(
         "<html>Vera Example v1 undeclared page</html>", encoding="utf-8")
-    check("v1 undeclared page under attempts/ stays servable",
-          c.get(f"/learn/lessons/{_v1_id}/files/attempts/extra.html").status_code == 200)
+    assert (
+        c.get(f"/learn/lessons/{_v1_id}/files/attempts/extra.html").status_code == 200
+    ), "v1 undeclared page under attempts/ stays servable"
 
     # the legacy flat-file bridge refuses a symlinked source (§2)
     _leg_conn = get_conn()
@@ -2493,16 +2733,18 @@ def test_assessment_artifact_migration(client, suite_state):
     (_leg_dir / "index.html").unlink(missing_ok=True)
     _os.symlink(_symp_target, Path(lessons_svc.LESSONS_DIR) / f"{_leg['slug']}.html")
     lessons_svc.lesson_file_info(_leg)  # runs the ensure/bridge path
-    check("legacy flat-file bridge refuses a symlinked source (§2)",
-          not (_leg_dir / "index.html").exists())
+    assert (
+        not (_leg_dir / "index.html").exists()
+    ), "legacy flat-file bridge refuses a symlinked source (§2)"
     # ...while a regular legacy source still bridges (fd-bound read)
     _leg_flat = Path(lessons_svc.LESSONS_DIR) / f"{_leg['slug']}.html"
     _leg_flat.unlink()
     _leg_flat.write_text("<html>Vera Example legacy body</html>", encoding="utf-8")
     lessons_svc.lesson_file_info(_leg)
-    check("legacy flat-file bridge still copies a regular source",
-          (_leg_dir / "index.html").is_file()
-          and "Vera Example legacy body" in (_leg_dir / "index.html").read_text(encoding="utf-8"))
+    assert (
+        (_leg_dir / "index.html").is_file()
+        and "Vera Example legacy body" in (_leg_dir / "index.html").read_text(encoding="utf-8")
+    ), "legacy flat-file bridge still copies a regular source"
 
     # hostile manifests stay bounded: finding count, deep JSON, malformed URL
     _flood = bschema.read_manifest_text(json.dumps({
@@ -2511,12 +2753,14 @@ def test_assessment_artifact_migration(client, suite_state):
         "entry": "index.html",
         "pages": [{"id": "pg_flood0001", "path": "index.html"}] + [7] * 5000,
     }))
-    check("hostile manifest findings stay bounded",
-          _flood.outcome == "rejected"
-          and len(_flood.findings) <= bschema.MAX_FINDINGS + 5)
+    assert (
+        _flood.outcome == "rejected"
+        and len(_flood.findings) <= bschema.MAX_FINDINGS + 5
+    ), "hostile manifest findings stay bounded"
     _deep = bschema.read_manifest_text('{"x":' * 5000 + "1" + "}" * 5000)
-    check("pathologically deep JSON is manifest-unreadable, not a crash",
-          _deep.outcome == "rejected" and "manifest-unreadable" in _deep.codes())
+    assert (
+        _deep.outcome == "rejected" and "manifest-unreadable" in _deep.codes()
+    ), "pathologically deep JSON is manifest-unreadable, not a crash"
     _badurl = bschema.read_manifest_text(json.dumps({
         "schema_version": 2,
         "lesson_uid": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
@@ -2525,26 +2769,31 @@ def test_assessment_artifact_migration(client, suite_state):
         "entry": "index.html",
         "pages": [{"id": "pg_badurl001", "path": "index.html"}],
     }))
-    check("malformed source_url copy degrades to stale-metadata, not a crash",
-          _badurl.outcome == "ok" and "stale-metadata" in _badurl.codes())
+    assert (
+        _badurl.outcome == "ok" and "stale-metadata" in _badurl.codes()
+    ), "malformed source_url copy degrades to stale-metadata, not a crash"
     _nan = bschema.read_manifest_text('{"schema_version": 2, "x_weight": NaN}')
-    check("non-standard JSON constants are manifest-unreadable",
-          _nan.outcome == "rejected" and "manifest-unreadable" in _nan.codes())
+    assert (
+        _nan.outcome == "rejected" and "manifest-unreadable" in _nan.codes()
+    ), "non-standard JSON constants are manifest-unreadable"
     _bigint = bschema.read_manifest_text(
         '{"schema_version": 2, "x_big": ' + "9" * 5000 + "}")
-    check("huge integer token is manifest-unreadable, not a crash",
-          _bigint.outcome == "rejected" and "manifest-unreadable" in _bigint.codes())
+    assert (
+        _bigint.outcome == "rejected" and "manifest-unreadable" in _bigint.codes()
+    ), "huge integer token is manifest-unreadable, not a crash"
     _inf = bschema.read_manifest_text('{"schema_version": 2, "x_big": 1e10000}')
-    check("overflowing float token is manifest-unreadable (writer stays JSON)",
-          _inf.outcome == "rejected" and "manifest-unreadable" in _inf.codes())
+    assert (
+        _inf.outcome == "rejected" and "manifest-unreadable" in _inf.codes()
+    ), "overflowing float token is manifest-unreadable (writer stays JSON)"
 
     # v2 selections compare exactly (§4.1): a normalizable variant is not repaired
     _norm_meta = c.get(f"/learn/lessons/{_v2_id}/preview-meta",
                        params={"entry": "./index.html"}).json()
-    check("normalizable v2 selection degrades instead of silent repair (§4.1)",
-          _norm_meta["outcome"] == "degraded"
-          and any(f["code"] == "invalid-entry" for f in _norm_meta["findings"])
-          and _norm_meta["path"].endswith("/index.html"))
+    assert (
+        _norm_meta["outcome"] == "degraded"
+        and any(f["code"] == "invalid-entry" for f in _norm_meta["findings"])
+        and _norm_meta["path"].endswith("/index.html")
+    ), "normalizable v2 selection degrades instead of silent repair (§4.1)"
     _norm_conn = get_conn()
     try:
         _norm_refused = False
@@ -2555,8 +2804,9 @@ def test_assessment_artifact_migration(client, suite_state):
         _norm_after = lessons_svc.get_lesson(_norm_conn, _v2_id)
     finally:
         _norm_conn.close()
-    check("set_current_entry refuses a normalizable v2 variant, stores exact paths",
-          _norm_refused and _norm_after["current_entry"] == "related/01-stage.html")
+    assert (
+        _norm_refused and _norm_after["current_entry"] == "related/01-stage.html"
+    ), "set_current_entry refuses a normalizable v2 variant, stores exact paths"
 
     # --- C4: v1→v2 migration tool (learn-bundle-spec.md §10) -----------------
     import contextlib as _contextlib
@@ -2582,12 +2832,19 @@ def test_assessment_artifact_migration(client, suite_state):
     }
     _mig_plan = mig.plan_bundle(_mig_dir, _mig_db)
     _mig_expected = (_fx_dir / "v1-migrated.json").read_text(encoding="utf-8")
-    check("migration output matches the fixture pair byte-exactly (§10/§11)",
-          _mig_plan.action == mig.ACTION_MIGRATE
-          and _mig_plan.new_text == _mig_expected,
-          f"action={_mig_plan.action} reasons={_mig_plan.reasons}")
-    check("migration plan is deterministic across reruns",
-          mig.plan_bundle(_mig_dir, _mig_db).new_text == _mig_plan.new_text)
+    assert (
+        _mig_plan.action == mig.ACTION_MIGRATE
+        and _mig_plan.new_text == _mig_expected
+    ), (
+        "migration output matches the fixture pair byte-exactly (§10/§11)"
+        + "  -- "
+        + (
+            f"action={_mig_plan.action} reasons={_mig_plan.reasons}"
+        )
+    )
+    assert (
+        mig.plan_bundle(_mig_dir, _mig_db).new_text == _mig_plan.new_text
+    ), "migration plan is deterministic across reruns"
     _mig_page_hash = hashlib.sha256(
         (_mig_dir / "index.html").read_bytes()).hexdigest()
 
@@ -2596,29 +2853,39 @@ def test_assessment_artifact_migration(client, suite_state):
     (_mig_rb1 / "rollback.json").write_text(
         json.dumps({"created_at": "test", "entries": []}) + "\n", encoding="utf-8")
     _mig_errors = mig.apply_plan(_mig_dir, _mig_plan, _mig_db, _mig_rb1)
-    check("apply writes the planned bytes atomically and post-verifies clean",
-          _mig_errors == []
-          and (_mig_dir / "lesson.json").read_text(encoding="utf-8") == _mig_expected,
-          "; ".join(_mig_errors))
-    check("HTML page bytes are untouched by migration (§10)",
-          hashlib.sha256((_mig_dir / "index.html").read_bytes()).hexdigest()
-          == _mig_page_hash)
-    check("migration is idempotent: a v2 manifest replans as a no-op",
-          mig.plan_bundle(_mig_dir, _mig_db).action == mig.ACTION_NOOP)
+    assert (
+        _mig_errors == []
+        and (_mig_dir / "lesson.json").read_text(encoding="utf-8") == _mig_expected
+    ), (
+        "apply writes the planned bytes atomically and post-verifies clean"
+        + "  -- "
+        + (
+            "; ".join(_mig_errors)
+        )
+    )
+    assert (
+        hashlib.sha256((_mig_dir / "index.html").read_bytes()).hexdigest()
+        == _mig_page_hash
+    ), "HTML page bytes are untouched by migration (§10)"
+    assert (
+        mig.plan_bundle(_mig_dir, _mig_db).action == mig.ACTION_NOOP
+    ), "migration is idempotent: a v2 manifest replans as a no-op"
 
     _mig_ledger = json.loads(
         (_mig_rb1 / "rollback.json").read_text(encoding="utf-8"))
-    check("rollback ledger records the old/new manifest hashes",
-          [e["slug"] for e in _mig_ledger["entries"]] == ["vera-example-tides"]
-          and _mig_ledger["entries"][0]["old_sha256"]
-          == hashlib.sha256(_mig_v1_text.encode()).hexdigest()
-          and (_mig_rb1 / "vera-example-tides.lesson.json").read_text(encoding="utf-8")
-          == _mig_v1_text)
+    assert (
+        [e["slug"] for e in _mig_ledger["entries"]] == ["vera-example-tides"]
+        and _mig_ledger["entries"][0]["old_sha256"]
+        == hashlib.sha256(_mig_v1_text.encode()).hexdigest()
+        and (_mig_rb1 / "vera-example-tides.lesson.json").read_text(encoding="utf-8")
+        == _mig_v1_text
+    ), "rollback ledger records the old/new manifest hashes"
     with _contextlib.redirect_stdout(_io.StringIO()) as _mig_out:
         _mig_rb_code = mig.rollback(_mig_rb1)
-    check("rollback restores the pre-migration manifest byte-exactly",
-          _mig_rb_code == 0
-          and (_mig_dir / "lesson.json").read_text(encoding="utf-8") == _mig_v1_text)
+    assert (
+        _mig_rb_code == 0
+        and (_mig_dir / "lesson.json").read_text(encoding="utf-8") == _mig_v1_text
+    ), "rollback restores the pre-migration manifest byte-exactly"
     # a manifest edited after migration is refused, never overwritten
     _mig_errors2 = mig.apply_plan(_mig_dir, _mig_plan, _mig_db, _mig_rb1)
     _mig_edited = _mig_expected.replace(
@@ -2626,9 +2893,10 @@ def test_assessment_artifact_migration(client, suite_state):
     (_mig_dir / "lesson.json").write_text(_mig_edited, encoding="utf-8")
     with _contextlib.redirect_stdout(_io.StringIO()):
         _mig_rb_code2 = mig.rollback(_mig_rb1)
-    check("rollback refuses a manifest edited since migration",
-          _mig_errors2 == [] and _mig_rb_code2 == 1
-          and (_mig_dir / "lesson.json").read_text(encoding="utf-8") == _mig_edited)
+    assert (
+        _mig_errors2 == [] and _mig_rb_code2 == 1
+        and (_mig_dir / "lesson.json").read_text(encoding="utf-8") == _mig_edited
+    ), "rollback refuses a manifest edited since migration"
 
     # §10: a valid DB current_entry absent from the v1 list folds in at the
     # head with entry unchanged; null source_url/updated_by_agent_at are
@@ -2648,25 +2916,29 @@ def test_assessment_artifact_migration(client, suite_state):
                     "current_entry": "related/09-note.html"}
     _mig_head = mig.plan_bundle(_mig_head_dir, _mig_head_db)
     _mig_head_obj = json.loads(_mig_head.new_text)
-    check("valid DB current_entry folds in at the head, entry unchanged (§10)",
-          _mig_head.action == mig.ACTION_MIGRATE
-          and _mig_head_obj["entry"] == "index.html"
-          and [p["path"] for p in _mig_head_obj["pages"]]
-          == ["related/09-note.html", "index.html", "related/01-extra.html"]
-          and _mig_head_obj["pages"][0]["id"]
-          == mig.deterministic_page_id(_mig_head_db["uid"], "related/09-note.html"))
-    check("null source_url and updated_by_agent_at copies are omitted (§10)",
-          "source_url" not in _mig_head_obj
-          and "updated_by_agent_at" not in _mig_head_obj)
-    check("missing v1 slug/title copies are filled from the DB row (§12)",
-          _mig_head_obj["slug"] == "vera-example-head"
-          and _mig_head_obj["title"] == "Vera Example Head"
-          and sum("filled from the DB row" in n for n in _mig_head.notes) == 2)
+    assert (
+        _mig_head.action == mig.ACTION_MIGRATE
+        and _mig_head_obj["entry"] == "index.html"
+        and [p["path"] for p in _mig_head_obj["pages"]]
+        == ["related/09-note.html", "index.html", "related/01-extra.html"]
+        and _mig_head_obj["pages"][0]["id"]
+        == mig.deterministic_page_id(_mig_head_db["uid"], "related/09-note.html")
+    ), "valid DB current_entry folds in at the head, entry unchanged (§10)"
+    assert (
+        "source_url" not in _mig_head_obj
+        and "updated_by_agent_at" not in _mig_head_obj
+    ), "null source_url and updated_by_agent_at copies are omitted (§10)"
+    assert (
+        _mig_head_obj["slug"] == "vera-example-head"
+        and _mig_head_obj["title"] == "Vera Example Head"
+        and sum("filled from the DB row" in n for n in _mig_head.notes) == 2
+    ), "missing v1 slug/title copies are filled from the DB row (§12)"
     _mig_nometa = mig.plan_bundle(
         _mig_head_dir, {"uid": _mig_head_db["uid"], "slug": "vera-example-head"})
-    check("no usable title anywhere stops the migration",
-          _mig_nometa.action == mig.ACTION_STOP
-          and any("no usable title" in r for r in _mig_nometa.reasons))
+    assert (
+        _mig_nometa.action == mig.ACTION_STOP
+        and any("no usable title" in r for r in _mig_nometa.reasons)
+    ), "no usable title anywhere stops the migration"
     # an invalid source_url copy is never emitted: DB value wins, else omitted
     (_mig_head_dir / "lesson.json").write_text(json.dumps({
         "schema_version": 1, "entry": "index.html",
@@ -2676,13 +2948,14 @@ def test_assessment_artifact_migration(client, suite_state):
         _mig_head_db, current_entry=None,
         source_url="https://learning.example/vera-head"))
     _mig_badsrc2 = mig.plan_bundle(_mig_head_dir, dict(_mig_head_db, current_entry=None))
-    check("invalid source_url copy: DB fallback, else omitted (§4)",
-          _mig_badsrc.action == mig.ACTION_MIGRATE
-          and json.loads(_mig_badsrc.new_text)["source_url"]
-          == "https://learning.example/vera-head"
-          and _mig_badsrc2.action == mig.ACTION_MIGRATE
-          and "source_url" not in json.loads(_mig_badsrc2.new_text)
-          and any("omitted" in n for n in _mig_badsrc2.notes))
+    assert (
+        _mig_badsrc.action == mig.ACTION_MIGRATE
+        and json.loads(_mig_badsrc.new_text)["source_url"]
+        == "https://learning.example/vera-head"
+        and _mig_badsrc2.action == mig.ACTION_MIGRATE
+        and "source_url" not in json.loads(_mig_badsrc2.new_text)
+        and any("omitted" in n for n in _mig_badsrc2.notes)
+    ), "invalid source_url copy: DB fallback, else omitted (§4)"
 
     # the §4 bound is on the emitted value's length, not its stripped form
     (_mig_head_dir / "lesson.json").write_text(json.dumps({
@@ -2691,18 +2964,20 @@ def test_assessment_artifact_migration(client, suite_state):
     }) + "\n", encoding="utf-8")
     _mig_longtitle = mig.plan_bundle(
         _mig_head_dir, dict(_mig_head_db, current_entry=None))
-    check("over-long title copy falls back to the DB row, never emitted (§4)",
-          _mig_longtitle.action == mig.ACTION_MIGRATE
-          and json.loads(_mig_longtitle.new_text)["title"] == "Vera Example Head")
+    assert (
+        _mig_longtitle.action == mig.ACTION_MIGRATE
+        and json.loads(_mig_longtitle.new_text)["title"] == "Vera Example Head"
+    ), "over-long title copy falls back to the DB row, never emitted (§4)"
     (_mig_head_dir / "lesson.json").write_text(json.dumps({
         "schema_version": 1,
         "entry": "index.html",
         "updated_by_agent_at": "soon-ish",
     }) + "\n", encoding="utf-8")
     _mig_soon = mig.plan_bundle(_mig_head_dir, dict(_mig_head_db, current_entry=None))
-    check("malformed updated_by_agent_at is preserved verbatim (§10)",
-          _mig_soon.action == mig.ACTION_MIGRATE
-          and json.loads(_mig_soon.new_text)["updated_by_agent_at"] == "soon-ish")
+    assert (
+        _mig_soon.action == mig.ACTION_MIGRATE
+        and json.loads(_mig_soon.new_text)["updated_by_agent_at"] == "soon-ish"
+    ), "malformed updated_by_agent_at is preserved verbatim (§10)"
 
     # §10 positive path: unknown members of an object-form related item are
     # copied verbatim onto the generated page object, in canonical key order
@@ -2714,12 +2989,13 @@ def test_assessment_artifact_migration(client, suite_state):
     }) + "\n", encoding="utf-8")
     _mig_extras = mig.plan_bundle(_mig_head_dir, dict(_mig_head_db, current_entry=None))
     _mig_extras_page = json.loads(_mig_extras.new_text)["pages"][1]
-    check("object-form item extras ride the generated page object (§10)",
-          _mig_extras.action == mig.ACTION_MIGRATE
-          and list(_mig_extras_page) == ["id", "path", "x_meta"]
-          and _mig_extras_page["x_meta"] == "Vera Example extra member"
-          and _mig_extras_page["id"]
-          == mig.deterministic_page_id(_mig_head_db["uid"], "related/01-extra.html"))
+    assert (
+        _mig_extras.action == mig.ACTION_MIGRATE
+        and list(_mig_extras_page) == ["id", "path", "x_meta"]
+        and _mig_extras_page["x_meta"] == "Vera Example extra member"
+        and _mig_extras_page["id"]
+        == mig.deterministic_page_id(_mig_head_db["uid"], "related/01-extra.html")
+    ), "object-form item extras ride the generated page object (§10)"
 
     # a manifest edited between plan and apply is refused, never overwritten
     _mig_race = mig.plan_bundle(_mig_head_dir, dict(_mig_head_db, current_entry=None))
@@ -2729,11 +3005,12 @@ def test_assessment_artifact_migration(client, suite_state):
     }) + "\n"
     (_mig_head_dir / "lesson.json").write_text(_mig_race_edit, encoding="utf-8")
     _mig_race_errors = mig.apply_plan(_mig_head_dir, _mig_race, _mig_head_db, _mig_rb1)
-    check("apply refuses a manifest edited since planning",
-          _mig_race.action == mig.ACTION_MIGRATE
-          and any("changed since planning" in e for e in _mig_race_errors)
-          and (_mig_head_dir / "lesson.json").read_text(encoding="utf-8")
-          == _mig_race_edit)
+    assert (
+        _mig_race.action == mig.ACTION_MIGRATE
+        and any("changed since planning" in e for e in _mig_race_errors)
+        and (_mig_head_dir / "lesson.json").read_text(encoding="utf-8")
+        == _mig_race_edit
+    ), "apply refuses a manifest edited since planning"
 
     # §10 stop-before-write conditions leave the manifest untouched
     def _mig_stop_case(label: str, manifest: dict, needle: str) -> None:
@@ -2744,11 +3021,17 @@ def test_assessment_artifact_migration(client, suite_state):
         _stop_plan = mig.plan_bundle(
             _stop_dir, {"uid": "3d9a1e1a-6c7f-4b2c-9e3f-4c0d9f5a3b26",
                         "slug": "vera-example-stop"})
-        check(f"stop-before-write: {label}",
-              _stop_plan.action == mig.ACTION_STOP
-              and any(needle in r for r in _stop_plan.reasons)
-              and (_stop_dir / "lesson.json").read_text(encoding="utf-8") == _stop_text,
-              f"action={_stop_plan.action} reasons={_stop_plan.reasons}")
+        assert (
+            _stop_plan.action == mig.ACTION_STOP
+            and any(needle in r for r in _stop_plan.reasons)
+            and (_stop_dir / "lesson.json").read_text(encoding="utf-8") == _stop_text
+        ), (
+            f"stop-before-write: {label}"
+            + "  -- "
+            + (
+                f"action={_stop_plan.action} reasons={_stop_plan.reasons}"
+            )
+        )
 
     _mig_stop_case(
         "unknown v1 key colliding with a v2-owned key",
@@ -2772,9 +3055,10 @@ def test_assessment_artifact_migration(client, suite_state):
          "related": ["related/" + "n" * 250 + ".html"]},
         "violates the v2 grammar")
     (_mig_dir / "lesson.json").write_text(_mig_v1_text, encoding="utf-8")
-    check("the tool never mints identity: no DB uid stops the migration",
-          mig.plan_bundle(_mig_dir, {"slug": "vera-example-tides"}).action
-          == mig.ACTION_STOP)
+    assert (
+        mig.plan_bundle(_mig_dir, {"slug": "vera-example-tides"}).action
+        == mig.ACTION_STOP
+    ), "the tool never mints identity: no DB uid stops the migration"
 
     # containment: a traversal DB slug stops before any filesystem join
     _esc_conn = get_conn()
@@ -2789,8 +3073,9 @@ def test_assessment_artifact_migration(client, suite_state):
         _esc_conn.close()
     with _contextlib.redirect_stdout(_io.StringIO()) as _esc_out:
         _esc_code = mig.run(dry_run=False, slugs=["../../vera-escape"])
-    check("traversal DB slug stops before any filesystem join",
-          _esc_code == 1 and "violates the slug grammar" in _esc_out.getvalue())
+    assert (
+        _esc_code == 1 and "violates the slug grammar" in _esc_out.getvalue()
+    ), "traversal DB slug stops before any filesystem join"
     _esc_conn = get_conn()
     try:
         with _esc_conn:
@@ -2812,8 +3097,9 @@ def test_assessment_artifact_migration(client, suite_state):
     _os.symlink(_rbh_target, Path(lessons_svc.LESSONS_DIR) / "vera-example-rbsym")
     with _contextlib.redirect_stdout(_io.StringIO()) as _rbh_out:
         _rbh_code = mig.rollback(_rbh)
-    check("rollback refuses a symlinked bundle dir",
-          _rbh_code == 1 and "not a real directory" in _rbh_out.getvalue())
+    assert (
+        _rbh_code == 1 and "not a real directory" in _rbh_out.getvalue()
+    ), "rollback refuses a symlinked bundle dir"
     (Path(lessons_svc.LESSONS_DIR) / "vera-example-rbsym").unlink()
     _rbh_dir = Path(lessons_svc.LESSONS_DIR) / "vera-example-rbsym"
     _rbh_dir.mkdir(exist_ok=True)
@@ -2821,9 +3107,10 @@ def test_assessment_artifact_migration(client, suite_state):
     _os.symlink(_rbh / "rollback.json", _rbh / "vera-example-rbsym.lesson.json")
     with _contextlib.redirect_stdout(_io.StringIO()) as _rbh_out2:
         _rbh_code2 = mig.rollback(_rbh)
-    check("rollback refuses a symlinked rollback copy",
-          _rbh_code2 == 1 and "rollback copy is" in _rbh_out2.getvalue()
-          and (_rbh_dir / "lesson.json").read_bytes() == b"Vera Example new")
+    assert (
+        _rbh_code2 == 1 and "rollback copy is" in _rbh_out2.getvalue()
+        and (_rbh_dir / "lesson.json").read_bytes() == b"Vera Example new"
+    ), "rollback refuses a symlinked rollback copy"
 
     # a declared page that is a FIFO is noted, never opened blocking
     (_mig_head_dir / "related").mkdir(exist_ok=True)
@@ -2832,47 +3119,63 @@ def test_assessment_artifact_migration(client, suite_state):
         "related": ["related/02-fifo.html"]}) + "\n", encoding="utf-8")
     _os.mkfifo(_mig_head_dir / "related" / "02-fifo.html")
     _mig_fifo = mig.plan_bundle(_mig_head_dir, dict(_mig_head_db, current_entry=None))
-    check("declared FIFO page is noted and skipped, not opened blocking",
-          _mig_fifo.action == mig.ACTION_MIGRATE
-          and "related/02-fifo.html" not in _mig_fifo.page_hashes
-          and any("not a regular file" in n for n in _mig_fifo.notes))
+    assert (
+        _mig_fifo.action == mig.ACTION_MIGRATE
+        and "related/02-fifo.html" not in _mig_fifo.page_hashes
+        and any("not a regular file" in n for n in _mig_fifo.notes)
+    ), "declared FIFO page is noted and skipped, not opened blocking"
 
     # end-to-end run over the DB enumeration: dry-run writes nothing, the run
     # migrates, a rerun reports the no-op
     _mig_run_before = (_v1_dir / "lesson.json").read_text(encoding="utf-8")
     with _contextlib.redirect_stdout(_io.StringIO()) as _mig_dry_out:
         _mig_dry_code = mig.run(dry_run=True, slugs=[_v1["slug"]])
-    check("dry-run plans the migration and writes nothing",
-          _mig_dry_code == 0
-          and "[migrate]" in _mig_dry_out.getvalue()
-          and (_v1_dir / "lesson.json").read_text(encoding="utf-8") == _mig_run_before)
+    assert (
+        _mig_dry_code == 0
+        and "[migrate]" in _mig_dry_out.getvalue()
+        and (_v1_dir / "lesson.json").read_text(encoding="utf-8") == _mig_run_before
+    ), "dry-run plans the migration and writes nothing"
     with _contextlib.redirect_stdout(_io.StringIO()):
         _mig_run_code = mig.run(dry_run=False, slugs=[_v1["slug"]])
     _mig_run_read = bschema.read_manifest_text(
         (_v1_dir / "lesson.json").read_text(encoding="utf-8"))
-    check("run migrates the enumerated bundle to clean v2",
-          _mig_run_code == 0
-          and _mig_run_read.version == 2
-          and _mig_run_read.outcome == "ok"
-          and _mig_run_read.lesson_uid == _v1["uid"])
+    assert (
+        _mig_run_code == 0
+        and _mig_run_read.version == 2
+        and _mig_run_read.outcome == "ok"
+        and _mig_run_read.lesson_uid == _v1["uid"]
+    ), "run migrates the enumerated bundle to clean v2"
     with _contextlib.redirect_stdout(_io.StringIO()) as _mig_rerun_out:
         _mig_rerun_code = mig.run(dry_run=True, slugs=[_v1["slug"]])
-    check("rerun dry-run reports already-v2, no changes",
-          _mig_rerun_code == 0 and "already-v2=1" in _mig_rerun_out.getvalue())
+    assert (
+        _mig_rerun_code == 0 and "already-v2=1" in _mig_rerun_out.getvalue()
+    ), "rerun dry-run reports already-v2, no changes"
 
     tday = c.get("/today").text
-    check("Today title carries the Ephemeris identity", "· Ephemeris" in tday)
-    check("base metas rebranded to Ephemeris",
-          'application-name" content="Ephemeris"' in tday)
+    assert "· Ephemeris" in tday, "Today title carries the Ephemeris identity"
+    assert (
+        'application-name" content="Ephemeris"' in tday
+    ), "base metas rebranded to Ephemeris"
     focus = c.get("/focus").text
-    check("focus ring is a progress-driven astrolabe SVG",
-          'class="astrolabe"' in focus and "astro-progress" in focus and 'id="focus-ring"' in focus)
-    check("astrolabe keeps the timer ids", 'id="focus-time"' in focus and 'id="focus-start"' in focus)
+    assert (
+        'class="astrolabe"' in focus and "astro-progress" in focus and 'id="focus-ring"' in focus
+    ), "focus ring is a progress-driven astrolabe SVG"
+    assert (
+        'id="focus-time"' in focus and 'id="focus-start"' in focus
+    ), "astrolabe keeps the timer ids"
 
     r = c.get("/items")
-    check("GET /items 200", r.status_code == 200, str(r.status_code))
-    check("items has Add form", 'action="/items"' in r.text)
-    check("items seeded rows shown", "Sleep" in r.text or "Food" in r.text)
+    assert (
+        r.status_code == 200
+    ), (
+        "GET /items 200"
+        + "  -- "
+        + (
+            str(r.status_code)
+        )
+    )
+    assert 'action="/items"' in r.text, "items has Add form"
+    assert "Sleep" in r.text or "Food" in r.text, "items seeded rows shown"
 
     suite_state.update({
         name: value for name, value in locals().items()
