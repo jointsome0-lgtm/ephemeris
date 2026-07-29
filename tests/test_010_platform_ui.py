@@ -772,11 +772,32 @@ def test_002_ui_and_workspace(client, suite_state):
         and not _bschema_84.valid_v2_path(".claude/output-styles/x.md")
     ), "no page, block file or artifact root may claim .claude"
     # Reserving the name also takes the file off the v1 preview surface, which
-    # serves any non-reserved bundle-relative ref; v2's allowlist never had it.
+    # serves any non-reserved bundle-relative ref. `_lt` carries a v2 manifest,
+    # whose positive allowlist would refuse an undeclared path anyway — so the
+    # v1 branch needs a v1 bundle of its own to be exercised at all, with a
+    # non-reserved sibling as the control that keeps the surface itself live.
+    _v1s_conn = get_conn()
+    try:
+        _v1s_id = lessons_svc.create_lesson(_v1s_conn, "V1 Reserved Claude Demo")
+        _v1s = lessons_svc.get_lesson(_v1s_conn, _v1s_id)
+    finally:
+        _v1s_conn.close()
+    _v1s_dir = Path(lessons_svc.prepare_terminal_workspace(_v1s["slug"])["dir"])
+    (_v1s_dir / "lesson.json").write_text(json.dumps({
+        "schema_version": 1,
+        "slug": _v1s["slug"],
+        "title": "Vera Example: A v1 Bundle",
+        "entry": "index.html",
+    }), encoding="utf-8")
+    (_v1s_dir / "index.html").write_text("<html>Vera Example v1</html>", encoding="utf-8")
+    _v1s_view = lessons_svc.with_bundle_info(_v1s)
     assert (
-        _settings_path.is_file()
-        and not lessons_svc.bundle_resource_info(_lt, ".claude/settings.json")["exists"]
-    ), "the preview surface does not serve .claude/settings.json"
+        _v1s_view["bundle"]["schema_version"] == 1
+        and (_v1s_dir / ".claude" / "settings.json").is_file()
+        and lessons_svc.bundle_resource_info(_v1s, "index.html")["exists"]
+        and not lessons_svc.bundle_resource_info(
+            _v1s, ".claude/settings.json")["exists"]
+    ), "the v1 preview surface serves an ordinary file but not .claude/"
     _spec_84 = (ROOT / "docs" / "learn-bundle-spec.md").read_text(encoding="utf-8")
     assert (
         "`CLAUDE.md`, `.claude`." in _spec_84

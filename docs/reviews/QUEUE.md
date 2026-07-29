@@ -241,13 +241,21 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   (equal to, or nested under, a reserved name) and which
   `lessons.bundle_resource_info` consults on its v1 branch — the v1 preview
   surface, which serves any non-reserved bundle-relative ref, therefore stops
-  serving refs under `.claude`; the v2 branch is a declared-page plus
-  `assets/` allowlist and never admitted them. Spec §2 gains the `.claude/`
+  serving refs under `.claude`. The v2 effect runs through the path grammar
+  instead: `valid_v2_path` previously accepted a path whose first segment was
+  `.claude`, so a v2 manifest could declare `.claude/page.html` as a page and
+  the v2 declared-page allowlist would serve it. Such a path is now
+  `invalid-path` (or `invalid-entry` as an entry), and a manifest whose only
+  page was such a path becomes rejected with `no-pages`. No bundle in the
+  live data directory and no manifest fixture in the repository declares a
+  path under `.claude`. Spec §2 gains the `.claude/`
   layout lines, `.claude` in the reserved-name list, and a paragraph stating
   the regenerated-never-authored rule and the app-owns-one-file-only scope.
   No schema migration, route, HTTP contract, sandbox profile, terminal trust
   gate, WS protocol, bridge ABI, `_AGENTS_TEMPLATE` text, `CLAUDE.md` shim,
-  manifest schema v2 parsing, attempts or assessments machinery changed.
+  attempts or assessments machinery changed. The manifest schema v2 parser is
+  unchanged as code; only its reserved-name input grew, with the accept/reject
+  consequence stated above.
   Empirical basis recorded in the PR: with `claude` 2.1.220 and a session
   started in a directory outside any git repository, `claude doctor` names
   that directory's `.claude/settings.json` under "Invalid settings" when the
