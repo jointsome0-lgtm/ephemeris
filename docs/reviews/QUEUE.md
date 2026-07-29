@@ -24,6 +24,159 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
+_No pending entries._
+
+## Done
+
+- [x] 2026-07-29 — `eabb9bb` and `f7f2877` on `fix/84-learning-output-style`,
+  with queue-only bookkeeping in between; the entry stays current with the
+  branch and the merge commit is appended before any restart —
+  `app/services/lessons.py`, `app/services/bundle_schema.py`,
+  `docs/learn-bundle-spec.md`, `tests/test_010_platform_ui.py`,
+  `docs/reviews/QUEUE.md` — issue #84 adds a third generated file to the
+  lesson-agent workspace. `prepare_terminal_workspace` now writes
+  `<bundle>/.claude/settings.json` after the two existing briefs, through the
+  same `_write_brief` writer: a `tempfile.mkstemp` 0600 file in the
+  destination directory, `write` + `flush` + `os.fsync`, then `os.replace`
+  onto the name, with the destination never opened and the temporary file
+  unlinked on any exception. The content is the constant
+  `{\n  "outputStyle": "Learning"\n}\n`; nothing from the lesson row or the
+  manifest is interpolated into it. A new `_ensure_settings_dir` supplies the
+  parent: it calls `os.unlink` when `<bundle>/.claude` is a symlink or an
+  existing non-directory, then `os.mkdir(path, 0o700)`; on `FileExistsError`
+  it re-tests the name and raises `NotADirectoryError` unless the name is now
+  a non-symlink directory. `prepare_terminal_workspace` already catches
+  `OSError` and answers `None`, so both the unlink failure and that raise
+  return "no workspace". An existing real directory is kept and only
+  `settings.json` inside it is written. `resolve_terminal_workspace` (the
+  learner path) still writes nothing. `bundle_schema.RESERVED_NAMES` gains
+  `.claude`, which `valid_v2_path` compares against the first path segment
+  (equal to, or nested under, a reserved name) and which
+  `lessons.bundle_resource_info` consults on its v1 branch — the v1 preview
+  surface, which serves any non-reserved bundle-relative ref, therefore stops
+  serving refs under `.claude`. The v2 effect runs through the path grammar
+  instead: `valid_v2_path` previously accepted a path whose first segment was
+  `.claude`, so a v2 manifest could declare `.claude/page.html` as a page and
+  the v2 declared-page allowlist would serve it. Such a path is now
+  `invalid-path` (or `invalid-entry` as an entry), and a manifest whose only
+  page was such a path becomes rejected with `no-pages`. No bundle in the
+  live data directory and no manifest fixture in the repository declares a
+  path under `.claude`. Spec §2 gains the `.claude/`
+  layout lines, `.claude` in the reserved-name list, and a paragraph stating
+  the regenerated-never-authored rule and the app-owns-one-file-only scope.
+  No schema migration, route, HTTP contract, sandbox profile, terminal trust
+  gate, WS protocol, bridge ABI, `_AGENTS_TEMPLATE` text, `CLAUDE.md` shim,
+  attempts or assessments machinery changed. The manifest schema v2 parser is
+  unchanged as code; only its reserved-name input grew, with the accept/reject
+  consequence stated above.
+  Empirical basis recorded in the PR: with `claude` 2.1.220 and a session
+  started in a directory outside any git repository, `claude doctor` names
+  that directory's `.claude/settings.json` under "Invalid settings" when the
+  file is malformed JSON, and identical `--print` prompts answer under the
+  style named by the file in that directory. `f7f2877` carries the two Low
+  findings of the independent correctness re-check: the preview-surface
+  regression now builds a v1 manifest bundle, because the previous one ran
+  against a v2 bundle whose declared-page allowlist refuses an undeclared
+  path with or without the reserved name, and this entry's v2 compatibility
+  account was corrected to the one above. No application code changed in that
+  commit. Host verification at `f7f2877`:
+  pytest 9 passed, verify_restore 28 passed, public hygiene clean. Python
+  only; the merge does not change what the live process runs. Merged into
+  `main` as `6209fa3` (PR #106) at branch tip `f4501d4`. The merged tree is
+  NOT byte-identical to that tip: `main` advanced while the PR was open, by
+  PR #103's Learn-router extraction and PR #110's attempts fix, so this was a
+  real three-way merge. The five files this entry covers —
+  `app/services/lessons.py`, `app/services/bundle_schema.py`,
+  `docs/learn-bundle-spec.md`, `tests/test_010_platform_ui.py`,
+  `docs/reviews/QUEUE.md` — are byte-identical between `f4501d4` and
+  `6209fa3` (`git diff` over exactly those paths is empty), and neither
+  incoming change touches them. Host verification on merged `main` at
+  `6209fa3`: pytest 9 passed, verify_restore 28 passed, public hygiene clean.
+  No restart was performed.
+  Diagnosis-only drain 2026-07-29 →
+  `2026-07-29-lesson-learning-output-style-review.md`: one Medium finding
+  remains open, so this entry stays Pending for a separate reviewed repair PR.
+  The frozen contract previously allowed `.claude` as an ordinary v1 file area
+  and as a v2 artifact root; an invented v2 bundle accepted by the exact
+  pre-#84 reader used `.claude/settings.json` as a block file, and the current
+  real workspace open silently replaced those bytes with the generated
+  Learning output-style JSON. The repair needs an owner decision on
+  compatibility/versioning, non-destructive collision handling or migration,
+  and exact v1/v2 regressions before this restart gate can open. No application
+  code, merge, or restart was performed by the drain.
+  The repair is on `fix/84-settings-collision`, carried by its own PR, and the
+  owner took both decisions the drain asked for. Non-destructive handling:
+  `_preserve_foreign` moves whatever sits at `<bundle>/.claude` or
+  `<bundle>/.claude/settings.json` and did not come from this writer to
+  `<name>.collision-<hex>` before the write — the same aside name and
+  deterministic rule `app/services/assessments.py` already applies to its own
+  reserved name. A node that is not an ordinary single-link file is moved
+  unread, so a planted link or special file is neither followed nor opened;
+  the previous `os.unlink` of such a node at `.claude` is gone. An ordinary
+  file is compared with the constant and left in place when it matches, and
+  the comparison reads only a file whose size already equals the constant's —
+  so the writer's own output is republished in place and no aside accumulates
+  per terminal open. Versioning: the reservation stays in v2 and is recorded
+  as a named exception rather than driving a v3. Spec §2 states the aside
+  rule, §9.2 records the v1 serving change as the second deliberate v1
+  behavior change, and §9.3 records the reservation as one named exception to
+  its own "a meaning change requires v3" rule, with the reason a v3 would not
+  serve the purpose (the app writes into every bundle it prepares) and the
+  statement that a bundle carrying the older shape loses a manifest binding,
+  never its bytes. No schema, route, HTTP contract, sandbox profile, terminal
+  trust gate, template or other application file changed. Coverage exercises
+  the report's own scenario — a pre-reservation `.claude/settings.json`
+  holding a learner artifact in a v1 bundle survives the first regen as an
+  aside copy — plus the no-accumulation rule and both squatter kinds
+  preserved rather than unlinked, with the symlink moved without being
+  followed. Merged into `main` as `7e8a850` (PR #112) at branch tip
+  `0a74699`; the merged tree is byte-identical to that tip (both trees
+  `28058dd`). PR-bot round 1 makes an unreadable file of the constant's size a
+  non-match rather than an error: `read_bytes` on a `chmod 000` node raised
+  `PermissionError`, which `prepare_terminal_workspace` catches as a refusal
+  of the whole workspace, so a lesson lost its terminal over one unreadable
+  generated file; the read is now guarded and a failure falls through to the
+  rename the writable bundle directory permits without opening the file. The
+  same round removes a contradiction the repair introduced into the spec:
+  §9.2's corrupt-manifest sentence called itself "the one deliberate v1
+  behavior change" while the new paragraph called the reservation the second,
+  so the earlier sentence now names itself the first and points at the other.
+  Host verification at the round-1 branch state: pytest 9 passed,
+  verify_restore 28 passed, public hygiene clean. The entry stays Pending for
+  the owner's re-drain; no merge or restart was performed.
+  Diagnosis-only resolution re-drain 2026-07-29 →
+  `2026-07-29-lesson-learning-output-style-review.md`: zero new findings. The
+  superseding section reviews `main` at `083fa36` / tree `3f69767` and finds
+  the prior Medium resolved: foreign bytes are moved aside before either the
+  `.claude` directory name or its `settings.json` name is replaced, an
+  unreadable same-sized file is treated as foreign, and the v1/v2
+  compatibility exception is explicit in the spec. An invented-data probe of
+  the exact formerly valid v2 artifact-root/block shape confirmed that the
+  current reader reports `invalid-path`, the generated setting is exact, and
+  the learner bytes survive in one collision aside. The prior request for a
+  durable test of that exact v2 shape remains open as non-blocking
+  verification debt: the suite pins the v1 shape and the shared writer, not
+  that manifest spelling. The repaired tree is safe only for the documented
+  direct-loopback, single-worker, unauthenticated single-user posture once the
+  owner closes this entry. The Pending box is unchanged; no application code,
+  merge or restart was performed by the re-drain.
+  Closure 2026-07-29, taken by the owner in this session (the R1 brief's
+  zero-findings branch, reconfirmed in-session before this line was written):
+  the re-drain read `main` itself at `083fa36` / tree `3f69767`, so the
+  reviewed bytes are the merged bytes and no branch-to-merge tree comparison
+  is owed. The report's one unmet request — a durable regression constructing
+  the exact formerly valid v2 artifact-root/block manifest — is recorded as
+  test-only debt and is NOT treated as a restart blocker: `_preserve_foreign`
+  branches on the node's kind and bytes, not on manifest version or read
+  outcome; the merged suite pins the v1 shape and the shared writer; and the
+  review's own invented-data probe established the current v2 behaviour. It is
+  left for a later test-only change rather than repaired here, under the
+  concrete-failure rule — no failure of the deployed app is named. The
+  owner-level versioning decision it descends from was already taken and is
+  frozen in spec §9.3. Independent host verification on `main` at `083fa36`:
+  pytest 9 passed, verify_restore 28 passed. The restart gate for this entry
+  is open.
+
 - [x] 2026-07-28 — `a0ae9dd`, `981400a`, `c91d002`, `18d4195`, `b8b3e02`,
   `5bcd585`, `89f0b77`, with queue-only bookkeeping through `ce2ad38` and the
   PR-bot round-6 through round-8 repairs at the current
@@ -216,141 +369,6 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   the reviewed head `167df06` (tree `cecc0a4`) only by the re-drain's own
   `docs/reviews/` commit — the merged application code is exactly the
   reviewed tree. The restart gate for this entry is open.
-
-- [ ] 2026-07-29 — `eabb9bb` and `f7f2877` on `fix/84-learning-output-style`,
-  with queue-only bookkeeping in between; the entry stays current with the
-  branch and the merge commit is appended before any restart —
-  `app/services/lessons.py`, `app/services/bundle_schema.py`,
-  `docs/learn-bundle-spec.md`, `tests/test_010_platform_ui.py`,
-  `docs/reviews/QUEUE.md` — issue #84 adds a third generated file to the
-  lesson-agent workspace. `prepare_terminal_workspace` now writes
-  `<bundle>/.claude/settings.json` after the two existing briefs, through the
-  same `_write_brief` writer: a `tempfile.mkstemp` 0600 file in the
-  destination directory, `write` + `flush` + `os.fsync`, then `os.replace`
-  onto the name, with the destination never opened and the temporary file
-  unlinked on any exception. The content is the constant
-  `{\n  "outputStyle": "Learning"\n}\n`; nothing from the lesson row or the
-  manifest is interpolated into it. A new `_ensure_settings_dir` supplies the
-  parent: it calls `os.unlink` when `<bundle>/.claude` is a symlink or an
-  existing non-directory, then `os.mkdir(path, 0o700)`; on `FileExistsError`
-  it re-tests the name and raises `NotADirectoryError` unless the name is now
-  a non-symlink directory. `prepare_terminal_workspace` already catches
-  `OSError` and answers `None`, so both the unlink failure and that raise
-  return "no workspace". An existing real directory is kept and only
-  `settings.json` inside it is written. `resolve_terminal_workspace` (the
-  learner path) still writes nothing. `bundle_schema.RESERVED_NAMES` gains
-  `.claude`, which `valid_v2_path` compares against the first path segment
-  (equal to, or nested under, a reserved name) and which
-  `lessons.bundle_resource_info` consults on its v1 branch — the v1 preview
-  surface, which serves any non-reserved bundle-relative ref, therefore stops
-  serving refs under `.claude`. The v2 effect runs through the path grammar
-  instead: `valid_v2_path` previously accepted a path whose first segment was
-  `.claude`, so a v2 manifest could declare `.claude/page.html` as a page and
-  the v2 declared-page allowlist would serve it. Such a path is now
-  `invalid-path` (or `invalid-entry` as an entry), and a manifest whose only
-  page was such a path becomes rejected with `no-pages`. No bundle in the
-  live data directory and no manifest fixture in the repository declares a
-  path under `.claude`. Spec §2 gains the `.claude/`
-  layout lines, `.claude` in the reserved-name list, and a paragraph stating
-  the regenerated-never-authored rule and the app-owns-one-file-only scope.
-  No schema migration, route, HTTP contract, sandbox profile, terminal trust
-  gate, WS protocol, bridge ABI, `_AGENTS_TEMPLATE` text, `CLAUDE.md` shim,
-  attempts or assessments machinery changed. The manifest schema v2 parser is
-  unchanged as code; only its reserved-name input grew, with the accept/reject
-  consequence stated above.
-  Empirical basis recorded in the PR: with `claude` 2.1.220 and a session
-  started in a directory outside any git repository, `claude doctor` names
-  that directory's `.claude/settings.json` under "Invalid settings" when the
-  file is malformed JSON, and identical `--print` prompts answer under the
-  style named by the file in that directory. `f7f2877` carries the two Low
-  findings of the independent correctness re-check: the preview-surface
-  regression now builds a v1 manifest bundle, because the previous one ran
-  against a v2 bundle whose declared-page allowlist refuses an undeclared
-  path with or without the reserved name, and this entry's v2 compatibility
-  account was corrected to the one above. No application code changed in that
-  commit. Host verification at `f7f2877`:
-  pytest 9 passed, verify_restore 28 passed, public hygiene clean. Python
-  only; the merge does not change what the live process runs. Merged into
-  `main` as `6209fa3` (PR #106) at branch tip `f4501d4`. The merged tree is
-  NOT byte-identical to that tip: `main` advanced while the PR was open, by
-  PR #103's Learn-router extraction and PR #110's attempts fix, so this was a
-  real three-way merge. The five files this entry covers —
-  `app/services/lessons.py`, `app/services/bundle_schema.py`,
-  `docs/learn-bundle-spec.md`, `tests/test_010_platform_ui.py`,
-  `docs/reviews/QUEUE.md` — are byte-identical between `f4501d4` and
-  `6209fa3` (`git diff` over exactly those paths is empty), and neither
-  incoming change touches them. Host verification on merged `main` at
-  `6209fa3`: pytest 9 passed, verify_restore 28 passed, public hygiene clean.
-  No restart was performed.
-  Diagnosis-only drain 2026-07-29 →
-  `2026-07-29-lesson-learning-output-style-review.md`: one Medium finding
-  remains open, so this entry stays Pending for a separate reviewed repair PR.
-  The frozen contract previously allowed `.claude` as an ordinary v1 file area
-  and as a v2 artifact root; an invented v2 bundle accepted by the exact
-  pre-#84 reader used `.claude/settings.json` as a block file, and the current
-  real workspace open silently replaced those bytes with the generated
-  Learning output-style JSON. The repair needs an owner decision on
-  compatibility/versioning, non-destructive collision handling or migration,
-  and exact v1/v2 regressions before this restart gate can open. No application
-  code, merge, or restart was performed by the drain.
-  The repair is on `fix/84-settings-collision`, carried by its own PR, and the
-  owner took both decisions the drain asked for. Non-destructive handling:
-  `_preserve_foreign` moves whatever sits at `<bundle>/.claude` or
-  `<bundle>/.claude/settings.json` and did not come from this writer to
-  `<name>.collision-<hex>` before the write — the same aside name and
-  deterministic rule `app/services/assessments.py` already applies to its own
-  reserved name. A node that is not an ordinary single-link file is moved
-  unread, so a planted link or special file is neither followed nor opened;
-  the previous `os.unlink` of such a node at `.claude` is gone. An ordinary
-  file is compared with the constant and left in place when it matches, and
-  the comparison reads only a file whose size already equals the constant's —
-  so the writer's own output is republished in place and no aside accumulates
-  per terminal open. Versioning: the reservation stays in v2 and is recorded
-  as a named exception rather than driving a v3. Spec §2 states the aside
-  rule, §9.2 records the v1 serving change as the second deliberate v1
-  behavior change, and §9.3 records the reservation as one named exception to
-  its own "a meaning change requires v3" rule, with the reason a v3 would not
-  serve the purpose (the app writes into every bundle it prepares) and the
-  statement that a bundle carrying the older shape loses a manifest binding,
-  never its bytes. No schema, route, HTTP contract, sandbox profile, terminal
-  trust gate, template or other application file changed. Coverage exercises
-  the report's own scenario — a pre-reservation `.claude/settings.json`
-  holding a learner artifact in a v1 bundle survives the first regen as an
-  aside copy — plus the no-accumulation rule and both squatter kinds
-  preserved rather than unlinked, with the symlink moved without being
-  followed. Merged into `main` as `7e8a850` (PR #112) at branch tip
-  `0a74699`; the merged tree is byte-identical to that tip (both trees
-  `28058dd`). PR-bot round 1 makes an unreadable file of the constant's size a
-  non-match rather than an error: `read_bytes` on a `chmod 000` node raised
-  `PermissionError`, which `prepare_terminal_workspace` catches as a refusal
-  of the whole workspace, so a lesson lost its terminal over one unreadable
-  generated file; the read is now guarded and a failure falls through to the
-  rename the writable bundle directory permits without opening the file. The
-  same round removes a contradiction the repair introduced into the spec:
-  §9.2's corrupt-manifest sentence called itself "the one deliberate v1
-  behavior change" while the new paragraph called the reservation the second,
-  so the earlier sentence now names itself the first and points at the other.
-  Host verification at the round-1 branch state: pytest 9 passed,
-  verify_restore 28 passed, public hygiene clean. The entry stays Pending for
-  the owner's re-drain; no merge or restart was performed.
-  Diagnosis-only resolution re-drain 2026-07-29 →
-  `2026-07-29-lesson-learning-output-style-review.md`: zero new findings. The
-  superseding section reviews `main` at `083fa36` / tree `3f69767` and finds
-  the prior Medium resolved: foreign bytes are moved aside before either the
-  `.claude` directory name or its `settings.json` name is replaced, an
-  unreadable same-sized file is treated as foreign, and the v1/v2
-  compatibility exception is explicit in the spec. An invented-data probe of
-  the exact formerly valid v2 artifact-root/block shape confirmed that the
-  current reader reports `invalid-path`, the generated setting is exact, and
-  the learner bytes survive in one collision aside. The prior request for a
-  durable test of that exact v2 shape remains open as non-blocking
-  verification debt: the suite pins the v1 shape and the shared writer, not
-  that manifest spelling. The repaired tree is safe only for the documented
-  direct-loopback, single-worker, unauthenticated single-user posture once the
-  owner closes this entry. The Pending box is unchanged; no application code,
-  merge or restart was performed by the re-drain.
-
-## Done
 
 - [x] 2026-07-28 — `f40bc2f`, `76b2021`, `3706562`, `419ccbc`, `2cef3b4` on
   `fix/4-s3-capability-brief`, merged into `main` as `42eabf4` (PR #90); the
