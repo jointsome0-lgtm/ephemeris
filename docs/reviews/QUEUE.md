@@ -333,6 +333,22 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   Host verification at the round-1 branch state: pytest 9 passed,
   verify_restore 28 passed, public hygiene clean. The entry stays Pending for
   the owner's re-drain; no merge or restart was performed.
+  Diagnosis-only resolution re-drain 2026-07-29 →
+  `2026-07-29-lesson-learning-output-style-review.md`: zero new findings. The
+  superseding section reviews `main` at `083fa36` / tree `3f69767` and finds
+  the prior Medium resolved: foreign bytes are moved aside before either the
+  `.claude` directory name or its `settings.json` name is replaced, an
+  unreadable same-sized file is treated as foreign, and the v1/v2
+  compatibility exception is explicit in the spec. An invented-data probe of
+  the exact formerly valid v2 artifact-root/block shape confirmed that the
+  current reader reports `invalid-path`, the generated setting is exact, and
+  the learner bytes survive in one collision aside. The prior request for a
+  durable test of that exact v2 shape remains open as non-blocking
+  verification debt: the suite pins the v1 shape and the shared writer, not
+  that manifest spelling. The repaired tree is safe only for the documented
+  direct-loopback, single-worker, unauthenticated single-user posture once the
+  owner closes this entry. The Pending box is unchanged; no application code,
+  merge or restart was performed by the re-drain.
 
 ## Done
 

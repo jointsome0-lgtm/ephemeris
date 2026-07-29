@@ -1,3 +1,221 @@
+# Lesson Learning output style resolution re-drain — adversarial security review
+
+## Resolution-review parameters — current main
+
+**Scope:** the sole unchecked Pending entry in `docs/reviews/QUEUE.md`: issue
+#84's lesson-agent workspace output-style change, its original application
+commit `eabb9bb`, correction `f7f2877`, merge `6209fa3`, dedicated collision
+repair `633172e`, PR-bot repair `0a74699`, repair merge `7e8a850`, and their
+queue-only bookkeeping. The listed surface is
+`app/services/lessons.py`, `app/services/bundle_schema.py`,
+`docs/learn-bundle-spec.md`, `tests/test_010_platform_ui.py`, and
+`docs/reviews/QUEUE.md`; direct callers include terminal role selection and
+workspace creation, manifest reads and path grammar, and the v1/v2 lesson-file
+serving path.
+
+**Starting HEAD:** `083fa3621eb1a8d2cea9e40dc176991093d8a76d` on clean
+`main`, equal to `origin/main`; starting tree
+`3f69767e179a149c595150ae640a210f450c75e9`.
+
+**Reviewed tree:** every entry and repair commit named above is an ancestor of
+the starting HEAD. PR #106's original merge was a real three-way merge, but
+the five entry paths were byte-identical between branch tip `f4501d4` and
+merge `6209fa3`. PR #112 merged repair tip `0a74699` as `7e8a850` with an
+exact tree match (`28058dd` for both). From that repair merge to the starting
+HEAD, the production module, bundle-schema module, and spec are unchanged;
+`tests/test_010_platform_ui.py` gained only the unrelated issue-#24 settings
+and request-connection probes, and the queue gained merge bookkeeping. The
+verdict is therefore about the landed repair bytes and the current direct
+callers actually read at starting HEAD. No entry commit was excluded for
+missing ancestry.
+
+**Report file:**
+`docs/reviews/2026-07-29-lesson-learning-output-style-review.md`. Today's date
+and the entry's subject derive the same path as the diagnosis preserved
+below, so this superseding resolution section is added at the top rather than
+creating a second same-topic report.
+
+**Prior reports to reconcile:** every existing
+`docs/reviews/*-review.md` closing verdict was rescanned. The immediately
+binding report is the original July 29 diagnosis below: preserve collision
+bytes, take an explicit v1/v2 compatibility decision, and pin both old
+contract shapes. The lesson Claude-shim and brief-writer reviews, final
+teaching-contract addenda, bundle-schema runtime review, lesson-agent sandbox
+and platform-support reviews, assessments projection review, and latest
+lesson-record-panel review retain the conditions enumerated in the original
+report. Their dispositions are reconciled below.
+
+**Validation baseline:** the template's literal `python verify.py` command
+still cannot run because `verify.py` was deleted by `9195e6a`; it exits 2
+with `can't open file`. The repository's current canonical replacement,
+`uv run pytest`, passed on the host with **9 passed, 1 warning** in 35.19
+seconds. The required host `python verify_restore.py` run passed
+**28 passed, 0 failed**. Initial nested-sandbox runs stalled at the known
+TestClient boundary and were interrupted without being counted.
+
+## Context and method
+
+The deployment decision assumes the documented unauthenticated,
+direct-loopback `127.0.0.1:8765`, single-user, single-worker app. This review
+did not merge or open a PR, restart or signal a service, or read or write the
+live data directory.
+
+The complete original and repair diffs, current touched production modules,
+the relevant specification and tests, terminal workspace caller, and lesson
+file-serving caller were read. Static review covered collision discovery,
+ordinary/generated-file classification, unreadable files, symlinks, hard
+links, special files, directory squatters, rename and atomic publication,
+permissions, role separation, v1 serving, v2 path rejection, and the explicit
+compatibility exception. Queue prose, commit messages, tests, and prior
+reports were treated as claims until established from current source or an
+independent invented-data probe.
+
+The independent probe created a throwaway v2 lesson whose exact old-contract
+shape used `.claude` as an artifact root and `.claude/settings.json` as an
+editor block file. The current reader reported the documented
+`invalid-path` degradation. A real `prepare_terminal_workspace()` call then
+published the constant settings file while preserving the foreign learner
+bytes in exactly one `settings.json.collision-<hex>` aside. The scratch
+directory was removed after the probe.
+
+## Findings
+
+**No new Critical, High, Medium, Low, Info, or other finding was established
+against the reviewed tree.**
+
+## Prior finding and repair disposition
+
+- **M1 destructive collision — RESOLVED by `633172e` and `0a74699`.**
+  `_preserve_foreign()` classifies only an ordinary single-link file with the
+  exact generated length and bytes as the writer's own output. Every other
+  node is renamed aside before publication; an unreadable same-sized file is
+  a non-match rather than a workspace refusal
+  (`app/services/lessons.py:1407-1445`). The same rule protects both a node at
+  `.claude` before directory creation and a node at
+  `.claude/settings.json` before the atomic write
+  (`app/services/lessons.py:1448-1468,1554-1579`).
+- **M1 owner-level compatibility decision — RESOLVED in the frozen spec.**
+  Section 2 states the non-destructive aside rule; §9.2 names the reservation
+  as the second deliberate v1 behavior change; §9.3 keeps v2 and names the
+  reservation as one explicit version-policy exception, including why a v3
+  would not preserve an author-addressable `.claude` directory and the
+  guarantee that older-shaped bundles lose a binding, not their bytes
+  (`docs/learn-bundle-spec.md:63-72,631-665,673-691`).
+- **Exact v2 regression pin requested by the diagnosis — STILL OPEN as
+  verification debt, not as a deployed-code finding.** The merged suite pins
+  the complete v1 collision and the shared version-independent writer, plus
+  current v2 reserved-path rejection; it does not construct the diagnosis's
+  exact old-valid v2 artifact-root/block manifest in a durable test
+  (`tests/test_010_platform_ui.py:858-966`). The independent probe above
+  established that exact current behavior, and neither manifest version nor
+  read outcome branches the preservation helper. The missing dedicated pin
+  therefore does not make the current application behavior false or reopen
+  M1, but this report does not call the requested test condition resolved.
+
+## Confirmed protections and rebutted candidates
+
+- A clean bundle receives a strict constant JSON file with no lesson,
+  manifest, attempt, assessment, or other runtime text interpolated. The
+  publication remains a mode-0600 temporary file, flush, `fsync`, and atomic
+  replace in the destination directory.
+- An existing generated file is republished without accumulating an aside.
+  A foreign ordinary file, hard link, symlink, FIFO, special file, directory,
+  or unreadable file is never adopted as generated content. Moving a symlink
+  does not follow it.
+- A real `.claude` directory remains in place and unrelated siblings inside it
+  remain untouched. A foreign node occupying the directory name is preserved
+  as a bundle-root collision aside before a new mode-0700 directory is made.
+- `resolve_terminal_workspace()` remains read-only. Only the server-selected
+  `lesson-agent` role invokes `prepare_terminal_workspace()`; the
+  `lesson-learner` path does not regenerate the config
+  (`app/terminal.py:748-805`).
+- The v1 file route denies the reserved first segment and v2 remains a positive
+  declared-page/assets allowlist over the same reserved path grammar
+  (`app/services/lessons.py:666-708`;
+  `app/services/bundle_schema.py:33-36,216-238`). The compatibility narrowing
+  is documented rather than silently treated as additive.
+- The finite random aside suffix repeats the already reviewed assessment
+  collision idiom. No concrete overwrite, refusal, or loss was established
+  in the supported single-user workload, so no hypothetical same-user race or
+  collision finding is padded into this report.
+
+## Prior-condition reconciliation at the reviewed main tree
+
+- **Original learning-output-style M1 — RESOLVED.** Foreign bytes survive both
+  v1 and the exact old-valid v2 collision shape. The explicit compatibility
+  decision is recorded. The requested v2-specific durable test remains
+  **STILL OPEN as non-blocking verification debt**, with current behavior
+  independently established.
+- **Lesson-shim prompt-injection and hard-link/FIFO findings — REMAIN
+  RESOLVED.** The generated content is constant, final destinations are
+  atomically replaced, and foreign settings nodes are now preserved.
+- **Lesson teaching-contract instruction/data and path-grammar findings —
+  REMAIN RESOLVED.** The generated teaching brief is unchanged; the newly
+  explicit compatibility exception removes the version-policy contradiction
+  identified by M1.
+- **Bundle-schema B1-B5, N1, parser totality, no-follow reads, selected-page
+  outcome, and positive v2 preview allowlisting — REMAIN RESOLVED.** The path
+  reservation changes accepted names as documented but does not weaken the
+  reader's bounds or fail-closed behavior.
+- **Lesson-agent sandbox authority, server-owned role separation, fail-closed
+  workspace resolution, terminal F1-F4, and platform import/refusal —
+  REMAIN RESOLVED.** The trusted lesson-agent's host-network, CLI credential,
+  `SSH_AUTH_SOCK`, and proxy posture remain **UNCHANGED/ACCEPTED only for the
+  documented single-user role**. Terminal-opt-in T1 remains
+  **OPEN/ACCEPTED only for the deliberately plain owner shell**.
+- **Assessment projection publication/cache/replay protections and the
+  accepted same-user post-validation window — RETAIN THEIR PRIOR
+  DISPOSITIONS.** The new preservation helper borrows only the collision-aside
+  convention; it changes no assessment authority or projection path.
+- **Record-panel false-retirement and page-selection findings — REMAIN
+  RESOLVED.** The shared bundle-reader explicit-null diagnostic remains
+  **STILL OPEN outside issue #84** and is neither changed nor masked here.
+- **Direct/no-forwarded-header condition — REMAINS MITIGATED only by the
+  documented direct-loopback deployment.** Wider, proxy-adjacent, and
+  multi-user exposure remain unsupported independently of this repair.
+
+## Verification
+
+- Clean starting worktree and ancestry — passed on `main == origin/main` at
+  `083fa3621eb1a8d2cea9e40dc176991093d8a76d`; every entry and repair commit is
+  reachable.
+- Repair landing proof — `0a74699` and merge `7e8a850` both have tree
+  `28058dd`; the repaired production/spec files are unchanged through the
+  starting HEAD.
+- `git diff --check 6209fa3..0a74699` — passed.
+- Literal `python verify.py` — unavailable at starting HEAD, exit 2; the file
+  was intentionally removed by `9195e6a`.
+- Canonical host `uv run pytest` — **9 passed, 1 warning** in 35.19 seconds.
+- Host `python verify_restore.py` — **28 passed, 0 failed**.
+- Independent exact old-valid v2 collision probe — passed: current outcome
+  `degraded` with `invalid-path`; generated bytes exact; one aside; foreign
+  bytes preserved.
+- No application code, test, specification, service, or live runtime file was
+  changed by this diagnosis-only resolution drain.
+
+## Final superseding verdict
+
+**SAFE TO MAKE LIVE for the exact starting tree
+`3f69767e179a149c595150ae640a210f450c75e9` under the documented
+direct-loopback `127.0.0.1:8765`, single-worker, unauthenticated single-user
+deployment, once the owner closes the queue entry.** This resolution re-drain
+found **0 Critical, 0 High, 0 Medium, 0 Low, and 0 Info** new findings. The
+prior Medium's destructive behavior is resolved for v1 and v2, and the
+compatibility exception is now explicit.
+
+The entry stays **Pending** and points to this report, as required for a
+diagnosis-only drain; a clean entry is closed by the owner. No application
+repair PR is required by this verdict. The one unmet prior request is a
+dedicated regression that constructs the exact old-valid v2
+artifact-root/block shape; current behavior is established by this review's
+probe and the shared writer is already covered, so that remains test debt
+rather than a live-safety blocker. Any follow-up that chooses to pin it should
+be test-only and preserve or grow the **9 / 28** baselines. Wider,
+proxy-adjacent, and multi-user deployment remain **NO**. No merge or restart
+was performed; restart remains the owner's action.
+
+---
+
 # Lesson Learning output style — adversarial security review
 
 **Date:** 2026-07-29
