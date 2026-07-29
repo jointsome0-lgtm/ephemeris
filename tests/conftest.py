@@ -23,24 +23,6 @@ sys.path.insert(0, str(ROOT))
 import pytest  # noqa: E402
 from app.db import get_conn  # noqa: E402
 
-PASS = 0
-FAIL = 0
-FAILURES: list[str] = []
-
-
-def check(label: str, cond: bool, extra: str = "") -> None:
-    global PASS, FAIL
-    mark = "PASS" if cond else "FAIL"
-    if cond:
-        PASS += 1
-    else:
-        FAIL += 1
-    detail = f"[{mark}] {label}" + (f"  -- {extra}" if extra and not cond else "")
-    print(detail)
-    if not cond:
-        FAILURES.append(detail)
-
-
 def events_of(type_: str) -> list:
     conn = get_conn()
     try:
@@ -74,12 +56,3 @@ def client():
 @pytest.fixture(scope="session")
 def suite_state() -> dict:
     return {}
-
-
-def pytest_sessionfinish(session, exitstatus) -> None:
-    print(f"\n{PASS} passed, {FAIL} failed")
-    if FAILURES:
-        print("\nFailed checks:")
-        print(*FAILURES, sep="\n")
-    if FAIL and exitstatus == pytest.ExitCode.OK:
-        session.exitstatus = pytest.ExitCode.TESTS_FAILED
