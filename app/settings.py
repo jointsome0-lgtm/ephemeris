@@ -21,6 +21,14 @@ failure mode rather than just tidy one:
   here would turn a bad `APP_TIMEZONE` into an import-time crash of the whole
   process; today it raises from `app.db.app_tz()` at first use, and that is
   the behaviour callers are written against.
+
+  What DID change, deliberately: the variable is read once, at import, so
+  mutating `os.environ["APP_TIMEZONE"]` afterwards no longer affects
+  `app_tz()`. That is the point of resolving configuration once — the ledger
+  clock cannot be repointed at a different zone by a later `os.environ`
+  write, which would silently change what "today" means mid-process. Nothing
+  in the app or the tests mutates it after import; a test that needs another
+  zone should build its own `Settings` via `load({...})`.
 * `data_dir` is not created here. `app.db.get_conn()` / `init_db()` still mkdir
   on demand, so importing this module has no filesystem side effects.
 """

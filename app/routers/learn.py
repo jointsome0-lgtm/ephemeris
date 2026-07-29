@@ -526,13 +526,22 @@ _STALE_SNAPSHOT_HTML = """<!doctype html>
 
 
 @router.get("/learn/lessons/{lesson_id}/files/{resource:path}")
-def get_lesson_bundle_file(lesson_id: int, resource: str, v: str | None = None,
-                           conn: sqlite3.Connection = Depends(get_db)):
-    lesson = _lesson_or_404(conn, lesson_id)
+def get_lesson_bundle_file(lesson_id: int, resource: str, v: str | None = None):
+    # NOT Depends(get_db) (#24 cut 5): this route can answer with a
+    # FileResponse, which streams the bundle file from disk AFTER the handler
+    # returns. A dependency's finally runs only once the response completes, so
+    # it would pin this connection for the whole transfer — a slow client would
+    # hold it open indefinitely. The database is needed only to resolve the
+    # lesson, so the connection is scoped to exactly that, as it was before.
+    conn = get_conn()
     try:
-        info = lessons.bundle_resource_info(lesson, resource)
-    except lessons.LessonError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        lesson = _lesson_or_404(conn, lesson_id)
+        try:
+            info = lessons.bundle_resource_info(lesson, resource)
+        except lessons.LessonError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        conn.close()
     if not info["exists"]:
         raise HTTPException(status_code=404, detail="lesson file not found")
     headers = {
