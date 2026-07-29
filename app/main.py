@@ -11,7 +11,6 @@ only, our own styling/assets (sec7.3).
 """
 from __future__ import annotations
 
-import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import date as _date, timedelta
