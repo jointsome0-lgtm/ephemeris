@@ -1,9 +1,15 @@
 """Routine-item management (sec15.3, sec17).
 
-Add / edit / deactivate / reactivate. Each write appends the matching event
-(sec14.1) in one transaction. Deactivation is a SOFT retire (active=0 +
-deactivated_at) so check-in history stays joinable — items are NEVER hard-deleted
-(sec15.3).
+Add / edit / deactivate / reactivate / delete. Each write appends the matching
+event (sec14.1) in one transaction.
+
+Two removal paths, and they are not the same thing:
+
+- Deactivation is a SOFT retire (active=0 + deactivated_at), so check-in history
+  stays joinable and the item can be reactivated (sec15.3).
+- ``delete_item`` is a HARD delete (sec31, the TickTick 'Delete'): it drops the
+  check-in rows and the routine_item row. Only the live tables are pruned — the
+  append-only events log keeps the audit trail, so the ledger survives.
 """
 from __future__ import annotations
 
