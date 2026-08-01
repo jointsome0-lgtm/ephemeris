@@ -306,7 +306,8 @@ def test_sandbox_learning(client, suite_state):
             and spawn_args.kwargs["private_root"]
                 == str(lessons_svc.LESSONS_DIR.parent)
             and spawn_args.kwargs["private_masks"] == ()
-            and spawn_args.kwargs["preexec_fn"] is _terminal._child_setup
+            and spawn_args.kwargs["preexec_fn"].__qualname__.startswith(
+                "_child_setup_for")
             and spawn_args.kwargs["env"]["HTTP_PROXY"]
                 == "http://127.0.0.1:10809"
         )
@@ -376,7 +377,8 @@ def test_sandbox_learning(client, suite_state):
             and sandbox_spawn.call_count == 0
             and plain_call.args == (os.environ.get("SHELL") or "/bin/bash", "-i")
             and plain_call.kwargs["cwd"] == str(_terminal._REPO_ROOT)
-            and plain_call.kwargs["preexec_fn"] is _terminal._child_setup
+            and plain_call.kwargs["preexec_fn"].__qualname__.startswith(
+                "_child_setup_for")
         )
         _terminal._SESSIONS.pop(plain_sess.sid, None)
         os.close(plain_sess.master_fd)

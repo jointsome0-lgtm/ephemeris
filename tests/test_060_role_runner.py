@@ -106,6 +106,7 @@ def test_role_runner(client, suite_state):
     }):
         _agent_socket_env = _terminal._child_env("lesson-agent")
         _learner_socket_env = _terminal._child_env("lesson-learner")
+    from app import runner as _runner_toolchain
     assert (
         _agent_socket_env.get("SSH_AUTH_SOCK") == "/run/user/1000/agent.sock"
         and _agent_socket_env.get("XDG_RUNTIME_DIR") == "/run/user/1000"
@@ -114,7 +115,10 @@ def test_role_runner(client, suite_state):
         and _learner_socket_env.get("HOME") == _sandbox.USER_HOME
         and _learner_socket_env.get("SHELL") == "/bin/bash"
         and _learner_socket_env.get("PATH")
-            == "/home/aina/.local/bin:/usr/local/bin:/usr/bin:/bin"
+            == f"{_sandbox.USER_HOME}/.local/bin:/usr/local/go/bin:"
+               "/usr/local/bin:/usr/bin:/bin"
+        # The learner shell resolves the same toolchain the runner compiles with.
+        and "/usr/local/go/bin" in _runner_toolchain.RUNNER_ENV["PATH"]
         and not any(name in _learner_socket_env for name in (
             "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
             "XDG_STATE_HOME",
