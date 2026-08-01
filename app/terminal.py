@@ -453,7 +453,13 @@ def _child_env(role: TerminalRole = "plain") -> dict[str, str]:
             env.pop(name, None)
         env["HOME"] = USER_HOME
         env["SHELL"] = "/bin/bash"
-        env["PATH"] = f"{USER_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+        # The Go toolchain lives outside the default prefixes, and the sandbox
+        # ro-binds `/`, so it is visible inside — it was only missing from PATH.
+        # The learner shell and the runner compile the same lesson code, so they
+        # must resolve the same `go`: this mirrors runner.RUNNER_ENV's PATH.
+        env["PATH"] = (
+            f"{USER_HOME}/.local/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin"
+        )
     else:
         # Help find user-installed agent CLIs even under a minimal service PATH.
         home = os.path.expanduser("~")
