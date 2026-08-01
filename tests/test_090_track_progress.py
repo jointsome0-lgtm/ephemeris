@@ -102,6 +102,38 @@ def test_track_progress(client, suite_state):
         and _finished["studied"] == _finished["total"] == 1
     ), "a fully studied track offers no next step"
 
+    # A manifest that declares a path but is not usable does not enrol its
+    # lesson. `_read_v2` parses `path` before the checks that reject the
+    # manifest, so both cases need the gate, not just the unreadable ones.
+    conn = get_conn()
+    try:
+        _bad = {}
+        for key, title in (("rejected", "Rejected Manifest"),
+                           ("foreign", "Foreign Manifest")):
+            _bad[key] = lessons_svc.get_lesson(
+                conn, lessons_svc.create_lesson(conn, f"#81 {title}"))
+    finally:
+        conn.close()
+    # duplicate page id: rejected on §9.2 grounds, `path` still parsed
+    _write_manifest(_bad["rejected"]["slug"], _bad["rejected"]["uid"],
+                    path="zz-track-one", step=120,
+                    pages=[{"id": "pg_track00001", "path": "index.html"},
+                           {"id": "pg_track00001", "path": "other.html"}])
+    # a bundle whose manifest names a different lesson entirely
+    _write_manifest(_bad["foreign"]["slug"],
+                    "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
+                    path="zz-track-one", step=130)
+    conn = get_conn()
+    try:
+        rows = lessons_svc.list_lessons(conn)
+    finally:
+        conn.close()
+    _gated = {t["path"]: t for t in lessons_svc.track_progress(rows)}
+    assert (
+        _gated["zz-track-one"]["total"] == 3
+        and _gated["zz-track-one"]["next"]["id"] == made["t1_b"]["id"]
+    ), "a rejected or foreign manifest joins no track and is never the next step"
+
     # A read the caller already took wins over re-reading the file: /learn
     # hands over the selected lesson's single ensured read (test_050 S4).
     from app.services import bundle_schema as _bschema

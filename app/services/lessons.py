@@ -1892,6 +1892,16 @@ def track_progress(
     by_path: dict[str, list[dict]] = {}
     for row in rows:
         read = (reads or {}).get(row["id"]) or read_bundle_readonly(row)
+        # Only a usable manifest speaks for its lesson. `_read_v2` parses
+        # `path` before the checks that reject the manifest, so a rejected read
+        # can still carry one — but `ManifestRead` promises its model fields
+        # mean nothing on a reject, and the rest of the app honours that. An
+        # `identity-mismatch` is degraded rather than rejected, and matters
+        # more here than anywhere: the bundle on disk belongs to a DIFFERENT
+        # lesson, so its declaration would enrol this row in a track on the
+        # strength of another lesson's file.
+        if read.rejected or read.lesson_uid != row["uid"]:
+            continue
         if not read.path_ref:
             continue
         by_path.setdefault(read.path_ref, []).append({"row": row, "step": read.step})
