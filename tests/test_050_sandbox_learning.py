@@ -1620,7 +1620,11 @@ def test_sandbox_learning(client, suite_state):
           == ["db", "manifest-swap", "manifest", "panel"]
         and len(_s4_ensured_reads) == 1
         and _s4_panel_reads == [_s4_ensured_reads[-1]]
-        and not _s4_readonly_reads
+        # #81 reads other lessons' manifests through the readonly reader to
+        # build the track strip. The invariant here is about THIS lesson: its
+        # single ensured read stays the only authority, so the track pass takes
+        # the read it was handed rather than re-reading the file.
+        and _s4_id not in _s4_readonly_reads
         and not _s4_mark_opened_calls
         and _s4_entry_after_swap == "index.html"
         and f"/files/index.html" in _s4_swap_html

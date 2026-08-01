@@ -1861,6 +1861,58 @@ def preview_html(lesson: dict, entry: str | None = None) -> tuple[str, dict]:
     return html, info
 
 
+# --- track progress (#81) ----------------------------------------------------
+#
+# Movement through a track, in lesson-status terms. Track membership lives ONLY
+# in `lesson.json` (`path`/`step`) — the ownership table in
+# docs/learn-bundle-spec.md keeps those agent-writable and app-read-only, so
+# they are derived per render rather than mirrored into the `lessons` table.
+# The read is the readonly one: rendering /learn must not create bundle state.
+
+def track_progress(
+    rows: list[dict],
+    *,
+    reads: dict[int, bundle_schema.ManifestRead] | None = None,
+) -> list[dict]:
+    """Per-track "N of M studied" plus the first unstudied step, from manifests.
+
+    `rows` are lesson views (`list_lessons`); each contributes to a track when
+    its manifest declares a `path`. A lesson whose manifest is missing, absent
+    a `path`, or unreadable simply belongs to no track — no error surfaces on
+    the page, and when no lesson declares one the result is empty.
+
+    `reads` supplies manifests the caller has already read, by lesson id. The
+    /learn render passes the selected lesson's read that way: that one read is
+    the single authority for its bundle metadata, selection and record, and
+    re-reading the file here could disagree with it mid-render.
+
+    Members order by `step`, then slug so a track without steps still renders
+    deterministically; tracks order by `path` (no notion of a "main" track).
+    """
+    by_path: dict[str, list[dict]] = {}
+    for row in rows:
+        read = (reads or {}).get(row["id"]) or read_bundle_readonly(row)
+        if not read.path_ref:
+            continue
+        by_path.setdefault(read.path_ref, []).append({"row": row, "step": read.step})
+    tracks = []
+    for path in sorted(by_path):
+        # An absent step sorts last: a declared member never displaces one that
+        # positioned itself.
+        members = sorted(
+            by_path[path],
+            key=lambda m: (m["step"] is None, m["step"] or 0, m["row"]["slug"]),
+        )
+        nxt = next((m["row"] for m in members if m["row"]["status"] != "studied"), None)
+        tracks.append({
+            "path": path,
+            "studied": sum(1 for m in members if m["row"]["status"] == "studied"),
+            "total": len(members),
+            "next": {"id": nxt["id"], "title": nxt["title"]} if nxt else None,
+        })
+    return tracks
+
+
 def counts(conn: sqlite3.Connection) -> dict:
     rows = conn.execute(
         "SELECT status, COUNT(*) AS n FROM lessons "

@@ -130,6 +130,22 @@ def get_learn(
         lesson_id=selected_id,
         entry=selected["entry"] if selected else None,
     )
+    # #81: track progress counts the whole active list, never the filtered
+    # `rows` — "N of M studied" that moved when a status pill was clicked would
+    # be a different number each time and mean nothing. The next-step link
+    # leaves the filter behind for the same reason: it points at a lesson the
+    # current filter usually excludes.
+    track_rows = (
+        rows if status is None and not show_archived
+        else lessons.list_lessons(conn)
+    )
+    tracks = lessons.track_progress(
+        track_rows,
+        reads={selected["id"]: selected_manifest} if selected else None,
+    )
+    for track in tracks:
+        if track["next"]:
+            track["next"]["href"] = _learn_url(lesson_id=track["next"]["id"])
     return templates.TemplateResponse(request, "learn.html", {
         "request": request,
         "rail": "learn",
@@ -137,6 +153,7 @@ def get_learn(
         "status_filter": status,
         "show_archived": show_archived,
         "counts": counts,
+        "tracks": tracks,
         "status_tabs": [{"key": key, "label": lessons.STATUS_LABELS[key]} for key in lessons.STATUSES],
         "selected": selected,
         "self_url": self_url,
