@@ -24,10 +24,12 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import logging
 import os
 import signal
 import socket
 import struct
+import subprocess
 import sys
 import time
 from collections import deque
@@ -45,6 +47,8 @@ from .services.lessons import (
     prepare_terminal_workspace,
     resolve_terminal_workspace,
 )
+
+_log = logging.getLogger("activity_ledger")
 
 # Repo root: a sensible cwd so agents/commands run against the project by default.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -74,7 +78,7 @@ def _pty_stack():
     explicit refusal instead of an ImportError from three frames up the chain.
 
     Cached, and every path that forks warms it in the parent first (setup_terminal
-    at startup, _create_session before pty.openpty), because _child_setup runs
+    at startup, _create_session before pty.openpty), because _child_setup_for runs
     between fork and exec, where importing a module for the first time could
     deadlock on the import lock. Post-fork this is a tuple read, never an import.
     """
@@ -189,18 +193,40 @@ def _set_winsize(fd: int, rows: int, cols: int) -> None:
         pass
 
 
-def _child_setup() -> None:
-    """Run in the forked child before exec: own a new session and make the pty
-    slave (fd 0) our controlling terminal, so job control + isatty work.
+def _child_setup_for(slave_fd: int):
+    """Build the post-fork hook that gives the child a controlling terminal.
 
-    Runs post-fork, so _pty_stack() must already be warm (it is: _create_session
-    opens the pty before spawning) and only reads the cached tuple here."""
+    Everything the child needs is resolved HERE, in the parent: the (fcntl,
+    termios) pair and the slave's path. The returned closure runs between fork
+    and exec, where a first-time import could deadlock on the import lock
+    (see _pty_stack), so it only makes syscalls on values captured above.
+
+    Why the slave is re-opened by path instead of ioctl'ing fd 0: fd 0 is the
+    pty slave only once the event loop's subprocess machinery has done its
+    stdio redirect, and the loops disagree about when that is. Plain asyncio
+    redirects BEFORE preexec_fn; uvloop — which uvicorn selects by default —
+    redirects AFTER, so the ioctl would land on whatever else occupies fd 0 and
+    fail with ENOTTY. A session leader opening its tty is the ordering-free way
+    to say the same thing, and it leaves no extra descriptor behind.
+
+    Failure is deliberately NOT swallowed. An exception here aborts the spawn,
+    which the callers turn into a visible refusal; the alternative — the bare
+    `except OSError: pass` this replaces — was a shell with no controlling
+    terminal, hence no foreground process group, hence no Ctrl-C and no
+    SIGWINCH, and nothing anywhere saying so.
+    """
     fcntl, _pty, termios = _pty_stack()
-    os.setsid()
-    try:
-        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-    except OSError:
-        pass
+    slave_path = os.ttyname(slave_fd)
+
+    def setup() -> None:
+        os.setsid()
+        fd = os.open(slave_path, os.O_RDWR)
+        try:
+            fcntl.ioctl(fd, termios.TIOCSCTTY, 0)
+        finally:
+            os.close(fd)
+
+    return setup
 
 
 # --- egress proxy for agent CLIs -------------------------------------------------
@@ -877,6 +903,13 @@ async def _spawn_on_pty(
     _fcntl, pty, _termios = _pty_stack()
     master_fd, slave_fd = pty.openpty()
     os.set_blocking(master_fd, False)  # pump + input writes are add_reader/add_writer-driven
+    try:
+        child_setup = _child_setup_for(slave_fd)
+    except OSError:
+        os.close(master_fd)  # nothing took ownership of either end yet
+        os.close(slave_fd)
+        _log.warning("terminal: could not resolve the pty slave for %s", sid)
+        return None
     if sandbox_profile is not None:
         try:
             proc = await spawn_sandboxed(
@@ -889,7 +922,7 @@ async def _spawn_on_pty(
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,
-                preexec_fn=_child_setup,
+                preexec_fn=child_setup,
                 env=env,
             )
         except (SandboxError, ValueError) as exc:
@@ -901,13 +934,18 @@ async def _spawn_on_pty(
             proc = await asyncio.create_subprocess_exec(
                 shell, "-i",
                 stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-                preexec_fn=_child_setup,
+                preexec_fn=child_setup,
                 cwd=workspace_dir,
                 env=env,
             )
-        except (OSError, ValueError):
+        # SubprocessError covers a child_setup that could not take the pty as its
+        # controlling terminal: the spawn dies here rather than handing back a
+        # shell with no job control. (The sandboxed branch above reports the same
+        # failure through SandboxSpawnError, which spawn_sandboxed raises for it.)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
             os.close(master_fd)  # no proc took ownership of the master end — don't leak it
             os.close(slave_fd)
+            _log.warning("terminal: shell spawn failed for %s: %s", sid, exc)
             return None
     os.close(slave_fd)  # success: parent keeps only the master end
 

@@ -2052,6 +2052,55 @@ def test_core_surfaces(client, suite_state):
         "terminal: reaper reaps it once the attach lock is free"
     )
 
+    # --- #116: the child must own the PTY as its controlling terminal --------
+    # Job control is what makes Ctrl-C and SIGWINCH work, and it exists only if
+    # the child holds a controlling terminal — so the property asserted here is
+    # the observable one: the master end reports the child as its foreground
+    # process group. `tcgetpgrp` fails, or answers 0, when nobody claimed it.
+    #
+    # This MUST run on uvloop, the loop uvicorn selects in production. uvloop
+    # redirects the child's stdio AFTER preexec_fn (plain asyncio does it
+    # before), so on plain asyncio fd 0 already happens to be the slave and a
+    # hook that ioctl'd fd 0 would pass here while still failing in the live
+    # app. The spawned program is /bin/sleep, not a shell, precisely because an
+    # interactive bash re-acquires the terminal on its own and would mask the
+    # defect on this path.
+    import uvloop as _uvloop
+
+    def _ctty_probe():
+        async def _spawn():
+            master_fd, slave_fd = _pty.openpty()
+            setup = _terminal._child_setup_for(slave_fd)
+            proc = await _asyncio.create_subprocess_exec(
+                "/bin/sleep", "30",
+                stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+                preexec_fn=setup, env={"PATH": "/usr/bin:/bin"},
+            )
+            os.close(slave_fd)
+            try:
+                try:
+                    foreground = os.tcgetpgrp(master_fd)
+                except OSError:
+                    foreground = -1
+                return foreground, proc.pid
+            finally:
+                proc.kill()
+                await proc.wait()
+                os.close(master_fd)
+
+        loop = _uvloop.new_event_loop()  # scoped: never touches the global policy
+        try:
+            return loop.run_until_complete(_spawn())
+        finally:
+            loop.close()
+
+    _fg, _child_pid = _ctty_probe()
+    assert _fg == _child_pid, (
+        "terminal: the spawned child must hold the PTY as its controlling "
+        f"terminal (foreground pgrp {_fg}, child {_child_pid}) — without it "
+        "there is no job control, so Ctrl-C and SIGWINCH are dead (#116)"
+    )
+
     suite_state.update(
         {
             name: value
