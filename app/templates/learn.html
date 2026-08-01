@@ -78,6 +78,25 @@
         </a>
       </nav>
 
+      {# #81: movement through a track, above the flat list (not the preview
+         header — #4 and #75 both queue additions there). `tracks is defined`
+         guards the live process: Jinja re-reads this file per render, so the
+         pre-#81 backend renders the new template with the old context until
+         its restart, and must omit the strip rather than fail the page. #}
+      {% if tracks is defined and tracks %}
+      <div class="learn-tracks">
+        {% for track in tracks %}
+        <p class="learn-track">
+          <span class="learn-track-path">{{ track.path }}</span>
+          <span class="learn-track-count">{{ track.studied }} of {{ track.total }} studied</span>
+          {% if track.next %}
+          <a class="learn-track-next" href="{{ track.next.href }}" title="{{ track.next.title }}">Next: {{ track.next.title }}</a>
+          {% endif %}
+        </p>
+        {% endfor %}
+      </div>
+      {% endif %}
+
       {% if rows %}
       <div class="lesson-list">
         {% for lesson in rows %}
