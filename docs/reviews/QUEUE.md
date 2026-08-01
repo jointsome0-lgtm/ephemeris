@@ -24,7 +24,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-08-02 — `06f6df5` and `63e7a1e` on `fix/terminal-job-control`,
+_None._
+
+## Done
+
+- [x] 2026-08-02 — `06f6df5` and `63e7a1e` on `fix/terminal-job-control`,
   merged to `main` as `ddbdddb` — `app/terminal.py`, `tests/test_040_core_surfaces.py`,
   `tests/test_050_sandbox_learning.py`, `tests/test_060_role_runner.py`,
   `docs/reviews/QUEUE.md` — issue #116, two changes to the child-spawn path.
@@ -43,9 +47,16 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   inserts `/usr/local/go/bin` into `PATH` after `{USER_HOME}/.local/bin`. Tests
   add a uvloop-scoped spawn of `/bin/sleep` asserting `os.tcgetpgrp` on the pty
   master, replace two `preexec_fn` identity assertions with `__qualname__`
-  checks, and update the learner `PATH` assertion.
-
-## Done
+  checks, and update the learner `PATH` assertion. Drained 2026-08-02 →
+  `2026-08-02-terminal-job-control-review.md`: no Critical, High, Medium, Low,
+  Info, or open finding. The uvloop regression and an invented `/tmp` probe
+  through the real learner bubblewrap wrapper both confirmed a live foreground
+  process group; failure paths retain complete PTY and assessment-capability
+  cleanup, and the fixed learner `PATH` grants no new sandbox authority. Prior
+  terminal, sandbox, role, and capability findings retain the report's stated
+  dispositions. Final verdict: SAFE TO MAKE LIVE for the documented direct-
+  loopback, single-worker, unauthenticated single-user deployment; wider,
+  proxy-adjacent, or multi-user deployment NO. No service action was performed.
 
 - [x] 2026-07-29 — `eabb9bb` and `f7f2877` on `fix/84-learning-output-style`,
   with queue-only bookkeeping in between; the entry stays current with the
