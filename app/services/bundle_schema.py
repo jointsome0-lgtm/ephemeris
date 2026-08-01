@@ -36,6 +36,9 @@ RESERVED_NAMES = (
 )
 
 MAX_MANIFEST_BYTES = 256 * 1024
+# The deepest a valid manifest nests is a handful of levels (pages → blocks →
+# their fields), so 64 is generous; see _too_deep for why the bound is ours.
+MAX_MANIFEST_DEPTH = 64
 MAX_PAGES = 200
 MAX_QUESTIONS = 200
 MAX_BLOCKS = 100
@@ -299,6 +302,38 @@ def _finite_float(token: str) -> float:
     return value
 
 
+def _too_deep(data: bytes) -> bool:
+    """A manifest nested deeper than MAX_MANIFEST_DEPTH is unreadable.
+
+    The bound used to be the interpreter's own recursion limit, caught below as
+    RecursionError. CPython 3.12's C scanner no longer raises there, so on 3.12+
+    a 5000-deep document parsed and read as a valid v1 manifest while the same
+    bytes were rejected on 3.10. Counting brackets outside strings makes the
+    bound the reader's own, identical on every supported Python. Bytes, not the
+    parse tree: this runs before json.loads and never builds the deep object.
+    """
+    depth = 0
+    in_string = False
+    escaped = False
+    for byte in data:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == 0x5C:  # backslash
+                escaped = True
+            elif byte == 0x22:  # closing quote
+                in_string = False
+        elif byte == 0x22:
+            in_string = True
+        elif byte in (0x7B, 0x5B):  # { [
+            depth += 1
+            if depth > MAX_MANIFEST_DEPTH:
+                return True
+        elif byte in (0x7D, 0x5D):  # } ]
+            depth -= 1
+    return False
+
+
 def read_manifest_text(
     text: str,
     *,
@@ -321,6 +356,8 @@ def read_manifest_bytes(
     accumulates across the whole manifest."""
     if len(data) > MAX_MANIFEST_BYTES:
         return rejected_read("manifest-too-large", f"{len(data)} bytes")
+    if _too_deep(data):
+        return rejected_read("manifest-unreadable", "manifest nesting too deep")
     try:
         raw = json.loads(
             data.decode("utf-8"),

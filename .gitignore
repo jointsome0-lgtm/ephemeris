@@ -69,3 +69,6 @@ venv/
 
 # --- Node (dev-only TypeScript toolchain, issue #42) ---
 node_modules/
+
+# --- Lint cache (issue #21) ---
+.ruff_cache/

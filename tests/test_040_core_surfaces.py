@@ -1451,7 +1451,7 @@ def test_core_surfaces(client, suite_state):
 
     # JSONL export now snapshots the series rows (source of truth, incl. archived)
     lines = [_json.loads(line) for line in c.post("/export/jsonl").text.splitlines()]
-    series = [l for l in lines if l["type"] == "calendar_event_series"]
+    series = [entry for entry in lines if entry["type"] == "calendar_event_series"]
     titles = {s["payload"]["title"] for s in series}
     assert {"Orbit Drill", "Vector Sync II", "Quiet Block"} <= titles, (
         "export carries calendar_event_series snapshot lines"
@@ -1462,10 +1462,10 @@ def test_core_surfaces(client, suite_state):
         s["payload"]["archived_at"] for s in series
     ), "series snapshot keeps the rule + archived flag"
     assert not any(
-        "occurrence" in l["type"]
-        and "skipped" not in l["type"]
-        and "unskipped" not in l["type"]
-        for l in lines
+        "occurrence" in entry["type"]
+        and "skipped" not in entry["type"]
+        and "unskipped" not in entry["type"]
+        for entry in lines
     ), "occurrences are never exported"
 
     # --- Learn: lesson lifecycle, ledger events, Search + export (sec: Learn module)

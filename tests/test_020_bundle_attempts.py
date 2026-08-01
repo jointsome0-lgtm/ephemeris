@@ -1109,7 +1109,7 @@ process.stdout.write(JSON.stringify([
     assert (
         _at_heal.json()["projection"] == "projected"
         and len(_at_lines) == len(_at_rows())
-        and [json.loads(l)["attempt_id"] for l in _at_lines]
+        and [json.loads(ln)["attempt_id"] for ln in _at_lines]
         == [r["attempt_id"] for r in _at_rows()]
     ), "next write reconciles: projection again equals the authority"
     # crash between commit and append (file vanished) and a torn tail
@@ -1125,7 +1125,7 @@ process.stdout.write(JSON.stringify([
     _at_lines2 = _at_proj.read_text(encoding="utf-8").splitlines()
     assert (
         len(_at_lines2) == len(_at_rows())
-        and all(json.loads(l)["kind"] == "attempt" for l in _at_lines2)
+        and all(json.loads(ln)["kind"] == "attempt" for ln in _at_lines2)
     ), "truncated projection is rebuilt: every line parses, counts match"
     # the public reconcile entry point rebuilds from scratch, idempotently
     _at_proj.write_text("junk that is not jsonl\n", encoding="utf-8")
@@ -1257,7 +1257,7 @@ process.stdout.write(JSON.stringify([
     _at_lines4 = _at_proj.read_text(encoding="utf-8").splitlines()
     assert (
         _at_backdated.json().get("projection") == "projected"
-        and [json.loads(l)["attempt_id"] for l in _at_lines4]
+        and [json.loads(ln)["attempt_id"] for ln in _at_lines4]
         == [r["attempt_id"] for r in _at_rows()]
         and json.loads(_at_lines4[0])["created_at"]
         == "2000-01-01T00:00:00.000000+00:00"

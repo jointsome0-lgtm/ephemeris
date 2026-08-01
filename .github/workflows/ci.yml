@@ -3,9 +3,53 @@ name: CI
 on:
   push:
   pull_request:
+  # gitleaks scans the whole history — not just the event's commits — when it is
+  # started by hand, so this trigger is what a full-repository sweep runs from.
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  verify:
+  # The suite is the only thing worth paying for three times over. Everything
+  # else below runs once, on the deployed interpreter.
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.13"]
+
+    env:
+      # Pin uv to the interpreter setup-python just installed. Left to itself uv
+      # downloads a python-build-standalone runtime, and those builds omit
+      # os.memfd_create and fcntl.F_SEAL_*, which app/sandbox.py requires.
+      UV_PYTHON: ${{ matrix.python-version }}
+      UV_PYTHON_PREFERENCE: only-system
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Sync frontend verification dependencies
+        run: npm ci
+
+      - name: Run verification
+        run: uv run pytest
+
+  checks:
     runs-on: ubuntu-latest
 
     steps:
@@ -23,14 +67,73 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen
 
-      - name: Sync frontend verification dependencies
-        run: npm ci
-
-      - name: Run verification
-        run: uv run pytest
+      - name: Lint
+        run: uv run ruff check .
 
       - name: Verify export/restore round trip
         run: uv run python verify_restore.py
 
       - name: Check public hygiene
         run: python scripts/check_public_hygiene.py
+
+      # The audit input is the lock file, not the installed environment, so what
+      # CI checks is exactly what a deploy would install.
+      - name: Export locked runtime dependencies
+        run: >
+          uv export --frozen --no-dev --format requirements-txt
+          --output-file "${RUNNER_TEMP}/requirements-runtime.txt"
+
+      # Blocking. A new advisory against a locked package turns this red without
+      # anyone pushing code — that is the point; the fix is `uv lock
+      # --upgrade-package <name>`. When no fix exists yet, buy time with
+      # `--ignore-vuln GHSA-xxxx-xxxx-xxxx` on the line below, and put the reason
+      # and the date to revisit in a comment beside it. No open-ended ignores.
+      - name: Audit runtime dependencies
+        run: uvx pip-audit --requirement "${RUNNER_TEMP}/requirements-runtime.txt"
+
+      # Advisory only: a vulnerable linter cannot reach production, so a finding
+      # here should be read at leisure rather than block a merge.
+      - name: Export locked development dependencies
+        run: >
+          uv export --frozen --format requirements-txt
+          --output-file "${RUNNER_TEMP}/requirements-dev.txt"
+
+      - name: Audit development dependencies
+        continue-on-error: true
+        run: uvx pip-audit --requirement "${RUNNER_TEMP}/requirements-dev.txt"
+
+  # Two layers that are easy to confuse: gitleaks reads file *contents* and looks
+  # for things shaped like credentials, while scripts/check_public_hygiene.py (in
+  # `checks` above) reads file *names* and enforces the repository's public-data
+  # boundary. Neither subsumes the other, so both run.
+  secrets:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # gitleaks walks commits, so a shallow clone would hide most of them.
+          fetch-depth: 0
+
+      # History: `gitleaks detect` over the event's commits on push and pull
+      # request, and over every commit in the repository on workflow_dispatch.
+      - name: Scan git history for secrets
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: "8.30.1"
+          # A finding is reported in the job summary and the step's exit code;
+          # commenting on the pull request would need write access we do not grant.
+          GITLEAKS_ENABLE_COMMENTS: "false"
+
+      # Working tree: the same binary the action just put on PATH, in `dir` mode
+      # over the checkout. History mode only sees the commits belonging to the
+      # event, so a secret introduced by an earlier commit and still sitting in
+      # the tree is caught here and nowhere else.
+      - name: Scan the working tree for secrets
+        run: gitleaks dir . --redact --exit-code 2 --no-banner
