@@ -24,9 +24,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-08-02 — `06f6df5` and `63e7a1e` on `fix/terminal-job-control`; the
-  entry stays current with the branch and the merge commit is appended before
-  any restart — `app/terminal.py`, `tests/test_040_core_surfaces.py`,
+- [ ] 2026-08-02 — `06f6df5` and `63e7a1e` on `fix/terminal-job-control`,
+  merged to `main` as `ddbdddb` — `app/terminal.py`, `tests/test_040_core_surfaces.py`,
   `tests/test_050_sandbox_learning.py`, `tests/test_060_role_runner.py`,
   `docs/reviews/QUEUE.md` — issue #116, two changes to the child-spawn path.
   (1) `_child_setup` becomes the factory `_child_setup_for(slave_fd)`: the
