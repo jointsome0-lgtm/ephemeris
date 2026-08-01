@@ -24,7 +24,27 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_No pending entries._
+- [ ] 2026-08-02 — `06f6df5` and `63e7a1e` on `fix/terminal-job-control`; the
+  entry stays current with the branch and the merge commit is appended before
+  any restart — `app/terminal.py`, `tests/test_040_core_surfaces.py`,
+  `tests/test_050_sandbox_learning.py`, `tests/test_060_role_runner.py`,
+  `docs/reviews/QUEUE.md` — issue #116, two changes to the child-spawn path.
+  (1) `_child_setup` becomes the factory `_child_setup_for(slave_fd)`: the
+  parent resolves `os.ttyname(slave_fd)` and the `(fcntl, termios)` pair, and
+  the returned closure runs post-fork as `os.setsid()`, `os.open(slave_path,
+  os.O_RDWR)`, `TIOCSCTTY` on that descriptor, `os.close`. It previously ran
+  `os.setsid()` then `TIOCSCTTY` on fd 0 under `except OSError: pass`. The
+  closure raises instead of swallowing, so a failure aborts the spawn; both
+  spawn sites in `_spawn_on_pty` pass the per-spawn closure, the factory call
+  is wrapped to close both pty ends on `OSError`, and the non-sandboxed branch
+  additionally catches `subprocess.SubprocessError` before closing its ends and
+  returning `None`. `logging` and `subprocess` are new module imports and
+  `_log` is a new module-level logger named `activity_ledger`; two spawn
+  failure paths now emit `_log.warning`. (2) `_child_env(role="lesson-learner")`
+  inserts `/usr/local/go/bin` into `PATH` after `{USER_HOME}/.local/bin`. Tests
+  add a uvloop-scoped spawn of `/bin/sleep` asserting `os.tcgetpgrp` on the pty
+  master, replace two `preexec_fn` identity assertions with `__qualname__`
+  checks, and update the learner `PATH` assertion.
 
 ## Done
 
