@@ -18,8 +18,6 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app.runner import (  # noqa: E402
-    FINISHED,
-    RUNNER_ENV,
     RunnerRequest,
     RunnerService,
     require_runner_health,

@@ -13,4 +13,28 @@ dependencies = [
 dev = [
     "httpx>=0.28.1",
     "pytest>=9.1.1",
+    "ruff>=0.16.1",
 ]
+
+[tool.ruff]
+line-length = 100
+# Deliberately malformed input for the runner's syntax-error path; it must not parse.
+extend-exclude = ["fixtures/runner/python_syntax_error.py"]
+
+[tool.ruff.lint]
+# Narrow on purpose (issue #21): pyflakes plus pycodestyle errors/warnings. Wider
+# rule families and `ruff format` are separate owner decisions — turning them on
+# here would rewrite the whole application in a CI-tooling change.
+select = ["E", "F", "W"]
+ignore = [
+    # TODO(#21): 82 existing violations, 25 of them in `app/`. Wrapping them is a
+    # reformatting pass, which this gate deliberately is not. Re-enable in a
+    # dedicated PR that only rewraps lines.
+    "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# TODO(#21): 98 unused imports accumulated across the suite. Deleting them touches
+# every test file at once and would collide with the test work in flight; the
+# rule stays live for `app/`, `scripts/` and the root modules, where it is clean.
+"tests/*" = ["F401"]

@@ -1,0 +1,26 @@
+# gitleaks configuration (see .github/workflows/ci.yml, job `secrets`).
+#
+# This layer looks at file *contents* for things shaped like credentials.
+# scripts/check_public_hygiene.py is the other layer and looks at file *names*
+# and the public-data boundary; neither replaces the other.
+#
+# Keep every allowlist below narrow and give it a reason. A broad path rule —
+# "all of tests/", say — is how a real secret gets waved through later.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = """Vendored third-party browser bundles. The minified xterm builds
+contain identifiers such as `t.FourKeyMap=` that read as high-entropy assignments
+to the generic-api-key rule. These files are upstream artifacts committed as-is;
+we do not author their contents."""
+paths = ['''app/static/vendor/.*\.min\.js$''']
+
+[[allowlists]]
+description = """Invented test data. The suite spells fabricated identifiers with
+a `vera-` prefix, after the repository's "Vera Example" convention for data that
+is deliberately not real. The prefix is the allowlist, not the file: a genuine
+credential pasted into a test still gets caught."""
+regexTarget = "match"
+regexes = ['''vera-[a-z0-9-]+''']

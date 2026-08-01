@@ -2758,8 +2758,28 @@ def test_assessment_artifact_migration(client, suite_state):
         and len(_flood.findings) <= bschema.MAX_FINDINGS + 5
     ), "hostile manifest findings stay bounded"
     _deep = bschema.read_manifest_text('{"x":' * 5000 + "1" + "}" * 5000)
+    # The bound is the reader's own (MAX_MANIFEST_DEPTH), not the interpreter's
+    # recursion limit: CPython 3.12+ parses this depth happily, so a guard that
+    # only caught RecursionError let it through on 3.12/3.13 and rejected it on
+    # 3.10. Probe one level over and one level under the declared bound too, and
+    # keep a brace inside a string from being counted as nesting.
+    _depth_edge = bschema.MAX_MANIFEST_DEPTH + 1
+    _over = bschema.read_manifest_text(
+        '{"x":' * _depth_edge + "1" + "}" * _depth_edge)
+    _under = bschema.read_manifest_text(json.dumps({
+        "schema_version": 2,
+        "lesson_uid": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
+        "slug": "vera-example", "title": "Vera Example {[",
+        "entry": "index.html",
+        "pages": [{"id": "pg_depth0001", "path": "index.html"}],
+    }))
     assert (
-        _deep.outcome == "rejected" and "manifest-unreadable" in _deep.codes()
+        _deep.outcome == "rejected"
+        and "manifest-unreadable" in _deep.codes()
+        and "nesting too deep" in "".join(f.detail or "" for f in _deep.findings)
+        and _over.outcome == "rejected"
+        and "manifest-unreadable" in _over.codes()
+        and _under.outcome == "ok"
     ), "pathologically deep JSON is manifest-unreadable, not a crash"
     _badurl = bschema.read_manifest_text(json.dumps({
         "schema_version": 2,

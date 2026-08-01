@@ -1629,7 +1629,7 @@ def test_sandbox_learning(client, suite_state):
         and _s4_id not in _s4_readonly_reads
         and not _s4_mark_opened_calls
         and _s4_entry_after_swap == "index.html"
-        and f"/files/index.html" in _s4_swap_html
+        and "/files/index.html" in _s4_swap_html
         and f"preview-meta?entry={_s4_swap_path}" in _s4_swap_html
     ), (
         "S4 a page removed before the final manifest read is not persisted" + "  -- " + (f"order={_s4_read_order}, current_entry={_s4_entry_after_swap}")

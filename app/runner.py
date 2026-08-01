@@ -18,7 +18,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from functools import cache
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import Awaitable, Callable, Mapping
 from uuid import uuid4
