@@ -398,29 +398,89 @@ def _require_shared_history(
 ) -> None:
     """Refuse a target that is not an earlier delivery of THIS stream.
 
-    Holding a database is not evidence of shared history, and two cases prove it.
-    A target built from a pre-#17 export minted its own local uuids, so a later
-    export of the very same source database shares none of them: every record
-    would look new and the whole prefix would be inserted a second time. And an
-    unrelated target shares nothing at all, yet its `calendar_events` ids are
-    small integers that collide readily — the snapshot upsert would overwrite
-    real series belonging to another history.
+    Redelivery is only ever a CONTINUATION: everything the target already holds
+    must appear in the incoming export. Sharing merely *some* history is not
+    enough, because `calendar_event_series` lines are absolute state rather than
+    a diff — they upsert whatever the file says, whether or not the audit half
+    had anything left to apply.
 
-    One receipt in common settles both: it can only exist if this stream was
-    delivered here before. An empty ledger is the one honest exception — there is
-    nothing to contradict and nothing to overwrite.
+    Three targets fail that test, and each would be corrupted silently:
+
+    - one built from a pre-#17 export, which minted its own local uuids: a later
+      export of the very same source database matches none of them, so the whole
+      prefix would land a second time;
+    - an unrelated history, which shares nothing at all, yet whose
+      `calendar_events` ids are small integers that collide readily — the
+      snapshot upsert would overwrite real series belonging to someone else;
+    - one that is AHEAD of this export, or that diverged from it. Every audit
+      line is skipped and the run reports "0 applied", which reads as "nothing
+      changed" — while the older snapshots quietly revert calendar titles,
+      recurrence rules and archive state to what they were at export time.
+
+    An empty ledger is the one honest exception: nothing to contradict, nothing
+    to overwrite.
     """
     if conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0:
         return
     incoming = {r.uuid for r in audit_records if r.uuid is not None}
-    if incoming & seen:
+    unmatched = seen - incoming
+    if not unmatched:
+        return
+    if not (incoming & seen):
+        raise RestoreError(
+            "target already holds a database, but it shares no event id with this "
+            "export, so it is not an earlier delivery of this stream. Restoring "
+            "here would duplicate the whole history and could overwrite unrelated "
+            "calendar series. Use a fresh target. (A target built from a pre-#17 "
+            "export cannot be redelivered into: its rows were given new local ids "
+            "at restore time.)"
+        )
+    raise RestoreError(
+        f"target holds {len(unmatched)} event(s) this export does not contain, so "
+        "it is ahead of this file or has diverged from it. Redelivery only ever "
+        "moves forward: applying this export would revert calendar series to their "
+        "state at export time while reporting that nothing was applied. Deliver a "
+        "newer export, or use a fresh target."
+    )
+
+
+def _require_same_envelope(conn: sqlite3.Connection, record: Record) -> None:
+    """A receipt identifies an event only if it describes the SAME event.
+
+    Skipping is justified by "the target already has this record". A damaged,
+    hand-edited or concatenated export can carry one id on two different
+    envelopes, and then the skip discards a real event together with its typed
+    replay while reporting it as already delivered — silent loss, in the one tool
+    whose job is not to lose anything. Everything else here refuses malformed
+    input loudly; a receipt collision is refused the same way.
+
+    The row is fetched by its unique index, one lookup per skipped record, rather
+    than holding the target's payloads in memory beside the export's.
+    """
+    row = conn.execute(
+        "SELECT timestamp, type, payload_version, payload_json FROM events "
+        "WHERE uuid = ?",
+        (record.uuid,),
+    ).fetchone()
+    if row is None:  # unreachable: `seen` is read from this same connection
+        return
+    try:
+        stored_payload = json.loads(row["payload_json"])
+    except (TypeError, ValueError):
+        stored_payload = None
+    # Payloads compare as parsed objects: key order is not part of the event.
+    if (
+        row["timestamp"] == record.timestamp
+        and row["type"] == record.type
+        and row["payload_version"] == record.payload_version
+        and stored_payload == record.payload
+    ):
         return
     raise RestoreError(
-        "target already holds a database, but it shares no event id with this "
-        "export, so it is not an earlier delivery of this stream. Restoring here "
-        "would duplicate the whole history and could overwrite unrelated calendar "
-        "series. Use a fresh target. (A target built from a pre-#17 export cannot "
-        "be redelivered into: its rows were given new local ids at restore time.)"
+        f"line {record.line}: id {record.uuid} is already present in the target "
+        f"with a different envelope (stored {row['type']} at {row['timestamp']}, "
+        f"incoming {record.type} at {record.timestamp}). Two different events "
+        "cannot share one receipt; skipping this line would discard it silently."
     )
 
 
@@ -451,6 +511,8 @@ def _apply_records(
                 # Already delivered. Its replay ran when it was applied, so
                 # skipping the insert must skip the replay with it — that is
                 # what makes redelivery a no-op rather than a double-apply.
+                # But only an identical envelope is the same event: see below.
+                _require_same_envelope(conn, record)
                 skipped += 1
                 continue
             conn.execute(
@@ -483,6 +545,9 @@ def _apply_records(
     fk_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
     if fk_errors:
         raise RestoreError(f"restored database failed foreign_key_check: {len(fk_errors)} row(s)")
+    # The deliberately-unrestored tables are counted too, not assumed empty: in
+    # redelivery mode the target may already hold real rows, and a recovery tool
+    # that prints "0 rows" over live data is worse than one that prints nothing.
     row_counts = {
         table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
         for table in (
@@ -491,6 +556,9 @@ def _apply_records(
             "checkins",
             "daily_notes",
             "calendar_events",
+            *PARTIAL_TABLE_EVENTS,
+            "tags",
+            "task_tags",
         )
     }
 
@@ -543,6 +611,11 @@ def _bump_id_sequences(conn: sqlite3.Connection, records: list[Record]) -> dict[
     return maxima
 
 
+def _untouched(count: int) -> str:
+    """How a not-restored table reads: empty, or pre-existing and left alone."""
+    return "0 rows" if count == 0 else f"{count} pre-existing rows (untouched)"
+
+
 def print_summary(target: Path, result: dict[str, Any]) -> None:
     rows = result["rows"]
     types: Counter[str] = result["types"]
@@ -580,9 +653,10 @@ def print_summary(target: Path, result: dict[str, Any]) -> None:
             "focus_sessions": "note and authoritative row dates/timestamps are absent",
             "lessons": "open state is unjournaled; bundle files are outside JSONL",
         }[table]
-        print(f"  {table}: 0 rows ({retained} audit events retained; {detail})")
-    print("  tags: 0 rows (not journaled)")
-    print("  task_tags: 0 rows (not journaled)")
+        print(f"  {table}: {_untouched(rows[table])} "
+              f"({retained} audit events retained; {detail})")
+    print(f"  tags: {_untouched(rows['tags'])} (not journaled)")
+    print(f"  task_tags: {_untouched(rows['task_tags'])} (not journaled)")
     print("  data/lessons: not restored (filesystem content is not exported)")
 
     dropped = result["unresolved_calendar_list_links"]
@@ -616,7 +690,13 @@ def print_summary(target: Path, result: dict[str, Any]) -> None:
         print("IDEMPOTENT REDELIVERY: NO")
         print("  This export predates event ids in the envelope, so restored rows take")
         print("  fresh local uuids and it can only be restored into a fresh target.")
-    if rows["routine_items"] == 0:
+    # Startup seeds per table via seed_if_empty, so a table that already holds
+    # rows is left alone. Only promise the seeding that will actually happen.
+    seeding = [name for name in ("routine_items", "lists", "tasks") if rows[name] == 0]
+    if not seeding:
+        print("FIRST APP START: no demo seeding is expected; routine_items, lists and")
+        print("  tasks all hold rows already, and startup seeds only empty tables.")
+    elif "routine_items" in seeding:
         print("FIRST APP START: demo habits will seed into the empty routine_items table")
         print("  (this export retained no live habits), and demo lists/tasks will seed")
         print("  and append new task events; inspect this partial DB before launching the app.")

@@ -220,10 +220,12 @@ def test_calendar_snapshots_carry_no_id(client, exports_dir):
     upserts them rather than deduplicating on an envelope receipt."""
     response = client.post(
         "/calendar/events",
-        data={"title": "Invented Export Series", "start_date": "2031-06-07"},
+        data={"title": "Invented Export Series", "start_date": "2031-06-07",
+              "all_day": "1"},
         follow_redirects=False,
     )
     assert response.status_code == 303
+    assert "flash=" not in (response.headers.get("location") or "")
     conn = _conn()
     try:
         path, _count = export.export_events(conn)
@@ -494,6 +496,98 @@ def test_an_unrelated_target_is_refused_before_any_snapshot_lands(tmp_path):
         == [(0,)]
     assert _query(target / "activity.sqlite",
                   "SELECT text FROM daily_notes") == [("A different history",)]
+
+
+def test_an_older_export_cannot_revert_a_target_that_is_ahead(tmp_path):
+    """Snapshots are absolute state, not a diff: they upsert whatever the file
+    says even when every audit line is skipped. Delivering an older export into a
+    newer target would report "0 applied" — reading as "nothing changed" — while
+    quietly reverting calendar titles, recurrence and archive state."""
+    columns_probe = tmp_path / "probe"
+    assert _restore(_write_stream(tmp_path / "s.jsonl", _STREAM), columns_probe).returncode == 0
+    columns = [row[1] for row in _query(
+        columns_probe / "activity.sqlite", "PRAGMA table_info(calendar_events)")]
+
+    def series(title):
+        row = dict.fromkeys(columns)
+        row.update({"id": 7001, "title": title, "all_day": 0, "freq": "once",
+                    "interval_n": 1, "start_date": "2031-05-06",
+                    "created_at": "2031-05-06T07:00:00+03:00"})
+        return {"timestamp": "2031-05-06T08:00:00+03:00",
+                "type": "calendar_event_series", "payload_version": 1, "payload": row}
+
+    older = _write_stream(tmp_path / "older.jsonl", [*_STREAM, series("Original Title")])
+    newer = _write_stream(tmp_path / "newer.jsonl", [*_STREAM, {
+        "id": "55555555-5555-4555-8555-555555555555",
+        "timestamp": "2031-05-08T07:08:09+03:00",
+        "type": "daily_note_updated",
+        "payload_version": 1,
+        "payload": {"date": "2031-05-08", "text": "Invented later note"},
+    }, series("Renamed Later")])
+
+    target = tmp_path / "restored-ahead"
+    assert _restore(newer, target).returncode == 0
+    assert _query(target / "activity.sqlite",
+                  "SELECT title FROM calendar_events") == [("Renamed Later",)]
+
+    run = _restore(older, target)
+    assert run.returncode != 0
+    assert "ahead of this file or has diverged" in run.stderr
+    assert _query(target / "activity.sqlite",
+                  "SELECT title FROM calendar_events") == [("Renamed Later",)], \
+        "the older snapshot must not have reverted the series"
+
+
+def test_a_receipt_on_two_different_events_is_refused(tmp_path):
+    """A damaged or concatenated export can put one id on two envelopes. Skipping
+    the second as 'already delivered' would discard a real event and its replay."""
+    collided = _write_stream(tmp_path / "collided.jsonl", [
+        _STREAM[0],
+        {**_STREAM[2], "id": _STREAM[0]["id"]},
+    ])
+    run = _restore(collided, tmp_path / "restored-collision")
+    assert run.returncode != 0
+    assert "is already present in the target with a different envelope" in run.stderr
+
+
+def test_an_identical_duplicate_line_is_still_idempotent(tmp_path):
+    """The collision check compares the envelope, so a genuinely repeated line —
+    the concatenation of a file with itself — is still just a skip."""
+    doubled = _write_stream(tmp_path / "doubled.jsonl", [*_STREAM, *_STREAM])
+    target = tmp_path / "restored-doubled"
+    run = _restore(doubled, target)
+    assert run.returncode == 0, run.stderr
+    assert "events: 3 applied / 3 skipped" in run.stdout
+    assert _counts(target / "activity.sqlite")["events"] == 3
+
+
+def test_the_summary_never_claims_zero_over_pre_existing_rows(tmp_path):
+    """`lists`/`tasks`/`tags` are deliberately not restored. In redelivery mode
+    the target may already hold real rows, and reporting them as 0 makes a
+    recovery report materially false."""
+    source = _write_stream(tmp_path / "stream.jsonl", _STREAM)
+    target = tmp_path / "restored-with-rows"
+    first = _restore(source, target)
+    assert first.returncode == 0
+    assert "  lists: 0 rows" in first.stdout
+
+    import sqlite3
+
+    conn = sqlite3.connect(target / "activity.sqlite")
+    try:
+        conn.execute(
+            "INSERT INTO lists (id, name, kind, sort_order, created_at) "
+            "VALUES (91, 'Invented', 'list', 10, '2031-05-06T07:00:00+03:00')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    second = _restore(source, target)
+    assert second.returncode == 0, second.stderr
+    assert "  lists: 1 pre-existing rows (untouched)" in second.stdout
+    assert "  lists: 0 rows" not in second.stdout
+    assert _query(target / "activity.sqlite", "SELECT name FROM lists") == [("Invented",)]
 
 
 def test_a_corrupt_id_is_refused_rather_than_ignored(tmp_path):
