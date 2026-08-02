@@ -172,6 +172,27 @@ def boot_app_and_reexport(target: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+# The reconstructible-state proofs all read the database. This one asks the
+# question an operator asks: does the app RENDER on a restored ledger.
+_SERVE = """
+from fastapi.testclient import TestClient
+from app.main import app
+with TestClient(app) as client:
+    for path in ('/', '/next7', '/today'):
+        print(path, client.get(path).status_code)
+"""
+
+
+def serve_restored(target: Path) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["ACTIVITY_DATA_DIR"] = str(target)
+    env.pop("ACTIVITY_DB", None)
+    env.pop("EPHEMERIS_ENABLE_TERMINAL", None)  # terminal is opt-in; stay at the default (off)
+    return subprocess.run(
+        [sys.executable, "-c", _SERVE], cwd=ROOT, env=env, text=True, capture_output=True,
+    )
+
+
 with TestClient(app) as client:
     # All fixtures are invented demo data and all writes go through real routes.
     response = client.post(
@@ -511,11 +532,14 @@ no_habits_export.write_text(
     }) + "\n",
     encoding="utf-8",
 )
-no_habits_run = run_restore(no_habits_export, WORK_DIR / "restored-no-habits")
+no_habits_target = WORK_DIR / "restored-no-habits"
+no_habits_run = run_restore(no_habits_export, no_habits_target)
 check(
-    "summary warns about habit seeding when no live habits were restored",
+    "an export retaining no habits still leaves an initialized, unseeded target",
     no_habits_run.returncode == 0
-    and "demo habits will seed" in no_habits_run.stdout,
+    and "FIRST APP START: no demo seeding" in no_habits_run.stdout
+    and rows(no_habits_target / "activity.sqlite",
+             "SELECT value FROM app_meta WHERE key = 'seeded_at'"),
     no_habits_run.stderr or no_habits_run.stdout,
 )
 
@@ -600,13 +624,17 @@ check(
     and restored_projections[0] == restored_projections[1],
 )
 
-# Prove the operational limit too: a normal first app boot seeds the deliberately
-# empty list/task tables and appends new task events. This is warned by restore.
+# Prove the operational property the initialization marker buys (issue #17):
+# a normal first app boot on a restored database adds NOTHING. The tables this
+# command deliberately leaves empty used to invite the demo seeders, which mixed
+# invented lists and tasks into restored history and appended their events to
+# the stream. Startup now asks app_meta.seeded_at, which the restore wrote.
 boot_target = WORK_DIR / "restored-then-booted"
 boot_restore = run_restore(export_path, boot_target)
 check(
-    "restore warns that first app boot mutates the partial DB",
-    boot_restore.returncode == 0 and "FIRST APP START" in boot_restore.stdout,
+    "restore marks the target initialized and promises no first-boot seeding",
+    boot_restore.returncode == 0
+    and "FIRST APP START: no demo seeding" in boot_restore.stdout,
     boot_restore.stderr or boot_restore.stdout,
 )
 booted = boot_app_and_reexport(boot_target)
@@ -617,13 +645,26 @@ booted_records = (
 )
 source_audit = audit_records(source_records)
 booted_audit = audit_records(booted_records)
-added_after_boot = booted_audit[len(source_audit):]
 check(
-    "first app boot preserves the stream prefix and adds only documented seed events",
-    booted_audit[:len(source_audit)] == source_audit
-    and len(added_after_boot) == 5
-    and {record["type"] for record in added_after_boot} <= {"task_created", "task_completed"},
-    str([record.get("type") for record in added_after_boot]),
+    "first app boot leaves the restored stream byte-identical, seeding nothing",
+    booted_audit == source_audit,
+    str([record.get("type") for record in booted_audit[len(source_audit):]]),
+)
+check(
+    "the boot rebuilds the structural Inbox and nothing else",
+    rows(boot_target / "activity.sqlite", "SELECT name, kind FROM lists")
+    == [("Inbox", "inbox")]
+    and rows(boot_target / "activity.sqlite", "SELECT COUNT(*) FROM tasks")[0][0] == 0,
+)
+# The Inbox is not decoration: two read routes call lists.inbox_id()
+# unconditionally, so a restored database without one opens and then raises on
+# its own home page. Prove the restored instance is actually usable, which is
+# what "launch it directly" in docs/restore-from-export.md promises.
+serving = serve_restored(boot_target)
+check(
+    "the restored instance serves its home page",
+    serving.returncode == 0 and "/ 200" in serving.stdout,
+    serving.stderr or serving.stdout,
 )
 
 print(f"\n{PASS} passed, {FAIL} failed")

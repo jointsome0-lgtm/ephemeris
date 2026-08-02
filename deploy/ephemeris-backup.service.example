@@ -1,0 +1,46 @@
+# Ephemeris — one full backup run (database + lesson bundles + manifest).
+#
+# A committed, portable template, like ephemeris.service.example. Nothing here
+# is installed by the repository; copy it and its timer to your user unit
+# directory and adjust the paths before enabling:
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/ephemeris-backup.service.example ~/.config/systemd/user/ephemeris-backup.service
+#   cp deploy/ephemeris-backup.timer.example   ~/.config/systemd/user/ephemeris-backup.timer
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now ephemeris-backup.timer
+#
+# Run one on demand at any time: systemctl --user start ephemeris-backup
+# See what a run did: journalctl --user -u ephemeris-backup -n 30
+#
+# This is Type=oneshot and takes no lock against the app: the snapshot goes
+# through SQLite's Online Backup API, which is consistent while the service
+# writes. RESTORING is the operation that needs the service stopped, and it is
+# never automated — see docs/backup-restore.md.
+
+[Unit]
+Description=Ephemeris — full backup (ledger + lessons + manifest)
+# Not Requires=: a backup of a stopped instance is a perfectly good backup.
+After=ephemeris.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/ephemeris
+# Must match the ACTIVITY_DATA_DIR of the instance being backed up; backups
+# land in $ACTIVITY_DATA_DIR/backups/.
+Environment=ACTIVITY_DATA_DIR=%h/.local/share/ephemeris
+# ONLY if your ephemeris.service copy sets ACTIVITY_DB: copy that line here too,
+# verbatim. This unit is a separate process and resolves the database path
+# itself, so an unmirrored override sends it to <data>/activity.sqlite — which
+# either does not exist (the run fails) or is some older file, and then the
+# timer cheerfully backs up the wrong ledger every night. Each run prints the
+# path it read, so `journalctl --user -u ephemeris-backup` settles it.
+#Environment=ACTIVITY_DB=%h/.local/share/ephemeris/activity.sqlite
+# Concrete venv interpreter built by `uv sync` — no PATH/shim dependency.
+# --keep 20 is roughly three weeks of daily sets; raise it if disk allows.
+ExecStart=%h/projects/ephemeris/.venv/bin/python -m scripts.backup_db --keep 20
+# The backup files are written 0600 by the script itself; this covers the
+# backups/ directory on the very first run.
+UMask=0077
+Nice=10
+IOSchedulingClass=idle

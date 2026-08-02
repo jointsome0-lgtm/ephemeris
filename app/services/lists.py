@@ -27,18 +27,41 @@ class ListError(ValueError):
     """A list write was rejected (empty name, unknown id, deleting Inbox, …)."""
 
 
+def ensure_inbox(conn: sqlite3.Connection) -> int:
+    """The built-in Inbox, created if this database has none. Returns its id.
+
+    Structure, not demo data, which is why startup calls this on EVERY boot
+    while `seed_if_empty` runs once per installation (the `app_meta.seeded_at`
+    marker, schema v16). `inbox_id()` is the default home for a task filed
+    without a list and two read routes call it unconditionally, so a database
+    without an Inbox does not render — it raises. A restore can legitimately
+    produce exactly that: the JSONL stream does not journal list rows, so its
+    target holds real history and no lists at all. Such a ledger is not a fresh
+    installation wanting demo data; it is an initialized one missing an
+    invariant, and only the invariant is restored here.
+    """
+    row = conn.execute(
+        "SELECT id FROM lists WHERE kind = 'inbox' ORDER BY id LIMIT 1"
+    ).fetchone()
+    if row is not None:
+        return row["id"]
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO lists (name, emoji, kind, sort_order, created_at) "
+            "VALUES (?, ?, 'inbox', 0, ?)",
+            (INBOX_NAME, "📥", now_iso()),
+        )
+    return cur.lastrowid
+
+
 def seed_if_empty(conn: sqlite3.Connection) -> int:
     """Create the Inbox + sample lists if there are no lists yet."""
     n = conn.execute("SELECT COUNT(*) FROM lists").fetchone()[0]
     if n:
         return 0
+    ensure_inbox(conn)
     ts = now_iso()
     with conn:
-        conn.execute(
-            "INSERT INTO lists (name, emoji, kind, sort_order, created_at) "
-            "VALUES (?, ?, 'inbox', 0, ?)",
-            (INBOX_NAME, "📥", ts),
-        )
         for i, (name, emoji) in enumerate(SEED_LISTS, start=1):
             conn.execute(
                 "INSERT INTO lists (name, emoji, kind, sort_order, created_at) "

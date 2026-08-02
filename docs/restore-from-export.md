@@ -1,8 +1,11 @@
 # JSONL restore contract
 
 The JSONL file is a restorable audit stream with calendar-series snapshots, not
-a full database backup. For full-fidelity recovery, use a consistent SQLite
-backup. The restore command always reports a partial result:
+a full database backup. For full-fidelity recovery use a full backup —
+`python -m scripts.backup_db`, documented in
+[backup and restore](backup-restore.md), which copies the whole database and the
+lesson bundles beside it. The restore command below always reports a partial
+result:
 
 ```bash
 python scripts/restore_from_export.py EXPORT.jsonl TARGET_ACTIVITY_DATA_DIR
@@ -60,12 +63,22 @@ Identity is settled; these gaps are not, and no restore reproduces them:
 - Bootstrap `lists`/`tasks` rows, task note/order fields, focus session
   notes/dates — see the matrix below.
 
-The command deliberately leaves insufficiently journaled typed tables empty.
-On the first normal app start, the current startup code will seed demo lists and
-tasks into those empty tables and append new task events. Inspect or copy the
-partial restored database before launching the app if stream equality matters.
+The command deliberately leaves insufficiently journaled typed tables empty, and
+they stay empty. Startup used to decide seeding per table by row count, so the
+first app start on a restored database poured demo lists and tasks into those
+gaps and appended their events to the very stream this file preserves. The
+restore now marks the target initialized — `app_meta.seeded_at`, schema v16 —
+and startup reads that marker instead of counting rows, so a restored database
+can be launched directly and re-exported byte-identically.
 
-To keep those new writes unambiguous, the restore advances `sqlite_sequence`
+The one row the first start does create is the built-in **Inbox**, which is
+structure rather than demo data: it is the default home for a task filed without
+a list, and the Today and Next-7 views call `lists.inbox_id()` unconditionally,
+so a database without one opens and then raises on its own home page. No sample
+list, task or habit comes with it, and creating the Inbox appends no event, so
+the restored stream is unchanged.
+
+To keep later writes unambiguous, the restore advances `sqlite_sequence`
 for the skipped tables (`tasks`, `lists`, `focus_sessions`, `lessons`) past the
 highest ids observed in the retained audit payloads, so post-restore rows and
 events never reuse an id that already appears in the historical stream.

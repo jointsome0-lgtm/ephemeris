@@ -3201,3 +3201,126 @@ def test_assessment_artifact_migration(client, suite_state):
         name: value for name, value in locals().items()
         if name not in {"client", "suite_state"}
     })
+
+
+# --- schema v16: the initialization marker (issue #17) ---------------------
+# A migration is the one piece of code that runs against databases this test
+# suite never created, so it is exercised against a real v15 database built by
+# the real migration runner, not against a hand-written table.
+
+
+def _init_db_at(monkeypatch, data_dir: Path, *, through: int | None = None) -> None:
+    """Run init_db() against `data_dir`, optionally stopping after version N.
+
+    app/db.py resolves its paths once at import; the module attributes are what
+    get_conn() reads on every call, so rebinding them here points the real
+    migration runner at a throwaway directory. `through` truncates the ordered
+    migration list, which is how a genuine v15 database — one that has never
+    seen v16 — comes into existence.
+    """
+    from app import db as db_module
+
+    monkeypatch.setattr(db_module, "DATA_DIR", data_dir)
+    monkeypatch.setattr(db_module, "DB_PATH", data_dir / "activity.sqlite")
+    monkeypatch.setattr(db_module, "EXPORTS_DIR", data_dir / "exports")
+    if through is not None:
+        monkeypatch.setattr(
+            db_module, "_MIGRATIONS",
+            [step for step in db_module._MIGRATIONS if step[0] <= through],
+        )
+    db_module.init_db()
+
+
+def _query(path: Path, sql: str):
+    conn = sqlite3.connect(path)
+    try:
+        return conn.execute(sql).fetchall()
+    finally:
+        conn.close()
+
+
+def test_v16_leaves_a_fresh_database_unmarked(monkeypatch, tmp_path):
+    """The one database that still needs the seeders is the empty one."""
+    from app.db import SCHEMA_VERSION
+
+    _init_db_at(monkeypatch, tmp_path)
+    db_path = tmp_path / "activity.sqlite"
+
+    assert _query(db_path, "PRAGMA user_version")[0][0] == SCHEMA_VERSION >= 16
+    assert _query(db_path, "SELECT COUNT(*) FROM app_meta")[0][0] == 0, (
+        "a fresh database carries no seeded_at, so startup still seeds it once"
+    )
+
+
+def test_v16_marks_an_existing_installation_seeded_on_upgrade(monkeypatch, tmp_path):
+    """An installation that already holds rows was initialized long before this
+    marker existed. The upgrade records that, rather than leaving the next boot
+    to re-decide it from row counts that no longer mean what they used to."""
+    _init_db_at(monkeypatch, tmp_path, through=15)
+    db_path = tmp_path / "activity.sqlite"
+    assert _query(db_path, "PRAGMA user_version")[0][0] == 15
+    assert not _query(
+        db_path, "SELECT name FROM sqlite_master WHERE name = 'app_meta'"
+    ), "app_meta arrives with v16, not before"
+
+    live = sqlite3.connect(db_path)
+    try:
+        live.execute(
+            "INSERT INTO lists (name, emoji, kind, sort_order, created_at) "
+            "VALUES ('Inbox', '📥', 'inbox', 0, '2026-01-01T00:00:00+03:00')"
+        )
+        live.commit()
+    finally:
+        live.close()
+
+    monkeypatch.undo()
+    _init_db_at(monkeypatch, tmp_path)
+    marked = _query(db_path, "SELECT value FROM app_meta WHERE key = 'seeded_at'")
+    assert marked and marked[0][0], "upgrading a populated database marks it seeded"
+
+
+def test_v16_marks_a_database_holding_only_history(monkeypatch, tmp_path):
+    """Evidence of initialization is not limited to the seeded tables: a ledger
+    whose owner deleted every habit, list and task still has an audit stream,
+    and that stream is exactly the history demo rows must not be mixed into."""
+    _init_db_at(monkeypatch, tmp_path, through=15)
+    db_path = tmp_path / "activity.sqlite"
+    live = sqlite3.connect(db_path)
+    try:
+        live.execute(
+            "INSERT INTO events (uuid, timestamp, type, payload_version, payload_json) "
+            "VALUES ('e1', '2026-01-01T00:00:00+03:00', 'daily_note_updated', 1, '{}')"
+        )
+        live.commit()
+    finally:
+        live.close()
+
+    monkeypatch.undo()
+    _init_db_at(monkeypatch, tmp_path)
+    assert _query(db_path, "SELECT COUNT(*) FROM lists")[0][0] == 0
+    marked = _query(db_path, "SELECT value FROM app_meta WHERE key = 'seeded_at'")
+    assert marked, "an emptied but real ledger is an initialized installation"
+
+
+def test_v16_migration_is_idempotent(monkeypatch, tmp_path):
+    """Re-running init_db() must not restamp an installation's initialization
+    time, or every restart would rewrite the one fact the row cannot re-derive."""
+    _init_db_at(monkeypatch, tmp_path, through=15)
+    db_path = tmp_path / "activity.sqlite"
+    live = sqlite3.connect(db_path)
+    try:
+        live.execute(
+            "INSERT INTO lists (name, emoji, kind, sort_order, created_at) "
+            "VALUES ('Inbox', '📥', 'inbox', 0, '2026-01-01T00:00:00+03:00')"
+        )
+        live.commit()
+    finally:
+        live.close()
+
+    monkeypatch.undo()
+    _init_db_at(monkeypatch, tmp_path)
+    first = _query(db_path, "SELECT value FROM app_meta WHERE key = 'seeded_at'")[0][0]
+    monkeypatch.undo()
+    _init_db_at(monkeypatch, tmp_path)
+    again = _query(db_path, "SELECT value FROM app_meta WHERE key = 'seeded_at'")
+    assert [row[0] for row in again] == [first], "seeded_at is written once, ever"
