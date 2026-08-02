@@ -600,22 +600,26 @@ def test_a_bad_ceiling_setting_falls_back_to_the_constant(monkeypatch):
     assert security._body_ceiling() == 8 * 1024 * 1024
 
 
-def test_the_ceiling_cannot_be_set_down_to_the_largest_route_cap(monkeypatch):
+def test_the_ceiling_cannot_be_set_down_near_the_largest_route_cap(monkeypatch):
     """An override may raise the perimeter, never lower it onto the route caps.
 
     A ceiling under a Learn endpoint's own cap tightens nothing — that route
     already bounds itself — but it does start answering oversized saves with
     this middleware's plain-text 413 instead of the typed JSON the lesson agent
-    parses. Equality is refused for the same reason and not out of caution: at
-    the same number the perimeter withholds the very chunk that would have
-    crossed the route's counter, so the inner limit never gets to answer. The
-    setting is declined and the default stands.
+    parses. Equality is refused for the same reason, and so is anything within
+    a chunk of it: this counter withholds the whole delivery that crosses it,
+    so two limits closer together than one chunk are crossed together and only
+    the outer one answers. The setting is declined and the default stands.
     """
-    for too_small in (1024, limits.LARGEST_ROUTE_CAP - 1, limits.LARGEST_ROUTE_CAP):
+    floor = limits.LARGEST_ROUTE_CAP + limits.BODY_CEILING_HEADROOM
+    for too_small in (1024, limits.LARGEST_ROUTE_CAP, limits.LARGEST_ROUTE_CAP + 1,
+                      floor - 1):
         monkeypatch.setenv("EPHEMERIS_MAX_BODY_BYTES", str(too_small))
         assert security._body_ceiling() == limits.MAX_BODY_BYTES, too_small
-    monkeypatch.setenv("EPHEMERIS_MAX_BODY_BYTES", str(limits.LARGEST_ROUTE_CAP + 1))
-    assert security._body_ceiling() == limits.LARGEST_ROUTE_CAP + 1
+    monkeypatch.setenv("EPHEMERIS_MAX_BODY_BYTES", str(floor))
+    assert security._body_ceiling() == floor
+    # The shipped default has to satisfy its own rule.
+    assert limits.MAX_BODY_BYTES >= floor
 
 
 # --- 3. export retention ---------------------------------------------------
@@ -921,6 +925,36 @@ def test_the_newest_backup_is_the_one_that_says_it_is_newest(client, backups_dir
         assert storage.status(conn)["backup_age_days"] == 0
     finally:
         conn.close()
+
+
+def test_a_backup_is_dated_in_the_ledgers_zone_not_the_hosts(client, backups_dir,
+                                                             monkeypatch):
+    """The panel subtracts the backup's date from `today_str()`, and those two
+    must be dates in the same calendar.
+
+    `today_str()` answers in APP_TIMEZONE when it is set. Reading the manifest
+    in the host's zone instead would put the two on different days around
+    midnight whenever the app is configured for a zone the machine is not in —
+    the stale warning arriving a day early, or a day late.
+    """
+    from zoneinfo import ZoneInfo
+
+    # A moment that is one calendar day earlier in Tokyo than in New York.
+    (backups_dir / "activity-2042-03-03-000000.manifest.json").write_text(
+        json.dumps({"manifest_version": storage.MANIFEST_VERSION,
+                    "created_at": "2042-03-03T14:00:00+00:00",
+                    "files": {"database": {"name": "a.sqlite", "bytes": 1},
+                              "instance": {"name": "b.tar.gz", "bytes": 1}}}),
+        encoding="utf-8")
+
+    monkeypatch.setattr(storage, "app_tz", lambda: ZoneInfo("Asia/Tokyo"))
+    assert storage.newest_backup()["created"].date() == date(2042, 3, 3)
+
+    monkeypatch.setattr(storage, "app_tz", lambda: ZoneInfo("America/New_York"))
+    assert storage.newest_backup()["created"].date() == date(2042, 3, 3)
+
+    monkeypatch.setattr(storage, "app_tz", lambda: ZoneInfo("Pacific/Kiritimati"))
+    assert storage.newest_backup()["created"].date() == date(2042, 3, 4)
 
 
 def test_a_naive_timestamp_does_not_break_the_comparison(client, backups_dir):

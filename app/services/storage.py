@@ -28,7 +28,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from .. import limits
-from ..db import BACKUPS_DIR, DATA_DIR, DB_PATH, pretty_date, today_str
+from ..db import BACKUPS_DIR, DATA_DIR, DB_PATH, app_tz, pretty_date, today_str
 from . import export
 
 # SQLite in WAL mode is three files, and the -wal one is not a rounding error:
@@ -80,9 +80,14 @@ def _parse_moment(value: object) -> datetime | None:
     data from outside this module; it answers None rather than raising, and the
     caller moves on to the next-newest set.
 
-    The result is always aware and always in local time — the zone the panel
-    reads dates in, and the only way candidates from different writers can be
-    compared at all. Normalizing here rather than at the comparison is what
+    The result is always aware and always in the LEDGER's zone — `APP_TIMEZONE`
+    when set, the host's otherwise, exactly what `db._now` uses. That is the
+    zone `today_str()` answers in, and the panel subtracts one from the other
+    to age a backup: normalizing to the host zone instead would put the two
+    dates in different calendars whenever the app is configured for a zone the
+    machine is not in, and the stale warning would arrive a day early or late
+    around midnight. It is also the only way candidates from different writers
+    can be compared at all. Normalizing here rather than at the comparison is what
     makes "unusable timestamp" one answer instead of two: a value near the
     datetime boundary parses cleanly and then raises on conversion, and that
     must be a skipped manifest, not a 500 on a page whose whole promise is to
@@ -91,7 +96,9 @@ def _parse_moment(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
-        return datetime.fromisoformat(value).astimezone()
+        # astimezone(None) is the host zone, which is what app_tz() means by
+        # "unset" — so this is one expression for both configurations.
+        return datetime.fromisoformat(value).astimezone(app_tz())
     except (ValueError, OverflowError, OSError):
         return None
 

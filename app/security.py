@@ -40,9 +40,10 @@ per-route (or absent):
    applied here, ABOVE the per-route caps and never instead of them: a Learn
    endpoint whose own cap is 512 KiB still answers with its own 413 and its own
    message, because the route's smaller counter trips first. The override obeys
-   that ordering as well — a value under the largest route cap is refused and
-   the default stands, so the perimeter can be raised but never lowered past
-   the limits it exists to sit above.
+   that ordering as well — a value that does not clear the largest route cap by
+   a whole megabyte is refused and the default stands, so the perimeter can be
+   raised but never lowered onto the limits it exists to sit above, nor close
+   enough that one chunk crosses both.
 
    Same two-part shape as read_capped: Content-Length is an early refusal, the
    streaming count is the authority, so a chunked or dishonest request cannot
@@ -112,16 +113,17 @@ def _body_ceiling() -> int:
     the constant rather than disabling the ceiling — a typo in a unit file must
     not be the way this protection turns itself off.
 
-    A value at or below limits.LARGEST_ROUTE_CAP falls back too, for the
-    opposite reason: it would not tighten anything the route caps do not
-    already bound, it would only start answering oversized Learn requests with
-    this middleware's plain-text 413 instead of the route's typed JSON — the
-    perimeter overruling a limit it was built to sit above. Equality is not
-    good enough, because equal counters do not make the inner one trip first:
-    at the same number this middleware withholds the chunk that would have
-    crossed the route's own limit, so the route never gets to answer. Both
-    fallbacks are silent because there is no honest failure mode here to report
-    to: refusing to start would take the app down over a body-size typo.
+    A value that does not clear limits.LARGEST_ROUTE_CAP by
+    limits.BODY_CEILING_HEADROOM falls back too, for the opposite reason: it
+    would not tighten anything the route caps do not already bound, it would
+    only start answering oversized Learn requests with this middleware's
+    plain-text 413 instead of the route's typed JSON — the perimeter overruling
+    a limit it was built to sit above. Merely being above is not enough,
+    because this counter works in whole chunks: it withholds the delivery that
+    crosses it, so two limits closer together than one chunk can both be
+    crossed at once and only the outer one answers. Both fallbacks are silent
+    because there is no honest failure mode here to report to: refusing to
+    start would take the app down over a body-size typo.
     """
     raw = os.environ.get("EPHEMERIS_MAX_BODY_BYTES")
     if raw is None:
@@ -130,7 +132,7 @@ def _body_ceiling() -> int:
         value = int(raw)
     except ValueError:
         return limits.MAX_BODY_BYTES
-    if value <= limits.LARGEST_ROUTE_CAP:
+    if value < limits.LARGEST_ROUTE_CAP + limits.BODY_CEILING_HEADROOM:
         return limits.MAX_BODY_BYTES
     return value
 

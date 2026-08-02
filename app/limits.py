@@ -94,9 +94,19 @@ fails if that stops being true. Spelled here rather than imported from
 It exists so the *override* obeys the same invariant the default does. A
 ceiling at or below this would not tighten anything — the route caps already
 bind — it would only convert a Learn endpoint's typed JSON refusal, which the
-lesson agent parses, into the perimeter's blunt plain-text 413. At the *same*
-number the perimeter still wins, because it withholds the chunk that would
-have crossed the route's counter, so "above" means strictly above.
+lesson agent parses, into the perimeter's blunt plain-text 413.
+"""
+
+BODY_CEILING_HEADROOM = 1024 * 1024
+"""How far a ceiling must clear `LARGEST_ROUTE_CAP` before it is safe.
+
+Not decoration on "strictly above". The perimeter counts whole ASGI chunks and
+withholds the one that crosses it, so if the two limits are less than a chunk
+apart, a single delivery can cross both and the route never sees the bytes that
+would have tripped its own counter — the blunt 413 again, just harder to
+notice. Clearing the largest cap by a megabyte puts them further apart than any
+chunk this stack produces: Uvicorn reads in tens of kilobytes, and Starlette's
+form parser refuses a single field over 1 MB.
 """
 
 # --- retention -------------------------------------------------------------
