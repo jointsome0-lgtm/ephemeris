@@ -244,6 +244,17 @@ def prune_exports(keep: Path | None = None) -> list[Path]:
     Only that window is affected: retention resumes as soon as it closes, and
     it deletes then what it declined to delete now.
 
+    Where this deliberately stops: once the grace has passed, eviction order is
+    the filename again, so exports written during a rolled-back hour are
+    evicted before slightly older ones. Nothing is lost by that — each of the
+    thirty is a full serialization of the same stream, the live database still
+    holds every event, and the next press writes a current one. Fixing the
+    order would mean persisting a sequence outside the filenames, which is a
+    second source of truth about the directory to keep correct forever, for a
+    once-a-year hour in which the answer is only unaesthetic. Deliberate skip
+    (#125 review round 6); reopen it as its own change if the ordering ever
+    matters to something.
+
     Best-effort by construction: a file that cannot be unlinked is left where
     it is rather than sinking an export that already succeeded. The next run
     tries again.

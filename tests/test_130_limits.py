@@ -974,6 +974,37 @@ def test_retention_spares_an_export_another_request_is_still_streaming(
     assert second.exists()
 
 
+@pytest.mark.parametrize("moment", [
+    "0001-01-01T00:00:00",          # naive, at the datetime floor
+    "0001-01-01T00:00:00+03:00",    # aware, converting off the end of the range
+    "9999-12-31T23:59:59.999999",
+    "9999-12-31T23:59:59-11:00",
+])
+def test_a_timestamp_that_cannot_be_normalized_skips_its_manifest(
+        client, backups_dir, moment):
+    """Parsing and comparing are two chances to fail, and the second one is the
+    dangerous one.
+
+    A boundary timestamp parses cleanly and then raises when it is moved into
+    local time — and because every candidate is compared, one such file would
+    500 every GET /export while a perfectly good older set sat behind it. So
+    "cannot be normalized" is decided once, where "cannot be parsed" is.
+    """
+    good = date.fromisoformat(today_str()) - timedelta(days=1)
+    _write_manifest(backups_dir, good, stamp="2000-01-01-000001")
+    (backups_dir / "activity-2999-01-01-000005.manifest.json").write_text(
+        json.dumps({"manifest_version": storage.MANIFEST_VERSION,
+                    "created_at": moment,
+                    "files": {"database": {"name": "a.sqlite", "bytes": 1},
+                              "instance": {"name": "b.tar.gz", "bytes": 1}}}),
+        encoding="utf-8")
+
+    found = storage.newest_backup()
+    assert found is not None
+    assert found["name"] == "activity-2000-01-01-000001.manifest.json"
+    assert client.get("/export").status_code == 200
+
+
 def test_an_export_pruned_mid_render_does_not_sink_the_page(client, exports_dir,
                                                             monkeypatch):
     """Retention deletes now, so a GET listing the directory can race a POST
@@ -1086,15 +1117,25 @@ def test_the_space_a_backup_needs_grows_with_the_database(client, backups_dir,
     assert storage._space_a_backup_needs(three_gb, None) == three_gb
 
 
-def test_a_previous_set_estimates_the_instance_archive(client, backups_dir):
-    """The archive beside the database is measured from the last set written —
-    the only figure available without walking the data directory on a GET."""
+def test_the_estimate_adds_the_old_archive_to_the_live_database(client,
+                                                                backups_dir):
+    """The two halves are measured at different moments, and must be.
+
+    The database is the live one, because that is the copy the next backup
+    stages. What sat beside it can only be read off the last manifest.
+    Deriving the archive by subtracting today's database from the old total
+    would cancel exactly the growth this warning exists to notice: a ledger
+    that went from 1 GB to 20 GB beside a 10 GB archive would be reported as
+    needing 20 GB rather than 30, and 25 GB free would look fine.
+    """
+    gb = 1024 ** 3
     _write_manifest(backups_dir, date.fromisoformat(today_str()),
-                    db_bytes=1000, files_bytes=2000)
+                    db_bytes=1 * gb, files_bytes=10 * gb)
     backup = storage.newest_backup()
-    # The set's total minus today's database is what else it carried.
-    assert storage._space_a_backup_needs(backup["bytes"], backup) == (
-        max(limits.FREE_SPACE_FLOOR, backup["bytes"]))
+    assert backup["beside_database"] >= 10 * gb   # the manifest's own size too
+
+    needed = storage._space_a_backup_needs(20 * gb, backup)
+    assert needed >= 30 * gb, "the old database size must not stand in for today's"
 
 
 def test_the_panel_writes_nothing(client, backups_dir, exports_dir):

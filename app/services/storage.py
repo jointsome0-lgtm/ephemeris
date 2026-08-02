@@ -78,15 +78,21 @@ def _parse_moment(value: object) -> datetime | None:
 
     A manifest written by a future version, by hand, or truncated mid-write is
     data from outside this module; it answers None rather than raising, and the
-    caller moves on to the next-newest set. Only the local calendar day and
-    clock time are ever read off the result, so an offset-less timestamp from
-    an older writer needs no repair to be usable.
+    caller moves on to the next-newest set.
+
+    The result is always aware and always in local time — the zone the panel
+    reads dates in, and the only way candidates from different writers can be
+    compared at all. Normalizing here rather than at the comparison is what
+    makes "unusable timestamp" one answer instead of two: a value near the
+    datetime boundary parses cleanly and then raises on conversion, and that
+    must be a skipped manifest, not a 500 on a page whose whole promise is to
+    survive a damaged file.
     """
     if not isinstance(value, str):
         return None
     try:
-        return datetime.fromisoformat(value)
-    except ValueError:
+        return datetime.fromisoformat(value).astimezone()
+    except (ValueError, OverflowError, OSError):
         return None
 
 
@@ -128,20 +134,26 @@ def _read_manifest(path: Path) -> dict | None:
         if not isinstance(entry, dict) or not entry.get("name"):
             return None
     total = _size_of(path)
-    for entry in files.values():
+    sizes = {}
+    for role, entry in files.items():
         if not isinstance(entry, dict):
             continue
         claimed = entry.get("bytes")
         name = entry.get("name")
         if isinstance(claimed, int) and claimed >= 0:
-            total += claimed
+            sizes[role] = claimed
         elif isinstance(name, str):
-            total += _size_of(path.parent / name)
+            sizes[role] = _size_of(path.parent / name)
+        total += sizes.get(role, 0)
     return {
         "name": path.name,
         "created": created,
         "when": f"{pretty_date(created.date(), year=True)} {created:%H:%M}",
         "bytes": total,
+        # Kept apart from the total because the space estimate needs one member
+        # without the other: the database it pairs with is the LIVE one, which
+        # has grown since, while everything else is only measurable from here.
+        "beside_database": total - sizes.get("database", 0),
         "size_h": export.human_size(total),
     }
 
@@ -157,9 +169,9 @@ def newest_backup() -> dict | None:
     which is what `--keep` keeps small; stopping at the first name would answer
     the panel's one question wrongly twice a year.
 
-    Aware and naive timestamps are compared through `astimezone()`, which reads
-    a naive one as local time — the zone the backup was taken in, on the machine
-    it was taken on.
+    Timestamps arrive aware and local from `_parse_moment`, which reads a naive
+    one as local time — the zone the backup was taken in, on the machine it was
+    taken on — so every candidate is comparable and none of them can raise here.
     """
     if not BACKUPS_DIR.is_dir():
         return None
@@ -171,8 +183,9 @@ def newest_backup() -> dict | None:
     if not sets:
         return None
     # Name descending as the tie-break, so two sets stamped in the same second
-    # still resolve the same way on every render.
-    return max(sets, key=lambda s: (s["created"].astimezone(), s["name"]))
+    # still resolve the same way on every render. Every `created` is already
+    # aware and local (`_parse_moment`), so they are all comparable.
+    return max(sets, key=lambda s: (s["created"], s["name"]))
 
 
 def free_space() -> int | None:
@@ -202,13 +215,16 @@ def _space_a_backup_needs(db_bytes: int, backup: dict | None) -> int:
     is the only measurement of it this module can make without walking the data
     directory on every page render. When there is no previous set, the floor
     stands in for it — the same number that has to cover a first backup anyway.
+
+    The two halves come from different moments on purpose. The database is
+    measured live, because that is the copy the next backup will stage; what
+    sat beside it is taken from the old manifest as recorded there. Subtracting
+    today's database from the old total instead would cancel out exactly the
+    growth this warning exists to notice — a ledger that has gone from 1 GB to
+    20 GB beside a 10 GB archive would report 20 GB needed instead of 30.
     """
-    instance_bytes = 0
-    if backup is not None:
-        # The manifest's total minus the database it names: whatever else that
-        # set carried, at the size it carried it.
-        instance_bytes = max(backup["bytes"] - db_bytes, 0)
-    return max(limits.FREE_SPACE_FLOOR, db_bytes + instance_bytes)
+    return max(limits.FREE_SPACE_FLOOR,
+               db_bytes + (backup["beside_database"] if backup else 0))
 
 
 def status(conn: sqlite3.Connection) -> dict:
