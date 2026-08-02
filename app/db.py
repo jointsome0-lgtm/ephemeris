@@ -27,6 +27,7 @@ from .settings import settings
 DATA_DIR = settings.data_dir
 DB_PATH = settings.db_path
 EXPORTS_DIR = settings.exports_dir
+BACKUPS_DIR = settings.backups_dir
 
 # --- status enum (sec13.2) -------------------------------------------------
 

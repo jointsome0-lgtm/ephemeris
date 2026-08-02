@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from .. import limits
 from ..db import append_event, now_iso
 
 DEFAULT_GROUP = "Core Routine"
@@ -63,8 +64,7 @@ def _clean(title: str | None, group_name: str | None) -> tuple[str, str]:
     group_name = (group_name or "").strip() or DEFAULT_GROUP
     if not title:
         raise ItemError("title can’t be empty")
-    if len(title) > 200:
-        raise ItemError("title too long")
+    limits.check(title, limits.ROUTINE_ITEM_TITLE, "title", ItemError)
     return title, group_name
 
 

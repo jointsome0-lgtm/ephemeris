@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse
 
 from ..db import get_db
-from ..services import export
+from ..services import export, storage
 from ..templating import templates
 
 router = APIRouter()  # GET /export, POST /export/jsonl
@@ -21,12 +21,19 @@ router = APIRouter()  # GET /export, POST /export/jsonl
 
 @router.get("/export")
 def get_export(request: Request, conn: sqlite3.Connection = Depends(get_db)):
-    """One-button export page: shows the event count + recent export files."""
+    """One-button export page: the export itself plus the storage status panel.
+
+    The panel (issue #23) shares this page rather than taking a rail slot of
+    its own: what it reports on — the ledger, the exports, the backups beside
+    them — is what this page is already about, and a screen consulted a few
+    times a year does not earn permanent navigation.
+    """
     count = export.event_count(conn)
     return templates.TemplateResponse(request,
         "export.html",
         {"request": request, "rail": "export",
-         "event_count": count, "recent": export.recent_exports()},
+         "event_count": count, "recent": export.recent_exports(),
+         "storage": storage.status(conn)},
     )
 
 

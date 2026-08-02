@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from .. import limits
 from ..db import append_event, now_iso
 
 INBOX_NAME = "Inbox"
@@ -122,8 +123,7 @@ def _clean_name(name: str | None) -> str:
     name = (name or "").strip()
     if not name:
         raise ListError("list name can’t be empty")
-    if len(name) > 100:
-        raise ListError("list name too long")
+    limits.check(name, limits.LIST_NAME, "list name", ListError)
     return name
 
 

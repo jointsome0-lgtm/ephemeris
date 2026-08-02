@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from .. import limits
 from ..db import STATUSES, append_event, now_iso
 
 
@@ -153,6 +154,7 @@ def upsert_checkin(
     - A note save with no existing row is rejected: the flow is status-first, so
       there are no note-only rows (status stays NOT NULL).
     - A date before the item's `start_date` is rejected (#18).
+    - A note longer than `limits.CHECKIN_NOTE` is rejected (#23).
 
     Returns the resulting status.
     """
@@ -160,6 +162,7 @@ def upsert_checkin(
         raise CheckinError("nothing to update (no status, no note)")
     if status is not None and status not in STATUSES:
         raise CheckinError(f"invalid status: {status!r}")
+    limits.check(note, limits.CHECKIN_NOTE, "check-in note", CheckinError)
     item = _require_item(conn, item_id)
     _require_started(item, date)
     existing = get_checkin(conn, date, item_id)
@@ -231,8 +234,11 @@ def apply_status(conn: sqlite3.Connection, date: str, item_id: int, status: str)
 def upsert_daily_note(conn: sqlite3.Connection, date: str, text: str) -> None:
     """Upsert the daily note for `date` and append daily_note_updated (sec16.4).
 
-    Empty text stores an empty note; there is no separate clear event.
+    Empty text stores an empty note; there is no separate clear event. Text
+    longer than `limits.DAILY_NOTE` is rejected (#23) — the one way this write
+    can fail, which is why its route grew an error branch.
     """
+    limits.check(text, limits.DAILY_NOTE, "daily note", CheckinError)
     existing = conn.execute(
         "SELECT date FROM daily_notes WHERE date = ?", (date,)
     ).fetchone()

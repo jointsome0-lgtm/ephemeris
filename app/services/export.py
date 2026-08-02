@@ -15,7 +15,13 @@ already seen a line can recognize it on redelivery instead of duplicating it.
 docs/restore-from-export.md.
 
 SQLite stays the source of truth. Output lands in db.EXPORTS_DIR
-(`data/exports/`, git-ignored; may contain private notes — sec9).
+(`data/exports/`, git-ignored; may contain private notes — sec9), which retains
+the `limits.EXPORT_KEEP` newest files and drops the rest after every write
+(issue #23). That is safe precisely because of the contract above: the stream is
+append-only, so the newest export contains everything its predecessors did. The
+full backups in `data/backups/` are a different mechanism with a different rule
+— manual `scripts/backup_db.py --keep N` — because a backup set is a point in
+time that the current database cannot reproduce.
 """
 from __future__ import annotations
 
@@ -23,9 +29,11 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
+from .. import limits
 from ..db import EXPORTS_DIR, now_iso, now_stamp
 
 
@@ -170,11 +178,132 @@ def export_events(conn: sqlite3.Connection) -> tuple[Path, int]:
     # Both directory changes — the new name and the dropped temporary one — are
     # persisted before this call reports an export the caller can rely on.
     _fsync_dir(EXPORTS_DIR)
+    prune_exports(keep=path)
     return path, count
 
 
-def _human_size(n: int) -> str:
-    """Friendly byte size, e.g. 412 B / 6.4 KB / 1.2 MB."""
+def existing_exports() -> list[Path]:
+    """Every finished export, newest first.
+
+    One ordering, used by retention, by the recent list and by the status
+    panel, so what the page calls "the newest 30" is exactly what retention
+    keeps. The stamp is the whole variable part of the name and sorts
+    chronologically. The collision suffix is read as the number it is, not as
+    text: `_claim_name` gives the second export of one second `-2`, and by
+    string order `-` sorts before `.`, so the plain name would come out ahead
+    of the suffix that was written after it — the older snapshot labelled as
+    the newest, and evicted last instead of first.
+
+    The `events-*` glob cannot match a `.events-*.jsonl.tmp` still being
+    written, so an export in progress is neither counted nor deleted.
+    """
+    if not EXPORTS_DIR.is_dir():
+        return []
+    return sorted(EXPORTS_DIR.glob("events-*.jsonl"), key=_order, reverse=True)
+
+
+def _order(path: Path) -> tuple[str, int]:
+    """(stamp, collision number) — the name read as what `_claim_name` wrote.
+
+    An unparseable tail sorts as 0, below every real export of that second: a
+    name this module did not write has no claim to being the newest thing in
+    the directory.
+    """
+    stem = path.name[len("events-"):-len(".jsonl")]
+    # A stamp's own last field is six digits (%H%M%S); a collision suffix is at
+    # most three, since _claim_name gives up at 999. That is what tells the two
+    # apart without re-deriving the stamp format here.
+    stamp, sep, tail = stem.rpartition("-")
+    if sep and tail.isdigit() and len(tail) < 4:
+        return stamp, int(tail)
+    return stem, 1
+
+
+def _in_flight(path: Path) -> bool:
+    """Was `path` written recently enough that a response may still be reading it?
+
+    Deliberately crude: an mtime, compared against the same clock that named the
+    file. That makes it symmetric — during a backward step the pre-existing
+    exports look "in the future" and are held too, which is the safe direction
+    for a rule whose whole job is not to delete something being served.
+
+    A file that cannot be stat'ed has already vanished; call it in flight and
+    let the next run confirm.
+    """
+    try:
+        age = time.time() - path.stat().st_mtime
+    except OSError:
+        return True
+    return age < limits.EXPORT_GRACE
+
+
+def prune_exports(keep: Path | None = None) -> list[Path]:
+    """Delete all but the `limits.EXPORT_KEEP` newest exports; return what went.
+
+    Runs after every export, because that is the only moment the directory
+    grows and the only moment anyone is watching. Retention is safe to
+    automate here in a way it is not for backups: every export is a full
+    serialization of an append-only stream, so the newest file contains
+    everything the ones behind it did. A backup set is not reproducible that
+    way, which is why `scripts/backup_db.py` keeps its manual `--keep`.
+
+    `keep` is the export the caller is about to hand back, and it is treated as
+    the newest whatever its name says. Usually that is what the ordering
+    concludes anyway; it stops being true when the wall clock steps backwards —
+    a DST fallback, an NTP correction — and the fresh file is stamped an hour
+    behind thirty existing ones. Ordering alone would then delete the export
+    the route is about to stream, turning a clock adjustment into a failed
+    download. Being written is the stronger evidence of newness than a name.
+
+    `keep` protects one path, and during that same rolled-back hour a second
+    export is a second path nobody passed here — its own request is still
+    streaming it while this one prunes. So the rule is widened rather than
+    threaded through both requests: nothing touched within EXPORT_GRACE of now
+    is removed, which covers every export still being delivered without any
+    shared state to keep, and needs no opinion about when a response finishes.
+    Only that window is affected: retention resumes as soon as it closes, and
+    it deletes then what it declined to delete now.
+
+    Where this deliberately stops: once the grace has passed, eviction order is
+    the filename again, so exports written during a rolled-back hour are
+    evicted before slightly older ones. Nothing is lost by that — each of the
+    thirty is a full serialization of the same stream, the live database still
+    holds every event, and the next press writes a current one. Fixing the
+    order would mean persisting a sequence outside the filenames, which is a
+    second source of truth about the directory to keep correct forever, for a
+    once-a-year hour in which the answer is only unaesthetic. Deliberate skip
+    (#125 review round 6); reopen it as its own change if the ordering ever
+    matters to something.
+
+    Best-effort by construction: a file that cannot be unlinked is left where
+    it is rather than sinking an export that already succeeded. The next run
+    tries again.
+    """
+    surviving = existing_exports()
+    if keep is not None and keep in surviving:
+        surviving.remove(keep)
+        surviving.insert(0, keep)
+    doomed = [p for p in surviving[limits.EXPORT_KEEP:] if not _in_flight(p)]
+    if not doomed:
+        return []
+    removed = []
+    for path in doomed:
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        removed.append(path)
+    if removed:
+        _fsync_dir(EXPORTS_DIR)
+    return removed
+
+
+def human_size(n: int) -> str:
+    """Friendly byte size, e.g. 412 B / 6.4 KB / 1.2 MB.
+
+    Public because the storage panel (services/storage.py) shows the same kind
+    of number beside these files and must not spell the rounding twice.
+    """
     size = float(n)
     for unit in ("B", "KB", "MB", "GB"):
         if size < 1024 or unit == "GB":
@@ -184,9 +313,19 @@ def _human_size(n: int) -> str:
 
 
 def recent_exports(limit: int = 8) -> list[dict]:
-    """Previously written export files, newest first (name + human size)."""
-    if not EXPORTS_DIR.exists():
-        return []
-    files = sorted(EXPORTS_DIR.glob("events-*.jsonl"),
-                   key=lambda p: p.name, reverse=True)[:limit]
-    return [{"name": f.name, "size_h": _human_size(f.stat().st_size)} for f in files]
+    """Previously written export files, newest first (name + human size).
+
+    A file that vanishes between the listing and its stat is dropped rather
+    than raised: now that retention deletes, `GET /export` rendering this list
+    can overlap a `POST /export/jsonl` pruning it, and one unlucky interleaving
+    must not turn the page into a 500 over a file the reader was going to be
+    told about and no longer needs to be.
+    """
+    found = []
+    for path in existing_exports()[:limit]:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        found.append({"name": path.name, "size_h": human_size(size)})
+    return found

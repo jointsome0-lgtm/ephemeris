@@ -59,6 +59,15 @@ class Settings:
     exports_dir: Path
     """`<data_dir>/exports` — where the JSONL backups land (sec18.1)."""
 
+    backups_dir: Path
+    """`<data_dir>/backups` — where full backup sets land (issue #17).
+
+    The app never writes here; `scripts/backup_db.py` does. It is resolved here
+    anyway so the name has one owner: the script used to compute it itself, and
+    the /export status panel reads it, which is exactly the arrangement where
+    two spellings drift apart.
+    """
+
     timezone: str | None
     """`APP_TIMEZONE` as typed, or None to mean 'host local zone' (sec13.3)."""
 
@@ -78,6 +87,7 @@ def load(env: dict[str, str] | None = None) -> Settings:
         data_dir=root,
         db_path=Path(env.get("ACTIVITY_DB", root / "activity.sqlite")),
         exports_dir=root / "exports",
+        backups_dir=root / "backups",
         timezone=env.get("APP_TIMEZONE"),
     )
 

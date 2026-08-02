@@ -32,7 +32,42 @@ per-route (or absent):
      "same-site" is deliberately rejected — a page on another local port is
      same-site but must not write here (same stance as the terminal gate F1).
 
-3. Response headers on every HTTP response:
+3. Request-body ceiling on unsafe methods (issue #23). Routes that read JSON
+   bound their own bodies through app/request_body.py; ordinary form POSTs —
+   tasks, habits, calendar — bounded nothing, so a multi-megabyte body was
+   parsed and stored by whichever route received it. The ceiling is one number
+   (limits.MAX_BODY_BYTES, overridable at startup with EPHEMERIS_MAX_BODY_BYTES)
+   applied here, ABOVE the per-route caps and never instead of them: a Learn
+   endpoint whose own cap is 512 KiB still answers with its own 413 and its own
+   message, because the route's smaller counter trips first. The override obeys
+   that ordering as well — a value that does not clear the largest route cap by
+   a whole megabyte is refused and the default stands, so the perimeter can be
+   raised but never lowered onto the limits it exists to sit above, nor close
+   enough that one chunk crosses both.
+
+   Same two-part shape as read_capped: Content-Length is an early refusal, the
+   streaming count is the authority, so a chunked or dishonest request cannot
+   buy a larger body than an honest one. Nothing is buffered here — the count
+   rides on the chunks the app is already pulling. Once the count is over, the
+   app is handed `http.disconnect` instead of more body: Starlette turns that
+   into ClientDisconnect, so no route can ever act on a body that was silently
+   truncated, and whatever answer the app produces afterwards (its own 400, or
+   the exception reaching this middleware) is replaced with the 413.
+
+   Not this middleware's, and left alone: Starlette's form parser already
+   refuses a single field over 1 MB. That is a narrower question — one field
+   cannot be a megabyte — and it sits under this ceiling rather than beside it,
+   so a body that is one enormous field is answered by the parser (400) before
+   the whole-body count gets near 2 MiB. Either way nothing oversized is read
+   into a route; only the wording of the refusal differs.
+
+   Not covered, deliberately: a route that never reads its body at all. Nothing
+   is buffered in that case either, and the Content-Length refusal still
+   catches every honest client; the alternative is draining bodies the app
+   declared no interest in. GET/HEAD and the WebSocket handshake are untouched,
+   so SSE responses and the terminal's WS upgrade never meet this counter.
+
+4. Response headers on every HTTP response:
    - X-Content-Type-Options: nosniff
    - Referrer-Policy: same-origin
    - Content-Security-Policy: frame-ancestors 'none' — only when the route
@@ -51,8 +86,11 @@ import os
 from urllib.parse import urlsplit
 
 from starlette.datastructures import Headers, MutableHeaders
+from starlette.requests import ClientDisconnect
 from starlette.responses import PlainTextResponse
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from . import limits
 
 _UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
@@ -64,6 +102,44 @@ TRUSTED_HOSTS = frozenset(
     for h in os.environ.get("EPHEMERIS_TRUSTED_HOSTS", _DEFAULT_TRUSTED_HOSTS).split(",")
     if h.strip()
 )
+
+
+def _body_ceiling() -> int:
+    """limits.MAX_BODY_BYTES, or EPHEMERIS_MAX_BODY_BYTES if it is usable.
+
+    Read once at import for the same reason as the host allowlist: the
+    perimeter's shape is a startup decision, so a later os.environ write cannot
+    widen it under a running process. Junk or a non-positive value falls back to
+    the constant rather than disabling the ceiling — a typo in a unit file must
+    not be the way this protection turns itself off.
+
+    A value that does not clear limits.LARGEST_ROUTE_CAP by
+    limits.BODY_CEILING_HEADROOM falls back too, for the opposite reason: it
+    would not tighten anything the route caps do not already bound, it would
+    only start answering oversized Learn requests with this middleware's
+    plain-text 413 instead of the route's typed JSON — the perimeter overruling
+    a limit it was built to sit above. Merely being above is not enough,
+    because this counter works in whole chunks: it withholds the delivery that
+    crosses it, so two limits closer together than one chunk can both be
+    crossed at once and only the outer one answers. Both fallbacks are silent
+    because there is no honest failure mode here to report to: refusing to
+    start would take the app down over a body-size typo.
+    """
+    raw = os.environ.get("EPHEMERIS_MAX_BODY_BYTES")
+    if raw is None:
+        return limits.MAX_BODY_BYTES
+    try:
+        value = int(raw)
+    except ValueError:
+        return limits.MAX_BODY_BYTES
+    if value < limits.LARGEST_ROUTE_CAP + limits.BODY_CEILING_HEADROOM:
+        return limits.MAX_BODY_BYTES
+    return value
+
+
+MAX_BODY_BYTES = _body_ceiling()
+
+_TOO_LARGE = "request body too large"
 
 _RESPONSE_HEADERS = (
     ("X-Content-Type-Options", "nosniff"),
@@ -136,6 +212,55 @@ def browser_origin_rejection(headers: Headers, scheme: str) -> str | None:
     return _write_rejection(headers, own, scheme)
 
 
+def _declared_length(headers: Headers) -> int | None:
+    """A Content-Length this middleware is willing to act on, else None.
+
+    Only a header that parses to a non-negative int is an early refusal. A
+    missing, malformed or negative one is left entirely alone: the routes that
+    care already answer it in their own vocabulary (the Learn endpoints return
+    a typed JSON `invalid-request`), and the streaming count below is the
+    authority in every case anyway.
+    """
+    raw = headers.get("content-length")
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+class _CappedBody:
+    """Counts the request body as the app pulls it, and cuts it off past `limit`.
+
+    The count rides on chunks the app asked for, so nothing is buffered and no
+    memory is held beyond what the app itself holds. Past the limit the app is
+    handed `http.disconnect` instead of the next chunk, which Starlette raises
+    as ClientDisconnect: a route can be denied its body, but never handed a
+    short one it would mistake for the whole request.
+    """
+
+    def __init__(self, receive: Receive, limit: int) -> None:
+        self._receive = receive
+        self._limit = limit
+        self._seen = 0
+        self.tripped = False
+
+    async def __call__(self) -> Message:
+        if self.tripped:
+            # Sticky: once the decision is made, the rest of an oversized body
+            # stays on the socket rather than being read in to be discarded.
+            return {"type": "http.disconnect"}
+        message = await self._receive()
+        if message["type"] == "http.request":
+            self._seen += len(message.get("body", b""))
+            if self._seen > self._limit:
+                self.tripped = True
+                return {"type": "http.disconnect"}
+        return message
+
+
 class SecurityMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -156,13 +281,31 @@ class SecurityMiddleware:
             await self.app(scope, receive, send)
             return
 
+        cap: _CappedBody | None = None
         if scope["method"] in _UNSAFE_METHODS:
             reason = _write_rejection(headers, own, scope.get("scheme", "http"))
             if reason is not None:
                 await self._refuse(scope, receive, send, 403, reason)
                 return
+            declared = _declared_length(headers)
+            if declared is not None and declared > MAX_BODY_BYTES:
+                await self._refuse(scope, receive, send, 413, _TOO_LARGE)
+                return
+            cap = _CappedBody(receive, MAX_BODY_BYTES)
 
-        async def send_with_headers(message) -> None:
+        answered = False
+
+        async def send_with_headers(message: Message) -> None:
+            nonlocal answered
+            if cap is not None and cap.tripped:
+                # Whatever the app is about to say describes a request it was
+                # not allowed to finish reading — commonly FastAPI's own 400
+                # for a body it could not parse. Replace it, once, and drop the
+                # rest of its messages.
+                if not answered:
+                    answered = True
+                    await self._refuse(scope, receive, send, 413, _TOO_LARGE)
+                return
             if message["type"] == "http.response.start":
                 out = MutableHeaders(scope=message)
                 for key, value in _RESPONSE_HEADERS:
@@ -172,7 +315,17 @@ class SecurityMiddleware:
                     out["Content-Security-Policy"] = "frame-ancestors 'none'"
             await send(message)
 
-        await self.app(scope, receive, send_with_headers)
+        try:
+            await self.app(scope, receive if cap is None else cap, send_with_headers)
+        except ClientDisconnect:
+            # A route reading its body directly (app/request_body.py) lets this
+            # propagate instead of turning it into a response. If it is the
+            # disconnect this middleware manufactured, the client is owed the
+            # 413; a genuine one is re-raised exactly as before.
+            if cap is None or not cap.tripped or answered:
+                raise
+            answered = True
+            await self._refuse(scope, receive, send, 413, _TOO_LARGE)
 
     async def _refuse(
         self, scope: Scope, receive: Receive, send: Send, status: int, detail: str

@@ -11,6 +11,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import date as _date, timedelta
 
+from .. import limits
 from ..db import append_event, immediate, is_valid_date, now_iso, today_str
 from . import lists as lists_svc
 
@@ -43,12 +44,26 @@ def _require_writable_list(conn: sqlite3.Connection, list_id: int) -> None:
 # --- writes ----------------------------------------------------------------
 
 
-def _clean(title: str | None, due_date: str | None, priority) -> tuple[str, str | None, int]:
+def _clean(
+    title: str | None, due_date: str | None, priority, note: str | None = None,
+    current_note: str | None = None,
+) -> tuple[str, str | None, int]:
     title = (title or "").strip()
     if not title:
         raise TaskError("task title can’t be empty")
-    if len(title) > 500:
-        raise TaskError("task title too long")
+    limits.check(title, limits.TASK_TITLE, "task title", TaskError)
+    # The note is only validated here, not normalized: it is stored as typed
+    # (leading whitespace can be deliberate in a note) and both writers pass it
+    # through untouched, so there is nothing to hand back.
+    #
+    # Only an actual change is measured. `update_task` refills every unsupplied
+    # column from the current row, so validating unconditionally would refuse a
+    # rename, a reschedule or a list move on a task whose note predates the cap
+    # — the user would have to destroy old text to fix a due date. A note that
+    # is already stored has already been accepted; the cap governs what is
+    # written next. Same rule as the list-membership check in `update_task`.
+    if note != current_note:
+        limits.check(note, limits.TASK_NOTE, "task note", TaskError)
     due_date = (due_date or "").strip() or None
     if due_date is not None and not is_valid_date(due_date):
         raise TaskError("invalid due date (expected YYYY-MM-DD)")
@@ -70,7 +85,7 @@ def create_task(
     priority: int = 0,
     note: str | None = None,
 ) -> int:
-    title, due_date, priority = _clean(title, due_date, priority)
+    title, due_date, priority = _clean(title, due_date, priority, note)
     if kind not in ("task",):
         kind = "task"
     if list_id is None:
@@ -156,8 +171,9 @@ def update_task(conn: sqlite3.Connection, task_id: int, **fields) -> None:
     title = fields.get("title", row["title"])
     due_date = fields.get("due_date", row["due_date"])
     priority = fields.get("priority", row["priority"])
-    title, due_date, priority = _clean(title, due_date, priority)
     note = fields.get("note", row["note"])
+    title, due_date, priority = _clean(title, due_date, priority, note,
+                                       current_note=row["note"])
     list_id = fields.get("list_id", row["list_id"])
     if list_id is not None and list_id != row["list_id"]:
         _require_writable_list(conn, list_id)

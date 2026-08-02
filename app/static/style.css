@@ -1268,6 +1268,18 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
 .ef-name { color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ef-size { flex: none; color: var(--faint); }
 
+/* storage status panel (#23) — same card width as the export block above it */
+.storage-card { margin-top: 30px; }
+.storage-head { font-size: 15px; font-weight: 600; margin: 0 0 12px; }
+.storage-warn { display: flex; align-items: flex-start; gap: 9px; margin: 0 0 10px; padding: 11px 13px; border: 1px solid var(--warn); border-left-width: 3px; border-radius: 9px; color: var(--text); font-size: 13px; line-height: 1.5; }
+.storage-warn svg { flex: none; width: 17px; height: 17px; margin-top: 1px; color: var(--warn); }
+.storage-grid { margin: 0 0 14px; padding: 4px 0 0; }
+.storage-row { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; padding: 10px 4px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.storage-row dt { color: var(--muted); }
+.storage-row dd { margin: 0; text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+.storage-sub { display: block; color: var(--faint); font-size: 12px; }
+.storage-none { color: var(--faint); }
+
 /* ===== empty states + flash ============================================= */
 .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 80px 20px; color: var(--faint); text-align: center; gap: 6px; }
 .empty-state.es-full { min-height: 56vh; }

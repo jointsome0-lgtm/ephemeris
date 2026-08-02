@@ -15,6 +15,7 @@ import sqlite3
 from datetime import date as _date, timedelta
 from typing import NamedTuple
 
+from .. import limits
 from ..db import append_event, immediate, is_valid_date, now_iso
 from . import lists as lists_svc
 
@@ -226,12 +227,11 @@ def layout_day(occs: list[dict]) -> list[dict]:
 
 def _clean(conn, *, title, start_date, freq, byweekday, interval_n, all_day,
            start_time, end_time, end_date, list_id, emoji, note, color,
-           current_list_id=None) -> dict:
+           current_list_id=None, current_note=None) -> dict:
     title = (title or "").strip()
     if not title:
         raise CalendarEventError("event title can’t be empty")
-    if len(title) > 500:
-        raise CalendarEventError("event title too long")
+    limits.check(title, limits.EVENT_TITLE, "event title", CalendarEventError)
 
     start_date = (start_date or "").strip()
     if not is_valid_date(start_date):
@@ -276,6 +276,21 @@ def _clean(conn, *, title, start_date, freq, byweekday, interval_n, all_day,
 
     emoji = (emoji or "").strip()[:8] or None
     note = (note or "").strip() or None
+    # Measured after the strip, like the title above: what is stored is what is
+    # bounded, so trailing whitespace can never be the difference between an
+    # accepted and a rejected note. And measured only when it actually changes,
+    # for the same reason as `current_list_id` below: `update_event` refills
+    # every unsupplied column, so an unconditional check would refuse a
+    # retitle, a skip or a drag of an event whose note predates the cap.
+    #
+    # BOTH sides are normalized before that comparison. The stored note went
+    # through this same strip on its way in — except for rows written before it
+    # existed, and those are exactly the over-cap ones this branch is for. A
+    # raw comparison would call a legacy note with trailing whitespace
+    # "changed" the moment it was refilled, and refuse the drag it is meant to
+    # allow.
+    if note != ((current_note or "").strip() or None):
+        limits.check(note, limits.EVENT_NOTE, "event note", CalendarEventError)
     color = (color or "").strip() or None
 
     if list_id is not None and str(list_id).strip() != "":
@@ -350,7 +365,7 @@ def update_event(conn: sqlite3.Connection, event_id: int, **fields) -> None:
     if row is None:
         raise CalendarEventError("unknown event")
     c = _clean(conn, **{k: fields.get(k, row[k]) for k in _COLS},
-               current_list_id=row["list_id"])
+               current_list_id=row["list_id"], current_note=row["note"])
     ts = now_iso()
     with conn:
         conn.execute(

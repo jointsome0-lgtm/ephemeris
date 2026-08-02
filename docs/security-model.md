@@ -108,7 +108,7 @@ that can reach the unauthenticated app can use the routes the app exposes.
 ## Main-app request perimeter
 
 `app/security.py` installs one middleware in front of every route (issue #15,
-first slice). It owns three things:
+first slice; issue #23 added the body ceiling). It owns four things:
 
 - **Trusted-host allowlist.** Every HTTP request and WebSocket handshake must
   carry a `Host` whose hostname is in `EPHEMERIS_TRUSTED_HOSTS`
@@ -130,6 +130,23 @@ first slice). It owns three things:
   `Sec-Fetch-Site` other than `same-origin`/`none` is rejected, including
   `same-site` — a page on another local port must not write here, the same
   stance as the terminal gate.
+- **Request-body ceiling.** Every unsafe-method request is bounded at
+  2 MiB (`EPHEMERIS_MAX_BODY_BYTES` overrides it at startup; junk, a
+  non-positive value, or anything that does not clear the largest per-route cap
+  by a megabyte falls back to the default — the setting can raise the ceiling
+  but never lower it onto the limits it exists to sit above, and a ceiling
+  within one chunk of a route cap lets the perimeter answer first).
+  `Content-Length` is an early refusal and the streaming byte count
+  is the authority, so a chunked or dishonest request buys nothing; nothing is
+  buffered by the middleware itself. A body past the ceiling is not truncated
+  into the route — the app is handed a disconnect, so no handler can act on a
+  partial request — and the answer is `413`. This is a ceiling **over** the
+  per-route caps, never a replacement: the Learn JSON endpoints keep their own
+  smaller caps (artifact 512 KiB, attempt 256 KiB, assessment 64 KiB, run
+  16 KiB) and their own typed JSON refusals, which the lesson agent reads. A
+  regression fails if the ceiling is ever set below the largest route cap.
+  Separately and upstream, Starlette's form parser refuses a single form field
+  over 1 MB.
 - **Security headers on every response.** `X-Content-Type-Options: nosniff`,
   `Referrer-Policy: same-origin`, and `Content-Security-Policy:
   frame-ancestors 'none'` when the route sets no CSP of its own — the
