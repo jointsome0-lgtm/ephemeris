@@ -29,10 +29,20 @@ inside the archive.
 
 **The manifest is written last, by rename.** That one rule is the durability
 contract: a manifest on disk is a promise that the two files it names are
-complete and match their checksums. Anything in `backups/` that no manifest
-names is debris from an interrupted run, and retention is free to remove it.
-Nothing is ever written under its final name — each file is staged in the same
-directory, fsynced, set to mode `0600`, and moved into place atomically.
+complete and match their checksums, and nothing in `backups/` without one is a
+backup. Nothing is ever written under its final name — each file is staged in
+the same directory, fsynced, set to mode `0600`, and moved into place
+atomically.
+
+The database half is consistent by construction. The lesson half is a
+file-by-file copy of a tree that a lesson agent may be writing into, so a bundle
+rewritten mid-run can be captured mid-rewrite; a file that disappears between
+enumeration and reading is dropped from both the archive and the manifest's
+list, and named under `lesson_files_vanished` so the seam is visible. Point-in-
+time consistency across the whole tree would need a filesystem snapshot (LVM,
+btrfs, ZFS), which is the operator's layer. If that matters to you, take the
+backup when nothing is editing lessons — the timer's small hours are already
+close to that.
 
 Before a snapshot is allowed to claim a name it is opened and run through a full
 `PRAGMA integrity_check`. A backup that cannot be read fails the night it is
@@ -55,6 +65,14 @@ uv run python -m scripts.backup_db --list       # what is on disk
 The service can stay running. `--keep N` prunes whole sets, oldest first, and
 identifies them by manifest — not by globbing `*.sqlite` — so a half-written run
 is never mistaken for a backup worth keeping.
+
+**Retention deletes only what a manifest claims.** Files without one are listed
+and left in place, because this directory may already hold `activity-*.sqlite`
+snapshots taken by the earlier version of this script, which wrote no manifests
+at all. Those are still restorable by hand — copy one to
+`$ACTIVITY_DATA_DIR/activity.sqlite` with the service stopped — and nothing here
+replaces them, so deleting them is your call, not the script's. Once you have
+looked, `rm` them; new runs will not accumulate more.
 
 ### On a schedule
 

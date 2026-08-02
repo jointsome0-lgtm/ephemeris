@@ -172,6 +172,27 @@ def boot_app_and_reexport(target: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+# The reconstructible-state proofs all read the database. This one asks the
+# question an operator asks: does the app RENDER on a restored ledger.
+_SERVE = """
+from fastapi.testclient import TestClient
+from app.main import app
+with TestClient(app) as client:
+    for path in ('/', '/next7', '/today'):
+        print(path, client.get(path).status_code)
+"""
+
+
+def serve_restored(target: Path) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["ACTIVITY_DATA_DIR"] = str(target)
+    env.pop("ACTIVITY_DB", None)
+    env.pop("EPHEMERIS_ENABLE_TERMINAL", None)  # terminal is opt-in; stay at the default (off)
+    return subprocess.run(
+        [sys.executable, "-c", _SERVE], cwd=ROOT, env=env, text=True, capture_output=True,
+    )
+
+
 with TestClient(app) as client:
     # All fixtures are invented demo data and all writes go through real routes.
     response = client.post(
@@ -630,9 +651,20 @@ check(
     str([record.get("type") for record in booted_audit[len(source_audit):]]),
 )
 check(
-    "the tables restore leaves empty are still empty after a real app boot",
-    rows(boot_target / "activity.sqlite", "SELECT COUNT(*) FROM lists")[0][0] == 0
+    "the boot rebuilds the structural Inbox and nothing else",
+    rows(boot_target / "activity.sqlite", "SELECT name, kind FROM lists")
+    == [("Inbox", "inbox")]
     and rows(boot_target / "activity.sqlite", "SELECT COUNT(*) FROM tasks")[0][0] == 0,
+)
+# The Inbox is not decoration: two read routes call lists.inbox_id()
+# unconditionally, so a restored database without one opens and then raises on
+# its own home page. Prove the restored instance is actually usable, which is
+# what "launch it directly" in docs/restore-from-export.md promises.
+serving = serve_restored(boot_target)
+check(
+    "the restored instance serves its home page",
+    serving.returncode == 0 and "/ 200" in serving.stdout,
+    serving.stderr or serving.stdout,
 )
 
 print(f"\n{PASS} passed, {FAIL} failed")

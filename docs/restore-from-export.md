@@ -71,6 +71,13 @@ restore now marks the target initialized â€” `app_meta.seeded_at`, schema v16 â€
 and startup reads that marker instead of counting rows, so a restored database
 can be launched directly and re-exported byte-identically.
 
+The one row the first start does create is the built-in **Inbox**, which is
+structure rather than demo data: it is the default home for a task filed without
+a list, and the Today and Next-7 views call `lists.inbox_id()` unconditionally,
+so a database without one opens and then raises on its own home page. No sample
+list, task or habit comes with it, and creating the Inbox appends no event, so
+the restored stream is unchanged.
+
 To keep later writes unambiguous, the restore advances `sqlite_sequence`
 for the skipped tables (`tasks`, `lists`, `focus_sessions`, `lessons`) past the
 highest ids observed in the retained audit payloads, so post-restore rows and

@@ -729,8 +729,10 @@ def print_summary(target: Path, result: dict[str, Any]) -> None:
     # Startup asks `app_meta.seeded_at`, which this run wrote, and not the row
     # counts — so the tables left empty above stay empty, however empty they are.
     print("FIRST APP START: no demo seeding. This target is marked initialized")
-    print("  (app_meta.seeded_at), so startup adds no habits, lists, tasks or events")
-    print("  to the restored stream; the empty tables above stay empty.")
+    print("  (app_meta.seeded_at), so startup adds no demo habits, lists, tasks or")
+    print("  events to the restored stream; the empty tables above stay empty. It")
+    print("  does create the built-in Inbox if there is none — structure, not demo")
+    print("  data: the Today and Next-7 views require it, and it appends no event.")
     print("FULL-FIDELITY RECOVERY: use a full backup, not JSONL alone —")
     print("  python -m scripts.backup_db (see docs/backup-restore.md).")
 

@@ -13,10 +13,14 @@ One backup is THREE files sharing one stamp, in `$ACTIVITY_DATA_DIR/backups/`:
 
 The manifest is written LAST, by rename. That single ordering rule is the whole
 durability contract: a manifest on disk is a promise that the two files it names
-are complete and match their checksums, and anything in `backups/` that no
-manifest names is debris from an interrupted run, which `--keep` is free to
-remove. Nothing is ever written under its final name — every file is staged in
+are complete and match their checksums, and nothing in `backups/` without one is
+a backup. Nothing is ever written under its final name — every file is staged in
 the same directory, fsynced, chmod 0600, and moved into place with os.replace.
+
+Retention deletes only what a manifest claims. A file with no manifest may be
+debris from an interrupted run, but it may equally be a snapshot from the
+pre-manifest version of this script, which used the same name; those are
+reported and left alone rather than swept.
 
 The snapshot itself goes through SQLite's Online Backup API, which is
 transactionally consistent even while the service is writing; a plain file copy
@@ -208,16 +212,39 @@ def lesson_files() -> list[str]:
     return sorted(found)
 
 
-def archive_lessons(dest: Path, names: list[str]) -> None:
+def archive_lessons(dest: Path, names: list[str]) -> tuple[list[str], list[str]]:
     """Write the lesson bundles to `dest` as a gzip tar, entries in sorted order.
+
+    Returns (archived, vanished). The lesson tree is not frozen while this runs
+    — a lesson agent or the app may be writing into it — so a name enumerated a
+    moment ago can be gone by the time it is read. Such a file is dropped from
+    the archive AND from the manifest's list rather than failing the whole run,
+    which keeps the manifest a description of what the archive actually holds:
+    the one property `--verify` depends on.
+
+    What this deliberately does NOT claim is a point-in-time view. The database
+    half is consistent by construction (the Online Backup API); the lesson half
+    is a file-by-file copy, so a bundle rewritten mid-run can be captured
+    mid-rewrite. Making it atomic would need a filesystem snapshot, which is the
+    operator's layer, not this script's — docs/backup-restore.md says so, and
+    the vanished list is recorded in the manifest so the seam is visible rather
+    than assumed away.
 
     An absent lessons directory produces an empty archive rather than no file:
     the set is three files whatever the instance holds, so a reader never has to
     tell "this instance had no lessons" from "the lessons file went missing".
     """
+    archived: list[str] = []
+    vanished: list[str] = []
     with tarfile.open(dest, "w:gz") as tar:
         for name in names:
-            tar.add(LESSONS_DIR / name, arcname=name, recursive=False)
+            try:
+                tar.add(LESSONS_DIR / name, arcname=name, recursive=False)
+            except FileNotFoundError:
+                vanished.append(name)
+                continue
+            archived.append(name)
+    return archived, vanished
 
 
 def _extract_lessons(archive: Path, dest: Path) -> None:
@@ -263,8 +290,7 @@ def create_backup() -> Path:
         snapshot(staged_db)
         schema_version = check_database(staged_db)
 
-        names = lesson_files()
-        archive_lessons(staged_lessons, names)
+        archived, vanished = archive_lessons(staged_lessons, lesson_files())
 
         manifest = {
             "manifest_version": MANIFEST_VERSION,
@@ -276,7 +302,10 @@ def create_backup() -> Path:
                 "database": _file_entry(staged_db, db_name(stamp)),
                 "lessons": _file_entry(staged_lessons, lessons_name(stamp)),
             },
-            "lesson_files": names,
+            "lesson_files": archived,
+            # Enumerated, then gone before it could be read — a lesson bundle
+            # being rewritten while the backup ran. Recorded, not hidden.
+            "lesson_files_vanished": vanished,
         }
         staged_manifest.write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
@@ -346,8 +375,24 @@ def verify(manifest_path: Path) -> dict:
                 f"  manifest {entry['sha256']}\n  on disk  {digest}"
             )
     # Checksums prove the bytes are the bytes that were written. Only opening
-    # the file proves those bytes are still a database.
+    # the files proves those bytes are still a database and still an archive of
+    # what the manifest says — a checksum over a tar cannot tell you the tar
+    # holds the lesson files the manifest lists.
     check_database(directory / manifest["files"]["database"]["name"])
+    archive = directory / manifest["files"]["lessons"]["name"]
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            members = sorted(tar.getnames())
+    except tarfile.TarError as exc:
+        raise BackupError(f"{archive.name} is not a readable archive: {exc}") from exc
+    if members != sorted(manifest["lesson_files"]):
+        missing = sorted(set(manifest["lesson_files"]) - set(members))
+        extra = sorted(set(members) - set(manifest["lesson_files"]))
+        raise BackupError(
+            f"{archive.name} does not hold what the manifest lists: "
+            f"{len(missing)} missing, {len(extra)} unexpected"
+            + (f" (first missing: {missing[0]})" if missing else "")
+        )
     return manifest
 
 
@@ -363,19 +408,48 @@ def list_sets() -> list[Path]:
     return sorted(BACKUPS_DIR.glob("activity-*.manifest.json"), key=lambda p: p.name)
 
 
-def prune(keep: int) -> tuple[list[str], list[Path]]:
-    """Keep the `keep` newest sets; return (dropped stamps, deleted paths).
+def unclaimed_files() -> list[Path]:
+    """Backup-shaped files in BACKUPS_DIR that no manifest names.
 
+    Two very different things land here and only one is disposable:
+
+    - abandoned name claims — the empty placeholder `_claim_stamp` leaves when a
+      run dies before publishing anything, which is always exactly zero bytes;
+    - **snapshots written by the pre-manifest version of this script**, which
+      used this very name and shipped no manifest at all. Those are somebody's
+      only restore points for everything older than this upgrade.
+
+    Nothing here can tell the second kind from an interrupted new-format run, so
+    retention does not guess: it removes the empty placeholders and reports the
+    rest, leaving the operator to look and decide. The dot-prefixed staging
+    files of a run in progress match no glob here.
+    """
+    if not BACKUPS_DIR.is_dir():
+        return []
+    claimed = set()
+    for path in list_sets():
+        stamp = stamp_of(path.name)
+        claimed.update((db_name(stamp), lessons_name(stamp)))
+    return sorted(
+        path
+        for path in list(BACKUPS_DIR.glob("activity-*.sqlite"))
+        + list(BACKUPS_DIR.glob("lessons-*.tar.gz"))
+        if path.name not in claimed
+    )
+
+
+def prune(keep: int) -> tuple[list[str], list[Path], list[Path]]:
+    """Keep the `keep` newest sets.
+
+    Returns (dropped stamps, deleted paths, unclaimed paths left in place).
     Sets are dropped whole, manifest first, so a set being deleted is never
-    momentarily indistinguishable from a complete one. Files no manifest claims
-    are debris from an interrupted run and go with them; the dot-prefixed
-    staging files of a run in progress match no glob here.
+    momentarily indistinguishable from a complete one. What no manifest claims
+    is left alone except for empty placeholders — see `unclaimed_files`.
     """
     if keep <= 0:
-        return [], []
+        return [], [], unclaimed_files()
     manifests = list_sets()
     doomed = manifests[:-keep] if len(manifests) > keep else []
-    survivors = manifests[len(doomed):]
 
     deleted: list[Path] = []
     stamps: list[str] = []
@@ -390,22 +464,39 @@ def prune(keep: int) -> tuple[list[str], list[Path]]:
                 member.unlink()
                 deleted.append(member)
 
-    claimed = set()
-    for path in survivors:
-        stamp = stamp_of(path.name)
-        claimed.update((db_name(stamp), lessons_name(stamp)))
-    orphans = sorted(
-        list(BACKUPS_DIR.glob("activity-*.sqlite"))
-        + list(BACKUPS_DIR.glob("lessons-*.tar.gz"))
-    )
-    for orphan in orphans:
-        if orphan.name not in claimed:
-            orphan.unlink()
-            deleted.append(orphan)
-    return stamps, deleted
+    left: list[Path] = []
+    for path in unclaimed_files():
+        if path.suffix == ".sqlite" and path.stat().st_size == 0:
+            path.unlink()                  # an abandoned name claim, nothing more
+            deleted.append(path)
+        else:
+            left.append(path)
+    return stamps, deleted, left
 
 
 # --- restoring -------------------------------------------------------------
+
+
+def _reserve_asides(paths: list[Path], stamp: str) -> list[Path]:
+    """A free `.pre-restore-<stamp>` name for each path, none colliding.
+
+    Chosen against both the filesystem and the names already handed out in this
+    call, so a second forced restore in the same second cannot land on the
+    first one's preserved copies.
+    """
+    taken: set[Path] = set()
+    reserved: list[Path] = []
+    for path in paths:
+        for n in range(1, 1000):
+            suffix = "" if n == 1 else f"-{n}"
+            candidate = path.with_name(f"{path.name}.pre-restore-{stamp}{suffix}")
+            if candidate not in taken and not candidate.exists():
+                break
+        else:
+            raise BackupError(f"no free name to preserve {path.name} under")
+        taken.add(candidate)
+        reserved.append(candidate)
+    return reserved
 
 
 def restore(manifest_path: Path, target: Path, *, force: bool = False) -> dict:
@@ -434,13 +525,18 @@ def restore(manifest_path: Path, target: Path, *, force: bool = False) -> dict:
             "existing files aside (they are kept, not deleted)."
         )
 
-    moved: list[str] = []
-    stamp = now_stamp()
     # The sidecars go first: a -wal left beside a moved-away database would be
     # replayed into the restored one, which is corruption dressed as recovery.
     sidecars = [db_target.with_name(DB_FILENAME + suffix) for suffix in _SIDECARS]
-    for path in [p for p in sidecars if p.exists()] + occupied:
-        aside = path.with_name(f"{path.name}.pre-restore-{stamp}")
+    displaced = [path for path in sidecars if path.exists()] + occupied
+    # Every destination is chosen BEFORE anything moves. `now_stamp()` resolves
+    # to the second, so an immediate retry of a forced restore would otherwise
+    # pick the same aside names and os.replace straight over the copies the
+    # first attempt had just preserved — deleting the very data this promised to
+    # keep.
+    asides = _reserve_asides(displaced, now_stamp())
+    moved: list[str] = []
+    for path, aside in zip(displaced, asides):
         os.replace(path, aside)
         moved.append(aside.name)
 
@@ -475,6 +571,24 @@ def _print_set(manifest: dict) -> None:
     print(f"  lessons:  {files['lessons']['name']} "
           f"({_human(files['lessons']['bytes'])}, "
           f"{len(manifest['lesson_files'])} files)")
+    vanished = manifest.get("lesson_files_vanished") or []
+    if vanished:
+        print(f"  NOTE: {len(vanished)} lesson file(s) were rewritten or removed "
+              "while this ran and are not in the archive:")
+        for name in vanished[:5]:
+            print(f"    {name}")
+
+
+def _report_unclaimed(paths: list[Path]) -> None:
+    if not paths:
+        return
+    print(f"{len(paths)} file(s) here belong to no manifest and were LEFT IN PLACE:")
+    for path in paths:
+        print(f"  {path.name} ({_human(path.stat().st_size)})")
+    print("  These are either snapshots from the pre-manifest version of this")
+    print("  script — still restorable by hand, and not replaced by anything")
+    print("  here — or leftovers of an interrupted run. Retention will not")
+    print("  guess which; delete them yourself once you have looked.")
 
 
 def main() -> int:
@@ -506,6 +620,7 @@ def main() -> int:
             for path in reversed(sets):
                 print(path.name)
                 _print_set(load_manifest(path))
+            _report_unclaimed(unclaimed_files())
             return 0
 
         if args.verify:
@@ -529,12 +644,10 @@ def main() -> int:
         _print_set(load_manifest(path))
         print(f"  manifest: {path.name}")
         if args.keep > 0:
-            stamps, deleted = prune(args.keep)
+            stamps, _, left = prune(args.keep)
             for stamp in stamps:
                 print(f"pruned backup set {stamp}")
-            unclaimed = len(deleted) - 3 * len(stamps)
-            if unclaimed > 0:
-                print(f"removed {unclaimed} file(s) belonging to no manifest")
+            _report_unclaimed(left)
     except (BackupError, OSError, sqlite3.Error, tarfile.TarError) as exc:
         print(f"{action} FAILED: {exc}", file=sys.stderr)
         return 1

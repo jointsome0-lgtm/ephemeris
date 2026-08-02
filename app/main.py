@@ -60,6 +60,13 @@ async def _lifespan(app: FastAPI):
             tasks.seed_if_empty(conn)      # sample tasks reference seeded lists
             with conn:
                 meta_set(conn, SEEDED_AT, now_iso())
+        # Every boot, seeded or not: the Inbox is structure, not demo data. A
+        # restored ledger can hold real history and no lists at all, and two
+        # read routes call lists.inbox_id() unconditionally — without this an
+        # initialized-but-listless database opens and then raises on its home
+        # page. Demo seeding above owns the fresh-install case, so on a first
+        # run this finds the Inbox already there.
+        lists.ensure_inbox(conn)
     finally:
         conn.close()
     if created:

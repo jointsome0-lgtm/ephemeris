@@ -121,8 +121,11 @@ def test_a_restored_ledger_with_empty_tables_is_never_reseeded(tmp_path):
     assert boot_app(data_dir).returncode == 0
 
     after = counts(data_dir)
-    assert after["lists"] == 0, "no demo lists reappear in a restored ledger"
     assert after["tasks"] == 0, "no demo tasks reappear in a restored ledger"
+    assert query(data_dir, "SELECT name, kind FROM lists") == [("Inbox", "inbox")], (
+        "the Inbox is rebuilt because two read routes require it, and nothing "
+        "else: none of the five demo lists comes back"
+    )
     assert after["events"] == before["events"], (
         "and nothing is appended to the audit stream the restore preserved"
     )
@@ -299,9 +302,10 @@ def test_an_interrupted_run_leaves_nothing_a_restore_will_accept(
 
     # And the debris is swept by the next successful run's retention pass.
     backup_db.create_backup()
-    stamps, deleted = backup_db.prune(1)
+    stamps, deleted, left = backup_db.prune(1)
     assert stamps == [], "the only complete set is kept"
-    assert deleted, "the interrupted run's leftovers are removed"
+    assert deleted, "the abandoned name claim is removed"
+    assert left == [], "and it was the only thing no manifest claimed"
     assert len(backup_db.list_sets()) == 1
     backup_db.verify(backup_db.list_sets()[0])
 
@@ -313,7 +317,8 @@ def test_keep_prunes_whole_sets_newest_first(backup_db, instance, monkeypatch):
         backup_db.create_backup()
     assert len(backup_db.list_sets()) == 5
 
-    dropped, _ = backup_db.prune(2)
+    dropped, _, left = backup_db.prune(2)
+    assert left == []
 
     assert dropped == stamps[:3]
     survivors = [path.name for path in backup_db.list_sets()]
@@ -332,7 +337,8 @@ def test_keep_zero_prunes_nothing(backup_db, monkeypatch):
     for stamp in ("2031-04-01-000000", "2031-04-02-000000"):
         monkeypatch.setattr(backup_db, "now_stamp", lambda s=stamp: s)
         backup_db.create_backup()
-    assert backup_db.prune(0) == ([], [])
+    stamps, deleted, _ = backup_db.prune(0)
+    assert (stamps, deleted) == ([], [])
     assert len(backup_db.list_sets()) == 2
 
 
@@ -442,3 +448,89 @@ def test_an_instance_without_lessons_still_produces_a_three_file_set(
     manifest = backup_db.verify(manifest_path)
     assert manifest["lesson_files"] == []
     assert (instance / "backups" / manifest["files"]["lessons"]["name"]).is_file()
+
+
+# --- what the review round found -------------------------------------------
+
+
+def test_retention_leaves_pre_manifest_snapshots_alone(
+    backup_db, instance, monkeypatch
+):
+    """The earlier version of this script wrote `activity-<stamp>.sqlite` and no
+    manifest at all. Those files are somebody's only restore points for
+    everything older than this upgrade, and they are indistinguishable by name
+    from an interrupted new-format run — so retention reports them instead of
+    guessing."""
+    backups = instance / "backups"
+    backups.mkdir(parents=True, exist_ok=True)
+    legacy = backups / "activity-2020-01-01-000000.sqlite"
+    legacy.write_bytes(b"SQLite format 3\x00" + b"\x00" * 512)
+
+    for stamp in ("2031-05-01-000000", "2031-05-02-000000"):
+        monkeypatch.setattr(backup_db, "now_stamp", lambda s=stamp: s)
+        backup_db.create_backup()
+
+    stamps, deleted, left = backup_db.prune(1)
+
+    assert legacy.exists(), "a pre-manifest snapshot is never swept as debris"
+    assert left == [legacy]
+    assert legacy not in deleted
+    assert stamps == ["2031-05-01-000000"]
+    assert backup_db.unclaimed_files() == [legacy]
+
+
+def test_a_lesson_file_that_vanishes_mid_run_is_recorded_not_guessed_at(
+    backup_db, instance, monkeypatch
+):
+    """The lesson tree is not frozen while a backup runs. A file enumerated and
+    then rewritten away must leave the manifest describing what the archive
+    actually holds — the property --verify depends on."""
+    names = backup_db.lesson_files() + ["demo-slug/gone-by-the-time-we-read-it.html"]
+    monkeypatch.setattr(backup_db, "lesson_files", lambda: names)
+    manifest_path = backup_db.create_backup()
+
+    manifest = backup_db.verify(manifest_path)
+    assert manifest["lesson_files_vanished"] == [
+        "demo-slug/gone-by-the-time-we-read-it.html"
+    ]
+    assert "demo-slug/gone-by-the-time-we-read-it.html" not in manifest["lesson_files"]
+    assert sorted(manifest["lesson_files"]) == [
+        "demo-slug/index.html", "demo-slug/lesson.json",
+    ]
+
+
+def test_verify_catches_an_archive_that_lost_a_lesson(backup_db, instance):
+    """A checksum over a tar cannot tell you the tar holds what the manifest
+    lists, so verify opens it and compares."""
+    manifest_path = backup_db.create_backup()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["lesson_files"].append("demo-slug/never-archived.html")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(backup_db.BackupError) as raised:
+        backup_db.verify(manifest_path)
+    assert "does not hold what the manifest lists" in str(raised.value)
+
+
+def test_a_second_forced_restore_in_one_second_keeps_both_copies(
+    backup_db, instance, tmp_path, monkeypatch
+):
+    """`now_stamp()` resolves to the second, so an immediate retry would reuse
+    the first attempt's aside names and os.replace over the copies it had just
+    preserved — deleting the data the --force promise says it keeps."""
+    manifest_path = backup_db.create_backup()
+    monkeypatch.setattr(backup_db, "now_stamp", lambda: "2031-06-01-000000")
+    target = tmp_path / "occupied"
+    target.mkdir()
+    (target / "activity.sqlite").write_text("first ledger", encoding="utf-8")
+    first = backup_db.restore(manifest_path, target, force=True)
+    second = backup_db.restore(manifest_path, target, force=True)
+
+    assert first["moved_aside"] != second["moved_aside"], "distinct aside names"
+    preserved = {
+        path.read_text(encoding="utf-8", errors="replace")[:12]
+        for path in target.iterdir()
+        if ".pre-restore-" in path.name and path.is_file()
+    }
+    assert "first ledger" in preserved, "the original is still there after retry #2"
+    assert counts(target) == counts(instance)
