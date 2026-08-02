@@ -393,6 +393,37 @@ def _redeliver_into(records: list[Record], target: Path) -> dict[str, Any]:
         conn.close()
 
 
+def _require_shared_history(
+    conn: sqlite3.Connection, audit_records: list[Record], seen: set[str]
+) -> None:
+    """Refuse a target that is not an earlier delivery of THIS stream.
+
+    Holding a database is not evidence of shared history, and two cases prove it.
+    A target built from a pre-#17 export minted its own local uuids, so a later
+    export of the very same source database shares none of them: every record
+    would look new and the whole prefix would be inserted a second time. And an
+    unrelated target shares nothing at all, yet its `calendar_events` ids are
+    small integers that collide readily — the snapshot upsert would overwrite
+    real series belonging to another history.
+
+    One receipt in common settles both: it can only exist if this stream was
+    delivered here before. An empty ledger is the one honest exception — there is
+    nothing to contradict and nothing to overwrite.
+    """
+    if conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0:
+        return
+    incoming = {r.uuid for r in audit_records if r.uuid is not None}
+    if incoming & seen:
+        return
+    raise RestoreError(
+        "target already holds a database, but it shares no event id with this "
+        "export, so it is not an earlier delivery of this stream. Restoring here "
+        "would duplicate the whole history and could overwrite unrelated calendar "
+        "series. Use a fresh target. (A target built from a pre-#17 export cannot "
+        "be redelivered into: its rows were given new local ids at restore time.)"
+    )
+
+
 def _apply_records(
     db: Any, conn: sqlite3.Connection, records: list[Record], *, redelivery: bool
 ) -> dict[str, Any]:
@@ -410,6 +441,8 @@ def _apply_records(
         row["uuid"]
         for row in conn.execute("SELECT uuid FROM events WHERE uuid IS NOT NULL")
     }
+    if redelivery:
+        _require_shared_history(conn, audit_records, seen)
     applied = 0
     skipped = 0
     with conn:

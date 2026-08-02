@@ -30,11 +30,23 @@ A target that already holds `activity.sqlite` is redelivered into. An absent or
 empty target is built fresh, in a sibling staging directory that is moved into
 place only on success.
 
+**Redelivery requires shared history.** Holding a database is not evidence of it,
+so the importer refuses a target whose ledger is non-empty and shares no event id
+with the incoming export. One receipt in common can only exist if this stream was
+delivered there before. Without that rule two targets would be silently corrupted:
+one built from a pre-id export (whose rows were given *new* local uuids, so a
+later export of the same source database matches nothing and lands twice), and one
+belonging to an unrelated history (whose `calendar_events` ids are small integers
+that collide readily, so a snapshot upsert would overwrite real series). An empty
+ledger is the one exception — there is nothing to contradict and nothing to lose.
+
 **Exports written before ids joined the envelope** carry no receipt. They still
 restore into a *fresh* target exactly as before — the restored rows get new local
 UUIDs — and the summary says `IDEMPOTENT REDELIVERY: NO`. Redelivering one into a
 populated target is refused rather than guessed at, because nothing distinguishes
-a replayed line from new history.
+a replayed line from new history. A target *built* from such an export is
+likewise a one-way destination: its new local UUIDs are not the source's, so no
+later export can be redelivered into it. Restore those to a fresh target.
 
 ## What the stream still cannot carry
 

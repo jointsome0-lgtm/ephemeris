@@ -118,6 +118,21 @@ def _claim_name(staged: Path, stamp: str) -> Path:
     raise OSError(f"every export name for {stamp} is taken (999 tried)")
 
 
+def _fsync_dir(path: Path) -> None:
+    """Flush a directory's own metadata: the entries created and removed in it.
+
+    Fsyncing the export's file descriptor persists its CONTENTS. The link that
+    gives those bytes a public name is a change to the directory, and survives a
+    power loss only once the directory itself is synced — otherwise the route
+    can report a durable backup that is gone after a reboot.
+    """
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def export_events(conn: sqlite3.Connection) -> tuple[Path, int]:
     """Write data/exports/events-<stamp>.jsonl atomically; return (path, count).
 
@@ -147,6 +162,9 @@ def export_events(conn: sqlite3.Connection) -> tuple[Path, int]:
         # After a successful link the bytes live under both names; dropping the
         # temporary one leaves the export. After a failure it drops the partial.
         staged.unlink(missing_ok=True)
+    # Both directory changes — the new name and the dropped temporary one — are
+    # persisted before this call reports an export the caller can rely on.
+    _fsync_dir(EXPORTS_DIR)
     return path, count
 
 

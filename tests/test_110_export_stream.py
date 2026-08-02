@@ -137,6 +137,29 @@ def test_recent_exports_cannot_see_a_staging_file(client, exports_dir):
     assert [entry["name"] for entry in export.recent_exports()] == [path.name]
 
 
+def test_the_export_directory_is_synced_before_success_is_reported(
+    client, exports_dir, monkeypatch
+):
+    """Fsyncing the file persists its bytes; the name they hang from is a
+    directory change, and an unsynced one can vanish in a power loss after the
+    route has already reported a durable backup."""
+    synced_dirs: list[str] = []
+    real_fsync = os.fsync
+
+    def record(fd):
+        if os.path.isdir(f"/proc/self/fd/{fd}"):
+            synced_dirs.append(os.readlink(f"/proc/self/fd/{fd}"))
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", record)
+    conn = _conn()
+    try:
+        export.export_events(conn)
+    finally:
+        conn.close()
+    assert synced_dirs == [str(exports_dir)]
+
+
 def test_the_finished_export_is_private(client, exports_dir):
     """Exports carry notes and check-in history (sec9): owner-only, always."""
     conn = _conn()
@@ -417,6 +440,60 @@ def test_a_pre_id_export_is_refused_on_redelivery(tmp_path):
     assert again.returncode != 0
     assert 'carry no "id"' in again.stderr
     assert _counts(target / "activity.sqlite")["daily_notes"] == 1
+
+
+def test_a_legacy_restored_target_refuses_a_modern_redelivery(tmp_path):
+    """The trap behind the fresh-target rule: restoring a pre-#17 export mints
+    NEW local uuids, so a later export of the same source database shares none of
+    them. Every record would read as new and the whole history would land twice."""
+    legacy = _write_stream(
+        tmp_path / "legacy.jsonl",
+        [{k: v for k, v in record.items() if k != "id"} for record in _STREAM],
+    )
+    target = tmp_path / "restored-legacy-then-modern"
+    assert _restore(legacy, target).returncode == 0
+    before = _counts(target / "activity.sqlite")
+
+    modern = _write_stream(tmp_path / "modern.jsonl", _STREAM)
+    run = _restore(modern, target)
+
+    assert run.returncode != 0
+    assert "shares no event id with this export" in run.stderr
+    assert _counts(target / "activity.sqlite") == before, "nothing was applied"
+
+
+def test_an_unrelated_target_is_refused_before_any_snapshot_lands(tmp_path):
+    """Holding a database is not evidence of shared history. Calendar series ids
+    are small integers that collide readily, and a snapshot upsert onto someone
+    else's series id is silent data loss."""
+    other = _write_stream(tmp_path / "other.jsonl", [{
+        "id": "99999999-9999-4999-8999-999999999999",
+        "timestamp": "2031-05-06T07:08:09+03:00",
+        "type": "daily_note_updated",
+        "payload_version": 1,
+        "payload": {"date": "2031-05-06", "text": "A different history"},
+    }])
+    target = tmp_path / "restored-other-history"
+    assert _restore(other, target).returncode == 0
+
+    columns = [row[1] for row in _query(
+        target / "activity.sqlite", "PRAGMA table_info(calendar_events)")]
+    series = dict.fromkeys(columns)
+    series.update({"id": 1, "title": "Invented Intruder", "all_day": 0,
+                   "freq": "once", "interval_n": 1, "start_date": "2031-05-06",
+                   "created_at": "2031-05-06T07:00:00+03:00"})
+    intruder = _write_stream(tmp_path / "intruder.jsonl", [*_STREAM, {
+        "timestamp": "2031-05-06T08:00:00+03:00",
+        "type": "calendar_event_series", "payload_version": 1, "payload": series,
+    }])
+
+    run = _restore(intruder, target)
+    assert run.returncode != 0
+    assert "shares no event id with this export" in run.stderr
+    assert _query(target / "activity.sqlite", "SELECT COUNT(*) FROM calendar_events") \
+        == [(0,)]
+    assert _query(target / "activity.sqlite",
+                  "SELECT text FROM daily_notes") == [("A different history",)]
 
 
 def test_a_corrupt_id_is_refused_rather_than_ignored(tmp_path):
