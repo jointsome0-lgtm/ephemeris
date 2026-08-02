@@ -618,6 +618,112 @@ def test_a_failed_restore_leaves_the_live_instance_where_it_was(
     assert not any(path.name.startswith(".restore-tmp-") for path in target.iterdir())
 
 
+def test_a_renamed_database_is_still_excluded_from_the_archive(
+    backup_db, instance, monkeypatch
+):
+    """`ACTIVITY_DB` may name any file, and both exclusions are derived from it.
+
+    A live database matching neither the literal `activity.sqlite` nor its
+    sidecars would otherwise be archived as ordinary content, and the restored
+    directory would hold both the verified snapshot and an unchecked raw copy
+    at the configured path — which is the one the next start opens.
+    """
+    renamed = instance / "ledger.sqlite"
+    (instance / "activity.sqlite").rename(renamed)
+    for suffix in ("-wal", "-shm"):
+        (instance / f"ledger.sqlite{suffix}").write_text("stale", encoding="utf-8")
+    monkeypatch.setattr(backup_db, "DB_PATH", renamed)
+
+    manifest = backup_db.verify(backup_db.create_backup())
+
+    assert not any(
+        name.startswith("ledger.sqlite") for name in manifest["instance_files"]
+    ), "the snapshot is the consistent copy; the raw file must not ride along"
+    assert manifest["excluded"] == ["backups/", "exports/", "ledger.sqlite*"], (
+        "and the manifest names the file it actually left out"
+    )
+
+
+def test_a_relative_data_dir_still_excludes_its_own_backups(
+    backup_db, instance, monkeypatch
+):
+    """`ACTIVITY_DATA_DIR` may be configured relative to the working directory.
+
+    Compared unresolved, a walked path and an absolute exclusion are simply
+    different strings that never match — and the failure compounds silently:
+    every run archives the sets before it, so each backup is larger than the
+    last and holds copies of copies.
+    """
+    monkeypatch.chdir(instance.parent)
+    relative = Path(instance.name)
+    monkeypatch.setattr(backup_db, "DATA_DIR", relative)
+    monkeypatch.setattr(backup_db, "DB_PATH", relative / "activity.sqlite")
+    monkeypatch.setattr(backup_db, "BACKUPS_DIR", relative / "backups")
+    (instance / "exports").mkdir(exist_ok=True)
+    (instance / "exports" / "events-2031-01-01-000000.jsonl").write_text(
+        "", encoding="utf-8"
+    )
+
+    backup_db.create_backup()  # a first set, for the second run to trip over
+    manifest = backup_db.verify(backup_db.create_backup())
+
+    assert not any(name.startswith("backups/") for name in manifest["instance_files"])
+    assert not any(name.startswith("exports/") for name in manifest["instance_files"])
+    assert not any(
+        name.startswith("activity.sqlite") for name in manifest["instance_files"]
+    )
+    assert manifest["excluded"] == ["backups/", "exports/", "activity.sqlite*"]
+
+
+def test_a_forced_restore_displaces_instance_data_the_set_never_held(
+    backup_db, instance, tmp_path
+):
+    """A restore promises the instance the set describes, not that instance
+    merged with whatever the directory accumulated afterwards.
+
+    Displacing only the names the archive carries leaves a `lessons/` tree
+    created after the backup standing beside a database that knows nothing
+    about it. `backups/` and `exports/` are the exception on both sides: never
+    archived, so displacing them would destroy state no restore can give back.
+    """
+    for path in sorted((instance / "lessons").rglob("*"), reverse=True):
+        path.unlink() if path.is_file() else path.rmdir()
+    (instance / "lessons").rmdir()
+    manifest_path = backup_db.create_backup()
+    assert backup_db.load_manifest(manifest_path)["instance_files"] == []
+
+    target = tmp_path / "live"
+    (target / "lessons" / "newer-slug").mkdir(parents=True)
+    (target / "lessons" / "newer-slug" / "index.html").write_text(
+        "written after the backup", encoding="utf-8"
+    )
+    (target / "activity.sqlite").write_text("the live ledger", encoding="utf-8")
+    (target / "backups").mkdir()
+    (target / "backups" / "someones-set.manifest.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(backup_db.BackupError) as raised:
+        backup_db.restore(manifest_path, target)
+    assert "lessons" in str(raised.value), "the newer tree is seen as occupancy"
+
+    result = backup_db.restore(manifest_path, target, force=True)
+
+    assert not (target / "lessons").exists(), (
+        "a tree the restored database has no rows for does not stay behind"
+    )
+    assert sorted(result["moved_aside"]) == sorted(
+        path.name for path in target.iterdir() if ".pre-restore-" in path.name
+    )
+    kept = [path for path in target.iterdir() if path.name.startswith("lessons.")]
+    assert kept and (kept[0] / "newer-slug" / "index.html").read_text(
+        encoding="utf-8"
+    ) == "written after the backup", "displaced, never deleted"
+    assert (target / "backups" / "someones-set.manifest.json").is_file(), (
+        "and the backup directory — often where the set being restored lives — "
+        "is left exactly where it was"
+    )
+    assert counts(target) == counts(instance)
+
+
 def test_verify_rejects_a_manifest_that_lies_about_the_schema_version(
     backup_db, instance
 ):

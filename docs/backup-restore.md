@@ -38,9 +38,11 @@ under `excluded`:
 - `backups/` — this directory; including it would nest every set in the next.
 - `exports/` — JSONL exports are generated *from* the database that is already
   in the set, so they cost size and add no recoverable state.
-- `activity.sqlite` and its `-wal` / `-shm` sidecars — the snapshot is the
-  consistent copy of those, and restoring a live `-wal` beside it would be
-  corruption dressed as completeness.
+- the database and its `-wal` / `-shm` sidecars — the snapshot is the consistent
+  copy of those, and restoring a live `-wal` beside it would be corruption
+  dressed as completeness. Read from `ACTIVITY_DB`, not from the name
+  `activity.sqlite`, so a renamed ledger is excluded too; the manifest's
+  `excluded` list names the file this particular set left out.
 
 **The manifest is written last, by rename.** That one rule is the durability
 contract: a manifest on disk is a promise that the two files it names are
@@ -158,11 +160,20 @@ directory inside the target and swaps them in by rename once they are complete,
 so a failure partway — a full disk is the ordinary one — leaves the existing
 instance where it was rather than half-replaced.
 
-By default it **refuses** a directory that already holds `activity.sqlite` or
-any top-level name the archive would write into. Pass `--force` to restore
-anyway; what is there is moved aside as `*.pre-restore-<stamp>` — including the
-WAL sidecars, which would otherwise be replayed into the restored database — and
-kept, never deleted. Remove those by hand once you are satisfied.
+By default it **refuses** a directory that already holds anything of its own.
+Pass `--force` to restore anyway; what is there is moved aside as
+`*.pre-restore-<stamp>` and kept, never deleted. Remove those by hand once you
+are satisfied.
+
+`--force` displaces **everything the backup side would have archived**, not only
+the names this particular set carries — the two lists are the same list. A
+`lessons/` tree created after the backup was taken would otherwise stay put
+beside a database that has no rows for it, and the result is a hybrid wearing
+the word "restored". The WAL sidecars go the same way, which is the point: left
+in place they would be replayed into the restored database. What stays is what
+the archive never held — `backups/` (often where the set you are restoring
+lives) and `exports/` — plus anything already moved aside by an earlier
+restore.
 
 To rehearse a restore without risking the live instance, restore into a scratch
 directory and start the app against it:

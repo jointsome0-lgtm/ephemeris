@@ -60,6 +60,14 @@ from app.db import DATA_DIR, DB_PATH, now_iso, now_stamp  # noqa: E402
 BACKUPS_DIR = DATA_DIR / "backups"
 DB_FILENAME = "activity.sqlite"
 
+EXCLUDED_DIRS = ("backups", "exports")
+"""Top-level directories that are neither archived nor replaced by a restore.
+
+`backups/` would nest every set inside the next one; `exports/` is generated
+FROM the database that is already in the set. Everything else under the data
+directory is instance state and belongs to both halves of this contract — the
+archive puts it in, and a forced restore moves it aside."""
+
 MANIFEST_VERSION = 1
 """Bumped when the manifest's shape changes. A reader that meets a version it
 does not know refuses the set rather than guessing at a field it cannot see."""
@@ -217,21 +225,81 @@ def instance_files() -> list[str]:
     consistent copy of those, and restoring a live `-wal` beside it would be
     corruption dressed as completeness.
     """
-    if not DATA_DIR.is_dir():
+    root = DATA_DIR.resolve()
+    if not root.is_dir():
         return []
-    skip_dirs = {BACKUPS_DIR.resolve(), (DATA_DIR / "exports").resolve()}
-    skip_files = {DB_FILENAME} | {DB_FILENAME + suffix for suffix in _SIDECARS}
+    skip_dirs = _excluded_dirs(root)
+    skip_files = _excluded_db_names(root)
     found = []
-    for path in DATA_DIR.rglob("*"):
-        if not path.is_file() or path.is_symlink():
-            continue
-        if any(parent in skip_dirs for parent in path.parents):
-            continue
-        relative = path.relative_to(DATA_DIR)
-        if relative.as_posix() in skip_files:
-            continue
-        found.append(relative.as_posix())
+    # os.walk, not rglob: pruning `dirnames` in place is what keeps this out of
+    # `backups/` entirely rather than walking it and discarding the results —
+    # the archive is being written in there as this runs. It also never follows
+    # a directory symlink, so a link pointing at an ancestor cannot loop.
+    for dirpath, dirnames, filenames in os.walk(root):
+        here = Path(dirpath)
+        dirnames[:] = [
+            name for name in dirnames
+            if (here / name).resolve() not in skip_dirs
+            and not (here / name).is_symlink()
+        ]
+        for name in filenames:
+            path = here / name
+            if path.is_symlink() or not path.is_file():
+                continue
+            relative = path.relative_to(root).as_posix()
+            if relative in skip_files:
+                continue
+            found.append(relative)
     return sorted(found)
+
+
+def _excluded_dirs(root: Path) -> set[Path]:
+    """Resolved directories the archive never enters.
+
+    Resolved on BOTH sides of every comparison. `ACTIVITY_DATA_DIR` may be
+    configured as a relative path, in which case a walked path and an absolute
+    exclusion never compare equal — and the failure is silent and compounding:
+    each run archives its own staging files and the previous sets, so backups
+    nest inside backups.
+    """
+    return {BACKUPS_DIR.resolve()} | {(root / name).resolve() for name in EXCLUDED_DIRS}
+
+
+def _excluded_db_names(root: Path) -> set[str]:
+    """Relative names of the database and its sidecars, when it lives under root.
+
+    Derived from `DB_PATH`, not from the literal `activity.sqlite`: `ACTIVITY_DB`
+    may name any file, and a differently-named live database would otherwise be
+    archived as ordinary content. A restore would then hold both the verified
+    snapshot AND an unchecked raw copy at the configured path — and restarting
+    with the same override would open the raw one.
+
+    A database configured OUTSIDE the data directory excludes nothing; it was
+    never in the walk.
+    """
+    try:
+        base = DB_PATH.resolve().relative_to(root).as_posix()
+    except ValueError:
+        return set()
+    return {base} | {base + suffix for suffix in _SIDECARS}
+
+
+def excluded_summary() -> list[str]:
+    """How the manifest describes what it left out, for a reader months later.
+
+    Derived from the same values the walk used, so a set taken with a renamed
+    `ACTIVITY_DB` says which file it means instead of naming a default that was
+    never on this disk.
+    """
+    root = DATA_DIR.resolve()
+    names = [f"{name}/" for name in EXCLUDED_DIRS]
+    try:
+        names.append(DB_PATH.resolve().relative_to(root).as_posix() + "*")
+    except ValueError:
+        # The database lives outside the data directory; the walk never saw it,
+        # so there was nothing to exclude.
+        pass
+    return names
 
 
 def archive_instance(dest: Path, names: list[str]) -> tuple[list[str], list[str]]:
@@ -330,7 +398,7 @@ def create_backup() -> Path:
             "instance_files_vanished": vanished,
             # Self-describing, so a reader never has to guess whether an absent
             # path was excluded by contract or lost by accident.
-            "excluded": ["backups/", "exports/", DB_FILENAME + "*"],
+            "excluded": excluded_summary(),
         }
         staged_manifest.write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
@@ -511,6 +579,32 @@ def prune(keep: int) -> tuple[list[str], list[Path], list[Path]]:
 # --- restoring -------------------------------------------------------------
 
 
+def restore_owned(target: Path) -> list[Path]:
+    """Everything in `target` that a restore replaces, top level only.
+
+    The complement of what the backup side excludes, and deliberately so: a
+    restore promises the instance the set describes, not a merge of that set
+    with whatever the directory happened to accumulate afterwards. Enumerating
+    only the names the archive carries would leave a `lessons/` tree created
+    after the backup — or present when the backup held none — sitting beside a
+    database that knows nothing about it, which is a hybrid instance wearing the
+    word "restored".
+
+    `backups/` and `exports/` stay: the first is usually where the set being
+    restored lives, and both are excluded from the archive, so displacing them
+    would destroy state no restore can give back. Previously preserved copies
+    stay too, or a second forced restore would move aside the first one's.
+    """
+    if not target.is_dir():
+        return []
+    return sorted(
+        path for path in target.iterdir()
+        if path.name not in EXCLUDED_DIRS
+        and ".pre-restore-" not in path.name
+        and not path.name.startswith(".restore-tmp-")
+    )
+
+
 def _reserve_asides(paths: list[Path], stamp: str) -> list[Path]:
     """A free `.pre-restore-<stamp>` name for each path, none colliding.
 
@@ -548,20 +642,17 @@ def restore(manifest_path: Path, target: Path, *, force: bool = False) -> dict:
     target.mkdir(parents=True, exist_ok=True)
 
     db_target = target / DB_FILENAME
-    # Every top-level name the archive would write into, so nothing the restore
-    # is about to merge into gets silently half-overwritten. Enumerated from the
-    # manifest rather than from a fixed list, for the same reason the backup
-    # side enumerates by exclusion: the set of directories an instance holds
-    # grows, and a hardcoded one goes stale between edits.
     tops = sorted({name.split("/", 1)[0] for name in manifest["instance_files"]})
-    occupied = [
-        path for path in [db_target] + [target / name for name in tops]
-        if path.exists()
-    ]
+    # Everything the restore takes over, not just the names this set happens to
+    # carry — see restore_owned().
+    occupied = restore_owned(target)
     if occupied and not force:
+        shown = [path.name for path in occupied[:5]]
+        if len(occupied) > 5:
+            shown.append(f"and {len(occupied) - 5} more")
         raise BackupError(
             "target already holds "
-            + ", ".join(path.name for path in occupied)
+            + ", ".join(shown)
             + f" — refusing to overwrite {target}.\n"
             "  Restore into an empty directory, or pass --force to move the "
             "existing files aside (they are kept, not deleted)."
@@ -578,14 +669,14 @@ def restore(manifest_path: Path, target: Path, *, force: bool = False) -> dict:
         os.chmod(staged_db, 0o600)
         _extract_instance(directory / manifest["files"]["instance"]["name"], staging)
 
-        # The sidecars go first: a -wal left beside a moved-away database would
-        # be replayed into the restored one, which is corruption dressed as
-        # recovery. Every destination is chosen BEFORE anything moves, because
+        # Everything moves aside before anything moves in, which is also what
+        # takes the WAL sidecars out of the way: a `-wal` left beside a replaced
+        # database would be replayed into it, corruption dressed as recovery.
+        # Every destination is chosen BEFORE anything moves, because
         # `now_stamp()` resolves to the second: an immediate retry of a forced
         # restore would otherwise pick the same aside names and replace straight
         # over the copies the first attempt had just preserved.
-        sidecars = [db_target.with_name(DB_FILENAME + s) for s in _SIDECARS]
-        displaced = [path for path in sidecars if path.exists()] + occupied
+        displaced = occupied
         asides = _reserve_asides(displaced, now_stamp())
         moved: list[Path] = []
         try:
