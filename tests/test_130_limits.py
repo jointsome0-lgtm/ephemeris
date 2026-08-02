@@ -29,7 +29,7 @@ import json
 import os
 import sqlite3
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -753,13 +753,26 @@ def backups_dir(tmp_path, monkeypatch):
     return target
 
 
+def _at(day: date, hour: int) -> str:
+    """`day` at `hour` o'clock, written the way the backup script writes it.
+
+    In the LEDGER's zone, with that zone's offset — not a hardcoded one. The
+    panel dates a backup in `app_tz()` and subtracts it from `today_str()`, so
+    a fixture that pinned "+03:00" would land on the previous day on a UTC
+    machine and make the age off by one there and only there.
+    """
+    tz = storage.app_tz()
+    moment = datetime(day.year, day.month, day.day, hour)
+    return moment.replace(tzinfo=tz).isoformat() if tz else moment.astimezone().isoformat()
+
+
 def _write_manifest(directory, when: date, *, stamp: str | None = None,
                     db_bytes: int = 4096, files_bytes: int = 2048) -> None:
     """A manifest in the shape scripts/backup_db.py publishes."""
     stamp = stamp or f"{when.isoformat()}-120000"
     (directory / f"activity-{stamp}.manifest.json").write_text(json.dumps({
         "manifest_version": 1,
-        "created_at": f"{when.isoformat()}T12:00:00+03:00",
+        "created_at": _at(when, 12),
         "stamp": stamp,
         "files": {
             "database": {"name": f"activity-{stamp}.sqlite", "bytes": db_bytes,
@@ -907,7 +920,7 @@ def test_the_newest_backup_is_the_one_that_says_it_is_newest(client, backups_dir
     # Named an hour behind the one above, created an hour after it.
     (backups_dir / "activity-2038-06-01-020000.manifest.json").write_text(
         json.dumps({"manifest_version": storage.MANIFEST_VERSION,
-                    "created_at": f"{today_str()}T02:00:00+03:00",
+                    "created_at": _at(date.fromisoformat(today_str()), 2),
                     "stamp": "2038-06-01-020000",
                     "files": {
                         "database": {"name": "activity-2038-06-01-020000.sqlite",
@@ -957,6 +970,35 @@ def test_a_backup_is_dated_in_the_ledgers_zone_not_the_hosts(client, backups_dir
     assert storage.newest_backup()["created"].date() == date(2042, 3, 4)
 
 
+def test_two_backups_inside_a_dst_fallback_are_ordered_by_instant(client,
+                                                                   backups_dir,
+                                                                   monkeypatch):
+    """Aware datetimes sharing one tzinfo compare by WALL time, by documented
+    rule — so the hour that repeats is the hour this ordering could invert.
+
+    01:15 after a fall-back is a later instant than the 01:30 before it, and
+    both normalize into the same ZoneInfo. Comparing the datetimes would
+    silently pick the earlier set, at the wrong size and on the wrong date, in
+    exactly the hour nobody is checking the panel against a stopwatch.
+    """
+    from zoneinfo import ZoneInfo
+
+    monkeypatch.setattr(storage, "app_tz", lambda: ZoneInfo("America/New_York"))
+    for name, moment in (("activity-2042-11-02-013000.manifest.json",
+                          "2042-11-02T01:30:00-04:00"),   # earlier instant
+                         ("activity-2042-11-02-011500.manifest.json",
+                          "2042-11-02T01:15:00-05:00")):  # later instant
+        (backups_dir / name).write_text(json.dumps({
+            "manifest_version": storage.MANIFEST_VERSION,
+            "created_at": moment,
+            "files": {"database": {"name": "a.sqlite", "bytes": 1},
+                      "instance": {"name": "b.tar.gz", "bytes": 1}}}),
+            encoding="utf-8")
+
+    found = storage.newest_backup()
+    assert found["name"] == "activity-2042-11-02-011500.manifest.json"
+
+
 def test_a_naive_timestamp_does_not_break_the_comparison(client, backups_dir):
     """One manifest written without an offset must not make the panel raise.
 
@@ -976,6 +1018,29 @@ def test_a_naive_timestamp_does_not_break_the_comparison(client, backups_dir):
     found = storage.newest_backup()
     assert found is not None
     assert found["name"] == "activity-2039-01-01-020000.manifest.json"
+
+
+def test_a_same_second_collision_is_ordered_by_its_number(client, exports_dir):
+    """`_claim_name` writes the second export of one second as `-2`, and `-`
+    sorts before `.` — so by string order the plain name would look newer than
+    the file written after it, and be listed first and evicted last.
+
+    Two exports in one second are not hypothetical: the stamp resolves to the
+    second, which is why the suffix exists at all.
+    """
+    names = ["events-2043-09-09-121212.jsonl",
+             "events-2043-09-09-121212-2.jsonl",
+             "events-2043-09-09-121212-10.jsonl",
+             "events-2043-09-09-121213.jsonl"]
+    for name in names:
+        (exports_dir / name).write_text("{}\n")
+
+    assert [p.name for p in export.existing_exports()] == [
+        "events-2043-09-09-121213.jsonl",       # the later second, first
+        "events-2043-09-09-121212-10.jsonl",    # then that second, newest back
+        "events-2043-09-09-121212-2.jsonl",
+        "events-2043-09-09-121212.jsonl",
+    ]
 
 
 def test_retention_spares_an_export_another_request_is_still_streaming(
@@ -1008,24 +1073,7 @@ def test_retention_spares_an_export_another_request_is_still_streaming(
     assert second.exists()
 
 
-@pytest.mark.parametrize("moment", [
-    "0001-01-01T00:00:00",          # naive, at the datetime floor
-    "0001-01-01T00:00:00+03:00",    # aware, converting off the end of the range
-    "9999-12-31T23:59:59.999999",
-    "9999-12-31T23:59:59-11:00",
-])
-def test_a_timestamp_that_cannot_be_normalized_skips_its_manifest(
-        client, backups_dir, moment):
-    """Parsing and comparing are two chances to fail, and the second one is the
-    dangerous one.
-
-    A boundary timestamp parses cleanly and then raises when it is moved into
-    local time — and because every candidate is compared, one such file would
-    500 every GET /export while a perfectly good older set sat behind it. So
-    "cannot be normalized" is decided once, where "cannot be parsed" is.
-    """
-    good = date.fromisoformat(today_str()) - timedelta(days=1)
-    _write_manifest(backups_dir, good, stamp="2000-01-01-000001")
+def _write_boundary_manifest(backups_dir, moment: str) -> None:
     (backups_dir / "activity-2999-01-01-000005.manifest.json").write_text(
         json.dumps({"manifest_version": storage.MANIFEST_VERSION,
                     "created_at": moment,
@@ -1033,9 +1081,52 @@ def test_a_timestamp_that_cannot_be_normalized_skips_its_manifest(
                               "instance": {"name": "b.tar.gz", "bytes": 1}}}),
         encoding="utf-8")
 
+
+@pytest.mark.parametrize("moment", [
+    "0001-01-01T00:00:00+03:00",     # converting to UTC falls off the bottom
+    "9999-12-31T23:59:59-11:00",     # and this one off the top
+])
+def test_a_timestamp_that_cannot_be_normalized_skips_its_manifest(
+        client, backups_dir, monkeypatch, moment):
+    """Parsing and converting are two chances to fail, and the second one is the
+    dangerous one.
+
+    A boundary timestamp parses cleanly and then raises when it is moved into
+    the ledger's zone — and because every candidate is compared, one such file
+    would 500 every GET /export while a perfectly good older set sat behind it.
+    So "cannot be normalized" is decided once, where "cannot be parsed" is.
+
+    The zone is pinned, because which values overflow depends on which
+    direction the conversion moves them; the behaviour under test does not.
+    """
+    from zoneinfo import ZoneInfo
+
+    monkeypatch.setattr(storage, "app_tz", lambda: ZoneInfo("UTC"))
+    good = date.fromisoformat(today_str()) - timedelta(days=1)
+    _write_manifest(backups_dir, good, stamp="2000-01-01-000001")
+    _write_boundary_manifest(backups_dir, moment)
+
     found = storage.newest_backup()
     assert found is not None
     assert found["name"] == "activity-2000-01-01-000001.manifest.json"
+    assert client.get("/export").status_code == 200
+
+
+@pytest.mark.parametrize("moment", ["0001-01-01T00:00:00",
+                                    "9999-12-31T23:59:59.999999"])
+def test_a_boundary_timestamp_never_reaches_the_page_as_an_error(
+        client, backups_dir, moment):
+    """Whether a naive boundary value survives conversion depends on which zone
+    the host is in. Whether the page survives it must not.
+
+    So this asserts the invariant rather than the outcome: read it, render it,
+    and never 500 — on the machine this runs on and on the one it doesn't.
+    """
+    _write_manifest(backups_dir, date.fromisoformat(today_str()) - timedelta(days=1),
+                    stamp="2000-01-01-000001")
+    _write_boundary_manifest(backups_dir, moment)
+
+    storage.newest_backup()   # must not raise
     assert client.get("/export").status_code == 200
 
 

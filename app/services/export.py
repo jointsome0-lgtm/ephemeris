@@ -188,15 +188,35 @@ def existing_exports() -> list[Path]:
     One ordering, used by retention, by the recent list and by the status
     panel, so what the page calls "the newest 30" is exactly what retention
     keeps. The stamp is the whole variable part of the name and sorts
-    chronologically; a within-the-second collision suffix ("-2") sorts just
-    before its base name, which is immaterial — they describe the same second.
+    chronologically. The collision suffix is read as the number it is, not as
+    text: `_claim_name` gives the second export of one second `-2`, and by
+    string order `-` sorts before `.`, so the plain name would come out ahead
+    of the suffix that was written after it — the older snapshot labelled as
+    the newest, and evicted last instead of first.
+
     The `events-*` glob cannot match a `.events-*.jsonl.tmp` still being
     written, so an export in progress is neither counted nor deleted.
     """
     if not EXPORTS_DIR.is_dir():
         return []
-    return sorted(EXPORTS_DIR.glob("events-*.jsonl"),
-                  key=lambda p: p.name, reverse=True)
+    return sorted(EXPORTS_DIR.glob("events-*.jsonl"), key=_order, reverse=True)
+
+
+def _order(path: Path) -> tuple[str, int]:
+    """(stamp, collision number) — the name read as what `_claim_name` wrote.
+
+    An unparseable tail sorts as 0, below every real export of that second: a
+    name this module did not write has no claim to being the newest thing in
+    the directory.
+    """
+    stem = path.name[len("events-"):-len(".jsonl")]
+    # A stamp's own last field is six digits (%H%M%S); a collision suffix is at
+    # most three, since _claim_name gives up at 999. That is what tells the two
+    # apart without re-deriving the stamp format here.
+    stamp, sep, tail = stem.rpartition("-")
+    if sep and tail.isdigit() and len(tail) < 4:
+        return stamp, int(tail)
+    return stem, 1
 
 
 def _in_flight(path: Path) -> bool:

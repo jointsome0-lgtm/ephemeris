@@ -189,10 +189,13 @@ def newest_backup() -> dict | None:
             sets.append(found)
     if not sets:
         return None
+    # Ordered by absolute instant, not by the datetime itself: two aware values
+    # sharing one tzinfo are compared by WALL time (a documented rule), so
+    # 01:15 after a fall-back would lose to the 01:30 that came before it —
+    # exactly the hour when this function's answer is hardest to check by eye.
     # Name descending as the tie-break, so two sets stamped in the same second
-    # still resolve the same way on every render. Every `created` is already
-    # aware and local (`_parse_moment`), so they are all comparable.
-    return max(sets, key=lambda s: (s["created"], s["name"]))
+    # still resolve the same way on every render.
+    return max(sets, key=lambda s: (s["created"].timestamp(), s["name"]))
 
 
 def free_space() -> int | None:
