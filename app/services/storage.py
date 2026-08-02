@@ -15,8 +15,9 @@ exactly that promise).
 Backups are read through their manifests, which is the same rule
 `scripts/backup_db.py` states for itself: a set exists when its manifest does,
 and the manifest names its own members, so this module never has to know how a
-backup file is spelled. The newest manifest that parses wins; older ones behind
-a corrupt file still answer the question "when was the last good backup?".
+backup file is spelled. The newest manifest the *restore tooling* would accept
+wins; older ones behind a corrupt or unrecognized file still answer the
+question "when was the last good backup?".
 """
 from __future__ import annotations
 
@@ -35,6 +36,20 @@ from . import export
 # ignored it would understate the ledger by however much has been written since
 # the app last quieted down.
 _SIDECARS = ("-wal", "-shm")
+
+MANIFEST_VERSION = 1
+"""The manifest shape `scripts/backup_db.py` writes and can restore.
+
+Spelled here rather than imported because `app/` must not depend on `scripts/`;
+`tests/test_130_limits.py` reads the script's own constant and fails if the two
+ever disagree.
+
+The panel skips any other version for a specific reason: the question it
+answers is "is there a backup I could restore?", and `load_manifest()` refuses
+every version but its own. Reporting a set the bundled tooling would decline is
+worse than reporting none — it suppresses the missing-backup warning and hides
+an older set that actually works.
+"""
 
 
 def _size_of(path: Path) -> int:
@@ -82,6 +97,8 @@ def _read_manifest(path: Path) -> dict | None:
     except (OSError, ValueError):
         return None
     if not isinstance(manifest, dict):
+        return None
+    if manifest.get("manifest_version") != MANIFEST_VERSION:
         return None
     created = _parse_moment(manifest.get("created_at"))
     if created is None:

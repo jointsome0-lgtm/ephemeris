@@ -45,7 +45,8 @@ def _require_writable_list(conn: sqlite3.Connection, list_id: int) -> None:
 
 
 def _clean(
-    title: str | None, due_date: str | None, priority, note: str | None = None
+    title: str | None, due_date: str | None, priority, note: str | None = None,
+    current_note: str | None = None,
 ) -> tuple[str, str | None, int]:
     title = (title or "").strip()
     if not title:
@@ -54,7 +55,15 @@ def _clean(
     # The note is only validated here, not normalized: it is stored as typed
     # (leading whitespace can be deliberate in a note) and both writers pass it
     # through untouched, so there is nothing to hand back.
-    limits.check(note, limits.TASK_NOTE, "task note", TaskError)
+    #
+    # Only an actual change is measured. `update_task` refills every unsupplied
+    # column from the current row, so validating unconditionally would refuse a
+    # rename, a reschedule or a list move on a task whose note predates the cap
+    # — the user would have to destroy old text to fix a due date. A note that
+    # is already stored has already been accepted; the cap governs what is
+    # written next. Same rule as the list-membership check in `update_task`.
+    if note != current_note:
+        limits.check(note, limits.TASK_NOTE, "task note", TaskError)
     due_date = (due_date or "").strip() or None
     if due_date is not None and not is_valid_date(due_date):
         raise TaskError("invalid due date (expected YYYY-MM-DD)")
@@ -163,7 +172,8 @@ def update_task(conn: sqlite3.Connection, task_id: int, **fields) -> None:
     due_date = fields.get("due_date", row["due_date"])
     priority = fields.get("priority", row["priority"])
     note = fields.get("note", row["note"])
-    title, due_date, priority = _clean(title, due_date, priority, note)
+    title, due_date, priority = _clean(title, due_date, priority, note,
+                                       current_note=row["note"])
     list_id = fields.get("list_id", row["list_id"])
     if list_id is not None and list_id != row["list_id"]:
         _require_writable_list(conn, list_id)

@@ -269,6 +269,64 @@ def test_an_over_long_list_name_is_refused_by_its_route(client):
     assert too_long.status_code == 303 and _flash(too_long) == "list name too long"
 
 
+def test_a_task_note_that_predates_the_cap_does_not_block_unrelated_edits(client):
+    """A cap governs what is written next, not what is already stored.
+
+    Every note in the database predates this cap — there was no cap. Both task
+    writers refill unsupplied columns from the current row, so measuring the
+    note on every update would mean a task with a long old note could not be
+    renamed, rescheduled or moved until the user destroyed the text. Rejecting
+    old data to accept a due-date change is not a limit, it is a hostage.
+    """
+    conn = _conn()
+    try:
+        task_id = tasks.create_task(conn, "#23 grandfathered", note="short")
+        legacy = "x" * (limits.TASK_NOTE + 500)
+        conn.execute("UPDATE tasks SET note = ? WHERE id = ?", (legacy, task_id))
+        conn.commit()
+
+        # Unrelated edits: the over-cap note rides along untouched.
+        tasks.update_task(conn, task_id, title="#23 renamed")
+        tasks.update_task(conn, task_id, due_date=today_str())
+        row = tasks.get_task(conn, task_id)
+        assert row["title"] == "#23 renamed"
+        assert row["note"] == legacy, "the old note must survive an unrelated edit"
+
+        # Writing a new over-cap note is still refused.
+        with pytest.raises(tasks.TaskError, match="task note too long"):
+            tasks.update_task(conn, task_id, note="y" * (limits.TASK_NOTE + 1))
+        # And shortening it to something legal works, which is the way out.
+        tasks.update_task(conn, task_id, note="brief")
+        assert tasks.get_task(conn, task_id)["note"] == "brief"
+    finally:
+        conn.close()
+
+
+def test_an_event_note_that_predates_the_cap_does_not_block_a_drag(client):
+    """The same rule on the calendar, where the refill also carries a drag:
+    `move_event` is an `update_event` with one new field, so a legacy note
+    would have made an old event undraggable."""
+    conn = _conn()
+    try:
+        event_id = cal.create_event(conn, title="#23 legacy event",
+                                    start_date=today_str(), all_day=True)
+        legacy = "x" * (limits.EVENT_NOTE + 500)
+        conn.execute("UPDATE calendar_events SET note = ? WHERE id = ?",
+                     (legacy, event_id))
+        conn.commit()
+
+        moved_to = (date.fromisoformat(today_str()) + timedelta(days=3)).isoformat()
+        cal.move_event(conn, event_id, moved_to)
+        row = cal.get_event(conn, event_id)
+        assert row["start_date"] == moved_to
+        assert row["note"] == legacy
+
+        with pytest.raises(cal.CalendarEventError, match="event note too long"):
+            cal.update_event(conn, event_id, note="y" * (limits.EVENT_NOTE + 1))
+    finally:
+        conn.close()
+
+
 # --- 2. the request-body ceiling -------------------------------------------
 
 _OVER = b"x" * (3 * 1024 * 1024)   # comfortably past the 2 MiB ceiling
@@ -758,14 +816,50 @@ def test_a_manifest_whose_files_field_is_not_a_mapping_is_skipped(
 
 
 def test_a_manifest_that_names_no_files_still_dates_the_set(client, backups_dir):
-    """Absent `files` is not malformed — an older writer that listed no members
-    still answers "when was the last backup?", which is the panel's question."""
+    """Absent `files` is not malformed — a manifest that listed no members still
+    answers "when was the last backup?", which is the panel's question."""
     (backups_dir / "activity-2001-02-03-040506.manifest.json").write_text(
-        json.dumps({"created_at": "2001-02-03T04:05:06+03:00"}), encoding="utf-8")
+        json.dumps({"manifest_version": storage.MANIFEST_VERSION,
+                    "created_at": "2001-02-03T04:05:06+03:00"}), encoding="utf-8")
 
     found = storage.newest_backup()
     assert found is not None
     assert found["bytes"] > 0   # the manifest's own size, nothing claimed
+
+
+def test_the_panels_manifest_version_is_the_one_the_script_writes():
+    """A tripwire, not behaviour: the panel spells the version rather than
+    importing it, because app/ must not depend on scripts/. If the backup
+    format is bumped and this is not, the panel starts calling every new backup
+    unreadable — the loudest possible way to be wrong, but only if it is caught
+    here rather than on the page."""
+    import scripts.backup_db as backup_db
+
+    assert storage.MANIFEST_VERSION == backup_db.MANIFEST_VERSION
+
+
+@pytest.mark.parametrize("version", [2, "1", None, 0])
+def test_a_manifest_from_an_unsupported_version_is_not_reported_as_a_backup(
+        client, backups_dir, version):
+    """The panel answers "is there a backup I could restore?", and
+    `backup_db.load_manifest()` refuses every version but its own.
+
+    So a newer set the bundled tooling would decline must not be shown as the
+    newest backup: it would silence the missing-backup warning and hide the
+    older set that actually restores — telling the user they are covered on the
+    one day they are not.
+    """
+    good = date.fromisoformat(today_str()) - timedelta(days=1)
+    _write_manifest(backups_dir, good, stamp="2000-01-01-000001")
+    body = {"created_at": "2999-01-01T00:00:03+03:00", "files": {}}
+    if version is not None:
+        body["manifest_version"] = version
+    (backups_dir / "activity-2999-01-01-000003.manifest.json").write_text(
+        json.dumps(body), encoding="utf-8")
+
+    found = storage.newest_backup()
+    assert found is not None
+    assert found["name"] == "activity-2000-01-01-000001.manifest.json"
 
 
 def test_low_free_space_is_warned_about(client, backups_dir, monkeypatch):
