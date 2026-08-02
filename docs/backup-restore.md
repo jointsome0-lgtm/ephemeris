@@ -41,6 +41,9 @@ under `excluded`:
 - `*.pre-restore-*` — copies a forced restore preserved. They are scrap you
   delete once satisfied, not instance state, and archiving them would make every
   backup after a forced restore carry a second copy of the instance it replaced.
+- `.restore-tmp-*` — the tree a restore builds before swapping it in. One only
+  survives a restore that was killed; it holds a copy of a backup set, so it is
+  reported and left for you rather than archived or deleted.
 - the database and its `-wal` / `-shm` sidecars — the snapshot is the consistent
   copy of those, and restoring a live `-wal` beside it would be corruption
   dressed as completeness. Read from `ACTIVITY_DB`, not from the name
@@ -91,6 +94,12 @@ holds that reservation until the whole set is on disk. A retention pass in one
 process therefore leaves another's unfinished work alone — a manual run started
 while the timer's is going does not disturb it, and neither loses its name to
 the other. Both appear as complete sets when they finish.
+
+It also clears up after a run that was killed outright — power loss, `SIGKILL`,
+a full disk — which leaves a half-written copy under a hidden `.staged-*` name
+that no other listing shows. Nothing else on the machine writes those names, so
+they are removed rather than reported, and a run still using its own are left
+alone.
 
 **Retention deletes only what a manifest claims.** Files without one are listed
 and left in place, because this directory may already hold `activity-*.sqlite`

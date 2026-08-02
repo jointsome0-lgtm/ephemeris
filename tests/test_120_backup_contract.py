@@ -655,6 +655,67 @@ def test_retention_never_sweeps_a_name_claim_another_run_still_holds(
     assert left == []
 
 
+def test_retention_sweeps_the_staged_files_a_killed_run_left(
+    backup_db, instance, monkeypatch
+):
+    """A run killed between staging and publishing has no `finally` to run.
+
+    What it leaves is a full copy of the database under a dot-prefixed name that
+    every other listing here hides — invisible, once per interruption, until the
+    disk fills. Nothing but `_stage` writes that name, so unlike an unclaimed
+    snapshot there is nothing to weigh: unowned means wreckage.
+    """
+    monkeypatch.setattr(backup_db, "now_stamp", lambda: "2031-09-01-000000")
+    backup_db.create_backup()
+    abandoned, fd = backup_db._stage(".sqlite")
+    abandoned.write_bytes(b"a half-copied database")
+    os.close(fd)                                  # the run that owned it is gone
+    live, live_fd = backup_db._stage(".tar.gz")   # and one that is still running
+    try:
+        assert backup_db.staging_debris() == [abandoned]
+
+        _, deleted, left = backup_db.prune(1)
+
+        assert abandoned in deleted and not abandoned.exists()
+        assert live.exists(), "a backup in progress keeps its staged files"
+        assert left == []
+        assert len(backup_db.list_sets()) == 1
+        backup_db.verify(backup_db.list_sets()[0])
+    finally:
+        os.close(live_fd)
+
+
+def test_a_backup_ignores_an_interrupted_restores_staging_tree(
+    backup_db, instance, tmp_path
+):
+    """A restore killed partway leaves `.restore-tmp-*` in the data directory,
+    and a restore deliberately does not displace it.
+
+    Archiving it would therefore put a name in the set that a later restore
+    keeps — and this restore now refuses a set like that outright rather than
+    discovering it mid-swap. So the instance would end up with backups it cannot
+    restore, from one interrupted restore.
+    """
+    orphan = instance / ".restore-tmp-abandoned"
+    (orphan / "lessons").mkdir(parents=True)
+    (orphan / "activity.sqlite").write_text("a half-restored ledger", encoding="utf-8")
+
+    manifest = backup_db.verify(backup_db.create_backup())
+    assert not any(
+        name.startswith(".restore-tmp-") for name in manifest["instance_files"]
+    )
+
+    result = backup_db.restore(backup_db.list_sets()[-1], instance, force=True)
+
+    assert result["stale_staging"] == [".restore-tmp-abandoned"], (
+        "reported, because it is invisible otherwise and holds a whole copy"
+    )
+    assert (orphan / "activity.sqlite").read_text(encoding="utf-8") == (
+        "a half-restored ledger"
+    ), "and left alone: deleting things in a data directory is not a restore's job"
+    assert counts(instance)["lists"] > 0
+
+
 def test_where_locks_are_unavailable_a_recent_claim_is_still_presumed_live(
     backup_db, instance, monkeypatch
 ):

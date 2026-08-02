@@ -68,6 +68,16 @@ They are recovery scrap the operator deletes once satisfied — not instance
 state — so neither half of this contract touches them: the archive walks past
 them and a restore leaves them where they are."""
 
+RESTORE_TMP = ".restore-tmp-"
+"""Prefix of the directory a restore builds in before swapping it in.
+
+One is left behind by a restore that was killed. It holds a copy of a backup
+set — reproducible, never unique — so nothing here deletes it, but nothing here
+archives or displaces it either: it is not instance state."""
+
+STAGED = ".staged-"
+"""Prefix of a backup's in-progress files inside `backups/`."""
+
 EXCLUDED_DIRS = ("backups", "exports")
 """Top-level directories that are neither archived nor replaced by a restore.
 
@@ -219,15 +229,26 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _stage(suffix: str) -> Path:
+def _stage(suffix: str) -> tuple[Path, int]:
     """A 0600 temporary file in BACKUPS_DIR — same filesystem, so os.replace is atomic.
 
-    The dot prefix keeps staged files out of the `activity-*` / `files-*`
-    globs, so a concurrent `--keep` cannot mistake a run in progress for debris.
+    Returns (path, fd). The dot prefix keeps staged files out of the
+    `activity-*` / `files-*` globs, and the fd is held — and locked, like a name
+    claim — for the life of the run, because these files are the one kind of
+    debris worth several hundred megabytes each. A run killed between staging
+    and publishing leaves them behind with no `finally` to clean up, so
+    retention has to be able to tell "another backup is writing this" from
+    "nobody has owned this since the power came back".
     """
-    fd, name = tempfile.mkstemp(dir=BACKUPS_DIR, prefix=".staged-", suffix=suffix)
-    os.close(fd)
-    return Path(name)
+    fd, name = tempfile.mkstemp(dir=BACKUPS_DIR, prefix=STAGED, suffix=suffix)
+    lock = _flock()
+    if lock is not None:
+        try:
+            lock.flock(fd, lock.LOCK_EX | lock.LOCK_NB)
+        except BaseException:
+            os.close(fd)
+            raise
+    return Path(name), fd
 
 
 def _fsync_file(path: Path) -> None:
@@ -328,12 +349,12 @@ def instance_files() -> list[str]:
         dirnames[:] = [
             name for name in dirnames
             if (here / name).resolve() not in skip_dirs
-            and not (top and ASIDE_MARK in name)
+            and not (top and _restore_keeps(name))
             and not (here / name).is_symlink()
         ]
         for name in filenames:
             path = here / name
-            if top and ASIDE_MARK in name:
+            if top and _restore_keeps(name):
                 continue
             if path.is_symlink() or not path.is_file():
                 continue
@@ -342,6 +363,26 @@ def instance_files() -> list[str]:
                 continue
             found.append(relative)
     return sorted(found)
+
+
+def _restore_keeps(name: str) -> bool:
+    """Is this top-level name one that a restore leaves standing?
+
+    The single predicate behind both halves of the contract: `instance_files`
+    skips exactly these, and `restore_owned` displaces everything but these.
+    Written once because the two must agree — a name the archive carries and a
+    restore keeps is a rename onto an occupied path, thrown in the middle of the
+    swap.
+
+    `backups/` and `exports/` are the standing exclusions; the rest is
+    interrupted-recovery scrap, which is state about a restore rather than state
+    of the instance.
+    """
+    return (
+        name in EXCLUDED_DIRS
+        or ASIDE_MARK in name
+        or name.startswith(RESTORE_TMP)
+    )
 
 
 def _excluded_dirs(root: Path) -> set[Path]:
@@ -464,9 +505,9 @@ def create_backup() -> Path:
     # mode is the only thing protecting the names inside it.
     BACKUPS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     stamp, claim_fd = _claim_stamp()
-    staged_db = _stage(".sqlite")
-    staged_files = _stage(".tar.gz")
-    staged_manifest = _stage(".json")
+    staged_db, db_fd = _stage(".sqlite")
+    staged_files, files_fd = _stage(".tar.gz")
+    staged_manifest, manifest_fd = _stage(".json")
     try:
         snapshot(staged_db)
         schema_version = check_database(staged_db)
@@ -506,9 +547,12 @@ def create_backup() -> Path:
         # failure they are the partial work, and nothing else refers to them.
         for staged in (staged_db, staged_files, staged_manifest):
             staged.unlink(missing_ok=True)
-        # Last: the stamp stays claimed until everything published under it is
-        # on disk. Released here, or by the kernel if this process dies.
-        os.close(claim_fd)
+        # Last: the stamp and the staged files stay owned until everything
+        # published under them is on disk. Released here, or by the kernel if
+        # this process dies — which is what makes the leftovers of a killed run
+        # recognizable as debris rather than as somebody's work in progress.
+        for fd in (db_fd, files_fd, manifest_fd, claim_fd):
+            os.close(fd)
     return BACKUPS_DIR / manifest_name(stamp)
 
 
@@ -639,13 +683,32 @@ def unclaimed_files() -> list[Path]:
     )
 
 
+def staging_debris() -> list[Path]:
+    """`.staged-*` files in BACKUPS_DIR that no run is holding open.
+
+    Unlike an unclaimed `activity-*.sqlite`, there is nothing to weigh here: the
+    name is produced by `_stage` and by nothing else — no operator, no earlier
+    version of this script — so a staged file nobody owns is the wreckage of a
+    run that was killed before its `finally` could run. Left alone it is
+    invisible (the dot prefix keeps it out of every other listing) and can be as
+    large as the database, once per interruption, until the disk fills.
+    """
+    if not BACKUPS_DIR.is_dir():
+        return []
+    return sorted(
+        path for path in BACKUPS_DIR.glob(f"{STAGED}*") if not _is_live_claim(path)
+    )
+
+
 def prune(keep: int) -> tuple[list[str], list[Path], list[Path]]:
     """Keep the `keep` newest sets.
 
     Returns (dropped stamps, deleted paths, unclaimed paths left in place).
     Sets are dropped whole, manifest first, so a set being deleted is never
     momentarily indistinguishable from a complete one. What no manifest claims
-    is left alone except for empty placeholders — see `unclaimed_files`.
+    is left alone except for what only this script could have written and only
+    by dying: empty name claims and staged files nobody holds — see
+    `unclaimed_files` and `staging_debris`.
     """
     if keep <= 0:
         return [], [], unclaimed_files()
@@ -664,6 +727,10 @@ def prune(keep: int) -> tuple[list[str], list[Path], list[Path]]:
             if member.exists():
                 member.unlink()
                 deleted.append(member)
+
+    for path in staging_debris():
+        path.unlink(missing_ok=True)       # a killed run's half-written copy
+        deleted.append(path)
 
     left: list[Path] = []
     for path in unclaimed_files():
@@ -697,10 +764,7 @@ def restore_owned(target: Path) -> list[Path]:
     if not target.is_dir():
         return []
     return sorted(
-        path for path in target.iterdir()
-        if path.name not in EXCLUDED_DIRS
-        and ASIDE_MARK not in path.name
-        and not path.name.startswith(".restore-tmp-")
+        path for path in target.iterdir() if not _restore_keeps(path.name)
     )
 
 
@@ -742,6 +806,13 @@ def restore(manifest_path: Path, target: Path, *, force: bool = False) -> dict:
 
     db_target = target / DB_FILENAME
     tops = sorted({name.split("/", 1)[0] for name in manifest["instance_files"]})
+    # A restore killed partway leaves its staging tree behind. Nothing here
+    # deletes it — deleting things in a data directory is not a restore's job —
+    # but it is worth a sentence in the output, because it is invisible
+    # otherwise and holds a whole second copy of a backup.
+    stale_staging = sorted(
+        path.name for path in target.iterdir() if path.name.startswith(RESTORE_TMP)
+    )
     # Everything the restore takes over, not just the names this set happens to
     # carry — see restore_owned().
     occupied = restore_owned(target)
@@ -761,7 +832,7 @@ def restore(manifest_path: Path, target: Path, *, force: bool = False) -> dict:
     # extraction can fail halfway — a full disk is the ordinary way — and doing
     # it in place would leave the target holding neither the old instance (moved
     # aside under names the failed run never reported) nor a usable new one.
-    staging = Path(tempfile.mkdtemp(dir=target, prefix=".restore-tmp-"))
+    staging = Path(tempfile.mkdtemp(dir=target, prefix=RESTORE_TMP))
     try:
         staged_db = staging / DB_FILENAME
         shutil.copyfile(directory / manifest["files"]["database"]["name"], staged_db)
@@ -815,6 +886,7 @@ def restore(manifest_path: Path, target: Path, *, force: bool = False) -> dict:
         "database": db_target,
         "restored": tops,
         "moved_aside": [path.name for path in moved],
+        "stale_staging": stale_staging,
     }
 
 
@@ -888,6 +960,11 @@ def main() -> int:
                 print(path.name)
                 _print_set(load_manifest(path))
             _report_unclaimed(unclaimed_files())
+            debris = staging_debris()
+            if debris:
+                total = sum(path.stat().st_size for path in debris)
+                print(f"{len(debris)} unfinished file(s) from interrupted runs "
+                      f"({_human(total)}); the next --keep removes them.")
             return 0
 
         if args.verify:
@@ -903,6 +980,9 @@ def main() -> int:
             _print_set(result["manifest"])
             for name in result["moved_aside"]:
                 print(f"  kept the previous file as {name}")
+            for name in result["stale_staging"]:
+                print(f"  NOTE: {name} is an interrupted restore's staging copy. "
+                      "Nothing uses it; delete it when you like.")
             print("  start the service now: systemctl --user start ephemeris")
             return 0
 
