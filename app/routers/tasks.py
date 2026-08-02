@@ -40,7 +40,9 @@ def _habit_rows(conn, today: str) -> list[dict]:
                 "id": it["id"],
                 "title": it["title"],
                 "status": it["status"],
-                "current_streak": stats.current_streak_from(smap, today_d),
+                "current_streak": stats.current_streak_from(
+                    smap, today_d, stats.as_start(it["start_date"])
+                ),
             })
     return rows
 

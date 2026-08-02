@@ -28,6 +28,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.db import DB_PATH, get_conn  # noqa: E402
 from app.main import app  # noqa: E402
+from app.services import items  # noqa: E402
 
 
 PASS = 0
@@ -201,12 +202,7 @@ with TestClient(app) as client:
             "title": "Demo Restore Walk",
             "group_name": "Demo Routine",
             "emoji": "🧭",
-            "frequency": "weekdays",
-            "goal": "achieve_all",
-            "goal_days": "30",
             "start_date": "2024-01-01",
-            "reminder": "08:15",
-            "constant_reminder": "1",
         },
         follow_redirects=False,
     )
@@ -219,6 +215,18 @@ with TestClient(app) as client:
         inbox_id = conn.execute(
             "SELECT id FROM lists WHERE kind = 'inbox' ORDER BY id LIMIT 1"
         ).fetchone()["id"]
+        # frequency / goal_days / reminder / constant_reminder are legacy since
+        # #18: no route writes them any more, but rows created before it still
+        # hold non-default values and the restore contract must carry them
+        # through. There is no HTTP surface left that can produce such a row, so
+        # this one write goes through the service (row + event in one
+        # transaction, exactly as a pre-#18 form post did).
+        items.update_item(
+            conn, habit_id, "Demo Restore Walk", "Demo Routine",
+            emoji="🧭", start_date="2024-01-01",
+            frequency="weekdays", goal_days="30",
+            reminder="08:15", constant_reminder=True,
+        )
     finally:
         conn.close()
 
@@ -228,11 +236,7 @@ with TestClient(app) as client:
             "title": "Demo Restore Walk Revised",
             "group_name": "Demo Routine",
             "emoji": "🧭",
-            "frequency": "daily",
-            "goal": "achieve_all",
-            "goal_days": "forever",
             "start_date": "2024-01-01",
-            "reminder": "",
         },
         follow_redirects=False,
     )

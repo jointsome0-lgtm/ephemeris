@@ -98,6 +98,7 @@ def _enrich_groups(raw_groups, hist: dict, strip: list[dict], today_d: _date):
         out = []
         for it in items:
             smap = hist.get(it["id"], {})
+            start = stats.as_start(it["start_date"])
             out.append({
                 "id": it["id"],
                 "title": it["title"],
@@ -105,8 +106,8 @@ def _enrich_groups(raw_groups, hist: dict, strip: list[dict], today_d: _date):
                 "emoji": it["emoji"],
                 "status": it["status"],
                 "note": it["note"],
-                "current_streak": stats.current_streak_from(smap, today_d),
-                "best_streak": stats.best_streak_from(smap, today_d),
+                "current_streak": stats.current_streak_from(smap, today_d, start),
+                "best_streak": stats.best_streak_from(smap, today_d, start),
                 # all-time kept days (full/light) — the "⚡ N Day" total on each row
                 "total": sum(1 for s in smap.values() if s in ("full_done", "light_done")),
                 "week_dots": [

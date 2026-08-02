@@ -73,7 +73,15 @@ def get_checkin(conn: sqlite3.Connection, date: str, item_id: int) -> sqlite3.Ro
 
 
 def today_view(conn: sqlite3.Connection, date: str) -> list[tuple[str, list[sqlite3.Row]]]:
-    """Active items + their check-in for `date`, grouped into ordered sections.
+    """Active, already-started items + their check-in for `date`, in sections.
+
+    This is the ONLY place that answers "which habits exist on this date" — the
+    Habit tab, the Today task list and the /history day view all read it, so the
+    start-date rule lives here and not in any of them (#18).
+
+    A habit is listed on `date` when it is active AND its `start_date` is not in
+    the future relative to `date`. A NULL `start_date` (rows created before the
+    column existed) means "no lower bound" and behaves as it always has.
 
     Ordering is sec13.3: ORDER BY group_name, sort_order, id. Because group_name
     is the leading sort key, each group's rows are contiguous, so grouping by
@@ -84,14 +92,16 @@ def today_view(conn: sqlite3.Connection, date: str) -> list[tuple[str, list[sqli
     rows = conn.execute(
         """
         SELECT ri.id AS id, ri.title AS title, ri.group_name AS group_name,
-               ri.emoji AS emoji, c.status AS status, c.note AS note
+               ri.emoji AS emoji, ri.start_date AS start_date,
+               c.status AS status, c.note AS note
         FROM routine_items ri
         LEFT JOIN checkins c
           ON c.routine_item_id = ri.id AND c.date = ?
         WHERE ri.active = 1
+          AND (ri.start_date IS NULL OR ri.start_date <= ?)
         ORDER BY ri.group_name, ri.sort_order, ri.id
         """,
-        (date,),
+        (date, date),
     ).fetchall()
     groups: list[tuple[str, list[sqlite3.Row]]] = []
     index: dict[str, list[sqlite3.Row]] = {}

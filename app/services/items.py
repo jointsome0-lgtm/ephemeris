@@ -21,6 +21,11 @@ DEFAULT_GROUP = "Core Routine"
 
 # Create-Habit option vocabularies (sec31). Stored on the routine_item; kept
 # permissive — unknown values fall back to the default rather than erroring.
+#
+# LEGACY since #18: the habit form no longer offers frequency / goal / goal_days
+# / reminder / constant_reminder, and nothing reads them. These keywords stay so
+# the columns keep their pre-#18 values — callers that omit them leave the stored
+# value alone (update_item's _UNSET) instead of resetting it to the default.
 FREQUENCIES = ("daily", "weekdays", "weekly")
 GOALS = ("achieve_all", "custom")
 GOAL_DAYS = ("forever", "21", "30", "66", "100")
@@ -93,7 +98,9 @@ def create_item(
     title, group_name = _clean(title, group_name)
     h = _clean_habit_fields(emoji, frequency, goal, goal_days, start_date, reminder)
     ts = now_iso()
-    h["start_date"] = h["start_date"] or ts[:10]  # default to creation date
+    # Default to the creation date: since #18 this is a real lower bound — the
+    # habit is not listed, and does not accrue statistics, before this day.
+    h["start_date"] = h["start_date"] or ts[:10]
     with conn:
         # One statement, so the MAX runs under the INSERT's own write lock and
         # two habits added to the same group cannot share a sort_order (#22).

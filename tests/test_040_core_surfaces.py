@@ -312,6 +312,13 @@ def test_core_surfaces(client, suite_state):
             "VALUES (?,?,?,?,?,?)",
             (dd, sid, st, ("kept it light" if off == 1 else None), "x", "x"),
         )
+    # The invented history reaches back six days, so the habit has to have
+    # existed for them: since #18 a start_date bounds where statistics begin,
+    # and create_item defaults it to today (POST /items above).
+    conn.execute(
+        "UPDATE routine_items SET start_date = ? WHERE id = ?",
+        ((t0 - _td(days=max(seed))).isoformat(), sid),
+    )
     conn.commit()
     smap = _stats.history(conn, sid)
     cur = _stats.current_streak_from(smap, t0)
@@ -513,11 +520,14 @@ def test_core_surfaces(client, suite_state):
         "habit pane: ⋯ menu w/ delete"
     )
     r = c.get("/habits?sel=habit-1&edit=1")
-    assert 'class="habit-form"' in r.text and "Frequency" in r.text, (
+    assert 'class="habit-form"' in r.text and "Start Date" in r.text, (
         "habit pane: edit form"
     )
+    assert "Frequency" not in r.text and 'name="reminder"' not in r.text, (
+        "habit pane: edit form drops the controls nothing reads (#18)"
+    )
 
-    # CREATE with the full Create-Habit field set
+    # CREATE with the field set the form still offers (#18)
     nh_before = len(events_of("routine_item_created"))
     r = c.post(
         "/habits",
@@ -525,12 +535,7 @@ def test_core_surfaces(client, suite_state):
             "title": "Meditate",
             "group_name": "Morning",
             "emoji": "🧘",
-            "frequency": "weekdays",
-            "goal": "achieve_all",
-            "goal_days": "66",
             "start_date": "2026-06-01",
-            "reminder": "07:30",
-            "constant_reminder": "1",
             "return_to": "/habits",
         },
         follow_redirects=False,
@@ -547,11 +552,14 @@ def test_core_surfaces(client, suite_state):
     assert (
         hb is not None
         and hb["emoji"] == "🧘"
-        and hb["frequency"] == "weekdays"
-        and hb["goal_days"] == "66"
-        and hb["reminder"] == "07:30"
-        and hb["constant_reminder"] == 1
-    ), "habit persisted with all fields"
+        and hb["start_date"] == "2026-06-01"
+    ), "habit persisted with the fields the form offers"
+    # the legacy columns still exist and take their defaults (#18)
+    assert (
+        hb["frequency"] == "daily" and hb["goal"] == "achieve_all"
+        and hb["goal_days"] == "forever" and hb["reminder"] is None
+        and hb["constant_reminder"] == 0
+    ), "unposted legacy columns fall back to their defaults"
     hid = hb["id"]
     page = c.get("/habits").text
     assert "Meditate" in page and "Morning" in page, "new habit shows in its section"
@@ -566,18 +574,23 @@ def test_core_surfaces(client, suite_state):
         "empty habit title -> flash redirect"
     )
 
-    # EDIT (and only-supplied fields change; reminder cleared)
+    # EDIT: only supplied fields change. A pre-#18 row carrying legacy values
+    # must keep them — the trimmed form omits those names, and update_item's
+    # _UNSET has to preserve rather than reset them.
+    conn = _gc()
+    with conn:
+        conn.execute(
+            "UPDATE routine_items SET frequency='weekdays', reminder='07:30', "
+            "constant_reminder=1 WHERE id = ?", (hid,)
+        )
+    conn.close()
     r = c.post(
         f"/habits/{hid}/edit",
         data={
             "title": "Meditate 10m",
             "group_name": "Morning",
             "emoji": "🧘",
-            "frequency": "daily",
-            "goal": "achieve_all",
-            "goal_days": "forever",
-            "start_date": "2026-06-01",
-            "reminder": "",
+            "start_date": "2026-06-02",
             "return_to": "/habits",
         },
         follow_redirects=False,
@@ -585,14 +598,18 @@ def test_core_surfaces(client, suite_state):
     assert r.status_code == 303, "POST habit edit 303"
     conn = _gc()
     hb = conn.execute(
-        "SELECT title, frequency, reminder FROM routine_items WHERE id = ?", (hid,)
+        "SELECT title, start_date, frequency, reminder, constant_reminder "
+        "FROM routine_items WHERE id = ?", (hid,)
     ).fetchone()
     conn.close()
+    assert hb["title"] == "Meditate 10m" and hb["start_date"] == "2026-06-02", (
+        "habit edited"
+    )
     assert (
-        hb["title"] == "Meditate 10m"
-        and hb["frequency"] == "daily"
-        and hb["reminder"] is None
-    ), "habit edited"
+        hb["frequency"] == "weekdays"
+        and hb["reminder"] == "07:30"
+        and hb["constant_reminder"] == 1
+    ), "editing through the trimmed form does not erase pre-#18 legacy values"
 
     # pane Today check-in round-trips and reflects in the pane
     r = c.post(
