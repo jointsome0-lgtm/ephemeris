@@ -287,20 +287,24 @@ def test_sort_order_is_computed_inside_the_insert(client):
 # --- archived lists --------------------------------------------------------
 
 
-def _archived_list_id(conn: sqlite3.Connection) -> int:
-    """A list that exists and is archived.
+def _archive(conn: sqlite3.Connection, list_id: int) -> int:
+    """Archive an existing list.
 
     There is no route that archives a list yet — the column and the archived
     read paths are older than any UI for them. The write gate is what makes a
     later archive action safe to add, so the state is set up directly.
     """
-    from app.services import lists as lists_svc
-
-    list_id = lists_svc.create_list(conn, "#22 Archived Target", emoji="•")
     with conn:
         conn.execute("UPDATE lists SET archived_at = ? WHERE id = ?",
                      ("2029-03-05T00:00:00+03:00", list_id))
     return list_id
+
+
+def _archived_list_id(conn: sqlite3.Connection, name: str = "#22 Archived Target") -> int:
+    """A list that exists and is archived."""
+    from app.services import lists as lists_svc
+
+    return _archive(conn, lists_svc.create_list(conn, name, emoji="•"))
 
 
 def test_services_refuse_to_file_into_an_archived_list(client):
@@ -341,6 +345,60 @@ def test_services_refuse_to_file_into_an_archived_list(client):
         ).fetchone()[0]
         assert stranded == 0, (
             "no row is filed under the archived list" + "  -- " + str(stranded)
+        )
+    finally:
+        conn.close()
+
+
+def test_rows_already_in_a_list_stay_editable_after_it_is_archived(client):
+    """The gate covers filing INTO a list, not living in one.
+
+    Archiving a list does not archive what it holds: those tasks and events stay
+    active and stay listed. Every edit path refills the columns the caller did
+    not supply from the current row, `list_id` among them, so a gate that fired
+    on an unchanged association would strand each of them at its next title
+    edit, skip or drag.
+    """
+    from app.services import calendar_events as cal
+    from app.services import lists as lists_svc
+    from app.services import tasks as tasks_svc
+
+    conn = _gc()
+    try:
+        home = lists_svc.create_list(conn, "#22 Archived Later", emoji="•")
+        task_id = tasks_svc.create_task(conn, "#22 Resident Task", list_id=home)
+        event_id = cal.create_event(conn, "#22 Resident Event", start_date=SERIES_START,
+                                    freq="daily", all_day=True, list_id=home)
+        # A one-off event is what the calendar's drag-and-drop moves.
+        once_id = cal.create_event(conn, "#22 Resident Drag", start_date=SERIES_START,
+                                   freq="once", all_day=True, list_id=home)
+        _archive(conn, home)
+
+        tasks_svc.update_task(conn, task_id, title="#22 Resident Task, renamed")
+        assert tasks_svc.toggle_complete(conn, task_id) is True, "a resident task still completes"
+
+        cal.update_event(conn, event_id, title="#22 Resident Event, renamed")
+        cal.skip_occurrence(conn, event_id, SKIP_A)
+        assert cal.exdates_of(cal.get_event(conn, event_id)) == [SKIP_A], (
+            "a resident event still takes a skip"
+        )
+
+        cal.move_event(conn, once_id, "2029-03-21")
+        assert cal.get_event(conn, once_id)["start_date"] == "2029-03-21", (
+            "a resident event still drags to another day"
+        )
+
+        # Moving OUT of the archived list is still a write into the target, so
+        # the target is what gets checked — not the list being left.
+        elsewhere = lists_svc.create_list(conn, "#22 Rescue List", emoji="•")
+        tasks_svc.update_task(conn, task_id, title="#22 Resident Task, moved",
+                              list_id=elsewhere)
+        assert tasks_svc.get_task(conn, task_id)["list_id"] == elsewhere, (
+            "a task moves out of an archived list"
+        )
+        cal.update_event(conn, event_id, list_id=elsewhere)
+        assert cal.get_event(conn, event_id)["list_id"] == elsewhere, (
+            "an event moves out of an archived list"
         )
     finally:
         conn.close()

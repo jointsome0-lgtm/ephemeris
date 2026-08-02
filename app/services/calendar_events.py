@@ -225,7 +225,8 @@ def layout_day(occs: list[dict]) -> list[dict]:
 
 
 def _clean(conn, *, title, start_date, freq, byweekday, interval_n, all_day,
-           start_time, end_time, end_date, list_id, emoji, note, color) -> dict:
+           start_time, end_time, end_date, list_id, emoji, note, color,
+           current_list_id=None) -> dict:
     title = (title or "").strip()
     if not title:
         raise CalendarEventError("event title can’t be empty")
@@ -282,13 +283,19 @@ def _clean(conn, *, title, start_date, freq, byweekday, interval_n, all_day,
             list_id = int(list_id)
         except (TypeError, ValueError):
             raise CalendarEventError("invalid list")
-        try:
-            lists_svc.require_writable_list(conn, list_id)
-        except lists_svc.ListError as exc:
-            # Re-raised as this module's error: the calendar routes catch
-            # CalendarEventError and answer with a flash redirect, and a
-            # ListError escaping here would be a 500 instead.
-            raise CalendarEventError(str(exc)) from exc
+        # Only an actual change of list association is a write INTO a list.
+        # `update_event` refills every unsupplied column from the current row,
+        # so validating unconditionally would refuse a title edit, a skip or a
+        # drag of an event whose list was archived after it was filed — the
+        # event is still active and still listed. Same rule as `update_task`.
+        if list_id != current_list_id:
+            try:
+                lists_svc.require_writable_list(conn, list_id)
+            except lists_svc.ListError as exc:
+                # Re-raised as this module's error: the calendar routes catch
+                # CalendarEventError and answer with a flash redirect, and a
+                # ListError escaping here would be a 500 instead.
+                raise CalendarEventError(str(exc)) from exc
     else:
         list_id = None
 
@@ -342,7 +349,8 @@ def update_event(conn: sqlite3.Connection, event_id: int, **fields) -> None:
     row = get_event(conn, event_id)
     if row is None:
         raise CalendarEventError("unknown event")
-    c = _clean(conn, **{k: fields.get(k, row[k]) for k in _COLS})
+    c = _clean(conn, **{k: fields.get(k, row[k]) for k in _COLS},
+               current_list_id=row["list_id"])
     ts = now_iso()
     with conn:
         conn.execute(
