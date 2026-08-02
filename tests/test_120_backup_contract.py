@@ -576,7 +576,8 @@ def test_the_archive_carries_every_directory_the_instance_grew(backup_db, instan
         "the snapshot is the consistent copy of the database and its sidecars"
     )
     assert manifest["excluded"] == [
-        "backups/", "exports/", "*.pre-restore-*", "activity.sqlite*",
+        "backups/", "exports/", "*.pre-restore-*", ".restore-tmp-*",
+        "activity.sqlite*",
     ]
 
 
@@ -653,6 +654,49 @@ def test_retention_never_sweeps_a_name_claim_another_run_still_holds(
     _, deleted, left = backup_db.prune(1)
     assert placeholder in deleted and not placeholder.exists()
     assert left == []
+
+
+def test_a_stale_default_named_database_never_reaches_the_archive(
+    backup_db, instance, tmp_path, monkeypatch
+):
+    """`activity.sqlite` is reserved whatever `ACTIVITY_DB` says.
+
+    Rename the database and the file it used to be stays behind. Archived as
+    ordinary content, it would be extracted over the verified snapshot in the
+    staging directory — and `--verify` would still pass, because the archive
+    does match its manifest. The restored ledger would simply be the wrong one.
+    """
+    renamed = instance / "ledger.sqlite"
+    (instance / "activity.sqlite").rename(renamed)
+    monkeypatch.setattr(backup_db, "DB_PATH", renamed)
+    stale = instance / "activity.sqlite"
+    stale.write_bytes(b"SQLite format 3\x00" + b"\x00" * 512)  # the pre-rename file
+
+    manifest = backup_db.verify(backup_db.create_backup())
+    assert not any(
+        name.startswith("activity.sqlite") or name.startswith("ledger.sqlite")
+        for name in manifest["instance_files"]
+    )
+
+    target = tmp_path / "recovered"
+    backup_db.restore(backup_db.list_sets()[-1], target)
+
+    assert (target / "activity.sqlite").read_bytes() != stale.read_bytes()
+    assert counts(target)["lists"] > 0, "the restored ledger is the verified one"
+
+
+def test_an_existing_backup_directory_is_tightened_not_trusted(backup_db, instance):
+    """The previous version of this script made `backups/` under the operator's
+    umask, and `mkdir(mode=...)` does nothing to a directory that already
+    exists. A group-writable one lets another local user replace a set: they
+    cannot read a 0600 file, but they can unlink it."""
+    backups = instance / "backups"
+    backups.mkdir(parents=True, exist_ok=True)
+    os.chmod(backups, 0o755)
+
+    backup_db.create_backup()
+
+    assert mode_of(backups) == 0o700
 
 
 def test_retention_sweeps_the_staged_files_a_killed_run_left(
@@ -793,7 +837,8 @@ def test_a_renamed_database_is_still_excluded_from_the_archive(
         name.startswith("ledger.sqlite") for name in manifest["instance_files"]
     ), "the snapshot is the consistent copy; the raw file must not ride along"
     assert manifest["excluded"] == [
-        "backups/", "exports/", "*.pre-restore-*", "ledger.sqlite*",
+        "backups/", "exports/", "*.pre-restore-*", ".restore-tmp-*",
+        "activity.sqlite*", "ledger.sqlite*",
     ], (
         "and the manifest names the file it actually left out"
     )
@@ -828,7 +873,8 @@ def test_a_relative_data_dir_still_excludes_its_own_backups(
         name.startswith("activity.sqlite") for name in manifest["instance_files"]
     )
     assert manifest["excluded"] == [
-        "backups/", "exports/", "*.pre-restore-*", "activity.sqlite*",
+        "backups/", "exports/", "*.pre-restore-*", ".restore-tmp-*",
+        "activity.sqlite*",
     ]
 
 

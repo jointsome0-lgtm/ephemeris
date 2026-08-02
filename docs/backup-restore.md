@@ -48,7 +48,10 @@ under `excluded`:
   copy of those, and restoring a live `-wal` beside it would be corruption
   dressed as completeness. Read from `ACTIVITY_DB`, not from the name
   `activity.sqlite`, so a renamed ledger is excluded too; the manifest's
-  `excluded` list names the file this particular set left out.
+  `excluded` list names the files this particular set left out. `activity.sqlite`
+  is reserved either way, because that is the name a restore writes the snapshot
+  to — so if you rename the database, the file it used to be is left out of the
+  backup rather than restored over the snapshot that was verified.
 
 **The manifest is written last, by rename.** That one rule is the durability
 contract: a manifest on disk is a promise that the two files it names are

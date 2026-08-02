@@ -46,6 +46,7 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import sys
 import tarfile
 import tempfile
@@ -398,22 +399,31 @@ def _excluded_dirs(root: Path) -> set[Path]:
 
 
 def _excluded_db_names(root: Path) -> set[str]:
-    """Relative names of the database and its sidecars, when it lives under root.
+    """Relative names of every database file the archive must not carry.
 
-    Derived from `DB_PATH`, not from the literal `activity.sqlite`: `ACTIVITY_DB`
-    may name any file, and a differently-named live database would otherwise be
-    archived as ordinary content. A restore would then hold both the verified
-    snapshot AND an unchecked raw copy at the configured path — and restarting
-    with the same override would open the raw one.
+    Two of them, and both are needed:
 
-    A database configured OUTSIDE the data directory excludes nothing; it was
-    never in the walk.
+    - whatever `ACTIVITY_DB` currently points at, if it is under `root`. A
+      differently-named live database would otherwise be archived as ordinary
+      content, and the restored directory would hold both the verified snapshot
+      and an unchecked raw copy at the configured path — the one a restart with
+      the same override opens.
+    - `activity.sqlite` itself, always, because that is the name a restore
+      writes the snapshot to. Rename the database and the file it used to be
+      stays behind; archived, it would be extracted straight over the verified
+      snapshot in the staging directory, and `--verify` would still pass — it
+      checks that the archive matches its manifest, which it would.
+
+    A stale default-named file is therefore never backed up. That is the right
+    trade: it is a leftover of a rename, the manifest says so under `excluded`,
+    and the alternative is a restore that silently produces the wrong ledger.
     """
+    names = {DB_FILENAME}
     try:
-        base = DB_PATH.resolve().relative_to(root).as_posix()
+        names.add(DB_PATH.resolve().relative_to(root).as_posix())
     except ValueError:
-        return set()
-    return {base} | {base + suffix for suffix in _SIDECARS}
+        pass  # configured outside the data directory; the walk never saw it
+    return {name for base in names for name in (base, *(base + s for s in _SIDECARS))}
 
 
 def excluded_summary() -> list[str]:
@@ -424,14 +434,18 @@ def excluded_summary() -> list[str]:
     never on this disk.
     """
     root = DATA_DIR.resolve()
-    names = [f"{name}/" for name in EXCLUDED_DIRS] + [f"*{ASIDE_MARK}*"]
+    databases = {DB_FILENAME}
     try:
-        names.append(DB_PATH.resolve().relative_to(root).as_posix() + "*")
+        databases.add(DB_PATH.resolve().relative_to(root).as_posix())
     except ValueError:
-        # The database lives outside the data directory; the walk never saw it,
-        # so there was nothing to exclude.
+        # The database lives outside the data directory; only the name a restore
+        # would write to is reserved.
         pass
-    return names
+    return (
+        [f"{name}/" for name in EXCLUDED_DIRS]
+        + [f"*{ASIDE_MARK}*", f"{RESTORE_TMP}*"]
+        + [f"{name}*" for name in sorted(databases)]
+    )
 
 
 def archive_instance(dest: Path, names: list[str]) -> tuple[list[str], list[str]]:
@@ -502,8 +516,16 @@ def create_backup() -> Path:
     behind anything a reader would call a backup.
     """
     # 0700: the directory holds whole copies of a private ledger, and its own
-    # mode is the only thing protecting the names inside it.
+    # mode is the only thing protecting the names inside it — and, if it is
+    # group-writable, the sets themselves: another local user cannot read a 0600
+    # file but can still unlink it and put their own there.
     BACKUPS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # mkdir's mode applies only when it creates the directory. On an upgrade
+    # this directory already exists, made by the previous version of this script
+    # under whatever umask the operator had, so the mode has to be asserted
+    # rather than requested.
+    if stat.S_IMODE(BACKUPS_DIR.stat().st_mode) & 0o077:
+        os.chmod(BACKUPS_DIR, 0o700)
     stamp, claim_fd = _claim_stamp()
     staged_db, db_fd = _stage(".sqlite")
     staged_files, files_fd = _stage(".tar.gz")
@@ -834,10 +856,14 @@ def restore(manifest_path: Path, target: Path, *, force: bool = False) -> dict:
     # aside under names the failed run never reported) nor a usable new one.
     staging = Path(tempfile.mkdtemp(dir=target, prefix=RESTORE_TMP))
     try:
+        # Extract FIRST, then lay the snapshot down. The archive cannot carry a
+        # database — `_excluded_db_names` reserves the name — but if a set from
+        # some other version ever did, the file the restore promises is the one
+        # that was verified, not one that happened to be extracted later.
+        _extract_instance(directory / manifest["files"]["instance"]["name"], staging)
         staged_db = staging / DB_FILENAME
         shutil.copyfile(directory / manifest["files"]["database"]["name"], staged_db)
         os.chmod(staged_db, 0o600)
-        _extract_instance(directory / manifest["files"]["instance"]["name"], staging)
 
         # Everything moves aside before anything moves in, which is also what
         # takes the WAL sidecars out of the way: a `-wal` left beside a replaced
