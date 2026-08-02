@@ -181,7 +181,9 @@ systemctl --user start ephemeris
 backup fails with the target untouched. It then builds both halves in a staging
 directory inside the target and swaps them in by rename once they are complete,
 so a failure partway — a full disk is the ordinary one — leaves the existing
-instance where it was rather than half-replaced.
+instance where it was rather than half-replaced. The staged files and directory
+entries are fsynced before that swap, and the target-directory renames are
+fsynced before the command reports success.
 
 A target directory created by the restore is mode `0700`; archive members can
 therefore keep relying on the private instance root instead of becoming visible

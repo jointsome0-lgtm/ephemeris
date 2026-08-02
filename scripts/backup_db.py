@@ -300,6 +300,17 @@ def _fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
+def _fsync_tree(root: Path) -> None:
+    """Persist every regular file and directory in a prepared restore tree."""
+    for dirpath, _, filenames in os.walk(root, topdown=False):
+        directory = Path(dirpath)
+        for name in filenames:
+            path = directory / name
+            if not path.is_symlink() and path.is_file():
+                _fsync_file(path)
+        _fsync_dir(directory)
+
+
 def _publish(staged: Path, final: Path) -> None:
     """Give staged bytes their public name: 0600, fsynced, then renamed."""
     os.chmod(staged, 0o600)
@@ -913,6 +924,10 @@ def restore(manifest_path: Path, target: Path, *, force: bool = False) -> dict:
         staged_db = staging / DB_FILENAME
         shutil.copyfile(directory / manifest["files"]["database"]["name"], staged_db)
         os.chmod(staged_db, 0o600)
+        # The swap only publishes state already durable in the staging tree.
+        # Otherwise a successful command followed by power loss can preserve
+        # target-directory renames without preserving all extracted bytes.
+        _fsync_tree(staging)
 
         # Everything moves aside before anything moves in, which is also what
         # takes the WAL sidecars out of the way: a `-wal` left beside a replaced
@@ -941,6 +956,7 @@ def restore(manifest_path: Path, target: Path, *, force: bool = False) -> dict:
             )
         asides = _reserve_asides(displaced, now_stamp())
         moved: list[Path] = []
+        installed: list[tuple[Path, Path]] = []
         try:
             for path, aside in zip(displaced, asides):
                 os.replace(path, aside)
@@ -948,12 +964,27 @@ def restore(manifest_path: Path, target: Path, *, force: bool = False) -> dict:
             # Renames within one directory: the swap itself cannot half-fail the
             # way the copies above can.
             for path in sorted(staging.iterdir()):
-                os.replace(path, target / path.name)
+                destination = target / path.name
+                os.replace(path, destination)
+                installed.append((path, destination))
         except BaseException:
+            # Clear every destination installed by this run before restoring
+            # the corresponding old entry. Merely checking `not path.exists()`
+            # leaves the new copy in place and the old one stranded in its
+            # aside when a later install rename fails — a hybrid instance.
+            for staged_path, installed_path in reversed(installed):
+                if installed_path.exists() and not staged_path.exists():
+                    os.replace(installed_path, staged_path)
             for path, aside in zip(displaced, moved):
                 if aside.exists() and not path.exists():
                     os.replace(aside, path)
             raise
+        # Persist both the displacement and installation renames before the CLI
+        # is allowed to report RESTORED. A newly created target also needs its
+        # parent entry made durable or the whole directory can disappear.
+        _fsync_dir(target)
+        if not target_existed:
+            _fsync_dir(target.parent)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return {

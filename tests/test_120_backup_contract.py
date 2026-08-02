@@ -623,6 +623,84 @@ def test_a_failed_restore_leaves_the_live_instance_where_it_was(
     assert not any(path.name.startswith(".restore-tmp-") for path in target.iterdir())
 
 
+def test_a_mid_swap_failure_removes_new_entries_before_restoring_old_ones(
+    backup_db, instance, tmp_path, monkeypatch
+):
+    """A staged entry already installed at an old path must not block rollback."""
+    manifest_path = backup_db.create_backup()
+    target = tmp_path / "occupied"
+    (target / "lessons").mkdir(parents=True)
+    (target / "activity.sqlite").write_text("the old ledger", encoding="utf-8")
+    (target / "lessons" / "mine.txt").write_text("the old lesson", encoding="utf-8")
+    original_replace = backup_db.os.replace
+    install_count = 0
+
+    def fail_second_install(source, destination):
+        nonlocal install_count
+        source = Path(source)
+        destination = Path(destination)
+        if source.parent.name.startswith(backup_db.RESTORE_TMP) and destination.parent == target:
+            install_count += 1
+            if install_count == 2:
+                raise OSError("simulated failure in the staged-entry swap")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(backup_db.os, "replace", fail_second_install)
+    with pytest.raises(OSError, match="staged-entry swap"):
+        backup_db.restore(manifest_path, target, force=True)
+
+    assert (target / "activity.sqlite").read_text(encoding="utf-8") == "the old ledger"
+    assert (target / "lessons" / "mine.txt").read_text(encoding="utf-8") == (
+        "the old lesson"
+    )
+    assert not any(backup_db.ASIDE_MARK in path.name for path in target.iterdir())
+    assert not any(path.name.startswith(backup_db.RESTORE_TMP) for path in target.iterdir())
+
+
+def test_restore_fsyncs_staging_before_swap_and_target_afterwards(
+    backup_db, instance, tmp_path, monkeypatch
+):
+    manifest_path = backup_db.create_backup()
+    target = tmp_path / "recovered"
+    events: list[tuple[str, Path]] = []
+    original_fsync_tree = backup_db._fsync_tree
+    original_fsync_dir = backup_db._fsync_dir
+    original_replace = backup_db.os.replace
+
+    def record_tree(path):
+        events.append(("tree", Path(path)))
+        original_fsync_tree(path)
+
+    def record_dir(path):
+        events.append(("dir", Path(path)))
+        original_fsync_dir(path)
+
+    def record_replace(source, destination):
+        events.append(("replace", Path(destination)))
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(backup_db, "_fsync_tree", record_tree)
+    monkeypatch.setattr(backup_db, "_fsync_dir", record_dir)
+    monkeypatch.setattr(backup_db.os, "replace", record_replace)
+
+    backup_db.restore(manifest_path, target)
+
+    tree_index = next(i for i, event in enumerate(events) if event[0] == "tree")
+    install_indices = [
+        i for i, event in enumerate(events)
+        if event[0] == "replace" and event[1].parent == target
+    ]
+    target_fsync_index = max(
+        i for i, event in enumerate(events)
+        if event == ("dir", target)
+    )
+    assert tree_index < min(install_indices)
+    assert max(install_indices) < target_fsync_index
+    assert events[-1] == ("dir", target.parent), (
+        "a newly created target's parent entry is durable before success"
+    )
+
+
 def test_retention_never_sweeps_a_name_claim_another_run_still_holds(
     backup_db, instance, monkeypatch
 ):
