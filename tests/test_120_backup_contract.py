@@ -2,7 +2,7 @@
 
 The JSONL export is an audit stream; it is honest about what it cannot carry
 (docs/restore-from-export.md). This module covers the other half — the full
-backup, which is the database itself plus the lesson bundles beside it — and the
+backup, which is the database itself plus every file beside it — and the
 one property both halves depend on: a restored installation must not be mistaken
 for a brand new one.
 
@@ -179,7 +179,6 @@ def backup_db(monkeypatch, instance):
 
     monkeypatch.setattr(module, "DB_PATH", instance / "activity.sqlite")
     monkeypatch.setattr(module, "DATA_DIR", instance)
-    monkeypatch.setattr(module, "LESSONS_DIR", instance / "lessons")
     monkeypatch.setattr(module, "BACKUPS_DIR", instance / "backups")
     return module
 
@@ -196,7 +195,7 @@ def test_a_backup_is_three_files_that_agree_with_each_other(backup_db, instance)
     stamp = manifest["stamp"]
     members = [
         backups / backup_db.db_name(stamp),
-        backups / backup_db.lessons_name(stamp),
+        backups / backup_db.instance_name(stamp),
         manifest_path,
     ]
     assert manifest_path.name == backup_db.manifest_name(stamp)
@@ -208,13 +207,13 @@ def test_a_backup_is_three_files_that_agree_with_each_other(backup_db, instance)
     assert manifest["manifest_version"] == backup_db.MANIFEST_VERSION
     assert manifest["schema_version"] == query(instance, "PRAGMA user_version")[0][0]
     assert manifest["created_at"]
-    for role, path in (("database", members[0]), ("lessons", members[1])):
+    for role, path in (("database", members[0]), ("instance", members[1])):
         entry = manifest["files"][role]
         assert entry["name"] == path.name
         assert entry["bytes"] == path.stat().st_size
         assert entry["sha256"] == backup_db.sha256_of(path)
-    assert sorted(manifest["lesson_files"]) == [
-        "demo-slug/index.html", "demo-slug/lesson.json",
+    assert sorted(manifest["instance_files"]) == [
+        "lessons/demo-slug/index.html", "lessons/demo-slug/lesson.json",
     ]
 
     assert all(mode_of(path) == 0o600 for path in members), (
@@ -258,7 +257,7 @@ def test_verify_catches_a_backup_that_rotted_on_disk(backup_db, instance):
 def test_verify_catches_a_truncated_backup(backup_db, instance):
     manifest_path = backup_db.create_backup()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    archive = instance / "backups" / manifest["files"]["lessons"]["name"]
+    archive = instance / "backups" / manifest["files"]["instance"]["name"]
     with open(archive, "r+b") as handle:
         handle.truncate(handle.seek(0, os.SEEK_END) // 2)
 
@@ -284,13 +283,13 @@ def test_an_interrupted_run_leaves_nothing_a_restore_will_accept(
     def boom(dest, names):
         raise OSError("simulated failure between the snapshot and the manifest")
 
-    intact = backup_db.archive_lessons
-    backup_db.archive_lessons = boom
+    intact = backup_db.archive_instance
+    backup_db.archive_instance = boom
     try:
         with pytest.raises(OSError):
             backup_db.create_backup()
     finally:
-        backup_db.archive_lessons = intact
+        backup_db.archive_instance = intact
 
     backups = instance / "backups"
     assert backup_db.list_sets() == [], "no manifest, so no backup exists"
@@ -326,7 +325,7 @@ def test_keep_prunes_whole_sets_newest_first(backup_db, instance, monkeypatch):
     assert sorted(p.name for p in (instance / "backups").iterdir()) == sorted(
         name
         for stamp in stamps[3:]
-        for name in (backup_db.db_name(stamp), backup_db.lessons_name(stamp),
+        for name in (backup_db.db_name(stamp), backup_db.instance_name(stamp),
                      backup_db.manifest_name(stamp))
     ), "sets are pruned in threes; no orphaned snapshot or archive survives"
     for path in backup_db.list_sets():
@@ -436,18 +435,18 @@ def test_restore_refuses_a_damaged_set_before_touching_the_target(
     assert not (target / "activity.sqlite").exists()
 
 
-def test_an_instance_without_lessons_still_produces_a_three_file_set(
+def test_an_instance_with_nothing_but_a_ledger_still_produces_three_files(
     backup_db, instance
 ):
-    """So a reader never has to tell "no lessons" from "the file went missing"."""
+    """So a reader never has to tell "there was nothing" from "it went missing"."""
     for path in sorted((instance / "lessons").rglob("*"), reverse=True):
         path.unlink() if path.is_file() else path.rmdir()
     (instance / "lessons").rmdir()
 
     manifest_path = backup_db.create_backup()
     manifest = backup_db.verify(manifest_path)
-    assert manifest["lesson_files"] == []
-    assert (instance / "backups" / manifest["files"]["lessons"]["name"]).is_file()
+    assert manifest["instance_files"] == []
+    assert (instance / "backups" / manifest["files"]["instance"]["name"]).is_file()
 
 
 # --- what the review round found -------------------------------------------
@@ -485,17 +484,20 @@ def test_a_lesson_file_that_vanishes_mid_run_is_recorded_not_guessed_at(
     """The lesson tree is not frozen while a backup runs. A file enumerated and
     then rewritten away must leave the manifest describing what the archive
     actually holds — the property --verify depends on."""
-    names = backup_db.lesson_files() + ["demo-slug/gone-by-the-time-we-read-it.html"]
-    monkeypatch.setattr(backup_db, "lesson_files", lambda: names)
+    names = backup_db.instance_files() + ["lessons/demo-slug/gone-before-we-read-it.html"]
+    monkeypatch.setattr(backup_db, "instance_files", lambda: names)
     manifest_path = backup_db.create_backup()
 
     manifest = backup_db.verify(manifest_path)
-    assert manifest["lesson_files_vanished"] == [
-        "demo-slug/gone-by-the-time-we-read-it.html"
+    assert manifest["instance_files_vanished"] == [
+        "lessons/demo-slug/gone-before-we-read-it.html"
     ]
-    assert "demo-slug/gone-by-the-time-we-read-it.html" not in manifest["lesson_files"]
-    assert sorted(manifest["lesson_files"]) == [
-        "demo-slug/index.html", "demo-slug/lesson.json",
+    assert (
+        "lessons/demo-slug/gone-before-we-read-it.html"
+        not in manifest["instance_files"]
+    )
+    assert sorted(manifest["instance_files"]) == [
+        "lessons/demo-slug/index.html", "lessons/demo-slug/lesson.json",
     ]
 
 
@@ -504,7 +506,7 @@ def test_verify_catches_an_archive_that_lost_a_lesson(backup_db, instance):
     lists, so verify opens it and compares."""
     manifest_path = backup_db.create_backup()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["lesson_files"].append("demo-slug/never-archived.html")
+    manifest["instance_files"].append("lessons/demo-slug/never-archived.html")
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(backup_db.BackupError) as raised:
@@ -534,3 +536,99 @@ def test_a_second_forced_restore_in_one_second_keeps_both_copies(
     }
     assert "first ledger" in preserved, "the original is still there after retry #2"
     assert counts(target) == counts(instance)
+
+
+def test_the_archive_carries_every_directory_the_instance_grew(backup_db, instance):
+    """Enumerated by exclusion, not by a list of known names.
+
+    `lessons/` was the obvious one. `migrations/` holds the only input
+    `migrate_bundles --rollback` accepts, `lessons-attic/` holds retired bundles,
+    and the next feature will add another — a backup that has to be edited each
+    time one appears is silently incomplete in between. Its own directory and
+    the exports (regenerated from the database that is already in the set) are
+    the only things left out.
+    """
+    (instance / "migrations" / "v1v2-2031-01-01-000000").mkdir(parents=True)
+    (instance / "migrations" / "v1v2-2031-01-01-000000" / "rollback.json").write_text(
+        json.dumps({"invented": True}), encoding="utf-8"
+    )
+    (instance / "lessons-attic").mkdir()
+    (instance / "lessons-attic" / "retired.json").write_text("{}", encoding="utf-8")
+    (instance / "exports").mkdir(exist_ok=True)
+    (instance / "exports" / "events-2031-01-01-000000.jsonl").write_text(
+        "", encoding="utf-8"
+    )
+
+    manifest = backup_db.verify(backup_db.create_backup())
+    archived = set(manifest["instance_files"])
+
+    assert "migrations/v1v2-2031-01-01-000000/rollback.json" in archived
+    assert "lessons-attic/retired.json" in archived
+    assert "lessons/demo-slug/lesson.json" in archived
+    assert not any(name.startswith("exports/") for name in archived), (
+        "exports are generated from the database that is already in the set"
+    )
+    assert not any(name.startswith("backups/") for name in archived), (
+        "and the backup directory would otherwise nest every set in the next"
+    )
+    assert not any(name.startswith("activity.sqlite") for name in archived), (
+        "the snapshot is the consistent copy of the database and its sidecars"
+    )
+    assert manifest["excluded"] == ["backups/", "exports/", "activity.sqlite*"]
+
+
+def test_a_restore_rebuilds_every_directory_it_carried(backup_db, instance, tmp_path):
+    (instance / "migrations").mkdir()
+    (instance / "migrations" / "rollback.json").write_text("{}", encoding="utf-8")
+    manifest_path = backup_db.create_backup()
+
+    target = tmp_path / "recovered"
+    result = backup_db.restore(manifest_path, target)
+
+    assert result["restored"] == ["lessons", "migrations"]
+    assert (target / "migrations" / "rollback.json").read_text(encoding="utf-8") == "{}"
+    assert (target / "lessons" / "demo-slug" / "index.html").is_file()
+
+
+def test_a_failed_restore_leaves_the_live_instance_where_it_was(
+    backup_db, instance, tmp_path, monkeypatch
+):
+    """The copy and the extraction can fail halfway — a full disk is the ordinary
+    way. Doing that in place would leave the target holding neither the old
+    instance nor a usable new one."""
+    manifest_path = backup_db.create_backup()
+    target = tmp_path / "occupied"
+    target.mkdir()
+    (target / "activity.sqlite").write_text("the live ledger", encoding="utf-8")
+    (target / "lessons").mkdir()
+    (target / "lessons" / "mine.txt").write_text("mine", encoding="utf-8")
+
+    def boom(archive, dest):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(backup_db, "_extract_instance", boom)
+    with pytest.raises(OSError):
+        backup_db.restore(manifest_path, target, force=True)
+
+    assert (target / "activity.sqlite").read_text(encoding="utf-8") == "the live ledger"
+    assert (target / "lessons" / "mine.txt").read_text(encoding="utf-8") == "mine"
+    assert not any(".pre-restore-" in path.name for path in target.iterdir()), (
+        "nothing was displaced, so nothing needs finding under an aside name"
+    )
+    assert not any(path.name.startswith(".restore-tmp-") for path in target.iterdir())
+
+
+def test_verify_rejects_a_manifest_that_lies_about_the_schema_version(
+    backup_db, instance
+):
+    """The checksums cover the member files, not the manifest describing them —
+    and the schema version is what a reader consults to decide whether a set
+    predates a migration."""
+    manifest_path = backup_db.create_backup()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = 999
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(backup_db.BackupError) as raised:
+        backup_db.verify(manifest_path)
+    assert "claims schema v999" in str(raised.value)

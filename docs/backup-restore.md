@@ -4,7 +4,7 @@ Ephemeris has two recovery paths, and they are not interchangeable.
 
 | | **Full backup** (this document) | **JSONL export** ([contract](restore-from-export.md)) |
 |---|---|---|
-| What it is | A byte copy of the ledger plus the lesson bundles | The append-only audit stream, one event per line |
+| What it is | A byte copy of the ledger plus every other file the instance holds | The append-only audit stream, one event per line |
 | Fidelity | Complete: every table, every column, every file | Partial and honestly documented — some tables cannot be reconstructed at all |
 | Readable by | SQLite | Anything; it is plain text you can grep |
 | Use it to | Recover the instance | Audit history, move a subset, feed another tool |
@@ -18,14 +18,29 @@ Three files sharing one stamp, in `$ACTIVITY_DATA_DIR/backups/`:
 
 ```
 activity-2026-08-02-031500.sqlite           the ledger, snapshotted
-lessons-2026-08-02-031500.tar.gz            $ACTIVITY_DATA_DIR/lessons, verbatim
+files-2026-08-02-031500.tar.gz              everything else under $ACTIVITY_DATA_DIR
 activity-2026-08-02-031500.manifest.json    what the set is and what it hashes to
 ```
 
 The manifest is the source of truth about the set: its format version, the
 schema version (`PRAGMA user_version`) the snapshot carries, when it was
-written, the size and SHA-256 of both other files, and the list of lesson files
+written, the size and SHA-256 of both other files, and the list of every file
 inside the archive.
+
+The archive is defined by **exclusion**, not by a list of known directories.
+`lessons/` is the obvious one, but an instance also accumulates `migrations/`
+(the only input `migrate_bundles --rollback` accepts), `lessons-attic/`,
+`course-raw/`, projection caches, and whatever the next feature adds beside
+them. Enumerating those by name would mean a backup that is silently incomplete
+between edits, so two things are left out instead and the manifest names them
+under `excluded`:
+
+- `backups/` — this directory; including it would nest every set in the next.
+- `exports/` — JSONL exports are generated *from* the database that is already
+  in the set, so they cost size and add no recoverable state.
+- `activity.sqlite` and its `-wal` / `-shm` sidecars — the snapshot is the
+  consistent copy of those, and restoring a live `-wal` beside it would be
+  corruption dressed as completeness.
 
 **The manifest is written last, by rename.** That one rule is the durability
 contract: a manifest on disk is a promise that the two files it names are
@@ -34,14 +49,14 @@ backup. Nothing is ever written under its final name — each file is staged in
 the same directory, fsynced, set to mode `0600`, and moved into place
 atomically.
 
-The database half is consistent by construction. The lesson half is a
+The database half is consistent by construction. The file half is a
 file-by-file copy of a tree that a lesson agent may be writing into, so a bundle
 rewritten mid-run can be captured mid-rewrite; a file that disappears between
 enumeration and reading is dropped from both the archive and the manifest's
-list, and named under `lesson_files_vanished` so the seam is visible. Point-in-
-time consistency across the whole tree would need a filesystem snapshot (LVM,
-btrfs, ZFS), which is the operator's layer. If that matters to you, take the
-backup when nothing is editing lessons — the timer's small hours are already
+list, and named under `instance_files_vanished` so the seam is visible.
+Point-in-time consistency across the whole tree would need a filesystem snapshot
+(LVM, btrfs, ZFS), which is the operator's layer. If that matters to you, take
+the backup when nothing is editing lessons — the timer's small hours are already
 close to that.
 
 Before a snapshot is allowed to claim a name it is opened and run through a full
@@ -92,6 +107,13 @@ loginctl enable-linger "$USER"     # or nothing runs while you are logged out
 Daily, `--keep 20`, `Persistent=true` so a run missed while the machine was
 asleep happens at the next boot rather than being skipped.
 
+**If your `ephemeris.service` copy sets `ACTIVITY_DB`, copy that line into the
+backup unit too.** The timer runs a separate process that resolves the database
+path itself; an unmirrored override sends it to `<data>/activity.sqlite`, which
+either does not exist — the run fails — or is an older file, and then the
+schedule backs up the wrong ledger every night without complaining. Each run
+prints the path it actually read, so the journal settles it.
+
 ```bash
 systemctl --user list-timers ephemeris-backup.timer   # when it next fires
 journalctl --user -u ephemeris-backup -n 30           # what the last run did
@@ -100,8 +122,10 @@ journalctl --user -u ephemeris-backup -n 30           # what the last run did
 ## Checking that the backups are alive
 
 A backup nobody has ever read is a hypothesis. `--verify` is the cheap test:
-it re-hashes both files against the manifest and re-runs `integrity_check` on
-the snapshot, and writes nothing.
+it re-hashes both files against the manifest, re-runs `integrity_check` on the
+snapshot, checks the snapshot's real `PRAGMA user_version` against the schema
+version the manifest claims, and opens the archive to confirm it holds exactly
+the files the manifest lists. It writes nothing.
 
 ```bash
 uv run python -m scripts.backup_db --verify \
@@ -129,14 +153,16 @@ systemctl --user start ephemeris
 ```
 
 `--restore` verifies the whole set before it writes anything, so a damaged
-backup fails with the target untouched. It rebuilds both halves: the database
-and `lessons/`.
+backup fails with the target untouched. It then builds both halves in a staging
+directory inside the target and swaps them in by rename once they are complete,
+so a failure partway — a full disk is the ordinary one — leaves the existing
+instance where it was rather than half-replaced.
 
 By default it **refuses** a directory that already holds `activity.sqlite` or
-`lessons/`. Pass `--force` to restore anyway; what is there is moved aside as
-`*.pre-restore-<stamp>` — including the WAL sidecars, which would otherwise be
-replayed into the restored database — and kept, never deleted. Remove those by
-hand once you are satisfied.
+any top-level name the archive would write into. Pass `--force` to restore
+anyway; what is there is moved aside as `*.pre-restore-<stamp>` — including the
+WAL sidecars, which would otherwise be replayed into the restored database — and
+kept, never deleted. Remove those by hand once you are satisfied.
 
 To rehearse a restore without risking the live instance, restore into a scratch
 directory and start the app against it:

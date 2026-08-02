@@ -1,4 +1,4 @@
-"""Full backup of the Ephemeris instance: the ledger, the lesson bundles, a manifest.
+"""Full backup of the Ephemeris instance: the ledger, its files, a manifest.
 
 The JSONL export is an audit stream and says so (docs/restore-from-export.md).
 This is the other thing: a byte-faithful copy of everything an instance holds,
@@ -8,7 +8,7 @@ tried.
 One backup is THREE files sharing one stamp, in `$ACTIVITY_DATA_DIR/backups/`:
 
     activity-<stamp>.sqlite           consistent snapshot of the ledger
-    lessons-<stamp>.tar.gz            $ACTIVITY_DATA_DIR/lessons, verbatim
+    files-<stamp>.tar.gz              everything else under $ACTIVITY_DATA_DIR
     activity-<stamp>.manifest.json    what the set is, and what it should hash to
 
 The manifest is written LAST, by rename. That single ordering rule is the whole
@@ -58,9 +58,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.db import DATA_DIR, DB_PATH, now_iso, now_stamp  # noqa: E402
 
 BACKUPS_DIR = DATA_DIR / "backups"
-LESSONS_DIR = DATA_DIR / "lessons"
 DB_FILENAME = "activity.sqlite"
-LESSONS_DIRNAME = "lessons"
 
 MANIFEST_VERSION = 1
 """Bumped when the manifest's shape changes. A reader that meets a version it
@@ -85,8 +83,8 @@ def db_name(stamp: str) -> str:
     return f"activity-{stamp}.sqlite"
 
 
-def lessons_name(stamp: str) -> str:
-    return f"lessons-{stamp}.tar.gz"
+def instance_name(stamp: str) -> str:
+    return f"files-{stamp}.tar.gz"
 
 
 def manifest_name(stamp: str) -> str:
@@ -136,7 +134,7 @@ def sha256_of(path: Path) -> str:
 def _stage(suffix: str) -> Path:
     """A 0600 temporary file in BACKUPS_DIR — same filesystem, so os.replace is atomic.
 
-    The dot prefix keeps staged files out of the `activity-*` / `lessons-*`
+    The dot prefix keeps staged files out of the `activity-*` / `files-*`
     globs, so a concurrent `--keep` cannot mistake a run in progress for debris.
     """
     fd, name = tempfile.mkstemp(dir=BACKUPS_DIR, prefix=".staged-", suffix=suffix)
@@ -200,46 +198,70 @@ def check_database(path: Path) -> int:
     return version
 
 
-def lesson_files() -> list[str]:
-    """Every regular file under the lessons directory, as sorted relative paths."""
-    if not LESSONS_DIR.is_dir():
+def instance_files() -> list[str]:
+    """Every file of the instance that is not the database, as sorted rel paths.
+
+    Enumerated by exclusion, not by a list of known directories. `lessons/` was
+    the obvious one, but an instance also accumulates `migrations/` (the only
+    input `migrate_bundles --rollback` accepts), `lessons-attic/`, `course-raw/`
+    and whatever the next feature adds beside them — and a backup that has to be
+    edited every time one appears is a backup that is silently incomplete
+    between edits. Two things are left out, both on purpose:
+
+    - `backups/` — this directory. Including it would nest every set inside the
+      next one.
+    - `exports/` — JSONL exports are generated FROM the database that is already
+      in the set, so they cost size and add no recoverable state.
+
+    The database and its WAL sidecars are excluded too: the snapshot is the
+    consistent copy of those, and restoring a live `-wal` beside it would be
+    corruption dressed as completeness.
+    """
+    if not DATA_DIR.is_dir():
         return []
-    found = [
-        path.relative_to(LESSONS_DIR).as_posix()
-        for path in LESSONS_DIR.rglob("*")
-        if path.is_file() and not path.is_symlink()
-    ]
+    skip_dirs = {BACKUPS_DIR.resolve(), (DATA_DIR / "exports").resolve()}
+    skip_files = {DB_FILENAME} | {DB_FILENAME + suffix for suffix in _SIDECARS}
+    found = []
+    for path in DATA_DIR.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        if any(parent in skip_dirs for parent in path.parents):
+            continue
+        relative = path.relative_to(DATA_DIR)
+        if relative.as_posix() in skip_files:
+            continue
+        found.append(relative.as_posix())
     return sorted(found)
 
 
-def archive_lessons(dest: Path, names: list[str]) -> tuple[list[str], list[str]]:
-    """Write the lesson bundles to `dest` as a gzip tar, entries in sorted order.
+def archive_instance(dest: Path, names: list[str]) -> tuple[list[str], list[str]]:
+    """Write the instance's files to `dest` as a gzip tar, entries sorted.
 
-    Returns (archived, vanished). The lesson tree is not frozen while this runs
-    — a lesson agent or the app may be writing into it — so a name enumerated a
+    Returns (archived, vanished). The tree is not frozen while this runs — a
+    lesson agent or the app may be writing into it — so a name enumerated a
     moment ago can be gone by the time it is read. Such a file is dropped from
     the archive AND from the manifest's list rather than failing the whole run,
     which keeps the manifest a description of what the archive actually holds:
     the one property `--verify` depends on.
 
     What this deliberately does NOT claim is a point-in-time view. The database
-    half is consistent by construction (the Online Backup API); the lesson half
-    is a file-by-file copy, so a bundle rewritten mid-run can be captured
-    mid-rewrite. Making it atomic would need a filesystem snapshot, which is the
-    operator's layer, not this script's — docs/backup-restore.md says so, and
-    the vanished list is recorded in the manifest so the seam is visible rather
-    than assumed away.
+    half is consistent by construction (the Online Backup API); this half is a
+    file-by-file copy, so a bundle rewritten mid-run can be captured mid-rewrite.
+    Making it atomic would need a filesystem snapshot, which is the operator's
+    layer, not this script's — docs/backup-restore.md says so, and the vanished
+    list is recorded in the manifest so the seam is visible rather than assumed
+    away.
 
-    An absent lessons directory produces an empty archive rather than no file:
-    the set is three files whatever the instance holds, so a reader never has to
-    tell "this instance had no lessons" from "the lessons file went missing".
+    An instance with nothing but a database produces an empty archive rather
+    than no file: the set is three files whatever it holds, so a reader never
+    has to tell "there was nothing to archive" from "the archive went missing".
     """
     archived: list[str] = []
     vanished: list[str] = []
     with tarfile.open(dest, "w:gz") as tar:
         for name in names:
             try:
-                tar.add(LESSONS_DIR / name, arcname=name, recursive=False)
+                tar.add(DATA_DIR / name, arcname=name, recursive=False)
             except FileNotFoundError:
                 vanished.append(name)
                 continue
@@ -247,7 +269,7 @@ def archive_lessons(dest: Path, names: list[str]) -> tuple[list[str], list[str]]
     return archived, vanished
 
 
-def _extract_lessons(archive: Path, dest: Path) -> None:
+def _extract_instance(archive: Path, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive, "r:gz") as tar:
         # `data` refuses absolute paths, `..` escapes, links out of the tree and
@@ -275,7 +297,7 @@ def create_backup() -> Path:
     """Write one complete backup set; return the manifest path.
 
     Order is the contract: stage the snapshot, prove it opens and passes
-    integrity_check, archive the lessons, hash both, and only then write the
+    integrity_check, archive the instance files, hash both, and only then write the
     manifest — last, and by rename. Every earlier step can fail without leaving
     behind anything a reader would call a backup.
     """
@@ -284,28 +306,31 @@ def create_backup() -> Path:
     BACKUPS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     stamp = _claim_stamp()
     staged_db = _stage(".sqlite")
-    staged_lessons = _stage(".tar.gz")
+    staged_files = _stage(".tar.gz")
     staged_manifest = _stage(".json")
     try:
         snapshot(staged_db)
         schema_version = check_database(staged_db)
 
-        archived, vanished = archive_lessons(staged_lessons, lesson_files())
+        archived, vanished = archive_instance(staged_files, instance_files())
 
         manifest = {
             "manifest_version": MANIFEST_VERSION,
             "created_at": now_iso(),
             "stamp": stamp,
             "schema_version": schema_version,
-            "source": {"database": str(DB_PATH), "lessons": str(LESSONS_DIR)},
+            "source": {"database": str(DB_PATH), "data_dir": str(DATA_DIR)},
             "files": {
                 "database": _file_entry(staged_db, db_name(stamp)),
-                "lessons": _file_entry(staged_lessons, lessons_name(stamp)),
+                "instance": _file_entry(staged_files, instance_name(stamp)),
             },
-            "lesson_files": archived,
+            "instance_files": archived,
             # Enumerated, then gone before it could be read — a lesson bundle
             # being rewritten while the backup ran. Recorded, not hidden.
-            "lesson_files_vanished": vanished,
+            "instance_files_vanished": vanished,
+            # Self-describing, so a reader never has to guess whether an absent
+            # path was excluded by contract or lost by accident.
+            "excluded": ["backups/", "exports/", DB_FILENAME + "*"],
         }
         staged_manifest.write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
@@ -313,14 +338,14 @@ def create_backup() -> Path:
         )
 
         _publish(staged_db, BACKUPS_DIR / db_name(stamp))
-        _publish(staged_lessons, BACKUPS_DIR / lessons_name(stamp))
+        _publish(staged_files, BACKUPS_DIR / instance_name(stamp))
         # Last, and only now: the set becomes a backup the instant this exists.
         _publish(staged_manifest, BACKUPS_DIR / manifest_name(stamp))
         _fsync_dir(BACKUPS_DIR)
     finally:
         # After a successful publish these names are already gone; after a
         # failure they are the partial work, and nothing else refers to them.
-        for staged in (staged_db, staged_lessons, staged_manifest):
+        for staged in (staged_db, staged_files, staged_manifest):
             staged.unlink(missing_ok=True)
     return BACKUPS_DIR / manifest_name(stamp)
 
@@ -341,7 +366,7 @@ def load_manifest(path: Path) -> dict:
         raise BackupError(
             f"manifest version {version!r} is not {MANIFEST_VERSION}: {path}"
         )
-    for role in ("database", "lessons"):
+    for role in ("database", "instance"):
         entry = manifest.get("files", {}).get(role)
         if not isinstance(entry, dict) or not entry.get("name"):
             raise BackupError(f"manifest names no {role} file: {path}")
@@ -358,7 +383,7 @@ def verify(manifest_path: Path) -> dict:
     """
     manifest = load_manifest(manifest_path)
     directory = manifest_path.parent
-    for role in ("database", "lessons"):
+    for role in ("database", "instance"):
         entry = manifest["files"][role]
         path = directory / entry["name"]
         if not path.is_file():
@@ -378,16 +403,25 @@ def verify(manifest_path: Path) -> dict:
     # the files proves those bytes are still a database and still an archive of
     # what the manifest says — a checksum over a tar cannot tell you the tar
     # holds the lesson files the manifest lists.
-    check_database(directory / manifest["files"]["database"]["name"])
-    archive = directory / manifest["files"]["lessons"]["name"]
+    version = check_database(directory / manifest["files"]["database"]["name"])
+    if version != manifest.get("schema_version"):
+        # The checksums cover the member files, not the manifest describing
+        # them. Without this, a manifest edited to claim schema 999 over a
+        # schema-16 snapshot passes verification and is believed by whoever
+        # reads it to decide whether this set predates a migration.
+        raise BackupError(
+            f"manifest claims schema v{manifest.get('schema_version')} but the "
+            f"snapshot is at v{version}: {manifest_path}"
+        )
+    archive = directory / manifest["files"]["instance"]["name"]
     try:
         with tarfile.open(archive, "r:gz") as tar:
             members = sorted(tar.getnames())
     except tarfile.TarError as exc:
         raise BackupError(f"{archive.name} is not a readable archive: {exc}") from exc
-    if members != sorted(manifest["lesson_files"]):
-        missing = sorted(set(manifest["lesson_files"]) - set(members))
-        extra = sorted(set(members) - set(manifest["lesson_files"]))
+    if members != sorted(manifest["instance_files"]):
+        missing = sorted(set(manifest["instance_files"]) - set(members))
+        extra = sorted(set(members) - set(manifest["instance_files"]))
         raise BackupError(
             f"{archive.name} does not hold what the manifest lists: "
             f"{len(missing)} missing, {len(extra)} unexpected"
@@ -429,11 +463,11 @@ def unclaimed_files() -> list[Path]:
     claimed = set()
     for path in list_sets():
         stamp = stamp_of(path.name)
-        claimed.update((db_name(stamp), lessons_name(stamp)))
+        claimed.update((db_name(stamp), instance_name(stamp)))
     return sorted(
         path
         for path in list(BACKUPS_DIR.glob("activity-*.sqlite"))
-        + list(BACKUPS_DIR.glob("lessons-*.tar.gz"))
+        + list(BACKUPS_DIR.glob("files-*.tar.gz"))
         if path.name not in claimed
     )
 
@@ -458,7 +492,7 @@ def prune(keep: int) -> tuple[list[str], list[Path], list[Path]]:
         stamps.append(stamp)
         path.unlink(missing_ok=True)       # first: the set stops being a set
         deleted.append(path)
-        for name in (db_name(stamp), lessons_name(stamp)):
+        for name in (db_name(stamp), instance_name(stamp)):
             member = BACKUPS_DIR / name
             if member.exists():
                 member.unlink()
@@ -514,8 +548,16 @@ def restore(manifest_path: Path, target: Path, *, force: bool = False) -> dict:
     target.mkdir(parents=True, exist_ok=True)
 
     db_target = target / DB_FILENAME
-    lessons_target = target / LESSONS_DIRNAME
-    occupied = [path for path in (db_target, lessons_target) if path.exists()]
+    # Every top-level name the archive would write into, so nothing the restore
+    # is about to merge into gets silently half-overwritten. Enumerated from the
+    # manifest rather than from a fixed list, for the same reason the backup
+    # side enumerates by exclusion: the set of directories an instance holds
+    # grows, and a hardcoded one goes stale between edits.
+    tops = sorted({name.split("/", 1)[0] for name in manifest["instance_files"]})
+    occupied = [
+        path for path in [db_target] + [target / name for name in tops]
+        if path.exists()
+    ]
     if occupied and not force:
         raise BackupError(
             "target already holds "
@@ -525,29 +567,47 @@ def restore(manifest_path: Path, target: Path, *, force: bool = False) -> dict:
             "existing files aside (they are kept, not deleted)."
         )
 
-    # The sidecars go first: a -wal left beside a moved-away database would be
-    # replayed into the restored one, which is corruption dressed as recovery.
-    sidecars = [db_target.with_name(DB_FILENAME + suffix) for suffix in _SIDECARS]
-    displaced = [path for path in sidecars if path.exists()] + occupied
-    # Every destination is chosen BEFORE anything moves. `now_stamp()` resolves
-    # to the second, so an immediate retry of a forced restore would otherwise
-    # pick the same aside names and os.replace straight over the copies the
-    # first attempt had just preserved — deleting the very data this promised to
-    # keep.
-    asides = _reserve_asides(displaced, now_stamp())
-    moved: list[str] = []
-    for path, aside in zip(displaced, asides):
-        os.replace(path, aside)
-        moved.append(aside.name)
+    # Build BOTH restored artifacts before displacing anything. A copy or an
+    # extraction can fail halfway — a full disk is the ordinary way — and doing
+    # it in place would leave the target holding neither the old instance (moved
+    # aside under names the failed run never reported) nor a usable new one.
+    staging = Path(tempfile.mkdtemp(dir=target, prefix=".restore-tmp-"))
+    try:
+        staged_db = staging / DB_FILENAME
+        shutil.copyfile(directory / manifest["files"]["database"]["name"], staged_db)
+        os.chmod(staged_db, 0o600)
+        _extract_instance(directory / manifest["files"]["instance"]["name"], staging)
 
-    shutil.copyfile(directory / manifest["files"]["database"]["name"], db_target)
-    os.chmod(db_target, 0o600)
-    _extract_lessons(directory / manifest["files"]["lessons"]["name"], lessons_target)
+        # The sidecars go first: a -wal left beside a moved-away database would
+        # be replayed into the restored one, which is corruption dressed as
+        # recovery. Every destination is chosen BEFORE anything moves, because
+        # `now_stamp()` resolves to the second: an immediate retry of a forced
+        # restore would otherwise pick the same aside names and replace straight
+        # over the copies the first attempt had just preserved.
+        sidecars = [db_target.with_name(DB_FILENAME + s) for s in _SIDECARS]
+        displaced = [path for path in sidecars if path.exists()] + occupied
+        asides = _reserve_asides(displaced, now_stamp())
+        moved: list[Path] = []
+        try:
+            for path, aside in zip(displaced, asides):
+                os.replace(path, aside)
+                moved.append(aside)
+            # Renames within one directory: the swap itself cannot half-fail the
+            # way the copies above can.
+            for path in sorted(staging.iterdir()):
+                os.replace(path, target / path.name)
+        except BaseException:
+            for path, aside in zip(displaced, moved):
+                if aside.exists() and not path.exists():
+                    os.replace(aside, path)
+            raise
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     return {
         "manifest": manifest,
         "database": db_target,
-        "lessons": lessons_target,
-        "moved_aside": moved,
+        "restored": tops,
+        "moved_aside": [path.name for path in moved],
     }
 
 
@@ -568,12 +628,12 @@ def _print_set(manifest: dict) -> None:
     print(f"  schema v{manifest['schema_version']}, written {manifest['created_at']}")
     print(f"  database: {files['database']['name']} "
           f"({_human(files['database']['bytes'])})")
-    print(f"  lessons:  {files['lessons']['name']} "
-          f"({_human(files['lessons']['bytes'])}, "
-          f"{len(manifest['lesson_files'])} files)")
-    vanished = manifest.get("lesson_files_vanished") or []
+    print(f"  files:    {files['instance']['name']} "
+          f"({_human(files['instance']['bytes'])}, "
+          f"{len(manifest['instance_files'])} files)")
+    vanished = manifest.get("instance_files_vanished") or []
     if vanished:
-        print(f"  NOTE: {len(vanished)} lesson file(s) were rewritten or removed "
+        print(f"  NOTE: {len(vanished)} file(s) were rewritten or removed "
               "while this ran and are not in the archive:")
         for name in vanished[:5]:
             print(f"    {name}")
@@ -593,7 +653,7 @@ def _report_unclaimed(paths: list[Path]) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Full backup of the Ephemeris instance (database + lessons).",
+        description="Full backup of the Ephemeris instance (database + its files).",
         epilog="Stop the service before restoring: systemctl --user stop ephemeris",
     )
     ap.add_argument("--keep", type=int, default=0, metavar="N",

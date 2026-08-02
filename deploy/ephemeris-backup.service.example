@@ -29,6 +29,13 @@ WorkingDirectory=%h/projects/ephemeris
 # Must match the ACTIVITY_DATA_DIR of the instance being backed up; backups
 # land in $ACTIVITY_DATA_DIR/backups/.
 Environment=ACTIVITY_DATA_DIR=%h/.local/share/ephemeris
+# ONLY if your ephemeris.service copy sets ACTIVITY_DB: copy that line here too,
+# verbatim. This unit is a separate process and resolves the database path
+# itself, so an unmirrored override sends it to <data>/activity.sqlite — which
+# either does not exist (the run fails) or is some older file, and then the
+# timer cheerfully backs up the wrong ledger every night. Each run prints the
+# path it read, so `journalctl --user -u ephemeris-backup` settles it.
+#Environment=ACTIVITY_DB=%h/.local/share/ephemeris/activity.sqlite
 # Concrete venv interpreter built by `uv sync` — no PATH/shim dependency.
 # --keep 20 is roughly three weeks of daily sets; raise it if disk allows.
 ExecStart=%h/projects/ephemeris/.venv/bin/python -m scripts.backup_db --keep 20
