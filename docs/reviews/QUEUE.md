@@ -24,7 +24,47 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
+- [ ] 2026-08-03 — `0b25126`..`113b1dd` on `fix/23-limits-retention`, merged to
+  `main` as `898bbed` — `app/security.py`, `app/limits.py`,
+  `tests/test_130_limits.py` (rest of the change: `app/db.py`,
+  `app/settings.py`, `app/services/{items,tasks,lists,checkins,focus,
+  calendar_events,export,storage}.py`, `app/routers/{export,habits}.py`,
+  `scripts/backup_db.py`, `app/templates/`, `app/static/style.css`,
+  `docs/`) — issue #23, a request-body ceiling added to the HTTP perimeter
+  plus service-layer field caps, export retention and a read-only status
+  section. `SecurityMiddleware` gains a body count on the four unsafe methods:
+  `_body_ceiling()` runs at import and sets the module constant
+  `MAX_BODY_BYTES` from `limits.MAX_BODY_BYTES` (2 MiB), overridable by the
+  `EPHEMERIS_MAX_BODY_BYTES` environment variable; a non-integer, non-positive,
+  or below-`limits.LARGEST_ROUTE_CAP + limits.BODY_CEILING_HEADROOM` value
+  falls back to the constant. `_declared_length()` parses `Content-Length` and
+  a declared value over the ceiling is answered 413 before the app is called.
+  Otherwise `receive` is wrapped in the new `_CappedBody`, which sums the
+  `body` of each `http.request` message as the app pulls it and, once over the
+  limit, returns `http.disconnect` from then on (sticky, nothing buffered).
+  When that has happened the send wrapper discards the app's own response and
+  sends one plain-text 413 instead, and a `ClientDisconnect` propagating out of
+  the app is converted to the same 413 unless it is a genuine one, which is
+  re-raised. GET, HEAD and the WebSocket handshake path take neither wrapper.
+  New module `app/limits.py` holds every write bound: the four existing title
+  caps at unchanged values, five previously unbounded note fields (10 000
+  chars, daily note 20 000), `MAX_BODY_BYTES` (2 MiB), `LARGEST_ROUTE_CAP`
+  (512 KiB, spelled here rather than imported from `app/routers/learn.py`,
+  with a test reading the four real Learn constants to check it is still the
+  largest), `BODY_CEILING_HEADROOM` (1 MiB), `EXPORT_KEEP` (30),
+  `EXPORT_GRACE`, `BACKUP_STALE_DAYS` (7) and `FREE_SPACE_FLOOR` (1 GiB). Enforcement is `limits.check` in
+  the service layer, raising each caller's existing domain error; `POST
+  /daily-note` gains its first failure branch (422 under `X-Partial`, else 303
+  and a flash). `export_events` prunes to the 30 newest `events-*.jsonl` after
+  each write, best-effort, with a directory fsync. New `app/services/storage.py`
+  computes read-only figures rendered in a section of `/export` (database size
+  including WAL sidecars, event count, newest parsing backup manifest with
+  size and age, export count and total, free disk, three warning conditions).
+  `Settings` gains `backups_dir`, exposed as `db.BACKUPS_DIR` and imported by
+  `scripts/backup_db.py::_load_live_paths` instead of recomputing the path. At
+  merge: `uv run pytest` 175 passed, `verify_restore.py` 34 passed 0 failed,
+  public hygiene clean. Codex PR review approved at exact HEAD `113b1dd`. No
+  service action was performed.
 
 ## Done
 
