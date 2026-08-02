@@ -370,6 +370,18 @@ check(
     } <= source_event_types,
     str(sorted(source_event_types)),
 )
+source_ids = [record.get("id") for record in audit_records(source_records)]
+check(
+    "every exported audit record carries a unique stable id",
+    bool(source_ids)
+    and all(isinstance(value, str) and value for value in source_ids)
+    and len(set(source_ids)) == len(source_ids),
+    str(source_ids[:3]),
+)
+check(
+    "exported ids are the source rows' own events.uuid",
+    source_ids == [row[0] for row in rows(DB_PATH, "SELECT uuid FROM events ORDER BY id")],
+)
 task_updates = [
     record for record in source_records if record["type"] == "task_updated"
     and record["payload"].get("task_id") == task_id
@@ -431,9 +443,30 @@ for index, run in enumerate(restore_runs, start=1):
         and "RESTORE STATUS: PARTIAL" in run.stdout
         and "tasks: 0 rows" in run.stdout
         and "calendar_events.list_id: cleared on 1 row(s)" in run.stdout
-        and "IDEMPOTENT REDELIVERY: NO" in run.stdout,
+        and "MODE: FRESH build" in run.stdout
+        and "IDEMPOTENT REDELIVERY: YES" in run.stdout,
         run.stderr or run.stdout,
     )
+
+# Redelivery: the same file into the same target a second time. This is the
+# whole point of carrying event ids, and it is proved here on the real app's
+# export rather than an invented stream.
+redelivered = run_restore(export_path, targets[0])
+check(
+    "redelivering the same export applies nothing",
+    redelivered.returncode == 0
+    and "MODE: REDELIVERY into an existing database" in redelivered.stdout
+    and f"events: 0 applied / {len(audit_records(source_records))} skipped"
+    in redelivered.stdout,
+    redelivered.stderr or redelivered.stdout,
+)
+check(
+    "redelivery duplicates no row in any restored table",
+    state_projection(targets[0] / "activity.sqlite")
+    == state_projection(targets[1] / "activity.sqlite")
+    and rows(targets[0] / "activity.sqlite", "SELECT COUNT(*) FROM events")
+    == rows(targets[1] / "activity.sqlite", "SELECT COUNT(*) FROM events"),
+)
 
 failed_target = WORK_DIR / "restored-failed"
 bad_export = WORK_DIR / "bad-export.jsonl"
