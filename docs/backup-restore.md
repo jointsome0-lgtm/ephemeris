@@ -38,6 +38,9 @@ under `excluded`:
 - `backups/` — this directory; including it would nest every set in the next.
 - `exports/` — JSONL exports are generated *from* the database that is already
   in the set, so they cost size and add no recoverable state.
+- `*.pre-restore-*` — copies a forced restore preserved. They are scrap you
+  delete once satisfied, not instance state, and archiving them would make every
+  backup after a forced restore carry a second copy of the instance it replaced.
 - the database and its `-wal` / `-shm` sidecars — the snapshot is the consistent
   copy of those, and restoring a live `-wal` beside it would be corruption
   dressed as completeness. Read from `ACTIVITY_DB`, not from the name
@@ -169,7 +172,8 @@ instance where it was rather than half-replaced.
 By default it **refuses** a directory that already holds anything of its own.
 Pass `--force` to restore anyway; what is there is moved aside as
 `*.pre-restore-<stamp>` and kept, never deleted. Remove those by hand once you
-are satisfied.
+are satisfied — later backups will not carry them, and later restores will not
+touch them.
 
 `--force` displaces **everything the backup side would have archived**, not only
 the names this particular set carries — the two lists are the same list. A

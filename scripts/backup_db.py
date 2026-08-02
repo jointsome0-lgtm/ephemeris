@@ -41,7 +41,6 @@ Restore never touches a running service: stop it first
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -50,6 +49,7 @@ import sqlite3
 import sys
 import tarfile
 import tempfile
+import time
 from contextlib import closing
 from pathlib import Path
 
@@ -60,6 +60,13 @@ from app.db import DATA_DIR, DB_PATH, now_iso, now_stamp  # noqa: E402
 
 BACKUPS_DIR = DATA_DIR / "backups"
 DB_FILENAME = "activity.sqlite"
+
+ASIDE_MARK = ".pre-restore-"
+"""Infix of the copies a forced restore preserves.
+
+They are recovery scrap the operator deletes once satisfied — not instance
+state — so neither half of this contract touches them: the archive walks past
+them and a restore leaves them where they are."""
 
 EXCLUDED_DIRS = ("backups", "exports")
 """Top-level directories that are neither archived nor replaced by a restore.
@@ -136,13 +143,39 @@ def _claim_stamp() -> tuple[str, int]:
                          os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
             continue
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BaseException:
-            os.close(fd)
-            raise
+        lock = _flock()
+        if lock is not None:
+            try:
+                lock.flock(fd, lock.LOCK_EX | lock.LOCK_NB)
+            except BaseException:
+                os.close(fd)
+                raise
         return stamp, fd
     raise BackupError(f"every backup name for {base} is taken (999 tried)")
+
+
+def _flock():
+    """`fcntl`, or None where the platform has no advisory locks.
+
+    Imported at the point of use, like every other flock in this repository
+    (app/services/attempts.py, app/sandbox.py). A module-level import would make
+    the whole CLI — including `--verify` and `--restore`, which are the tools
+    somebody reaches for on a bad day — fail to import over one guarantee that
+    only matters when two backups overlap.
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - Unix everywhere we run
+        return None
+    return fcntl
+
+
+_UNLOCKED_CLAIM_GRACE = 86400
+"""Seconds a placeholder is presumed live where locks are unavailable.
+
+A day, because no backup run takes one and nothing here should delete a claim
+that might still be in use. It buys back, coarsely, what `_flock` cannot give
+on such a platform."""
 
 
 def _is_live_claim(path: Path) -> bool:
@@ -151,15 +184,24 @@ def _is_live_claim(path: Path) -> bool:
     The mirror of the flock in `_claim_stamp`: if the lock can be taken, no
     process holds it, and the file is debris. Asked without ever writing to the
     file, and released immediately — this is a question, not a claim.
+
+    Without flock there is nobody to ask, so age answers instead: recent means
+    presumed live. Coarse, but it errs toward keeping a file rather than freeing
+    a name another run is publishing under.
     """
     try:
         fd = os.open(path, os.O_RDONLY)
     except OSError:
         return False
+    lock = _flock()
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        return True
+        if lock is None:
+            age = time.time() - path.stat().st_mtime
+            return age < _UNLOCKED_CLAIM_GRACE
+        try:
+            lock.flock(fd, lock.LOCK_EX | lock.LOCK_NB)
+        except OSError:
+            return True
     finally:
         os.close(fd)
     return False
@@ -258,6 +300,13 @@ def instance_files() -> list[str]:
       next one.
     - `exports/` — JSONL exports are generated FROM the database that is already
       in the set, so they cost size and add no recoverable state.
+    - `*.pre-restore-*` — what a forced restore preserved. A restore leaves
+      those alone (`restore_owned`), so archiving them would make every backup
+      after a forced restore carry a second copy of the instance it replaced,
+      and a later restore of that set would try to rename an archived aside over
+      the very copy it is keeping: ENOTEMPTY, mid-swap, on a half-replaced
+      instance. Excluding them keeps this list and `restore_owned` exact
+      complements, which is what makes the swap collision-free by construction.
 
     The database and its WAL sidecars are excluded too: the snapshot is the
     consistent copy of those, and restoring a live `-wal` beside it would be
@@ -275,13 +324,17 @@ def instance_files() -> list[str]:
     # a directory symlink, so a link pointing at an ancestor cannot loop.
     for dirpath, dirnames, filenames in os.walk(root):
         here = Path(dirpath)
+        top = here == root
         dirnames[:] = [
             name for name in dirnames
             if (here / name).resolve() not in skip_dirs
+            and not (top and ASIDE_MARK in name)
             and not (here / name).is_symlink()
         ]
         for name in filenames:
             path = here / name
+            if top and ASIDE_MARK in name:
+                continue
             if path.is_symlink() or not path.is_file():
                 continue
             relative = path.relative_to(root).as_posix()
@@ -330,7 +383,7 @@ def excluded_summary() -> list[str]:
     never on this disk.
     """
     root = DATA_DIR.resolve()
-    names = [f"{name}/" for name in EXCLUDED_DIRS]
+    names = [f"{name}/" for name in EXCLUDED_DIRS] + [f"*{ASIDE_MARK}*"]
     try:
         names.append(DB_PATH.resolve().relative_to(root).as_posix() + "*")
     except ValueError:
@@ -646,7 +699,7 @@ def restore_owned(target: Path) -> list[Path]:
     return sorted(
         path for path in target.iterdir()
         if path.name not in EXCLUDED_DIRS
-        and ".pre-restore-" not in path.name
+        and ASIDE_MARK not in path.name
         and not path.name.startswith(".restore-tmp-")
     )
 
@@ -723,6 +776,23 @@ def restore(manifest_path: Path, target: Path, *, force: bool = False) -> dict:
         # restore would otherwise pick the same aside names and replace straight
         # over the copies the first attempt had just preserved.
         displaced = occupied
+        # Every destination has to be free once the displacement is done. It is,
+        # by construction — the archive carries nothing a restore keeps — but a
+        # rename onto a non-empty directory fails with ENOTEMPTY, and it would
+        # fail in the middle of the swap, with the instance half replaced and
+        # the rollback only able to undo the moves. One stat per entry buys the
+        # failure BEFORE anything moves.
+        keeping = {path.name for path in target.iterdir()} - {
+            path.name for path in displaced
+        }
+        clash = sorted(path.name for path in staging.iterdir()
+                       if path.name in keeping)
+        if clash:
+            raise BackupError(
+                f"this set carries {', '.join(clash)}, which a restore does not "
+                f"displace — refusing to restore it into {target} rather than "
+                "fail halfway through the swap"
+            )
         asides = _reserve_asides(displaced, now_stamp())
         moved: list[Path] = []
         try:

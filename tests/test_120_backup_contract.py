@@ -26,6 +26,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -574,7 +575,9 @@ def test_the_archive_carries_every_directory_the_instance_grew(backup_db, instan
     assert not any(name.startswith("activity.sqlite") for name in archived), (
         "the snapshot is the consistent copy of the database and its sidecars"
     )
-    assert manifest["excluded"] == ["backups/", "exports/", "activity.sqlite*"]
+    assert manifest["excluded"] == [
+        "backups/", "exports/", "*.pre-restore-*", "activity.sqlite*",
+    ]
 
 
 def test_a_restore_rebuilds_every_directory_it_carried(backup_db, instance, tmp_path):
@@ -652,6 +655,61 @@ def test_retention_never_sweeps_a_name_claim_another_run_still_holds(
     assert left == []
 
 
+def test_where_locks_are_unavailable_a_recent_claim_is_still_presumed_live(
+    backup_db, instance, monkeypatch
+):
+    """The lock is imported at the point of use, so the recovery commands still
+    work on a platform that has none — and on such a platform age answers the
+    question instead, erring toward keeping the file."""
+    monkeypatch.setattr(backup_db, "_flock", lambda: None)
+    backups = instance / "backups"
+    backups.mkdir(parents=True, exist_ok=True)
+    fresh = backups / backup_db.db_name("2031-08-01-000000")
+    fresh.touch()
+    stale = backups / backup_db.db_name("2020-08-01-000000")
+    stale.touch()
+    old = time.time() - backup_db._UNLOCKED_CLAIM_GRACE - 60
+    os.utime(stale, (old, old))
+
+    assert backup_db.unclaimed_files() == [stale]
+    _, deleted, left = backup_db.prune(1)
+    assert deleted == [stale] and left == []
+    assert fresh.exists(), "a claim young enough to belong to a live run stays"
+
+
+def test_a_backup_ignores_what_a_forced_restore_set_aside(
+    backup_db, instance, tmp_path
+):
+    """Asides are recovery scrap, not instance state.
+
+    Archiving them would double every backup taken after a forced restore, and
+    the set would then carry a `lessons.pre-restore-*` directory that a later
+    restore does NOT displace — so the swap would try to rename it over the
+    non-empty copy it is keeping and fail with ENOTEMPTY, halfway through, on a
+    half-replaced instance.
+    """
+    manifest_path = backup_db.create_backup()
+    backup_db.restore(manifest_path, instance, force=True)
+    asides = [path for path in instance.iterdir() if ".pre-restore-" in path.name]
+    assert asides, "the forced restore preserved what it replaced"
+
+    manifest = backup_db.verify(backup_db.create_backup())
+
+    assert not any(
+        ".pre-restore-" in name for name in manifest["instance_files"]
+    ), "the next backup carries the instance, not the copies of what it replaced"
+    assert "*.pre-restore-*" in manifest["excluded"]
+
+    # And that set restores over the same instance without meeting them.
+    result = backup_db.restore(
+        backup_db.list_sets()[-1], instance, force=True
+    )
+    assert result["restored"] == ["lessons"]
+    for aside in asides:
+        assert aside.exists(), "a restore leaves earlier asides exactly alone"
+    assert (instance / "lessons" / "demo-slug" / "index.html").is_file()
+
+
 def test_a_renamed_database_is_still_excluded_from_the_archive(
     backup_db, instance, monkeypatch
 ):
@@ -673,7 +731,9 @@ def test_a_renamed_database_is_still_excluded_from_the_archive(
     assert not any(
         name.startswith("ledger.sqlite") for name in manifest["instance_files"]
     ), "the snapshot is the consistent copy; the raw file must not ride along"
-    assert manifest["excluded"] == ["backups/", "exports/", "ledger.sqlite*"], (
+    assert manifest["excluded"] == [
+        "backups/", "exports/", "*.pre-restore-*", "ledger.sqlite*",
+    ], (
         "and the manifest names the file it actually left out"
     )
 
@@ -706,7 +766,9 @@ def test_a_relative_data_dir_still_excludes_its_own_backups(
     assert not any(
         name.startswith("activity.sqlite") for name in manifest["instance_files"]
     )
-    assert manifest["excluded"] == ["backups/", "exports/", "activity.sqlite*"]
+    assert manifest["excluded"] == [
+        "backups/", "exports/", "*.pre-restore-*", "activity.sqlite*",
+    ]
 
 
 def test_a_forced_restore_displaces_instance_data_the_set_never_held(
