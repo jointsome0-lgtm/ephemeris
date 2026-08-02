@@ -2,12 +2,51 @@
 
 The JSONL file is a restorable audit stream with calendar-series snapshots, not
 a full database backup. For full-fidelity recovery, use a consistent SQLite
-backup. The restore command accepts only a fresh target and always reports a
-partial result:
+backup. The restore command always reports a partial result:
 
 ```bash
 python scripts/restore_from_export.py EXPORT.jsonl TARGET_ACTIVITY_DATA_DIR
 ```
+
+## Idempotent redelivery
+
+Every audit line carries the source row's stable `events.uuid` as its `id`, the
+first key of the envelope. The importer skips a line whose `id` the target
+already holds and reports the split:
+
+```
+events: 0 applied / 412 skipped (already present); 412 total in target
+IDEMPOTENT REDELIVERY: YES
+```
+
+So the same file can be delivered into the same target repeatedly without
+duplicating anything, and a later export — which shares its whole prefix with an
+earlier one — applies only its tail. A skipped line does not re-run its replay
+either, so typed state is not touched twice. `calendar_event_series` lines carry
+no `id`; their identity is the series id inside the payload, and they upsert onto
+the existing row rather than adding a second one.
+
+A target that already holds `activity.sqlite` is redelivered into. An absent or
+empty target is built fresh, in a sibling staging directory that is moved into
+place only on success.
+
+**Exports written before ids joined the envelope** carry no receipt. They still
+restore into a *fresh* target exactly as before — the restored rows get new local
+UUIDs — and the summary says `IDEMPOTENT REDELIVERY: NO`. Redelivering one into a
+populated target is refused rather than guessed at, because nothing distinguishes
+a replayed line from new history.
+
+## What the stream still cannot carry
+
+Identity is settled; these gaps are not, and no restore reproduces them:
+
+- `tags` and `task_tags` — no write vocabulary at all, so the tables stay empty.
+- Lesson bundle files under `$ACTIVITY_DATA_DIR/lessons/` — filesystem content
+  is outside JSONL entirely.
+- `calendar_events.list_id` links to lists that never entered the stream; restore
+  clears and reports them to keep the database FK-clean.
+- Bootstrap `lists`/`tasks` rows, task note/order fields, focus session
+  notes/dates — see the matrix below.
 
 The command deliberately leaves insufficiently journaled typed tables empty.
 On the first normal app start, the current startup code will seed demo lists and
@@ -31,7 +70,7 @@ separate calls.
 | `routine_items` | Fully* | Create/update carry the business fields; deactivate, reactivate, and delete are journaled (`app/services/items.py:97-108`, `140-149`, `161-187`, `203-210`). Reactivation is inferred from the sparse `routine_item_updated` emitted for an inactive row. |
 | `checkins` | Fully* | Upsert carries the natural key plus final status/note; clear carries the natural key (`app/services/checkins.py:147-185`). The generated row ID and exact row timestamps are absent. |
 | `daily_notes` | Fully* | `daily_note_updated` carries the complete business state `{date, text}` (`app/services/checkins.py:205-226`). Exact row timestamps are absent. |
-| `events` | Partially | Export preserves content and order but selects no `events.id` (`app/services/export.py:30-47`; schema at `app/db.py:146-152`). Original stable record identity cannot be rebuilt. |
+| `events` | Fully* | Export preserves content, order, and stable identity: each line carries the row's `events.uuid` as `id` (`app/services/export.py` `iter_jsonl`; schema v9 at `app/db.py:488-515`), and restore reinstates that uuid. The local autoincrement `events.id` is still a fresh per-database value. |
 | `lists` | Partially | Startup inserts Inbox/demo rows without events (`app/services/lists.py:30-48`, `app/main.py:48-57`); create events also omit kind/order/timestamps (`app/services/lists.py:86-100`). |
 | `tasks` | Partially | Create omits note/order (`app/services/tasks.py:56-86`). Update writes title, note, due date, priority, and list ID but emits only task ID/title (`app/services/tasks.py:192-211`). Respace and list archive also change rows without complete payloads (`app/services/tasks.py:98-143`, `app/services/lists.py:119-131`). |
 | `tags` | Not journaled | The table exists (`app/db.py:191-195`) but has no application write/event vocabulary. |
@@ -60,8 +99,9 @@ separate calls.
 ## Equivalence rules
 
 - Audit records compare by exported line order and
-  `(timestamp, type, payload_version, payload)`; original `events.id` is absent,
-  so restored IDs are fresh local autoincrement values.
+  `(id, timestamp, type, payload_version, payload)`. The `id` — the row's
+  `events.uuid` — survives restore unchanged; only the local autoincrement
+  `events.id` is a fresh per-database value.
 - `routine_items` compare on IDs and business columns. Service-owned
   `created_at`, `updated_at`, and `deactivated_at` are reconstructed from the
   corresponding event timestamp.
@@ -77,12 +117,8 @@ separate calls.
 
 ## Known gaps and proposals
 
-- Stable event identity: the database now stores a unique `events.uuid` per row
-  (schema v9; pre-v9 rows backfilled once, payload history untouched), but the
-  export envelope does not carry it yet, so the importer still has no receipt to
-  deduplicate on. Until the envelope exports the UUID and the importer enforces
-  it, import is fresh-target-only and redelivery is not idempotent; restored
-  rows get fresh local UUIDs, like restored autoincrement IDs.
+- ~~Stable event identity~~ — **settled.** The envelope carries `events.uuid` as
+  `id` and the importer deduplicates on it; see "Idempotent redelivery" above.
 - Tasks/lists: emit complete post-write row snapshots, including every row
   changed by respace and list archive, or add versioned typed-table snapshots.
 - Focus: include note/date/timestamps or snapshot the table.

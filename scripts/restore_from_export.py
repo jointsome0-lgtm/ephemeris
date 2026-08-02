@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
 """Restore the reconstructible subset of an Ephemeris JSONL export.
 
-The current export is not a full database snapshot.  This command therefore
-accepts only a fresh target and always reports the tables and metadata that the
-stream cannot reproduce.
+The current export is not a full database snapshot, so this command always
+reports the tables and metadata the stream cannot reproduce.
+
+It is idempotent when the export carries event ids (issue #17).  Each audit line
+holds the source row's stable `events.uuid` as its `id`; a line whose id is
+already in the target is skipped rather than inserted again, and calendar series
+snapshots upsert on their own id.  Redelivering the same file into the same
+target therefore applies nothing and changes nothing.
+
+An export written before ids joined the envelope carries no such receipt.  It
+still restores into a FRESH target exactly as it always did — restored rows get
+new local uuids — but it cannot be redelivered into a populated one, because
+there is nothing to recognize an already-applied line by.
 
 Usage:
     python scripts/restore_from_export.py EXPORT.jsonl TARGET_ACTIVITY_DATA_DIR
@@ -25,6 +35,9 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 CALENDAR_SNAPSHOT_TYPE = "calendar_event_series"
+# Mirrors app/settings.py: `<ACTIVITY_DATA_DIR>/activity.sqlite`. Read before
+# app.db is imported, because importing it binds the path to the environment.
+DB_FILENAME = "activity.sqlite"
 
 ROUTINE_EVENT_TYPES = {
     "routine_item_created",
@@ -74,6 +87,9 @@ class Record:
     type: str
     payload_version: int
     payload: dict[str, Any]
+    uuid: str | None = None
+    """The export's `id`: the source row's `events.uuid`, or None for a
+    calendar snapshot and for any export written before ids were carried."""
 
 
 def _field(payload: dict[str, Any], name: str, record: Record) -> Any:
@@ -112,7 +128,13 @@ def load_records(path: Path) -> list[Record]:
             )
         if not isinstance(payload, dict):
             raise RestoreError(f"line {line_no}: payload must be a JSON object")
-        records.append(Record(line_no, timestamp, type_, version, payload))
+        # Absent is allowed (a pre-#17 export); present but not a usable string
+        # is a corrupt receipt, and silently ignoring it would turn a redelivery
+        # into a duplicate insert.
+        uuid = value.get("id")
+        if uuid is not None and (not isinstance(uuid, str) or not uuid):
+            raise RestoreError(f"line {line_no}: id must be a non-empty string when present")
+        records.append(Record(line_no, timestamp, type_, version, payload, uuid))
     return records
 
 
@@ -273,8 +295,15 @@ def _insert_calendar_snapshot(
         payload["list_id"] = None
     quoted = ", ".join(f'"{name}"' for name in schema_columns)
     placeholders = ", ".join("?" for _ in schema_columns)
+    # A snapshot is complete state keyed by the series id, so redelivery means
+    # "this row now reads like this" — an upsert, never a second row. The export
+    # holds one snapshot per series, so within a single file this never fires.
+    updates = ", ".join(
+        f'"{name}" = excluded."{name}"' for name in schema_columns if name != "id"
+    )
     conn.execute(
-        f"INSERT INTO calendar_events ({quoted}) VALUES ({placeholders})",
+        f"INSERT INTO calendar_events ({quoted}) VALUES ({placeholders}) "
+        f"ON CONFLICT(id) DO UPDATE SET {updates}",
         [payload[name] for name in schema_columns],
     )
 
@@ -293,10 +322,16 @@ def _ensure_fresh_target(target: Path) -> None:
 def restore(records: list[Record], target: Path) -> dict[str, Any]:
     """Build a fresh schema, preserve the audit stream, and replay supported state.
 
-    The database is built in a sibling staging directory and moved into place
+    A target that already holds a database is redelivered into instead of
+    refused: records it already carries are skipped, the rest applied. That path
+    needs the export's event ids, so a pre-#17 file is still fresh-target only.
+
+    The fresh path builds in a sibling staging directory and moves into place
     only on success, so a replay failure cannot leave a half-created target
     that would block the retry behind the fresh-target guard.
     """
+    if (target / DB_FILENAME).is_file():
+        return _redeliver_into(records, target)
     _ensure_fresh_target(target)
     # Unique name via mkdtemp: never collides with (or deletes) anything
     # pre-existing; sibling of target so the final rename stays on one filesystem.
@@ -315,62 +350,116 @@ def restore(records: list[Record], target: Path) -> dict[str, Any]:
     return result
 
 
-def _build_into(records: list[Record], staging: Path) -> dict[str, Any]:
+def _open_target(data_dir: Path):
+    """Bind app.db to `data_dir`, create or upgrade the schema, and connect.
 
-    # app.db resolves these at import time. ACTIVITY_DB must not escape the target.
-    os.environ["ACTIVITY_DATA_DIR"] = str(staging)
+    Call once per process: app.db resolves these paths at import time, so a
+    second call with a different directory would reuse the first binding.
+    """
+    # ACTIVITY_DB must not escape the target.
+    os.environ["ACTIVITY_DATA_DIR"] = str(data_dir)
     os.environ.pop("ACTIVITY_DB", None)
     sys.path.insert(0, str(ROOT))
     from app import db  # noqa: E402
 
     db.init_db()
-    conn = db.get_conn()
+    return db, db.get_conn()
+
+
+def _build_into(records: list[Record], staging: Path) -> dict[str, Any]:
+    db, conn = _open_target(staging)
+    try:
+        return _apply_records(db, conn, records, redelivery=False)
+    finally:
+        conn.close()
+
+
+def _redeliver_into(records: list[Record], target: Path) -> dict[str, Any]:
+    missing = [
+        r.line for r in records
+        if r.type != CALENDAR_SNAPSHOT_TYPE and r.uuid is None
+    ]
+    if missing:
+        raise RestoreError(
+            f"target already holds a database, but {len(missing)} audit record(s) "
+            f'carry no "id" (first at line {missing[0]}). Redelivery recognizes an '
+            "already-applied record by its id; restore this export into a fresh "
+            "target instead."
+        )
+    db, conn = _open_target(target)
+    try:
+        return _apply_records(db, conn, records, redelivery=True)
+    finally:
+        conn.close()
+
+
+def _apply_records(
+    db: Any, conn: sqlite3.Connection, records: list[Record], *, redelivery: bool
+) -> dict[str, Any]:
+    """Insert every audit record the target does not already hold, replay what
+    it supports, and upsert the calendar snapshots."""
     type_counts = Counter(r.type for r in records if r.type != CALENDAR_SNAPSHOT_TYPE)
     unknown_types = sorted(set(type_counts) - KNOWN_EVENT_TYPES)
     unresolved_links: list[int] = []
     audit_records = [r for r in records if r.type != CALENDAR_SNAPSHOT_TYPE]
     snapshots = [r for r in records if r.type == CALENDAR_SNAPSHOT_TYPE]
-    try:
-        with conn:
-            for record in audit_records:
-                conn.execute(
-                    "INSERT INTO events (timestamp, type, payload_version, payload_json) "
-                    "VALUES (?, ?, ?, ?)",
-                    (
-                        record.timestamp,
-                        record.type,
-                        record.payload_version,
-                        json.dumps(record.payload, ensure_ascii=False),
-                    ),
-                )
-                if record.type in ROUTINE_EVENT_TYPES:
-                    _replay_routine(conn, record)
-                elif record.type in CHECKIN_EVENT_TYPES:
-                    _replay_checkin(conn, record)
-                elif record.type in NOTE_EVENT_TYPES:
-                    _replay_note(conn, record)
-            for record in snapshots:
-                _insert_calendar_snapshot(conn, record, unresolved_links)
-            sequence_bumps = _bump_id_sequences(conn, records)
-            # Export lines carry no event identity yet (issue #17 tail), so
-            # restored rows get fresh local UUIDs, like restored autoincrement ids.
-            db.backfill_event_uuids(conn)
-
-        fk_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
-        if fk_errors:
-            raise RestoreError(f"restored database failed foreign_key_check: {len(fk_errors)} row(s)")
-        row_counts = {
-            table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
-            for table in (
-                "events",
-                "routine_items",
-                "checkins",
-                "daily_notes",
-                "calendar_events",
+    # Held in memory rather than queried per record: one id lookup per line
+    # against a growing table is the only part of this that scales with both
+    # sides at once. `events.uuid` is uniquely indexed, so the set is exact.
+    seen = {
+        row["uuid"]
+        for row in conn.execute("SELECT uuid FROM events WHERE uuid IS NOT NULL")
+    }
+    applied = 0
+    skipped = 0
+    with conn:
+        for record in audit_records:
+            if record.uuid is not None and record.uuid in seen:
+                # Already delivered. Its replay ran when it was applied, so
+                # skipping the insert must skip the replay with it — that is
+                # what makes redelivery a no-op rather than a double-apply.
+                skipped += 1
+                continue
+            conn.execute(
+                "INSERT INTO events (uuid, timestamp, type, payload_version, payload_json) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    record.uuid,
+                    record.timestamp,
+                    record.type,
+                    record.payload_version,
+                    json.dumps(record.payload, ensure_ascii=False),
+                ),
             )
-        }
-    finally:
-        conn.close()
+            if record.uuid is not None:
+                seen.add(record.uuid)
+            applied += 1
+            if record.type in ROUTINE_EVENT_TYPES:
+                _replay_routine(conn, record)
+            elif record.type in CHECKIN_EVENT_TYPES:
+                _replay_checkin(conn, record)
+            elif record.type in NOTE_EVENT_TYPES:
+                _replay_note(conn, record)
+        for record in snapshots:
+            _insert_calendar_snapshot(conn, record, unresolved_links)
+        sequence_bumps = _bump_id_sequences(conn, records)
+        # A pre-#17 export carries no ids, so its rows land with a NULL uuid and
+        # are stamped here — fresh local identity, like restored autoincrement ids.
+        db.backfill_event_uuids(conn)
+
+    fk_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if fk_errors:
+        raise RestoreError(f"restored database failed foreign_key_check: {len(fk_errors)} row(s)")
+    row_counts = {
+        table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+        for table in (
+            "events",
+            "routine_items",
+            "checkins",
+            "daily_notes",
+            "calendar_events",
+        )
+    }
 
     return {
         "rows": row_counts,
@@ -378,6 +467,10 @@ def _build_into(records: list[Record], staging: Path) -> dict[str, Any]:
         "unknown_types": unknown_types,
         "unresolved_calendar_list_links": unresolved_links,
         "sequence_bumps": sequence_bumps,
+        "applied": applied,
+        "skipped": skipped,
+        "redelivery": redelivery,
+        "identified": all(r.uuid is not None for r in audit_records),
     }
 
 
@@ -421,9 +514,16 @@ def print_summary(target: Path, result: dict[str, Any]) -> None:
     rows = result["rows"]
     types: Counter[str] = result["types"]
     print("RESTORE STATUS: PARTIAL (limits in the current export contract)")
-    print(f"TARGET: {target / 'activity.sqlite'}")
+    print(f"TARGET: {target / DB_FILENAME}")
+    print("MODE: " + (
+        "REDELIVERY into an existing database"
+        if result["redelivery"] else "FRESH build"
+    ))
     print("RESTORED:")
-    print(f"  events: {rows['events']} records (content/order; new local ids)")
+    print(
+        f"  events: {result['applied']} applied / {result['skipped']} skipped "
+        f"(already present); {rows['events']} total in target"
+    )
     print(
         "  routine_items: "
         f"{rows['routine_items']} semantic rows (event timestamps replace row timestamps)"
@@ -475,8 +575,14 @@ def print_summary(target: Path, result: dict[str, Any]) -> None:
             + ", ".join(f"{table} -> {seq}" for table, seq in sorted(bumps.items()))
         )
 
-    print("IDEMPOTENT REDELIVERY: NO")
-    print("  Exported events omit their stable events.id; this importer is fresh-target only.")
+    if result["identified"]:
+        print("IDEMPOTENT REDELIVERY: YES")
+        print("  Every audit record carries its stable events.uuid as \"id\". Running this")
+        print("  file into this target again applies 0 records and changes nothing.")
+    else:
+        print("IDEMPOTENT REDELIVERY: NO")
+        print("  This export predates event ids in the envelope, so restored rows take")
+        print("  fresh local uuids and it can only be restored into a fresh target.")
     if rows["routine_items"] == 0:
         print("FIRST APP START: demo habits will seed into the empty routine_items table")
         print("  (this export retained no live habits), and demo lists/tasks will seed")

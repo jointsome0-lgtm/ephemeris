@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import Response
+from fastapi.responses import FileResponse
 
 from ..db import get_db
 from ..services import export
@@ -31,12 +31,16 @@ def get_export(request: Request, conn: sqlite3.Connection = Depends(get_db)):
 
 
 @router.post("/export/jsonl")
-def post_export_jsonl(request: Request,
-                      conn: sqlite3.Connection = Depends(get_db)):
-    """Write data/exports/events-<stamp>.jsonl AND stream it back as a download."""
-    path, text, _count = export.export_events(conn)
-    return Response(
-        content=text,
+def post_export_jsonl(conn: sqlite3.Connection = Depends(get_db)):
+    """Write data/exports/events-<stamp>.jsonl AND send back that exact file.
+
+    The download is the file on disk, not a second rendering of it: the export
+    is never held in memory whole, and what the browser saves is byte-identical
+    to what `data/exports/` keeps.
+    """
+    path, _count = export.export_events(conn)
+    return FileResponse(
+        path,
         media_type="application/x-ndjson",
-        headers={"Content-Disposition": f'attachment; filename="{path.name}"'},
+        filename=path.name,  # -> Content-Disposition: attachment; filename="..."
     )
