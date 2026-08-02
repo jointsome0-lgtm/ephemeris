@@ -254,6 +254,19 @@ def human_size(n: int) -> str:
 
 
 def recent_exports(limit: int = 8) -> list[dict]:
-    """Previously written export files, newest first (name + human size)."""
-    return [{"name": f.name, "size_h": human_size(f.stat().st_size)}
-            for f in existing_exports()[:limit]]
+    """Previously written export files, newest first (name + human size).
+
+    A file that vanishes between the listing and its stat is dropped rather
+    than raised: now that retention deletes, `GET /export` rendering this list
+    can overlap a `POST /export/jsonl` pruning it, and one unlucky interleaving
+    must not turn the page into a 500 over a file the reader was going to be
+    told about and no longer needs to be.
+    """
+    found = []
+    for path in existing_exports()[:limit]:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        found.append({"name": path.name, "size_h": human_size(size)})
+    return found

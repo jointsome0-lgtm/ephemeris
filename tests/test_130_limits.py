@@ -28,6 +28,7 @@ import asyncio
 import json
 import sqlite3
 from datetime import date, timedelta
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -867,6 +868,80 @@ def test_a_manifest_that_names_no_restorable_set_is_skipped(client, backups_dir,
     found = storage.newest_backup()
     assert found is not None
     assert found["name"] == "activity-2000-01-01-000001.manifest.json"
+
+
+def test_the_newest_backup_is_the_one_that_says_it_is_newest(client, backups_dir):
+    """The timestamp inside the manifest decides, not the stamp in the name.
+
+    A clock that steps backwards — DST, an NTP correction — writes the next
+    backup under a lexically older name while its own `created_at` correctly
+    records the later moment. Trusting the name would report the wrong set, its
+    wrong size, and an age a day too large, twice a year.
+    """
+    older = date.fromisoformat(today_str()) - timedelta(days=2)
+    _write_manifest(backups_dir, older, stamp="2038-06-01-030000")
+    # Named an hour behind the one above, created an hour after it.
+    (backups_dir / "activity-2038-06-01-020000.manifest.json").write_text(
+        json.dumps({"manifest_version": storage.MANIFEST_VERSION,
+                    "created_at": f"{today_str()}T02:00:00+03:00",
+                    "stamp": "2038-06-01-020000",
+                    "files": {
+                        "database": {"name": "activity-2038-06-01-020000.sqlite",
+                                     "bytes": 4096},
+                        "instance": {"name": "files-2038-06-01-020000.tar.gz",
+                                     "bytes": 2048},
+                    }}), encoding="utf-8")
+
+    found = storage.newest_backup()
+    assert found is not None
+    assert found["name"] == "activity-2038-06-01-020000.manifest.json"
+
+    conn = _conn()
+    try:
+        assert storage.status(conn)["backup_age_days"] == 0
+    finally:
+        conn.close()
+
+
+def test_a_naive_timestamp_does_not_break_the_comparison(client, backups_dir):
+    """One manifest written without an offset must not make the panel raise.
+
+    Aware and naive datetimes are not orderable, and every candidate is now
+    compared rather than short-circuited at the first name — so a single
+    offset-less `created_at` would be a TypeError out of a page render.
+    """
+    _write_manifest(backups_dir, date.fromisoformat(today_str()) - timedelta(days=1),
+                    stamp="2039-01-01-010000")
+    (backups_dir / "activity-2039-01-01-020000.manifest.json").write_text(
+        json.dumps({"manifest_version": storage.MANIFEST_VERSION,
+                    "created_at": f"{today_str()}T02:00:00",   # no offset
+                    "files": {"database": {"name": "a.sqlite", "bytes": 1},
+                              "instance": {"name": "b.tar.gz", "bytes": 1}}}),
+        encoding="utf-8")
+
+    found = storage.newest_backup()
+    assert found is not None
+    assert found["name"] == "activity-2039-01-01-020000.manifest.json"
+
+
+def test_an_export_pruned_mid_render_does_not_sink_the_page(client, exports_dir,
+                                                            monkeypatch):
+    """Retention deletes now, so a GET listing the directory can race a POST
+    pruning it. The reader loses one line, not the page."""
+    for n in range(3):
+        (exports_dir / f"events-2040-07-07-{n:06d}.jsonl").write_text("{}\n")
+    vanishing = exports_dir / "events-2040-07-07-000001.jsonl"
+
+    real_stat = Path.stat
+
+    def stat_after_a_prune(self, *args, **kwargs):
+        if self == vanishing:
+            vanishing.unlink(missing_ok=True)
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat_after_a_prune)
+    names = [item["name"] for item in export.recent_exports()]
+    assert names == ["events-2040-07-07-000002.jsonl", "events-2040-07-07-000000.jsonl"]
 
 
 def test_the_panel_accepts_exactly_what_the_restore_tooling_accepts(tmp_path):

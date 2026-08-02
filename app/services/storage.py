@@ -147,15 +147,32 @@ def _read_manifest(path: Path) -> dict | None:
 
 
 def newest_backup() -> dict | None:
-    """The newest backup set whose manifest can be read, or None if there is none."""
+    """The newest backup set whose manifest can be read, or None if there is none.
+
+    "Newest" is the `created_at` the set recorded, not the name it sorts under.
+    They agree except when the wall clock steps backwards — a DST fallback, an
+    NTP correction — and then the stamp in the filename is the thing that is
+    wrong, while the timestamp inside is what the backup itself claims. Reading
+    every manifest to find the maximum costs one small JSON per retained set,
+    which is what `--keep` keeps small; stopping at the first name would answer
+    the panel's one question wrongly twice a year.
+
+    Aware and naive timestamps are compared through `astimezone()`, which reads
+    a naive one as local time — the zone the backup was taken in, on the machine
+    it was taken on.
+    """
     if not BACKUPS_DIR.is_dir():
         return None
-    for path in sorted(BACKUPS_DIR.glob("activity-*.manifest.json"),
-                       key=lambda p: p.name, reverse=True):
+    sets = []
+    for path in BACKUPS_DIR.glob("activity-*.manifest.json"):
         found = _read_manifest(path)
         if found is not None:
-            return found
-    return None
+            sets.append(found)
+    if not sets:
+        return None
+    # Name descending as the tie-break, so two sets stamped in the same second
+    # still resolve the same way on every render.
+    return max(sets, key=lambda s: (s["created"].astimezone(), s["name"]))
 
 
 def free_space() -> int | None:
