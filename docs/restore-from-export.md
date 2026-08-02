@@ -1,8 +1,11 @@
 # JSONL restore contract
 
 The JSONL file is a restorable audit stream with calendar-series snapshots, not
-a full database backup. For full-fidelity recovery, use a consistent SQLite
-backup. The restore command always reports a partial result:
+a full database backup. For full-fidelity recovery use a full backup —
+`python -m scripts.backup_db`, documented in
+[backup and restore](backup-restore.md), which copies the whole database and the
+lesson bundles beside it. The restore command below always reports a partial
+result:
 
 ```bash
 python scripts/restore_from_export.py EXPORT.jsonl TARGET_ACTIVITY_DATA_DIR

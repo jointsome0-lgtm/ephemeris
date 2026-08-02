@@ -731,7 +731,8 @@ def print_summary(target: Path, result: dict[str, Any]) -> None:
     print("FIRST APP START: no demo seeding. This target is marked initialized")
     print("  (app_meta.seeded_at), so startup adds no habits, lists, tasks or events")
     print("  to the restored stream; the empty tables above stay empty.")
-    print("FULL-FIDELITY RECOVERY: use a consistent SQLite backup, not JSONL alone.")
+    print("FULL-FIDELITY RECOVERY: use a full backup, not JSONL alone —")
+    print("  python -m scripts.backup_db (see docs/backup-restore.md).")
 
 
 def main() -> int:

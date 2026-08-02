@@ -9,7 +9,10 @@ See [`docs/system-design.md`](docs/system-design.md) for the full design.
 **Status:** runnable and actively implemented. Today/Tasks, Calendar (month),
 Focus (Pomodoro + persisted stats), Habits, Search, and JSONL Export are
 available, with light/dark themes and Mode A (no-JS PRG) + Mode B (fetch)
-progressive enhancement. Security, backup, cleanup, and Learn work continues
+progressive enhancement. Recovery is a documented contract: full
+[backup and restore](docs/backup-restore.md) for the instance, the
+[JSONL restore contract](docs/restore-from-export.md) for the audit stream.
+Security, backup, cleanup, and Learn work continues
 through focused issues and the repository's normal review and verification
 protocols; it is not waiting on a repository-wide SDD freeze.
 
@@ -176,10 +179,14 @@ override is ignored. The terminal toggle also changed polarity: it is now
 ## Data
 
 - `$ACTIVITY_DATA_DIR/activity.sqlite` — source of truth (WAL mode). **Not** committed.
-- Back it up with `sqlite3 "$ACTIVITY_DATA_DIR/activity.sqlite" ".backup '$ACTIVITY_DATA_DIR/backup.sqlite'"`
-  (or `VACUUM INTO`), never a raw copy mid-write.
+- Back it up with `python -m scripts.backup_db --keep 20`, never a raw copy
+  mid-write. One run writes a verified set — snapshot, lesson bundles, manifest —
+  to `$ACTIVITY_DATA_DIR/backups/`; see [backup and restore](docs/backup-restore.md)
+  for the schedule template, the `--verify` check, and the restore command.
 - Exports land in `$ACTIVITY_DATA_DIR/exports/` and can contain private
-  notes/tasks — also not committed.
+  notes/tasks — also not committed. A JSONL export is an audit stream, **not** a
+  backup: see the [restore contract](docs/restore-from-export.md) for what it
+  cannot carry.
 
 ## Public repository hygiene
 

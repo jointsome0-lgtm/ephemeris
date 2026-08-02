@@ -1,0 +1,26 @@
+# Ephemeris — daily schedule for the full backup.
+#
+# Copy alongside ephemeris-backup.service.example (see the header there), then:
+#
+#   systemctl --user enable --now ephemeris-backup.timer
+#   systemctl --user list-timers ephemeris-backup.timer   # when it next fires
+#
+# Enable lingering as well, or nothing runs while you are logged out:
+#
+#   loginctl enable-linger "$USER"
+
+[Unit]
+Description=Ephemeris — daily full backup
+
+[Timer]
+OnCalendar=daily
+# A laptop is asleep at 00:00 more often than not; without this the backup is
+# simply skipped rather than run late, which is the failure mode a schedule
+# exists to prevent.
+Persistent=true
+# Spread the wake-up so the backup does not contend with everything else that
+# also asked for "daily".
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target
