@@ -164,8 +164,17 @@ def post_daily_note(
     conn: sqlite3.Connection = Depends(get_db),
 ):
     date = _validated_write_date(date)
-    checkins.upsert_daily_note(conn, date, text)
-    if _wants_json(request):
+    json_mode = _wants_json(request)
+    try:
+        checkins.upsert_daily_note(conn, date, text)
+    except checkins.CheckinError as exc:
+        # The only rejection this write has (the #23 length bound), answered the
+        # way its sibling /checkins answers one: 422 in Mode B, flash in Mode A.
+        if json_mode:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+        return RedirectResponse(
+            _redirect_for(date, "daily-note", flash=str(exc)), status_code=303)
+    if json_mode:
         return JSONResponse({"ok": True, "date": date})
     return RedirectResponse(_redirect_for(date, "daily-note"), status_code=303)
 

@@ -113,11 +113,18 @@ def _load_live_paths() -> None:
     global DATA_DIR, DB_PATH, BACKUPS_DIR
     if DATA_DIR is not None and DB_PATH is not None and BACKUPS_DIR is not None:
         return
-    from app.db import DATA_DIR as app_data_dir, DB_PATH as app_db_path
+    from app.db import (
+        BACKUPS_DIR as app_backups_dir,
+        DATA_DIR as app_data_dir,
+        DB_PATH as app_db_path,
+    )
 
     DATA_DIR = app_data_dir
     DB_PATH = app_db_path
-    BACKUPS_DIR = DATA_DIR / "backups"
+    # From app/settings.py rather than recomputed here: the /export status
+    # panel reads the same directory, and one owner is what keeps the two from
+    # pointing at different places after a layout change.
+    BACKUPS_DIR = app_backups_dir
 
 
 def _now() -> datetime:

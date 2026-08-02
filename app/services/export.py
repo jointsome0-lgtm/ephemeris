@@ -15,7 +15,13 @@ already seen a line can recognize it on redelivery instead of duplicating it.
 docs/restore-from-export.md.
 
 SQLite stays the source of truth. Output lands in db.EXPORTS_DIR
-(`data/exports/`, git-ignored; may contain private notes — sec9).
+(`data/exports/`, git-ignored; may contain private notes — sec9), which retains
+the `limits.EXPORT_KEEP` newest files and drops the rest after every write
+(issue #23). That is safe precisely because of the contract above: the stream is
+append-only, so the newest export contains everything its predecessors did. The
+full backups in `data/backups/` are a different mechanism with a different rule
+— manual `scripts/backup_db.py --keep N` — because a backup set is a point in
+time that the current database cannot reproduce.
 """
 from __future__ import annotations
 
@@ -26,6 +32,7 @@ import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
+from .. import limits
 from ..db import EXPORTS_DIR, now_iso, now_stamp
 
 
@@ -170,11 +177,63 @@ def export_events(conn: sqlite3.Connection) -> tuple[Path, int]:
     # Both directory changes — the new name and the dropped temporary one — are
     # persisted before this call reports an export the caller can rely on.
     _fsync_dir(EXPORTS_DIR)
+    prune_exports()
     return path, count
 
 
-def _human_size(n: int) -> str:
-    """Friendly byte size, e.g. 412 B / 6.4 KB / 1.2 MB."""
+def existing_exports() -> list[Path]:
+    """Every finished export, newest first.
+
+    One ordering, used by retention, by the recent list and by the status
+    panel, so what the page calls "the newest 30" is exactly what retention
+    keeps. The stamp is the whole variable part of the name and sorts
+    chronologically; a within-the-second collision suffix ("-2") sorts just
+    before its base name, which is immaterial — they describe the same second.
+    The `events-*` glob cannot match a `.events-*.jsonl.tmp` still being
+    written, so an export in progress is neither counted nor deleted.
+    """
+    if not EXPORTS_DIR.is_dir():
+        return []
+    return sorted(EXPORTS_DIR.glob("events-*.jsonl"),
+                  key=lambda p: p.name, reverse=True)
+
+
+def prune_exports() -> list[Path]:
+    """Delete all but the `limits.EXPORT_KEEP` newest exports; return what went.
+
+    Runs after every export, because that is the only moment the directory
+    grows and the only moment anyone is watching. Retention is safe to
+    automate here in a way it is not for backups: every export is a full
+    serialization of an append-only stream, so the newest file contains
+    everything the ones behind it did. A backup set is not reproducible that
+    way, which is why `scripts/backup_db.py` keeps its manual `--keep`.
+
+    Best-effort by construction: a file that cannot be unlinked is left where
+    it is rather than sinking an export that already succeeded. The next run
+    tries again, and the export the caller is about to be handed is by
+    definition the newest, so it is never a candidate.
+    """
+    doomed = existing_exports()[limits.EXPORT_KEEP:]
+    if not doomed:
+        return []
+    removed = []
+    for path in doomed:
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        removed.append(path)
+    if removed:
+        _fsync_dir(EXPORTS_DIR)
+    return removed
+
+
+def human_size(n: int) -> str:
+    """Friendly byte size, e.g. 412 B / 6.4 KB / 1.2 MB.
+
+    Public because the storage panel (services/storage.py) shows the same kind
+    of number beside these files and must not spell the rounding twice.
+    """
     size = float(n)
     for unit in ("B", "KB", "MB", "GB"):
         if size < 1024 or unit == "GB":
@@ -185,8 +244,5 @@ def _human_size(n: int) -> str:
 
 def recent_exports(limit: int = 8) -> list[dict]:
     """Previously written export files, newest first (name + human size)."""
-    if not EXPORTS_DIR.exists():
-        return []
-    files = sorted(EXPORTS_DIR.glob("events-*.jsonl"),
-                   key=lambda p: p.name, reverse=True)[:limit]
-    return [{"name": f.name, "size_h": _human_size(f.stat().st_size)} for f in files]
+    return [{"name": f.name, "size_h": human_size(f.stat().st_size)}
+            for f in existing_exports()[:limit]]

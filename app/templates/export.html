@@ -35,4 +35,53 @@
   </div>
   {% endif %}
 </div>
+
+{# `is defined`: templates are read per render, so a merged change reaches a
+   still-running process whose router has no `storage` in its context. #}
+{% if storage is defined %}
+<section class="export-card storage-card">
+  <h2 class="storage-head">Storage</h2>
+
+  {% for w in storage.warnings %}
+  <p class="storage-warn">{{ ic.icon('alert') }}<span>{{ w }}</span></p>
+  {% endfor %}
+
+  <dl class="storage-grid">
+    <div class="storage-row">
+      <dt>Database</dt>
+      <dd>{{ storage.db_size_h }} <span class="storage-sub">{{ storage.event_count }} event{{ '' if storage.event_count == 1 else 's' }}</span></dd>
+    </div>
+    <div class="storage-row">
+      <dt>Newest backup</dt>
+      {% if storage.backup %}
+      <dd>{{ storage.backup.when }}
+        <span class="storage-sub">{{ storage.backup.size_h }}{% if storage.backup_age_days is not none %} · {{ storage.backup_age_days }} day{{ '' if storage.backup_age_days == 1 else 's' }} ago{% endif %}</span>
+      </dd>
+      {% else %}
+      <dd class="storage-none">none</dd>
+      {% endif %}
+    </div>
+    <div class="storage-row">
+      <dt>Exports</dt>
+      <dd>{{ storage.export_count }} file{{ '' if storage.export_count == 1 else 's' }}
+        <span class="storage-sub">{{ storage.export_size_h }} · newest {{ storage.export_keep }} kept</span>
+      </dd>
+    </div>
+    <div class="storage-row">
+      <dt>Free space</dt>
+      {% if storage.free_size_h %}
+      <dd>{{ storage.free_size_h }}</dd>
+      {% else %}
+      <dd class="storage-none">unavailable</dd>
+      {% endif %}
+    </div>
+  </dl>
+
+  <p class="export-path">
+    Backups live in <code>data/backups/</code> and are written by
+    <code>scripts/backup_db.py</code>, which prunes on its own <code>--keep</code>;
+    exports here prune themselves.
+  </p>
+</section>
+{% endif %}
 {% endblock %}

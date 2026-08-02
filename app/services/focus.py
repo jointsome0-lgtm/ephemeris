@@ -12,6 +12,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import date as _date, timedelta
 
+from .. import limits
 from ..db import append_event, now_iso, pretty_date, today_str
 
 MODES = ("pomo", "stopwatch")
@@ -56,6 +57,7 @@ def record_session(conn: sqlite3.Connection, mode: str, seconds, note: str | Non
         raise FocusError("duration must be positive")
     seconds = min(seconds, MAX_SECONDS)
     note = (note or "").strip() or None
+    limits.check(note, limits.FOCUS_NOTE, "focus note", FocusError)
     lesson_id = _coerce_lesson_id(conn, lesson_id)
     ts = now_iso()
     day = today_str()

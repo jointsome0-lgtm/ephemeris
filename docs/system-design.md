@@ -1233,6 +1233,35 @@ truth; expanded occurrences are never exported.
 the Samsung client can save it; `GET /export` renders a one-button page. (The
 stop-loss fallback in sec24 replaces this with a script and no page.)
 
+**Retention (issue #23).** `data/exports/` keeps the `limits.EXPORT_KEEP`
+newest `events-*.jsonl` files and drops the rest after every write. This is
+safe only because of the contract above: the stream is append-only, so the
+newest export contains everything its predecessors did. Full backup sets in
+`data/backups/` are a different mechanism with a different rule — the operator's
+`scripts/backup_db.py --keep N` — because a backup set is a point in time the
+current database cannot reproduce. Do not merge the two.
+
+`GET /export` also renders a read-only storage panel (issue #23): database
+size, event count, the newest backup set's date and size, the export count and
+their total size, and free disk space. It warns when there is no backup set,
+when the newest one is older than `limits.BACKUP_STALE_DAYS`, or when free
+space is under `limits.FREE_SPACE_FLOOR`. It reads only — a GET in this app is
+side-effect-free by contract (sec20 / `app/security.py`), so it never writes a
+backup or prunes anything.
+
+### 18.3 Field and body limits
+
+`app/limits.py` is the one place that says how much a single write may carry:
+the four title bounds (task 500, habit 200, list 100, event 500 characters,
+unchanged since they were inline), the free-text note bounds (task, check-in,
+event and focus notes 10 000 characters; the daily note 20 000), and the
+perimeter's request-body ceiling. Lengths are counted in **characters**, not
+bytes, so the same sentence is not shorter in Cyrillic than in ASCII. The
+checks run in the service layer, where the domain errors the routes already
+render are raised. The body ceiling is documented in
+`docs/security-model.md`. Pagination for the history views is deliberately not
+part of this: it is a UI decision, not a limit.
+
 ### 18.2 Future Markdown Export
 
 Later, optionally generate:

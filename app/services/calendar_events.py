@@ -15,6 +15,7 @@ import sqlite3
 from datetime import date as _date, timedelta
 from typing import NamedTuple
 
+from .. import limits
 from ..db import append_event, immediate, is_valid_date, now_iso
 from . import lists as lists_svc
 
@@ -230,8 +231,7 @@ def _clean(conn, *, title, start_date, freq, byweekday, interval_n, all_day,
     title = (title or "").strip()
     if not title:
         raise CalendarEventError("event title can’t be empty")
-    if len(title) > 500:
-        raise CalendarEventError("event title too long")
+    limits.check(title, limits.EVENT_TITLE, "event title", CalendarEventError)
 
     start_date = (start_date or "").strip()
     if not is_valid_date(start_date):
@@ -276,6 +276,10 @@ def _clean(conn, *, title, start_date, freq, byweekday, interval_n, all_day,
 
     emoji = (emoji or "").strip()[:8] or None
     note = (note or "").strip() or None
+    # Measured after the strip, like the title above: what is stored is what is
+    # bounded, so trailing whitespace can never be the difference between an
+    # accepted and a rejected note.
+    limits.check(note, limits.EVENT_NOTE, "event note", CalendarEventError)
     color = (color or "").strip() or None
 
     if list_id is not None and str(list_id).strip() != "":
