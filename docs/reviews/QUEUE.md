@@ -27,10 +27,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 - [ ] 2026-08-03 — `0b25126`..`113b1dd` on `fix/23-limits-retention`, merged to
   `main` as `898bbed` — `app/security.py`, `app/limits.py`,
   `tests/test_130_limits.py` (rest of the change: `app/db.py`,
-  `app/settings.py`, `app/services/{items,tasks,lists,checkins,focus,
-  calendar_events,export,storage}.py`, `app/routers/{export,habits}.py`,
-  `scripts/backup_db.py`, `app/templates/`, `app/static/style.css`,
-  `docs/`) — issue #23, a request-body ceiling added to the HTTP perimeter
+  `app/settings.py`, eight modules under `app/services/`,
+  `app/routers/export.py`, `app/routers/habits.py`, `scripts/backup_db.py`,
+  `app/templates/`, `app/static/style.css`, `docs/`) — issue #23, a request-body ceiling added to the HTTP perimeter
   plus service-layer field caps, export retention and a read-only status
   section. `SecurityMiddleware` gains a body count on the four unsafe methods:
   `_body_ceiling()` runs at import and sets the module constant
@@ -52,8 +51,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   (512 KiB, spelled here rather than imported from `app/routers/learn.py`,
   with a test reading the four real Learn constants to check it is still the
   largest), `BODY_CEILING_HEADROOM` (1 MiB), `EXPORT_KEEP` (30),
-  `EXPORT_GRACE`, `BACKUP_STALE_DAYS` (7) and `FREE_SPACE_FLOOR` (1 GiB). Enforcement is `limits.check` in
-  the service layer, raising each caller's existing domain error; `POST
+  `EXPORT_GRACE`, `BACKUP_STALE_DAYS` (7) and `FREE_SPACE_FLOOR` (1 GiB).
+  Enforcement is `limits.check` in the service layer, raising each caller's
+  existing domain error; `POST
   /daily-note` gains its first failure branch (422 under `X-Partial`, else 303
   and a flash). `export_events` prunes to the 30 newest `events-*.jsonl` after
   each write, best-effort, with a directory fsync. New `app/services/storage.py`
