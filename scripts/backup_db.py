@@ -52,14 +52,19 @@ import tarfile
 import tempfile
 import time
 from contextlib import closing
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
-# Reuse the app's path resolution + timestamp so backups follow ACTIVITY_DB and
-# match the rest of the ledger's clock (sec13.3).
+# Keep recovery operations importable without live-instance configuration. A
+# recovery host needs only the manifest and its two companions; importing
+# app.db here would make --verify and --restore --into fail before argument
+# parsing whenever ACTIVITY_DATA_DIR is absent. Backup/list operations load the
+# app-owned paths at the point where they actually need them.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.db import DATA_DIR, DB_PATH, now_iso, now_stamp  # noqa: E402
-
-BACKUPS_DIR = DATA_DIR / "backups"
+DATA_DIR: Path | None = None
+DB_PATH: Path | None = None
+BACKUPS_DIR: Path | None = None
 DB_FILENAME = "activity.sqlite"
 
 ASIDE_MARK = ".pre-restore-"
@@ -101,6 +106,32 @@ _CHUNK = 1 << 20
 
 class BackupError(RuntimeError):
     """A backup could not be written, verified, or restored."""
+
+
+def _load_live_paths() -> None:
+    """Resolve the configured instance only for operations that need it."""
+    global DATA_DIR, DB_PATH, BACKUPS_DIR
+    if DATA_DIR is not None and DB_PATH is not None and BACKUPS_DIR is not None:
+        return
+    from app.db import DATA_DIR as app_data_dir, DB_PATH as app_db_path
+
+    DATA_DIR = app_data_dir
+    DB_PATH = app_db_path
+    BACKUPS_DIR = DATA_DIR / "backups"
+
+
+def _now() -> datetime:
+    """The app's sec13.3 clock rule, without importing live path settings."""
+    timezone = os.environ.get("APP_TIMEZONE")
+    return datetime.now(ZoneInfo(timezone)) if timezone else datetime.now().astimezone()
+
+
+def now_iso() -> str:
+    return _now().isoformat(timespec="seconds")
+
+
+def now_stamp() -> str:
+    return _now().strftime("%Y-%m-%d-%H%M%S")
 
 
 # --- naming ----------------------------------------------------------------
@@ -515,6 +546,7 @@ def create_backup() -> Path:
     manifest — last, and by rename. Every earlier step can fail without leaving
     behind anything a reader would call a backup.
     """
+    _load_live_paths()
     # 0700: the directory holds whole copies of a private ledger, and its own
     # mode is the only thing protecting the names inside it — and, if it is
     # group-writable, the sets themselves: another local user cannot read a 0600
@@ -526,6 +558,11 @@ def create_backup() -> Path:
     # rather than requested.
     if stat.S_IMODE(BACKUPS_DIR.stat().st_mode) & 0o077:
         os.chmod(BACKUPS_DIR, 0o700)
+    # Sweep wreckage before allocating another snapshot/archive. If an
+    # interrupted run filled the filesystem with hidden staged copies, waiting
+    # until post-backup retention means the next run cannot make enough progress
+    # to reach the cleanup that would let it self-heal.
+    sweep_staging_debris()
     stamp, claim_fd = _claim_stamp()
     staged_db, db_fd = _stage(".sqlite")
     staged_files, files_fd = _stage(".tar.gz")
@@ -722,6 +759,14 @@ def staging_debris() -> list[Path]:
     )
 
 
+def sweep_staging_debris() -> list[Path]:
+    """Remove only abandoned staged files; live runs retain their locks."""
+    deleted = staging_debris()
+    for path in deleted:
+        path.unlink(missing_ok=True)
+    return deleted
+
+
 def prune(keep: int) -> tuple[list[str], list[Path], list[Path]]:
     """Keep the `keep` newest sets.
 
@@ -750,9 +795,7 @@ def prune(keep: int) -> tuple[list[str], list[Path], list[Path]]:
                 member.unlink()
                 deleted.append(member)
 
-    for path in staging_debris():
-        path.unlink(missing_ok=True)       # a killed run's half-written copy
-        deleted.append(path)
+    deleted.extend(sweep_staging_debris())
 
     left: list[Path] = []
     for path in unclaimed_files():
@@ -824,7 +867,13 @@ def restore(manifest_path: Path, target: Path, *, force: bool = False) -> dict:
     """
     manifest = verify(manifest_path)
     directory = manifest_path.parent
-    target.mkdir(parents=True, exist_ok=True)
+    target_existed = target.exists()
+    target.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not target_existed:
+        # Be explicit even though 0700 is already immune to a permissive umask:
+        # the restored files are private instance state, and their source modes
+        # commonly rely on the containing data directory for confidentiality.
+        os.chmod(target, 0o700)
 
     db_target = target / DB_FILENAME
     tops = sorted({name.split("/", 1)[0] for name in manifest["instance_files"]})
@@ -970,7 +1019,7 @@ def main() -> int:
     ap.add_argument("--restore", type=Path, metavar="MANIFEST",
                     help="restore one verified set (stop the service first)")
     ap.add_argument("--into", type=Path, metavar="DIR",
-                    help=f"restore destination (default: {DATA_DIR})")
+                    help="restore destination (default: $ACTIVITY_DATA_DIR)")
     ap.add_argument("--force", action="store_true",
                     help="restore over an occupied directory, moving what is "
                          "there aside as *.pre-restore-<stamp>")
@@ -979,6 +1028,7 @@ def main() -> int:
     action = ("VERIFY" if args.verify else "RESTORE" if args.restore else "BACKUP")
     try:
         if args.list:
+            _load_live_paths()
             sets = list_sets()
             if not sets:
                 print(f"no backup sets in {BACKUPS_DIR}")
@@ -1000,6 +1050,8 @@ def main() -> int:
             return 0
 
         if args.restore:
+            if args.into is None:
+                _load_live_paths()
             target = (args.into or DATA_DIR).expanduser()
             result = restore(args.restore.expanduser(), target, force=args.force)
             print(f"RESTORED into {target}")

@@ -98,9 +98,11 @@ process therefore leaves another's unfinished work alone — a manual run starte
 while the timer's is going does not disturb it, and neither loses its name to
 the other. Both appear as complete sets when they finish.
 
-It also clears up after a run that was killed outright — power loss, `SIGKILL`,
-a full disk — which leaves a half-written copy under a hidden `.staged-*` name
-that no other listing shows. Nothing else on the machine writes those names, so
+The next backup also clears up after a run that was killed outright — power
+loss, `SIGKILL`, a full disk — which leaves a half-written copy under a hidden
+`.staged-*` name that no other listing shows. Cleanup happens before allocating
+the new set, so debris that filled the backup filesystem cannot trap the timer
+in a repeat-failure loop. Nothing else on the machine writes those names, so
 they are removed rather than reported, and a run still using its own are left
 alone.
 
@@ -180,6 +182,10 @@ backup fails with the target untouched. It then builds both halves in a staging
 directory inside the target and swaps them in by rename once they are complete,
 so a failure partway — a full disk is the ordinary one — leaves the existing
 instance where it was rather than half-replaced.
+
+A target directory created by the restore is mode `0700`; archive members can
+therefore keep relying on the private instance root instead of becoming visible
+under a typical `022` umask. An existing target keeps its operator-chosen mode.
 
 By default it **refuses** a directory that already holds anything of its own.
 Pass `--force` to restore anyway; what is there is moved aside as

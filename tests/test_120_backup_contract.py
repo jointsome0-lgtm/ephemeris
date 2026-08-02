@@ -171,9 +171,9 @@ def instance(tmp_path):
 def backup_db(monkeypatch, instance):
     """scripts/backup_db bound to `instance`.
 
-    The module resolves its paths from app.db at import, which under pytest
-    means the shared suite directory. Rebinding the module attributes is what
-    points a real backup run at a throwaway instance.
+    Live paths are resolved lazily so recovery commands can run without app
+    configuration. Rebinding the module attributes points a real backup run at
+    a throwaway instance without importing the shared suite's settings.
     """
     sys.path.insert(0, str(ROOT))
     import scripts.backup_db as module
@@ -360,6 +360,7 @@ def test_restore_rebuilds_an_instance_that_boots_without_migrating_or_seeding(
     result = backup_db.restore(manifest_path, target)
 
     assert result["moved_aside"] == []
+    assert mode_of(target) == 0o700
     assert mode_of(target / "activity.sqlite") == 0o600
     assert counts(target) == before
     assert query(target, "PRAGMA user_version")[0][0] == schema_before
@@ -727,6 +728,68 @@ def test_retention_sweeps_the_staged_files_a_killed_run_left(
         backup_db.verify(backup_db.list_sets()[0])
     finally:
         os.close(live_fd)
+
+
+def test_a_backup_sweeps_abandoned_staging_before_allocating_a_new_set(
+    backup_db, instance, monkeypatch
+):
+    """Disk-filling wreckage must be removed before the next snapshot starts.
+
+    Post-backup retention cannot self-heal when the debris itself leaves too
+    little room to create the set needed to reach that retention pass. A staged
+    file held by another live run must still survive the early sweep.
+    """
+    (instance / "backups").mkdir(mode=0o700)
+    abandoned, abandoned_fd = backup_db._stage(".sqlite")
+    abandoned.write_bytes(b"an abandoned database copy")
+    os.close(abandoned_fd)
+    live, live_fd = backup_db._stage(".tar.gz")
+    original_claim_stamp = backup_db._claim_stamp
+
+    def claim_after_cleanup():
+        assert not abandoned.exists(), "wreckage is gone before name allocation"
+        assert live.exists(), "a concurrent run still owns its staged file"
+        return original_claim_stamp()
+
+    monkeypatch.setattr(backup_db, "_claim_stamp", claim_after_cleanup)
+    try:
+        backup_db.create_backup()
+    finally:
+        os.close(live_fd)
+
+
+def test_verify_and_restore_into_need_no_live_instance_configuration(
+    backup_db, instance, tmp_path
+):
+    """A copied three-file set is sufficient on a recovery host."""
+    manifest_path = backup_db.create_backup()
+    env = os.environ.copy()
+    env.pop("ACTIVITY_DATA_DIR", None)
+    env.pop("ACTIVITY_DB", None)
+
+    verified = subprocess.run(
+        [sys.executable, "-m", "scripts.backup_db", "--verify", str(manifest_path)],
+        cwd=ROOT, env=env, text=True, capture_output=True,
+    )
+    assert verified.returncode == 0, verified.stderr
+    assert "VERIFIED" in verified.stdout
+
+    target = tmp_path / "off-machine-restore"
+    previous_umask = os.umask(0o022)
+    try:
+        restored = subprocess.run(
+            [
+                sys.executable, "-m", "scripts.backup_db",
+                "--restore", str(manifest_path), "--into", str(target),
+            ],
+            cwd=ROOT, env=env, text=True, capture_output=True,
+        )
+    finally:
+        os.umask(previous_umask)
+    assert restored.returncode == 0, restored.stderr
+    assert "RESTORED" in restored.stdout
+    assert mode_of(target) == 0o700
+    assert counts(target) == counts(instance)
 
 
 def test_a_backup_ignores_an_interrupted_restores_staging_tree(
