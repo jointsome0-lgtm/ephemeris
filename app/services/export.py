@@ -142,7 +142,12 @@ def export_events(conn: sqlite3.Connection) -> tuple[Path, int]:
     would look exactly like a complete backup to anyone reading the directory
     later, including recent_exports() below.
     """
-    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    if not EXPORTS_DIR.is_dir():
+        EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        # A directory's own NAME is an entry in its parent. Syncing only the leaf
+        # would make the first export durable inside a directory that can itself
+        # vanish in the same power loss.
+        _fsync_dir(EXPORTS_DIR.parent)
     stamp = now_stamp()
     # mkstemp creates 0600, which the final name inherits through the link:
     # exports hold private notes (sec9) and are never group- or world-readable.

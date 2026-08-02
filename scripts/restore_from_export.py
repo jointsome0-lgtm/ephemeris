@@ -467,7 +467,11 @@ def _require_same_envelope(conn: sqlite3.Connection, record: Record) -> None:
     try:
         stored_payload = json.loads(row["payload_json"])
     except (TypeError, ValueError):
-        stored_payload = None
+        # iter_jsonl() deliberately exports an unparseable payload as
+        # {"_raw": <stored text>}. Normalize the stored side the same way, or a
+        # row with a corrupt payload could never be redelivered into the very
+        # database the export came from: both sides describe the same event.
+        stored_payload = {"_raw": row["payload_json"]}
     # Payloads compare as parsed objects: key order is not part of the event.
     if (
         row["timestamp"] == record.timestamp
@@ -497,15 +501,22 @@ def _apply_records(
     # Held in memory rather than queried per record: one id lookup per line
     # against a growing table is the only part of this that scales with both
     # sides at once. `events.uuid` is uniquely indexed, so the set is exact.
-    seen = {
-        row["uuid"]
-        for row in conn.execute("SELECT uuid FROM events WHERE uuid IS NOT NULL")
-    }
-    if redelivery:
-        _require_shared_history(conn, audit_records, seen)
     applied = 0
     skipped = 0
-    with conn:
+    # db.immediate (#22), not `with conn:`: this is a read-modify-write. It reads
+    # the target's receipts, decides in Python what to apply, and writes that back.
+    # sqlite3's implicit BEGIN is DEFERRED and never precedes a SELECT, so with
+    # `with conn:` the app could commit a calendar update between the read and the
+    # write — after which this run would skip the audit prefix it no longer covers
+    # and upsert an older snapshot over the newer series. The lock goes up front,
+    # and every check below, including foreign keys, is inside it.
+    with db.immediate(conn):
+        seen = {
+            row["uuid"]
+            for row in conn.execute("SELECT uuid FROM events WHERE uuid IS NOT NULL")
+        }
+        if redelivery:
+            _require_shared_history(conn, audit_records, seen)
         for record in audit_records:
             if record.uuid is not None and record.uuid in seen:
                 # Already delivered. Its replay ran when it was applied, so
@@ -542,9 +553,16 @@ def _apply_records(
         # are stamped here — fresh local identity, like restored autoincrement ids.
         db.backfill_event_uuids(conn)
 
-    fk_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
-    if fk_errors:
-        raise RestoreError(f"restored database failed foreign_key_check: {len(fk_errors)} row(s)")
+        # Inside the transaction: raising here rolls the delivery back. Run after
+        # the commit and a target that fails the check would keep every event
+        # this run applied while the command exits RESTORE FAILED — an outcome
+        # the fresh path hid, because its whole staging directory was discarded.
+        fk_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if fk_errors:
+            raise RestoreError(
+                f"restored database failed foreign_key_check: {len(fk_errors)} row(s)"
+            )
+
     # The deliberately-unrestored tables are counted too, not assumed empty: in
     # redelivery mode the target may already hold real rows, and a recovery tool
     # that prints "0 rows" over live data is worse than one that prints nothing.

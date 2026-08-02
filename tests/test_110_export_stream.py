@@ -160,6 +160,40 @@ def test_the_export_directory_is_synced_before_success_is_reported(
     assert synced_dirs == [str(exports_dir)]
 
 
+def test_a_newly_created_export_directory_is_itself_persisted(
+    client, tmp_path, monkeypatch
+):
+    """The leaf sync persists entries INSIDE data/exports/. The directory's own
+    name lives in its parent, and an unsynced parent can take the whole thing."""
+    fresh = tmp_path / "data" / "exports"
+    fresh.parent.mkdir(parents=True)
+    monkeypatch.setattr(export, "EXPORTS_DIR", fresh)
+    synced: list[str] = []
+    real_fsync = os.fsync
+
+    def record(fd):
+        if os.path.isdir(f"/proc/self/fd/{fd}"):
+            synced.append(os.readlink(f"/proc/self/fd/{fd}"))
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", record)
+    conn = _conn()
+    try:
+        export.export_events(conn)
+    finally:
+        conn.close()
+    assert synced == [str(fresh.parent), str(fresh)]
+
+    # An existing directory needs no second parent sync.
+    synced.clear()
+    conn = _conn()
+    try:
+        export.export_events(conn)
+    finally:
+        conn.close()
+    assert synced == [str(fresh)]
+
+
 def test_the_finished_export_is_private(client, exports_dir):
     """Exports carry notes and check-in history (sec9): owner-only, always."""
     conn = _conn()
@@ -588,6 +622,112 @@ def test_the_summary_never_claims_zero_over_pre_existing_rows(tmp_path):
     assert "  lists: 1 pre-existing rows (untouched)" in second.stdout
     assert "  lists: 0 rows" not in second.stdout
     assert _query(target / "activity.sqlite", "SELECT name FROM lists") == [("Invented",)]
+
+
+def _restore_module():
+    """The CLI's own module, for the checks that need to observe SQL."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_restore_under_test", ROOT / "scripts" / "restore_from_export.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # the @dataclass needs to resolve its module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_row_with_a_corrupt_payload_can_still_be_redelivered(tmp_path):
+    """iter_jsonl exports an unparseable payload as {"_raw": <text>}. Comparing
+    that against a stored None would call the row a receipt collision and refuse
+    to redeliver an export into the very database it came from."""
+    source = _write_stream(tmp_path / "stream.jsonl", _STREAM)
+    target = tmp_path / "restored-raw"
+    assert _restore(source, target).returncode == 0
+
+    import sqlite3
+
+    conn = sqlite3.connect(target / "activity.sqlite")
+    try:
+        conn.execute("UPDATE events SET payload_json = 'not json{' WHERE uuid = ?",
+                     (_STREAM[2]["id"],))
+        conn.commit()
+    finally:
+        conn.close()
+
+    # The export of that damaged row, as iter_jsonl would render it.
+    damaged = _write_stream(tmp_path / "damaged.jsonl", [
+        *_STREAM[:2],
+        {**_STREAM[2], "payload": {"_raw": "not json{"}},
+    ])
+    run = _restore(damaged, target)
+    assert run.returncode == 0, run.stderr
+    assert "events: 0 applied / 3 skipped" in run.stdout
+
+
+def test_a_pre_existing_fk_violation_rolls_the_delivery_back(tmp_path):
+    """The check used to run after the commit. On the fresh path that was hidden
+    — the whole staging directory was discarded — but a redelivery would report
+    RESTORE FAILED while keeping every event it had just applied."""
+    source = _write_stream(tmp_path / "stream.jsonl", _STREAM)
+    target = tmp_path / "restored-fk"
+    assert _restore(source, target).returncode == 0
+
+    import sqlite3
+
+    conn = sqlite3.connect(target / "activity.sqlite")  # FK enforcement off here
+    try:
+        conn.execute(
+            "INSERT INTO checkins (date, routine_item_id, status, created_at, updated_at) "
+            "VALUES ('2031-05-09', 8888, 'full_done', "
+            "'2031-05-09T07:00:00+03:00', '2031-05-09T07:00:00+03:00')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    before = _counts(target / "activity.sqlite")
+
+    grown = _write_stream(tmp_path / "grown.jsonl", [*_STREAM, {
+        "id": "66666666-6666-4666-8666-666666666666",
+        "timestamp": "2031-05-09T07:08:09+03:00",
+        "type": "daily_note_updated",
+        "payload_version": 1,
+        "payload": {"date": "2031-05-09", "text": "Invented note"},
+    }])
+    run = _restore(grown, target)
+
+    assert run.returncode != 0
+    assert "foreign_key_check" in run.stderr
+    assert _counts(target / "activity.sqlite") == before, \
+        "a failed restore must not leave the new event behind"
+
+
+def test_the_delivery_takes_the_writer_lock_before_it_reads(tmp_path):
+    """A read-modify-write: it reads the target's receipts, decides in Python,
+    and writes that back. sqlite3's implicit BEGIN is DEFERRED and never precedes
+    a SELECT, so the app could commit between the two (#22)."""
+    import sqlite3
+
+    module = _restore_module()
+    source = _write_stream(tmp_path / "stream.jsonl", _STREAM)
+    target = tmp_path / "restored-lock"
+    assert _restore(source, target).returncode == 0
+
+    import app.db as app_db
+
+    conn = sqlite3.connect(target / "activity.sqlite")
+    conn.row_factory = sqlite3.Row
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+    try:
+        module._apply_records(
+            app_db, conn, module.load_records(source), redelivery=True)
+    finally:
+        conn.set_trace_callback(None)
+        conn.close()
+
+    assert statements[0] == "BEGIN IMMEDIATE"
+    first_read = next(i for i, sql in enumerate(statements) if "SELECT uuid FROM events" in sql)
+    assert first_read > 0, "the receipts must be read inside the write lock"
 
 
 def test_a_corrupt_id_is_refused_rather_than_ignored(tmp_path):
