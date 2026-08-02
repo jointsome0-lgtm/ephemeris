@@ -94,20 +94,25 @@ def create_item(
     h = _clean_habit_fields(emoji, frequency, goal, goal_days, start_date, reminder)
     ts = now_iso()
     h["start_date"] = h["start_date"] or ts[:10]  # default to creation date
-    nxt = conn.execute(
-        "SELECT COALESCE(MAX(sort_order), 0) + 10 FROM routine_items WHERE group_name = ?",
-        (group_name,),
-    ).fetchone()[0]
     with conn:
+        # One statement, so the MAX runs under the INSERT's own write lock and
+        # two habits added to the same group cannot share a sort_order (#22).
+        # The event still reports the number, read back by id inside the same
+        # transaction rather than guessed before it.
         cur = conn.execute(
             "INSERT INTO routine_items "
             "(title, group_name, active, sort_order, created_at, emoji, frequency, "
             " goal, goal_days, start_date, reminder, constant_reminder) "
-            "VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (title, group_name, nxt, ts, h["emoji"], h["frequency"], h["goal"],
-             h["goal_days"], h["start_date"], h["reminder"], int(bool(constant_reminder))),
+            "SELECT ?, ?, 1, COALESCE(MAX(sort_order), 0) + 10, ?, ?, ?, ?, ?, ?, ?, ? "
+            "FROM routine_items WHERE group_name = ?",
+            (title, group_name, ts, h["emoji"], h["frequency"], h["goal"],
+             h["goal_days"], h["start_date"], h["reminder"], int(bool(constant_reminder)),
+             group_name),
         )
         item_id = cur.lastrowid
+        nxt = conn.execute(
+            "SELECT sort_order FROM routine_items WHERE id = ?", (item_id,)
+        ).fetchone()[0]
         append_event(conn, "routine_item_created", {
             "routine_item_id": item_id, "title": title, "group_name": group_name,
             "sort_order": nxt, **h, "constant_reminder": int(bool(constant_reminder)),

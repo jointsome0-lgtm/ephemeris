@@ -11,7 +11,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import date as _date, timedelta
 
-from ..db import append_event, is_valid_date, now_iso, today_str
+from ..db import append_event, immediate, is_valid_date, now_iso, today_str
 from . import lists as lists_svc
 
 PRIORITIES = (0, 1, 2, 3)
@@ -28,6 +28,16 @@ SEED_TASKS = [
 
 class TaskError(ValueError):
     """A task write was rejected (empty title, bad date, unknown id, …)."""
+
+
+def _require_writable_list(conn: sqlite3.Connection, list_id: int) -> None:
+    """`lists.require_writable_list`, re-raised as the error this module's
+    callers already handle — the routes catch `TaskError` and answer with a
+    flash redirect, and a `ListError` escaping here would be a 500 instead."""
+    try:
+        lists_svc.require_writable_list(conn, list_id)
+    except lists_svc.ListError as exc:
+        raise TaskError(str(exc)) from exc
 
 
 # --- writes ----------------------------------------------------------------
@@ -65,17 +75,18 @@ def create_task(
         kind = "task"
     if list_id is None:
         list_id = lists_svc.inbox_id(conn)
-    elif lists_svc.get_list(conn, list_id) is None:
-        raise TaskError("unknown list")
-    nxt = conn.execute(
-        "SELECT COALESCE(MAX(sort_order), 0) + 10 FROM tasks WHERE list_id = ?", (list_id,)
-    ).fetchone()[0]
+    else:
+        _require_writable_list(conn, list_id)
     ts = now_iso()
     with conn:
+        # sort_order is read and written by one statement, so the MAX is taken
+        # under the write lock the INSERT itself holds — two concurrent adds to
+        # the same list can no longer land on the same number (#22).
         cur = conn.execute(
             "INSERT INTO tasks (title, list_id, note, due_date, priority, kind, sort_order, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (title, list_id, note, due_date, priority, kind, nxt, ts),
+            "SELECT ?, ?, ?, ?, ?, ?, COALESCE(MAX(sort_order), 0) + 10, ? "
+            "FROM tasks WHERE list_id = ?",
+            (title, list_id, note, due_date, priority, kind, ts, list_id),
         )
         task_id = cur.lastrowid
         append_event(conn, "task_created", {
@@ -114,13 +125,20 @@ def get_task(conn: sqlite3.Connection, task_id: int) -> sqlite3.Row | None:
 
 
 def toggle_complete(conn: sqlite3.Connection, task_id: int) -> bool:
-    """Flip completion. Returns the new completed state (True = now completed)."""
-    row = conn.execute("SELECT completed_at, title FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    if row is None:
-        raise TaskError("unknown task")
+    """Flip completion. Returns the new completed state (True = now completed).
+
+    The read decides the write and the caller is told which way it went, so the
+    whole flip is held under the writer lock (#22): desktop and phone tapping
+    the same task can no longer both read "open" and both write "completed".
+    """
     ts = now_iso()
-    now_completed = row["completed_at"] is None
-    with conn:
+    with immediate(conn):
+        row = conn.execute(
+            "SELECT completed_at, title FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if row is None:
+            raise TaskError("unknown task")
+        now_completed = row["completed_at"] is None
         conn.execute(
             "UPDATE tasks SET completed_at = ?, updated_at = ? WHERE id = ?",
             (ts if now_completed else None, ts, task_id),
@@ -141,8 +159,8 @@ def update_task(conn: sqlite3.Connection, task_id: int, **fields) -> None:
     title, due_date, priority = _clean(title, due_date, priority)
     note = fields.get("note", row["note"])
     list_id = fields.get("list_id", row["list_id"])
-    if list_id is not None and list_id != row["list_id"] and lists_svc.get_list(conn, list_id) is None:
-        raise TaskError("unknown list")
+    if list_id is not None and list_id != row["list_id"]:
+        _require_writable_list(conn, list_id)
     ts = now_iso()
     with conn:
         conn.execute(
