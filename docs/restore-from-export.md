@@ -60,12 +60,15 @@ Identity is settled; these gaps are not, and no restore reproduces them:
 - Bootstrap `lists`/`tasks` rows, task note/order fields, focus session
   notes/dates — see the matrix below.
 
-The command deliberately leaves insufficiently journaled typed tables empty.
-On the first normal app start, the current startup code will seed demo lists and
-tasks into those empty tables and append new task events. Inspect or copy the
-partial restored database before launching the app if stream equality matters.
+The command deliberately leaves insufficiently journaled typed tables empty, and
+they stay empty. Startup used to decide seeding per table by row count, so the
+first app start on a restored database poured demo lists and tasks into those
+gaps and appended their events to the very stream this file preserves. The
+restore now marks the target initialized — `app_meta.seeded_at`, schema v16 —
+and startup reads that marker instead of counting rows, so a restored database
+can be launched directly and re-exported byte-identically.
 
-To keep those new writes unambiguous, the restore advances `sqlite_sequence`
+To keep later writes unambiguous, the restore advances `sqlite_sequence`
 for the skipped tables (`tasks`, `lists`, `focus_sessions`, `lessons`) past the
 highest ids observed in the retained audit payloads, so post-restore rows and
 events never reuse an id that already appears in the historical stream.

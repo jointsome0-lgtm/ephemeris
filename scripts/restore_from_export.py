@@ -561,6 +561,16 @@ def _apply_records(
         # are stamped here — fresh local identity, like restored autoincrement ids.
         db.backfill_event_uuids(conn)
 
+        # The target is an initialized installation, not a fresh one (schema
+        # v16). Startup used to decide that per table, by row count, and this
+        # command deliberately leaves `lists` and `tasks` empty — so the first
+        # app start seeded demo rows into restored history and appended their
+        # events to the very audit stream this file exists to preserve. Written
+        # only when absent, so a redelivery keeps the target's original
+        # initialization time.
+        if db.meta_get(conn, db.SEEDED_AT) is None:
+            db.meta_set(conn, db.SEEDED_AT, db.now_iso())
+
         # Inside the transaction: raising here rolls the delivery back. Run after
         # the commit and a target that fails the check would keep every event
         # this run applied while the command exits RESTORE FAILED — an outcome
@@ -716,19 +726,11 @@ def print_summary(target: Path, result: dict[str, Any]) -> None:
         print("IDEMPOTENT REDELIVERY: NO")
         print("  This export predates event ids in the envelope, so restored rows take")
         print("  fresh local uuids and it can only be restored into a fresh target.")
-    # Startup seeds per table via seed_if_empty, so a table that already holds
-    # rows is left alone. Only promise the seeding that will actually happen.
-    seeding = [name for name in ("routine_items", "lists", "tasks") if rows[name] == 0]
-    if not seeding:
-        print("FIRST APP START: no demo seeding is expected; routine_items, lists and")
-        print("  tasks all hold rows already, and startup seeds only empty tables.")
-    elif "routine_items" in seeding:
-        print("FIRST APP START: demo habits will seed into the empty routine_items table")
-        print("  (this export retained no live habits), and demo lists/tasks will seed")
-        print("  and append new task events; inspect this partial DB before launching the app.")
-    else:
-        print("FIRST APP START: current demo lists/tasks will seed into their empty tables")
-        print("  and append new task events; inspect this partial DB before launching the app.")
+    # Startup asks `app_meta.seeded_at`, which this run wrote, and not the row
+    # counts — so the tables left empty above stay empty, however empty they are.
+    print("FIRST APP START: no demo seeding. This target is marked initialized")
+    print("  (app_meta.seeded_at), so startup adds no habits, lists, tasks or events")
+    print("  to the restored stream; the empty tables above stay empty.")
     print("FULL-FIDELITY RECOVERY: use a consistent SQLite backup, not JSONL alone.")
 
 

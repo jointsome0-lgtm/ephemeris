@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from .db import get_conn, init_db
+from .db import SEEDED_AT, get_conn, init_db, meta_get, meta_set, now_iso
 from .routers.calendar import router as calendar_router
 from .routers.export import router as export_router
 from .routers.focus import router as focus_router
@@ -47,9 +47,19 @@ async def _lifespan(app: FastAPI):
     init_db()
     conn = get_conn()
     try:
-        created = checkins.seed_if_empty(conn)
-        lists.seed_if_empty(conn)          # Inbox + sample lists (before tasks)
-        tasks.seed_if_empty(conn)          # sample tasks reference seeded lists
+        # The `app_meta` marker (schema v16), not the per-table row counts, is
+        # what decides this. A restored database can legitimately hold empty
+        # lists and tasks; seeding into it would mix demo rows into real
+        # history and append their events to the audit stream. Whether the
+        # seeders created anything is irrelevant — the marker records that
+        # they had their turn, so an installation is initialized exactly once.
+        created = 0
+        if meta_get(conn, SEEDED_AT) is None:
+            created = checkins.seed_if_empty(conn)
+            lists.seed_if_empty(conn)      # Inbox + sample lists (before tasks)
+            tasks.seed_if_empty(conn)      # sample tasks reference seeded lists
+            with conn:
+                meta_set(conn, SEEDED_AT, now_iso())
     finally:
         conn.close()
     if created:

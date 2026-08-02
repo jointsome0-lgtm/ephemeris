@@ -95,6 +95,38 @@ def is_not_future(s: str) -> bool:
     return s <= today_str()
 
 
+# --- installation metadata (schema v16) ------------------------------------
+# One key/value row per fact about THIS database that is not domain data: how
+# it was initialized, not what it holds. Deliberately a table and not a file
+# beside it — a full backup is a byte copy of the database, so anything stored
+# here travels with a restore automatically, while a sidecar file would have to
+# be remembered separately and would be missing exactly when it matters.
+
+SEEDED_AT = "seeded_at"
+"""`app_meta` key: ISO timestamp of the boot that ran the demo seeders.
+
+Its PRESENCE is the contract, not its value: startup calls the seeders only
+when the key is absent. The timestamp is for a human reading the row.
+"""
+
+
+def meta_get(conn: sqlite3.Connection, key: str) -> str | None:
+    """Read one `app_meta` value, or None when the key was never written."""
+    row = conn.execute("SELECT value FROM app_meta WHERE key = ?", (key,)).fetchone()
+    # Positional, not by name: these helpers are also called from the restore
+    # script on a plain sqlite3 connection, which has no Row factory.
+    return None if row is None else row[0]
+
+
+def meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """Write one `app_meta` value, replacing any earlier one for that key."""
+    conn.execute(
+        "INSERT INTO app_meta (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+
+
 # --- event ledger (sec14.1): append-only audit feed -------------------------
 
 
@@ -224,7 +256,7 @@ def immediate(conn: sqlite3.Connection):
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -733,6 +765,42 @@ def _migrate_to_15(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA_V15)
 
 
+# v16 — the initialization marker (issue #17). Startup seeded demo habits,
+# lists and tasks per table, each seeder asking only `COUNT(*) == 0` of its
+# own table. That question cannot tell "never initialized" from "restored
+# from a backup whose owner had deleted every task": both are empty, so the
+# first boot after a restore quietly poured demo rows into real history and
+# appended their events to the audit stream.
+#
+# The marker answers the question the row counts cannot. It is a one-way door
+# per installation: `seeded_at` is written once, after the seeders have had
+# their turn, and its presence alone decides that they never run again.
+_SCHEMA_V16 = """
+CREATE TABLE IF NOT EXISTS app_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+"""
+
+# Every table startup would seed, plus the audit stream. A database holding a
+# row in any of them is a live installation that was initialized long before
+# this marker existed, so the migration records that fact instead of leaving
+# it to be re-decided on the next boot.
+_SEEDED_EVIDENCE = ("routine_items", "lists", "tasks", "events")
+
+
+def _migrate_to_16(conn: sqlite3.Connection) -> None:
+    conn.executescript(_SCHEMA_V16)
+    seeded = any(
+        conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None
+        for table in _SEEDED_EVIDENCE
+    )
+    if seeded:
+        # An empty database is the only one that still needs the seeders, so it
+        # is the only one that leaves this migration without a marker.
+        meta_set(conn, SEEDED_AT, now_iso())
+
+
 # Ordered, idempotent steps. A schema change must NEVER require deleting the
 # ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
 _MIGRATIONS = [
@@ -751,6 +819,7 @@ _MIGRATIONS = [
     (13, _migrate_to_13),
     (14, _migrate_to_14),
     (15, _migrate_to_15),
+    (16, _migrate_to_16),
 ]
 
 
