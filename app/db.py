@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from contextlib import contextmanager
 from datetime import date, datetime
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -179,6 +180,46 @@ def get_db():
         yield conn
     finally:
         conn.close()
+
+
+@contextmanager
+def immediate(conn: sqlite3.Connection):
+    """A write transaction that takes the writer lock up front (#22).
+
+    `with conn:` leaves sqlite3 in its legacy mode: the implicit `BEGIN` is
+    DEFERRED and is emitted before the first DML, never before a `SELECT`. A
+    path that reads a value, decides something in Python and then writes it
+    back therefore reads outside the write lock, and two such paths interleave
+    freely — the classic lost update. `BEGIN IMMEDIATE` moves the lock to the
+    top, so the read and the write it feeds see one serialized version of the
+    row. The other writer waits out `busy_timeout` and then raises
+    `sqlite3.OperationalError`, which is the honest answer: nothing was lost.
+
+    Use it only where the application needs the value in Python. Where the
+    value is needed only inside SQL — `MAX(sort_order) + 10` — a single
+    `INSERT ... SELECT` is cheaper and just as safe, because one statement
+    already runs under the lock it takes.
+
+    Two ways to hold it wrong, both pinned by tests:
+
+    - It cannot nest. `BEGIN` inside a transaction is an error from SQLite
+      with a message that says nothing about the caller, so the precondition
+      is checked here instead.
+    - Do not write `with conn:` inside the block. That context manager commits
+      on exit, which would end THIS transaction early and hand the rest of the
+      body to autocommit. Plain `conn.execute` calls only.
+    """
+    if conn.in_transaction:
+        raise RuntimeError(
+            "immediate() needs a connection that is not already in a transaction"
+        )
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield conn
+    except BaseException:
+        conn.rollback()
+        raise
+    conn.commit()
 
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------

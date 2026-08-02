@@ -59,6 +59,27 @@ def get_list(conn: sqlite3.Connection, list_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM lists WHERE id = ?", (list_id,)).fetchone()
 
 
+def require_writable_list(conn: sqlite3.Connection, list_id: int) -> sqlite3.Row:
+    """The row, if a new or moved entity may be filed under this list (#22).
+
+    `get_list` deliberately still answers for an archived list — the read paths
+    need it, or an archived list's own page could not name itself. Writing into
+    one is the case with no reader: `/list/{id}` 404s on an archived list, so a
+    task or event filed there by a form the sidebar rendered before the archive
+    lands somewhere the app will not show again. Refusing at the write is the
+    narrow fix; the read side is untouched.
+
+    Raises `ListError` for a missing list and for an archived one, with the
+    missing case keeping the wording its callers already surface.
+    """
+    row = get_list(conn, list_id)
+    if row is None:
+        raise ListError("unknown list")
+    if row["archived_at"] is not None:
+        raise ListError("that list is archived")
+    return row
+
+
 def list_lists(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Active lists with an `open_count` of incomplete tasks, Inbox first."""
     return conn.execute(
@@ -86,15 +107,15 @@ def _clean_name(name: str | None) -> str:
 def create_list(conn: sqlite3.Connection, name: str, emoji: str | None = None) -> int:
     name = _clean_name(name)
     emoji = (emoji or "").strip() or "•"
-    nxt = conn.execute(
-        "SELECT COALESCE(MAX(sort_order), 0) + 10 FROM lists WHERE kind = 'list'"
-    ).fetchone()[0]
     ts = now_iso()
     with conn:
+        # One statement, so the MAX runs under the INSERT's own write lock and
+        # two lists created at once cannot share a sort_order (#22).
         cur = conn.execute(
             "INSERT INTO lists (name, emoji, kind, sort_order, created_at) "
-            "VALUES (?, ?, 'list', ?, ?)",
-            (name, emoji, nxt, ts),
+            "SELECT ?, ?, 'list', COALESCE(MAX(sort_order), 0) + 10, ? "
+            "FROM lists WHERE kind = 'list'",
+            (name, emoji, ts),
         )
         list_id = cur.lastrowid
         append_event(conn, "list_created", {"list_id": list_id, "name": name, "emoji": emoji})
