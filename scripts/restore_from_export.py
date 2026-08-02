@@ -128,12 +128,20 @@ def load_records(path: Path) -> list[Record]:
             )
         if not isinstance(payload, dict):
             raise RestoreError(f"line {line_no}: payload must be a JSON object")
-        # Absent is allowed (a pre-#17 export); present but not a usable string
-        # is a corrupt receipt, and silently ignoring it would turn a redelivery
-        # into a duplicate insert.
-        uuid = value.get("id")
-        if uuid is not None and (not isinstance(uuid, str) or not uuid):
-            raise RestoreError(f"line {line_no}: id must be a non-empty string when present")
+        # Test for the KEY, not the value. Absent means a pre-#17 export, which
+        # is allowed. Present but unusable is a corrupt receipt — and `null` is
+        # present: read as absent it would pass for a legacy line, take a fresh
+        # local uuid at restore, and silently discard the source identity that
+        # every later redelivery depends on. iter_jsonl omits the key rather
+        # than writing null, so nothing this app produces takes that branch.
+        if "id" in value:
+            uuid = value["id"]
+            if not isinstance(uuid, str) or not uuid:
+                raise RestoreError(
+                    f"line {line_no}: id must be a non-empty string when present"
+                )
+        else:
+            uuid = None
         records.append(Record(line_no, timestamp, type_, version, payload, uuid))
     return records
 

@@ -748,6 +748,29 @@ def test_a_corrupt_id_is_refused_rather_than_ignored(tmp_path):
     assert "id must be a non-empty string" in run.stderr
 
 
+def test_an_explicitly_null_id_is_not_read_as_a_legacy_line(tmp_path):
+    """`null` is present, not absent. Conflating the two would let a damaged
+    modern export pass as pre-#17: the line takes a fresh local uuid at restore,
+    silently discarding the source identity every later redelivery needs."""
+    nulled = tmp_path / "null-id-export.jsonl"
+    nulled.write_text(
+        json.dumps({
+            "id": None,
+            "timestamp": "2031-05-06T07:08:09+03:00",
+            "type": "daily_note_updated",
+            "payload_version": 1,
+            "payload": {"date": "2031-05-06", "text": "Invented note"},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    target = tmp_path / "restored-null-id"
+    run = _restore(nulled, target)
+
+    assert run.returncode != 0
+    assert "id must be a non-empty string" in run.stderr
+    assert not target.exists(), "a refused export leaves no target behind"
+
+
 def test_redelivery_applies_only_the_records_that_are_new(tmp_path):
     """The point of the receipt: an export taken later shares a prefix with the
     earlier one, and only its tail should land."""
