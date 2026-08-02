@@ -618,6 +618,40 @@ def test_a_failed_restore_leaves_the_live_instance_where_it_was(
     assert not any(path.name.startswith(".restore-tmp-") for path in target.iterdir())
 
 
+def test_retention_never_sweeps_a_name_claim_another_run_still_holds(
+    backup_db, instance, monkeypatch
+):
+    """A placeholder is zero bytes and named by no manifest whether its run is
+    dead or merely unfinished — the two are indistinguishable by inspection.
+
+    Deleting a live one frees its stamp, and a run starting in the same second
+    then claims a name someone else is still publishing under: two processes
+    replace each other's members, and the manifest that survives describes a set
+    that no longer checksums. The claim is held open for the life of the run, so
+    retention can ask rather than guess, and the kernel releases it if the run
+    dies.
+    """
+    monkeypatch.setattr(backup_db, "now_stamp", lambda: "2031-07-01-000000")
+    backup_db.create_backup()
+    stamp, claim_fd = backup_db._claim_stamp()   # stands in for a concurrent run
+    placeholder = instance / "backups" / backup_db.db_name(stamp)
+    try:
+        assert placeholder.stat().st_size == 0
+        _, deleted, left = backup_db.prune(1)
+        assert placeholder.exists(), "a backup in progress is not debris"
+        assert placeholder not in deleted
+        assert left == [], "nor is it reported as something to look at"
+        assert backup_db.unclaimed_files() == []
+    finally:
+        os.close(claim_fd)
+
+    # The same file, once nobody owns it, is exactly the debris it looks like.
+    assert backup_db.unclaimed_files() == [placeholder]
+    _, deleted, left = backup_db.prune(1)
+    assert placeholder in deleted and not placeholder.exists()
+    assert left == []
+
+
 def test_a_renamed_database_is_still_excluded_from_the_archive(
     backup_db, instance, monkeypatch
 ):

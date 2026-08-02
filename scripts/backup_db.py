@@ -41,6 +41,7 @@ Restore never touches a running service: stop it first
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -104,8 +105,12 @@ def stamp_of(manifest_filename: str) -> str:
     return manifest_filename[len("activity-"):-len(".manifest.json")]
 
 
-def _claim_stamp() -> str:
-    """Reserve a free stamp by creating the snapshot's name, empty and exclusive.
+def _claim_stamp() -> tuple[str, int]:
+    """Reserve a free stamp by creating the snapshot's name, empty and locked.
+
+    Returns (stamp, fd). The caller closes the fd when the run is over — that
+    close is what releases the claim, so it is also released by the kernel if
+    the process dies.
 
     `now_stamp()` resolves to the second, so two backups in one second are a
     real collision — the same one the JSONL export hit (#17, first half). O_EXCL
@@ -113,6 +118,15 @@ def _claim_stamp() -> str:
     placeholder is overwritten by os.replace at the end; if the run dies before
     that, it is a file no manifest claims, which is exactly what `--keep` sweeps
     up.
+
+    The flock is what keeps retention from sweeping a claim that is still being
+    used. A `--keep` pass in another process cannot tell a placeholder belonging
+    to a run in progress from one an interrupted run abandoned — both are zero
+    bytes and neither is named by a manifest — and deleting the live one frees
+    the stamp for a third run to claim, at which point two processes publish
+    over each other's member names and the surviving manifest describes a set
+    that no longer checksums. An open lock says "mine, still", and says it
+    without a timeout to guess at.
     """
     base = now_stamp()
     for n in range(1, 1000):
@@ -122,9 +136,33 @@ def _claim_stamp() -> str:
                          os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
             continue
-        os.close(fd)
-        return stamp
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BaseException:
+            os.close(fd)
+            raise
+        return stamp, fd
     raise BackupError(f"every backup name for {base} is taken (999 tried)")
+
+
+def _is_live_claim(path: Path) -> bool:
+    """Is this placeholder still held by a running backup?
+
+    The mirror of the flock in `_claim_stamp`: if the lock can be taken, no
+    process holds it, and the file is debris. Asked without ever writing to the
+    file, and released immediately — this is a question, not a claim.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return True
+    finally:
+        os.close(fd)
+    return False
 
 
 # --- primitives ------------------------------------------------------------
@@ -372,7 +410,7 @@ def create_backup() -> Path:
     # 0700: the directory holds whole copies of a private ledger, and its own
     # mode is the only thing protecting the names inside it.
     BACKUPS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-    stamp = _claim_stamp()
+    stamp, claim_fd = _claim_stamp()
     staged_db = _stage(".sqlite")
     staged_files = _stage(".tar.gz")
     staged_manifest = _stage(".json")
@@ -415,6 +453,9 @@ def create_backup() -> Path:
         # failure they are the partial work, and nothing else refers to them.
         for staged in (staged_db, staged_files, staged_manifest):
             staged.unlink(missing_ok=True)
+        # Last: the stamp stays claimed until everything published under it is
+        # on disk. Released here, or by the kernel if this process dies.
+        os.close(claim_fd)
     return BACKUPS_DIR / manifest_name(stamp)
 
 
@@ -525,6 +566,11 @@ def unclaimed_files() -> list[Path]:
     retention does not guess: it removes the empty placeholders and reports the
     rest, leaving the operator to look and decide. The dot-prefixed staging
     files of a run in progress match no glob here.
+
+    A placeholder another run still holds is not listed at all: it is neither
+    debris nor an old snapshot, just a backup that has not finished. Reporting
+    it would alarm the reader, and deleting it — which is what `--keep` does to
+    everything else that is empty — would hand its stamp to the next run.
     """
     if not BACKUPS_DIR.is_dir():
         return []
@@ -536,7 +582,7 @@ def unclaimed_files() -> list[Path]:
         path
         for path in list(BACKUPS_DIR.glob("activity-*.sqlite"))
         + list(BACKUPS_DIR.glob("files-*.tar.gz"))
-        if path.name not in claimed
+        if path.name not in claimed and not _is_live_claim(path)
     )
 
 

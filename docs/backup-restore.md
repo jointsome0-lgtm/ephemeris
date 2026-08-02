@@ -83,6 +83,12 @@ The service can stay running. `--keep N` prunes whole sets, oldest first, and
 identifies them by manifest — not by globbing `*.sqlite` — so a half-written run
 is never mistaken for a backup worth keeping.
 
+Two runs at once are safe: each reserves its name before it writes anything, and
+holds that reservation until the whole set is on disk. A retention pass in one
+process therefore leaves another's unfinished work alone — a manual run started
+while the timer's is going does not disturb it, and neither loses its name to
+the other. Both appear as complete sets when they finish.
+
 **Retention deletes only what a manifest claims.** Files without one are listed
 and left in place, because this directory may already hold `activity-*.sqlite`
 snapshots taken by the earlier version of this script, which wrote no manifests
