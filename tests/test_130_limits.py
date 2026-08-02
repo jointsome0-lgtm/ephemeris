@@ -327,6 +327,32 @@ def test_an_event_note_that_predates_the_cap_does_not_block_a_drag(client):
         conn.close()
 
 
+def test_a_legacy_event_note_with_stray_whitespace_still_does_not_block_a_drag(
+        client):
+    """The comparison normalizes both sides, or it would not be a comparison.
+
+    The stored note is stripped on its way in — except in rows written before
+    the strip and the cap existed, which is precisely the population this
+    grandfathering serves. Comparing a stripped refill against a raw stored
+    value would call an untouched note "changed" over a trailing newline and
+    refuse the drag anyway.
+    """
+    conn = _conn()
+    try:
+        event_id = cal.create_event(conn, title="#23 whitespace event",
+                                    start_date=today_str(), all_day=True)
+        legacy = "  " + "x" * (limits.EVENT_NOTE + 500) + "\n"
+        conn.execute("UPDATE calendar_events SET note = ? WHERE id = ?",
+                     (legacy, event_id))
+        conn.commit()
+
+        moved_to = (date.fromisoformat(today_str()) + timedelta(days=4)).isoformat()
+        cal.move_event(conn, event_id, moved_to)
+        assert cal.get_event(conn, event_id)["start_date"] == moved_to
+    finally:
+        conn.close()
+
+
 # --- 2. the request-body ceiling -------------------------------------------
 
 _OVER = b"x" * (3 * 1024 * 1024)   # comfortably past the 2 MiB ceiling
@@ -571,21 +597,22 @@ def test_a_bad_ceiling_setting_falls_back_to_the_constant(monkeypatch):
     assert security._body_ceiling() == 8 * 1024 * 1024
 
 
-def test_the_ceiling_cannot_be_set_below_the_largest_route_cap(monkeypatch):
-    """An override may raise the perimeter, never lower it past the route caps.
+def test_the_ceiling_cannot_be_set_down_to_the_largest_route_cap(monkeypatch):
+    """An override may raise the perimeter, never lower it onto the route caps.
 
     A ceiling under a Learn endpoint's own cap tightens nothing — that route
-    already bounds itself — but it does start answering perfectly valid saves
-    with this middleware's plain-text 413 instead of the typed JSON the lesson
-    agent parses. So the setting is declined and the default stands.
+    already bounds itself — but it does start answering oversized saves with
+    this middleware's plain-text 413 instead of the typed JSON the lesson agent
+    parses. Equality is refused for the same reason and not out of caution: at
+    the same number the perimeter withholds the very chunk that would have
+    crossed the route's counter, so the inner limit never gets to answer. The
+    setting is declined and the default stands.
     """
-    for too_small in (1024, limits.LARGEST_ROUTE_CAP - 1):
+    for too_small in (1024, limits.LARGEST_ROUTE_CAP - 1, limits.LARGEST_ROUTE_CAP):
         monkeypatch.setenv("EPHEMERIS_MAX_BODY_BYTES", str(too_small))
         assert security._body_ceiling() == limits.MAX_BODY_BYTES, too_small
-    # Exactly at the largest cap is allowed: the route's own counter trips
-    # first at that size, so nothing it accepts is refused out here.
-    monkeypatch.setenv("EPHEMERIS_MAX_BODY_BYTES", str(limits.LARGEST_ROUTE_CAP))
-    assert security._body_ceiling() == limits.LARGEST_ROUTE_CAP
+    monkeypatch.setenv("EPHEMERIS_MAX_BODY_BYTES", str(limits.LARGEST_ROUTE_CAP + 1))
+    assert security._body_ceiling() == limits.LARGEST_ROUTE_CAP + 1
 
 
 # --- 3. export retention ---------------------------------------------------
@@ -815,27 +842,61 @@ def test_a_manifest_whose_files_field_is_not_a_mapping_is_skipped(
     assert page.status_code == 200
 
 
-def test_a_manifest_that_names_no_files_still_dates_the_set(client, backups_dir):
-    """Absent `files` is not malformed — a manifest that listed no members still
-    answers "when was the last backup?", which is the panel's question."""
-    (backups_dir / "activity-2001-02-03-040506.manifest.json").write_text(
+@pytest.mark.parametrize("files", [
+    {},
+    {"database": {"name": "activity-x.sqlite", "bytes": 10}},
+    {"database": {"name": "activity-x.sqlite"}, "instance": {"bytes": 10}},
+    {"database": {"name": ""}, "instance": {"name": "files-x.tar.gz"}},
+    {"database": "activity-x.sqlite", "instance": "files-x.tar.gz"},
+])
+def test_a_manifest_that_names_no_restorable_set_is_skipped(client, backups_dir,
+                                                            files):
+    """A manifest is a backup only when it names both members with names.
+
+    `load_manifest` refuses each of these, so the set behind them cannot be
+    verified or restored — and a panel that counted them would answer "you have
+    a backup" on the strength of a file that only describes one.
+    """
+    good = date.fromisoformat(today_str()) - timedelta(days=1)
+    _write_manifest(backups_dir, good, stamp="2000-01-01-000001")
+    (backups_dir / "activity-2999-01-01-000004.manifest.json").write_text(
         json.dumps({"manifest_version": storage.MANIFEST_VERSION,
-                    "created_at": "2001-02-03T04:05:06+03:00"}), encoding="utf-8")
+                    "created_at": "2999-01-01T00:00:04+03:00",
+                    "files": files}), encoding="utf-8")
 
     found = storage.newest_backup()
     assert found is not None
-    assert found["bytes"] > 0   # the manifest's own size, nothing claimed
+    assert found["name"] == "activity-2000-01-01-000001.manifest.json"
 
 
-def test_the_panels_manifest_version_is_the_one_the_script_writes():
-    """A tripwire, not behaviour: the panel spells the version rather than
-    importing it, because app/ must not depend on scripts/. If the backup
-    format is bumped and this is not, the panel starts calling every new backup
-    unreadable — the loudest possible way to be wrong, but only if it is caught
-    here rather than on the page."""
+def test_the_panel_accepts_exactly_what_the_restore_tooling_accepts(tmp_path):
+    """A tripwire, not behaviour: the panel spells the version and the member
+    roles rather than importing them, because app/ must not depend on scripts/.
+    If the backup format is bumped and this is not, the panel starts calling
+    every new backup unreadable — the loudest possible way to be wrong, but
+    only if it is caught here rather than on the page.
+    """
     import scripts.backup_db as backup_db
 
     assert storage.MANIFEST_VERSION == backup_db.MANIFEST_VERSION
+
+    # The roles are not a constant over there, they are the loop in
+    # load_manifest — so prove the agreement by handing it a manifest that
+    # names exactly the members this module requires, and one that does not.
+    _write_manifest(tmp_path, date.fromisoformat(today_str()),
+                    stamp="2000-01-01-000001")
+    manifest_path = tmp_path / "activity-2000-01-01-000001.manifest.json"
+    assert backup_db.load_manifest(manifest_path)
+    assert storage._read_manifest(manifest_path) is not None
+
+    for role in storage._REQUIRED_MEMBERS:
+        body = json.loads(manifest_path.read_text(encoding="utf-8"))
+        del body["files"][role]
+        thinned = tmp_path / f"activity-2000-01-01-00000{role[0]}.manifest.json"
+        thinned.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(backup_db.BackupError):
+            backup_db.load_manifest(thinned)
+        assert storage._read_manifest(thinned) is None, role
 
 
 @pytest.mark.parametrize("version", [2, "1", None, 0])

@@ -112,13 +112,16 @@ def _body_ceiling() -> int:
     the constant rather than disabling the ceiling — a typo in a unit file must
     not be the way this protection turns itself off.
 
-    A value BELOW limits.LARGEST_ROUTE_CAP falls back too, for the opposite
-    reason: it would not tighten anything the route caps do not already bound,
-    it would only start answering valid Learn requests with this middleware's
-    plain-text 413 instead of the route's typed JSON — the perimeter overruling
-    a limit it was built to sit above. Both fallbacks are silent because there
-    is no honest failure mode here to report to: refusing to start would take
-    the app down over a body-size typo.
+    A value at or below limits.LARGEST_ROUTE_CAP falls back too, for the
+    opposite reason: it would not tighten anything the route caps do not
+    already bound, it would only start answering oversized Learn requests with
+    this middleware's plain-text 413 instead of the route's typed JSON — the
+    perimeter overruling a limit it was built to sit above. Equality is not
+    good enough, because equal counters do not make the inner one trip first:
+    at the same number this middleware withholds the chunk that would have
+    crossed the route's own limit, so the route never gets to answer. Both
+    fallbacks are silent because there is no honest failure mode here to report
+    to: refusing to start would take the app down over a body-size typo.
     """
     raw = os.environ.get("EPHEMERIS_MAX_BODY_BYTES")
     if raw is None:
@@ -127,7 +130,7 @@ def _body_ceiling() -> int:
         value = int(raw)
     except ValueError:
         return limits.MAX_BODY_BYTES
-    if value < limits.LARGEST_ROUTE_CAP:
+    if value <= limits.LARGEST_ROUTE_CAP:
         return limits.MAX_BODY_BYTES
     return value
 

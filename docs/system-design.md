@@ -1255,8 +1255,8 @@ backup or prunes anything.
 
 The panel counts a backup set only when `scripts/backup_db.py` would accept its
 manifest: current `manifest_version`, parseable `created_at`, and a `files`
-object if the key is present at all. Anything else is skipped and the search
-falls back to the next-newest set, because the question the panel answers is
+object naming both the `database` and `instance` members. Anything else is
+skipped and the search falls back to the next-newest set, because the question the panel answers is
 "is there a backup I could restore?" — a set the bundled tooling would decline
 must not silence the missing-backup warning.
 

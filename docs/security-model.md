@@ -132,9 +132,10 @@ first slice; issue #23 added the body ceiling). It owns four things:
   stance as the terminal gate.
 - **Request-body ceiling.** Every unsafe-method request is bounded at
   2 MiB (`EPHEMERIS_MAX_BODY_BYTES` overrides it at startup; junk, a
-  non-positive value, or anything below the largest per-route cap falls back to
-  the default — the setting can raise the ceiling but never lower it past the
-  limits it exists to sit above). `Content-Length` is an early refusal and the streaming byte count
+  non-positive value, or anything not strictly above the largest per-route cap
+  falls back to the default — the setting can raise the ceiling but never lower
+  it onto the limits it exists to sit above, and equality already lets the
+  perimeter answer first). `Content-Length` is an early refusal and the streaming byte count
   is the authority, so a chunked or dishonest request buys nothing; nothing is
   buffered by the middleware itself. A body past the ceiling is not truncated
   into the route — the app is handed a disconnect, so no handler can act on a

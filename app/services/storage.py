@@ -51,6 +51,13 @@ worse than reporting none — it suppresses the missing-backup warning and hides
 an older set that actually works.
 """
 
+_REQUIRED_MEMBERS = ("database", "instance")
+"""The members `load_manifest` insists a set names before it will restore it.
+
+Same tripwire as the version above: a role added there and not here would be a
+panel that reports sets the tooling cannot use.
+"""
+
 
 def _size_of(path: Path) -> int:
     """`path`'s size in bytes, or 0 if it is not there to be measured."""
@@ -86,11 +93,18 @@ def _parse_moment(value: object) -> datetime | None:
 def _read_manifest(path: Path) -> dict | None:
     """One backup set summarized from its manifest, or None if it is not one.
 
+    "Is one" means exactly what `scripts/backup_db.py::load_manifest` means by
+    it — the current version, and both restorable members named — because the
+    panel's claim is that the bundled tooling could restore what it reports. A
+    manifest this function accepted but that tooling would refuse is worse than
+    no manifest: it silences the missing-backup warning with a set nobody can
+    open. Structure only; nothing is hashed and no member is stat'ed for
+    integrity, because that is `--verify`, which reads gigabytes and belongs
+    nowhere near a page render.
+
     The sizes come from the manifest's own `files` entries — what the set
     claimed to be when it was written — falling back to the bytes on disk for
-    an entry that does not carry a number. Nothing is hashed or verified here:
-    that is `scripts/backup_db.py --verify`, which reads gigabytes and belongs
-    nowhere near a page render.
+    an entry that does not carry a number.
     """
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -104,15 +118,17 @@ def _read_manifest(path: Path) -> dict | None:
     if created is None:
         return None
     files = manifest.get("files")
-    # Absent is fine — an older writer that named no members still dates the
-    # set. Present but not a mapping is not a manifest this module can read, and
-    # answering None sends the caller to the next-newest set, which is what the
-    # module contract promises. Anything else would be an AttributeError out of
-    # a page render.
-    if files is not None and not isinstance(files, dict):
+    if not isinstance(files, dict):
         return None
+    # The two members a restore needs. Anything else under `files` is summed
+    # below but not required — a later version may add members, and the panel
+    # would rather over-report a set's size than refuse to mention it.
+    for role in _REQUIRED_MEMBERS:
+        entry = files.get(role)
+        if not isinstance(entry, dict) or not entry.get("name"):
+            return None
     total = _size_of(path)
-    for entry in (files or {}).values():
+    for entry in files.values():
         if not isinstance(entry, dict):
             continue
         claimed = entry.get("bytes")

@@ -92,9 +92,11 @@ fails if that stops being true. Spelled here rather than imported from
 `app/routers/learn.py` because the perimeter must not import a router.
 
 It exists so the *override* obeys the same invariant the default does. A
-ceiling set below this would not tighten anything — the route caps already
+ceiling at or below this would not tighten anything — the route caps already
 bind — it would only convert a Learn endpoint's typed JSON refusal, which the
-lesson agent parses, into the perimeter's blunt plain-text 413.
+lesson agent parses, into the perimeter's blunt plain-text 413. At the *same*
+number the perimeter still wins, because it withholds the chunk that would
+have crossed the route's counter, so "above" means strictly above.
 """
 
 # --- retention -------------------------------------------------------------
