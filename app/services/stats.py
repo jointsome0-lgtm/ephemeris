@@ -13,6 +13,14 @@ chain is the differentiator TickTick's binary model cannot express (sec16.5):
                              but adds 0 (the "skip day" pattern).
     failed / empty past day  BREAK the streak.
     empty `today`            PENDING — does not break (the day isn't over yet).
+
+Every function that walks days takes an optional `start` — the habit's
+`start_date`. Days BEFORE it are outside the habit's life: they are not misses,
+they do not break or extend a run, and they are not in a rate's denominator
+(#18). Check-ins that predate `start` (possible if the date was edited backwards)
+are left in the table and still show in the detail heatmap; they just stop
+counting. `start=None` means no lower bound, which is how every row behaved
+before start_date was honoured.
 """
 from __future__ import annotations
 
@@ -52,11 +60,33 @@ def all_histories(conn: sqlite3.Connection) -> dict[int, dict[str, str]]:
 # --- streak math (pure, operate on a {iso: status} map) --------------------
 
 
-def current_streak_from(smap: dict[str, str], today: _date) -> int:
+def item_start(conn: sqlite3.Connection, item_id: int) -> _date | None:
+    """A habit's `start_date` as a date, or None when it has no lower bound."""
+    row = conn.execute(
+        "SELECT start_date FROM routine_items WHERE id = ?", (item_id,)
+    ).fetchone()
+    return as_start(row["start_date"]) if row else None
+
+
+def as_start(value: str | None) -> _date | None:
+    """Parse a stored `start_date` into a bound; unparsable/empty means none."""
+    if not value:
+        return None
+    try:
+        return _date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def current_streak_from(
+    smap: dict[str, str], today: _date, start: _date | None = None
+) -> int:
     """Consecutive kept days counting back from `today` (see module docstring)."""
     if not smap:
         return 0
     earliest = min(smap)
+    if start is not None and start.isoformat() > earliest:
+        earliest = start.isoformat()  # the walk stops at the habit's first day
     streak = 0
     d = today
     first = True
@@ -75,11 +105,15 @@ def current_streak_from(smap: dict[str, str], today: _date) -> int:
     return streak
 
 
-def best_streak_from(smap: dict[str, str], today: _date) -> int:
+def best_streak_from(
+    smap: dict[str, str], today: _date, start: _date | None = None
+) -> int:
     """Longest kept run ever observed (failed/empty past days reset it)."""
     if not smap:
         return 0
     d = _date.fromisoformat(min(smap))
+    if start is not None and start > d:
+        d = start  # pre-start check-ins neither seed nor break a run
     best = run = 0
     while d <= today:
         s = smap.get(d.isoformat())
@@ -100,11 +134,17 @@ def best_streak_from(smap: dict[str, str], today: _date) -> int:
 
 
 def current_streak(conn: sqlite3.Connection, item_id: int, today: str | None = None) -> int:
-    return current_streak_from(history(conn, item_id), _date.fromisoformat(today or today_str()))
+    return current_streak_from(
+        history(conn, item_id), _date.fromisoformat(today or today_str()),
+        item_start(conn, item_id),
+    )
 
 
 def best_streak(conn: sqlite3.Connection, item_id: int, today: str | None = None) -> int:
-    return best_streak_from(history(conn, item_id), _date.fromisoformat(today or today_str()))
+    return best_streak_from(
+        history(conn, item_id), _date.fromisoformat(today or today_str()),
+        item_start(conn, item_id),
+    )
 
 
 def total_checkins(conn: sqlite3.Connection, item_id: int) -> int:
@@ -130,24 +170,26 @@ def month_stats(
 ) -> dict:
     """Kept-day count and check-in rate for one month.
 
-    Rate denominator = elapsed days (today's day-of-month for the current month,
-    the full month for past months, 0 for future months) so an in-progress month
-    isn't unfairly penalised for days that haven't happened yet.
+    The window runs from the later of the 1st and the habit's `start_date` to the
+    earlier of the month's last day and today: an in-progress month isn't
+    penalised for days that haven't happened yet, and the month a habit started
+    in isn't penalised for the days before it existed (#18). An empty window
+    (a future month, or one entirely before the start date) yields rate 0.
     """
     today_d = _date.fromisoformat(today or today_str())
     days_in_month = _cal.monthrange(year, month)[1]
+    first = _date(year, month, 1)
+    last = _date(year, month, days_in_month)
+    start = item_start(conn, item_id)
+    window_from = max(first, start) if start else first
+    window_to = min(last, today_d)
     rows = conn.execute(
         "SELECT date, status FROM checkins "
         "WHERE routine_item_id = ? AND date >= ? AND date <= ?",
-        (item_id, _date(year, month, 1).isoformat(), _date(year, month, days_in_month).isoformat()),
+        (item_id, window_from.isoformat(), last.isoformat()),
     ).fetchall()
     kept = sum(1 for r in rows if r["status"] in KEPT)
-    if (year, month) == (today_d.year, today_d.month):
-        applicable = today_d.day
-    elif _date(year, month, days_in_month) < today_d:
-        applicable = days_in_month
-    else:
-        applicable = 0  # future month
+    applicable = (window_to - window_from).days + 1 if window_to >= window_from else 0
     rate = round(kept / applicable * 100) if applicable else 0
     return {"kept": kept, "applicable": applicable, "rate": rate, "days_in_month": days_in_month}
 

@@ -104,6 +104,7 @@ def _checkin_state(conn, date: str, item_id: int) -> dict:
     row = checkins.get_checkin(conn, date, item_id)
     smap = stats.history(conn, item_id)
     today_d = _date.fromisoformat(today_str())
+    start = stats.item_start(conn, item_id)
     return {
         "ok": True,
         "item_id": item_id,
@@ -111,8 +112,8 @@ def _checkin_state(conn, date: str, item_id: int) -> dict:
         "status": row["status"] if row else None,
         "note": (row["note"] if row else "") or "",
         # so Mode B can refresh the row's streak + total + that day's ring without a reload
-        "current_streak": stats.current_streak_from(smap, today_d),
-        "best_streak": stats.best_streak_from(smap, today_d),
+        "current_streak": stats.current_streak_from(smap, today_d, start),
+        "best_streak": stats.best_streak_from(smap, today_d, start),
         "total": sum(1 for s in smap.values() if s in ("full_done", "light_done")),
     }
 
@@ -178,20 +179,19 @@ def post_habit_create(
     title: str = Form(...),
     group_name: str = Form(""),
     emoji: str = Form(""),
-    frequency: str = Form("daily"),
-    goal: str = Form("achieve_all"),
-    goal_days: str = Form("forever"),
     start_date: str = Form(""),
-    reminder: str = Form(""),
-    constant_reminder: str | None = Form(None),
     return_to: str = Form("/habits"),
     conn: sqlite3.Connection = Depends(get_db),
 ):
+    """Create a habit from the four fields the form still offers (#18).
+
+    frequency / goal / goal_days / reminder / constant_reminder are not accepted:
+    nothing reads them, so the form no longer asks. New rows take the column
+    defaults create_item already applies.
+    """
     try:
         items.create_item(
-            conn, title, group_name, emoji=emoji, frequency=frequency, goal=goal,
-            goal_days=goal_days, start_date=(start_date or None),
-            reminder=(reminder or None), constant_reminder=bool(constant_reminder),
+            conn, title, group_name, emoji=emoji, start_date=(start_date or None),
         )
     except items.ItemError as exc:
         return RedirectResponse(_with_flash(_safe_return(return_to), str(exc)), status_code=303)
@@ -205,20 +205,20 @@ def post_habit_edit(
     title: str = Form(...),
     group_name: str = Form(""),
     emoji: str = Form(""),
-    frequency: str = Form("daily"),
-    goal: str = Form("achieve_all"),
-    goal_days: str = Form("forever"),
     start_date: str = Form(""),
-    reminder: str = Form(""),
-    constant_reminder: str | None = Form(None),
     return_to: str = Form("/habits"),
     conn: sqlite3.Connection = Depends(get_db),
 ):
+    """Edit a habit's four remaining fields (#18).
+
+    The removed columns are deliberately NOT passed: update_item's `_UNSET`
+    sentinel then leaves whatever a pre-#18 row already stored intact, so
+    trimming the form does not silently erase existing data.
+    """
     try:
         items.update_item(
-            conn, item_id, title, group_name, emoji=emoji, frequency=frequency,
-            goal=goal, goal_days=goal_days, start_date=(start_date or None),
-            reminder=(reminder or None), constant_reminder=bool(constant_reminder),
+            conn, item_id, title, group_name, emoji=emoji,
+            start_date=(start_date or None),
         )
     except items.ItemError as exc:
         return RedirectResponse(_with_flash(_safe_return(return_to), str(exc)), status_code=303)

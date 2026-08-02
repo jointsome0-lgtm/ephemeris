@@ -57,11 +57,25 @@ def seed_if_empty(conn: sqlite3.Connection) -> int:
 
 def _require_item(conn: sqlite3.Connection, item_id: int) -> sqlite3.Row:
     item = conn.execute(
-        "SELECT id, title FROM routine_items WHERE id = ?", (item_id,)
+        "SELECT id, title, start_date FROM routine_items WHERE id = ?", (item_id,)
     ).fetchone()
     if item is None:
         raise CheckinError(f"unknown routine_item_id: {item_id}")
     return item
+
+
+def _require_started(item: sqlite3.Row, date: str) -> None:
+    """Reject a check-in on a day before the habit's start_date (#18).
+
+    `today_view` already hides an unstarted habit from every list, but the
+    per-item detail page is reachable from the command palette and offers a
+    "check in for today" button. Without this the write contract would accept a
+    day the read rule says the habit does not exist on. Clearing is deliberately
+    NOT guarded: a row that predates a start date moved forward stays removable.
+    """
+    start = item["start_date"]
+    if start and date < start:
+        raise CheckinError(f"{item['title']} doesn’t start until {start}")
 
 
 def get_checkin(conn: sqlite3.Connection, date: str, item_id: int) -> sqlite3.Row | None:
@@ -73,7 +87,15 @@ def get_checkin(conn: sqlite3.Connection, date: str, item_id: int) -> sqlite3.Ro
 
 
 def today_view(conn: sqlite3.Connection, date: str) -> list[tuple[str, list[sqlite3.Row]]]:
-    """Active items + their check-in for `date`, grouped into ordered sections.
+    """Active, already-started items + their check-in for `date`, in sections.
+
+    This is the ONLY place that answers "which habits exist on this date" — the
+    Habit tab, the Today task list and the /history day view all read it, so the
+    start-date rule lives here and not in any of them (#18).
+
+    A habit is listed on `date` when it is active AND its `start_date` is not in
+    the future relative to `date`. A NULL `start_date` (rows created before the
+    column existed) means "no lower bound" and behaves as it always has.
 
     Ordering is sec13.3: ORDER BY group_name, sort_order, id. Because group_name
     is the leading sort key, each group's rows are contiguous, so grouping by
@@ -84,14 +106,16 @@ def today_view(conn: sqlite3.Connection, date: str) -> list[tuple[str, list[sqli
     rows = conn.execute(
         """
         SELECT ri.id AS id, ri.title AS title, ri.group_name AS group_name,
-               ri.emoji AS emoji, c.status AS status, c.note AS note
+               ri.emoji AS emoji, ri.start_date AS start_date,
+               c.status AS status, c.note AS note
         FROM routine_items ri
         LEFT JOIN checkins c
           ON c.routine_item_id = ri.id AND c.date = ?
         WHERE ri.active = 1
+          AND (ri.start_date IS NULL OR ri.start_date <= ?)
         ORDER BY ri.group_name, ri.sort_order, ri.id
         """,
-        (date,),
+        (date, date),
     ).fetchall()
     groups: list[tuple[str, list[sqlite3.Row]]] = []
     index: dict[str, list[sqlite3.Row]] = {}
@@ -128,6 +152,7 @@ def upsert_checkin(
     - `note` only changes if provided (an absent field leaves the column alone).
     - A note save with no existing row is rejected: the flow is status-first, so
       there are no note-only rows (status stays NOT NULL).
+    - A date before the item's `start_date` is rejected (#18).
 
     Returns the resulting status.
     """
@@ -136,6 +161,7 @@ def upsert_checkin(
     if status is not None and status not in STATUSES:
         raise CheckinError(f"invalid status: {status!r}")
     item = _require_item(conn, item_id)
+    _require_started(item, date)
     existing = get_checkin(conn, date, item_id)
     ts = now_iso()
     with conn:  # row + event in ONE transaction; rollback both on failure

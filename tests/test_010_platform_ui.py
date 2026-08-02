@@ -337,14 +337,19 @@ def test_002_ui_and_workspace(client, suite_state):
     assert (
         'href="#new-habit"' in r.text and 'id="new-habit"' in r.text
     ), "habits has create button + modal"
-    # Create-Habit modal mirrors TickTick (two-column rows, no priority, P0 gone)
+    # Create-Habit modal: two-column rows, no priority, P0 gone
     assert (
-        'class="habit-form"' in r.text and "Frequency" in r.text
-        and "Goal Days" in r.text and "Constant Reminder" in r.text
-    ), "create modal: TickTick rows"
-    assert (
-        'class="hf-reminder"' in r.text and 'class="hf-switch"' in r.text
-    ), "create modal: reminder '+' + toggle"
+        'class="habit-form"' in r.text and "Start Date" in r.text and "Section" in r.text
+    ), "create modal: the rows that are honoured"
+    # #18: controls nothing reads were removed rather than left lying — the form
+    # must not offer a frequency, a goal, a goal-day target or a reminder.
+    for gone in (
+        "Frequency", "Goal Days", "Constant Reminder",
+        'name="frequency"', 'name="goal"', 'name="goal_days"',
+        'name="reminder"', 'name="constant_reminder"',
+        'class="hf-reminder"',
+    ):
+        assert gone not in r.text, f"create modal: unbacked control removed ({gone})"
     assert 'name="priority"' not in r.text, "create modal: habits have NO priority field"
     assert "P0 Core Routine" not in r.text and "Core Routine" in r.text, "habit section is P0-free"
     # the rich day-review view now lives at /history (week strip + day sections)

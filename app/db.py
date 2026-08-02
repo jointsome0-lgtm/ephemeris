@@ -359,9 +359,18 @@ def _migrate_to_2(conn: sqlite3.Connection) -> None:
 
 
 # v3 — habit attributes for the TickTick-style Habit tab (sec31). The habit IS a
-# routine_item; these columns add the Create-Habit fields (frequency / goal /
-# start date / reminder / section is the existing group_name). Reminders are
-# stored for parity; firing them needs a scheduler (out of scope, noted sec31).
+# routine_item; these columns added the Create-Habit fields (section is the
+# existing group_name).
+#
+# Since #18 only `emoji` and `start_date` are still written and read: start_date
+# bounds which days a habit appears on and where its statistics begin. The other
+# four — frequency, goal, goal_days, reminder, constant_reminder — are LEGACY.
+# No form posts them and no reader consults them; frequency's "weekdays" and
+# "weekly" options never even had columns for their own parameters, and the app
+# has no channel through which a reminder could fire. The columns are kept so
+# values written before #18 survive untouched (and keep round-tripping through
+# export/restore); do not add readers for them without building the scheduling
+# engine that #18 tracks.
 _SCHEMA_V3 = """
 ALTER TABLE routine_items ADD COLUMN emoji TEXT;
 ALTER TABLE routine_items ADD COLUMN frequency TEXT NOT NULL DEFAULT 'daily';

@@ -1,5 +1,5 @@
 {# Habit detail (binary, TickTick): header + 4 stat cards + monthly calendar + log.
-   In the pane it adds a close ×, a ⋯ menu (Edit/Archive/Delete) and the edit form.
+   Both surfaces carry a ⋯ menu (Edit/Archive/Delete); the pane adds a close ×.
    Shared by the full page (habit.html, pane unset) and the inline pane. Context:
    item, total, current_streak, month_stats, month_label, weeks, can_next,
    month_prev_url, month_next_url, log, today, today_status, pane, edit, sections. #}
@@ -17,12 +17,17 @@
       <h2>{{ item.title }}</h2>
       <p class="subtitle">{{ item.group_name }}{% if not item.active %} · archived{% endif %}</p>
     </div>
-    {% if pane %}
+    {# The menu is on BOTH surfaces. It used to be pane-only, which was safe
+       while every active habit was in the list behind the pane; since #18 a
+       habit with a future start date is not, and the full page (reachable from
+       the command palette) is then the only place left to fix a mistyped date
+       or delete it. The edit pane itself renders fine for an unlisted habit —
+       _habit_detail_ctx looks the row up by id, not through the list. #}
     <details class="rowmenu">
       <summary aria-label="More">⋯</summary>
       <div class="rowmenu-pop">
         <a href="/habits?sel=habit-{{ item.id }}&edit=1">✏️ Edit</a>
-        <a href="/habit/{{ item.id }}">⤢ Open full page</a>
+        {% if pane %}<a href="/habit/{{ item.id }}">⤢ Open full page</a>{% endif %}
         <form method="post" action="/habits/{{ item.id }}/archive">
           <input type="hidden" name="return_to" value="/habits"><button type="submit">📦 Archive</button>
         </form>
@@ -32,7 +37,6 @@
         </form>
       </div>
     </details>
-    {% endif %}
     {% if pane %}<a class="dp-close" href="{{ close_url }}" aria-label="Close">×</a>{% endif %}
   </header>
 
@@ -41,8 +45,13 @@
   {% else %}
 
   {# binary today check-in — full page only; in the pane the list row's ring is the
-     check-in affordance (matches TickTick, whose pane has no check-in button) #}
-  {% if not pane %}
+     check-in affordance (matches TickTick, whose pane has no check-in button).
+     A habit that has not started yet offers no button: this page is reachable
+     from the command palette, which indexes every active habit, and the write
+     contract would reject the check-in anyway (#18). #}
+  {% if not pane and not_started %}
+  <p class="dp-pending">Starts {{ item.start_date }} — no check-ins before then.</p>
+  {% elif not pane %}
   <form method="post" action="/checkins" data-native style="margin-bottom:16px">
     <input type="hidden" name="date" value="{{ today }}">
     <input type="hidden" name="routine_item_id" value="{{ item.id }}">
