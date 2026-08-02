@@ -29,6 +29,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -198,6 +199,24 @@ def existing_exports() -> list[Path]:
                   key=lambda p: p.name, reverse=True)
 
 
+def _in_flight(path: Path) -> bool:
+    """Was `path` written recently enough that a response may still be reading it?
+
+    Deliberately crude: an mtime, compared against the same clock that named the
+    file. That makes it symmetric — during a backward step the pre-existing
+    exports look "in the future" and are held too, which is the safe direction
+    for a rule whose whole job is not to delete something being served.
+
+    A file that cannot be stat'ed has already vanished; call it in flight and
+    let the next run confirm.
+    """
+    try:
+        age = time.time() - path.stat().st_mtime
+    except OSError:
+        return True
+    return age < limits.EXPORT_GRACE
+
+
 def prune_exports(keep: Path | None = None) -> list[Path]:
     """Delete all but the `limits.EXPORT_KEEP` newest exports; return what went.
 
@@ -216,6 +235,15 @@ def prune_exports(keep: Path | None = None) -> list[Path]:
     the route is about to stream, turning a clock adjustment into a failed
     download. Being written is the stronger evidence of newness than a name.
 
+    `keep` protects one path, and during that same rolled-back hour a second
+    export is a second path nobody passed here — its own request is still
+    streaming it while this one prunes. So the rule is widened rather than
+    threaded through both requests: nothing touched within EXPORT_GRACE of now
+    is removed, which covers every export still being delivered without any
+    shared state to keep, and needs no opinion about when a response finishes.
+    Only that window is affected: retention resumes as soon as it closes, and
+    it deletes then what it declined to delete now.
+
     Best-effort by construction: a file that cannot be unlinked is left where
     it is rather than sinking an export that already succeeded. The next run
     tries again.
@@ -224,7 +252,7 @@ def prune_exports(keep: Path | None = None) -> list[Path]:
     if keep is not None and keep in surviving:
         surviving.remove(keep)
         surviving.insert(0, keep)
-    doomed = surviving[limits.EXPORT_KEEP:]
+    doomed = [p for p in surviving[limits.EXPORT_KEEP:] if not _in_flight(p)]
     if not doomed:
         return []
     removed = []

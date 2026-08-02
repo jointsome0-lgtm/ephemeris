@@ -114,6 +114,21 @@ Backups (`data/backups/`) are a *separate* mechanism with a separate rule:
 not reproducible from the current database the way an export is.
 """
 
+EXPORT_GRACE = 60
+"""Seconds an export is left alone after its last write, whatever the count says.
+
+An export is written, then streamed to the browser by a response that outlives
+the call which produced it — and a second, overlapping export prunes without
+knowing about the first one's file. Retention must not unlink a file
+mid-download, and the cheapest sound way to know which files those are is that
+they were just written. A minute is roughly a thousand times what serving a
+local file takes, and it needs no shared state between requests.
+
+The consequence is deliberate and small: `EXPORT_KEEP` is a floor rather than
+an exact count. A burst of exports inside one minute can leave the directory a
+few files over thirty, and the next export outside that window removes them.
+"""
+
 # --- what the storage panel calls worrying ---------------------------------
 
 BACKUP_STALE_DAYS = 7
@@ -125,11 +140,12 @@ write triggered by reading.
 """
 
 FREE_SPACE_FLOOR = 1024 * 1024 * 1024
-"""Free bytes on the data directory's filesystem below which /export warns.
+"""The MINIMUM free space /export warns below, not the whole test.
 
-One GiB is several times the largest thing this app writes in one go (a full
-backup set: the database plus a tar of the instance files), so the warning
-arrives while there is still room to take one.
+One GiB is comfortable headroom for a small instance, but the database and the
+instance files grow without a bound and a backup stages a copy of both beside
+them — so the real threshold is measured (see `services/storage.py`), and this
+is the floor it can never fall under.
 """
 
 

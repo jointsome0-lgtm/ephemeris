@@ -189,6 +189,28 @@ def free_space() -> int | None:
         return None
 
 
+def _space_a_backup_needs(db_bytes: int, backup: dict | None) -> int:
+    """Roughly what `scripts/backup_db.py` would have to fit on this volume.
+
+    A fixed floor cannot answer this. The ledger and the instance files grow
+    without a bound, and the backup stages a full copy of both *beside* them —
+    so a 3 GB database on a volume with 2 GB free is a backup that cannot
+    succeed, while a floor of 1 GB says nothing is wrong. The measured database
+    is the honest lower bound and it is already in hand.
+
+    The instance archive is estimated from the last set that was written, which
+    is the only measurement of it this module can make without walking the data
+    directory on every page render. When there is no previous set, the floor
+    stands in for it — the same number that has to cover a first backup anyway.
+    """
+    instance_bytes = 0
+    if backup is not None:
+        # The manifest's total minus the database it names: whatever else that
+        # set carried, at the size it carried it.
+        instance_bytes = max(backup["bytes"] - db_bytes, 0)
+    return max(limits.FREE_SPACE_FLOOR, db_bytes + instance_bytes)
+
+
 def status(conn: sqlite3.Connection) -> dict:
     """Everything the /export status panel shows, already formatted.
 
@@ -220,10 +242,11 @@ def status(conn: sqlite3.Connection) -> dict:
                 f"The newest backup set is {age_days} days old "
                 f"(over {limits.BACKUP_STALE_DAYS}). Run scripts/backup_db.py."
             )
-    if free_bytes is not None and free_bytes < limits.FREE_SPACE_FLOOR:
+    needed = _space_a_backup_needs(db_bytes, backup)
+    if free_bytes is not None and free_bytes < needed:
         warnings.append(
             f"Only {export.human_size(free_bytes)} free on the data volume — "
-            "below the 1 GB a backup set needs room for."
+            f"a backup set needs about {export.human_size(needed)}."
         )
 
     return {

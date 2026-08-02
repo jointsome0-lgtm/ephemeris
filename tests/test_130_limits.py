@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
+import time
 from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -628,6 +630,20 @@ def exports_dir(tmp_path, monkeypatch):
     return target
 
 
+def _age(directory, seconds: int = 3600) -> None:
+    """Back-date every export in `directory` so retention stops sparing it.
+
+    Retention leaves anything written in the last `limits.EXPORT_GRACE` seconds
+    alone, because a file that new may still be streaming to a browser. Exports
+    made in a test loop are all "just written", so the loop has to say out loud
+    that time passed between them — which is what happens in life, where the
+    button is pressed by a person.
+    """
+    past = time.time() - seconds
+    for path in directory.glob("events-*.jsonl"):
+        os.utime(path, (past, past))
+
+
 def test_retention_keeps_only_the_newest_thirty(client, exports_dir, monkeypatch):
     """Thirty-five exports in, thirty out — and the thirty that survive are the
     newest, not an arbitrary thirty."""
@@ -636,6 +652,7 @@ def test_retention_keeps_only_the_newest_thirty(client, exports_dir, monkeypatch
         for n in range(35):
             monkeypatch.setattr(export, "now_stamp", lambda n=n: f"2033-01-01-{n:06d}")
             export.export_events(conn)
+            _age(exports_dir)   # the next press is not in the same second
     finally:
         conn.close()
 
@@ -673,6 +690,7 @@ def test_a_clock_that_steps_backwards_does_not_delete_the_new_export(
     """
     for n in range(limits.EXPORT_KEEP):
         (exports_dir / f"events-2037-05-05-{n:06d}.jsonl").write_text("{}\n")
+    _age(exports_dir)
 
     conn = _conn()
     try:
@@ -695,6 +713,7 @@ def test_an_export_in_progress_is_neither_counted_nor_deleted(client, exports_di
     staged.write_text("half an export")
     for n in range(limits.EXPORT_KEEP + 2):
         (exports_dir / f"events-2035-03-03-{n:06d}.jsonl").write_text("{}\n")
+    _age(exports_dir)
 
     removed = export.prune_exports()
 
@@ -708,6 +727,7 @@ def test_retention_survives_a_file_it_cannot_remove(client, exports_dir, monkeyp
     are on disk and named, and the caller is owed the path."""
     for n in range(limits.EXPORT_KEEP + 2):
         (exports_dir / f"events-2036-04-04-{n:06d}.jsonl").write_text("{}\n")
+    _age(exports_dir)
 
     def refuse(self, *a, **kw):
         raise PermissionError("read-only medium")
@@ -924,6 +944,36 @@ def test_a_naive_timestamp_does_not_break_the_comparison(client, backups_dir):
     assert found["name"] == "activity-2039-01-01-020000.manifest.json"
 
 
+def test_retention_spares_an_export_another_request_is_still_streaming(
+        client, exports_dir, monkeypatch):
+    """`keep` protects one path. A second, overlapping export is a path this
+    call was never told about.
+
+    Two exports inside a backward clock step: each request protects its own
+    file, and each other's file sorts near the bottom. The one that prunes
+    second would unlink the first one's export while its response is still
+    reading it. Recency covers both without either request knowing the other
+    exists.
+    """
+    for n in range(limits.EXPORT_KEEP):
+        (exports_dir / f"events-2041-08-08-{n:06d}.jsonl").write_text("{}\n")
+    _age(exports_dir)
+
+    conn = _conn()
+    try:
+        # Request one: written under a rolled-back clock, still streaming.
+        monkeypatch.setattr(export, "now_stamp", lambda: "2041-08-07-235958")
+        first, _ = export.export_events(conn)
+        # Request two, a moment later, also behind the retained set.
+        monkeypatch.setattr(export, "now_stamp", lambda: "2041-08-07-235959")
+        second, _ = export.export_events(conn)
+    finally:
+        conn.close()
+
+    assert first.exists(), "the first request's download was deleted under it"
+    assert second.exists()
+
+
 def test_an_export_pruned_mid_render_does_not_sink_the_page(client, exports_dir,
                                                             monkeypatch):
     """Retention deletes now, so a GET listing the directory can race a POST
@@ -1007,6 +1057,44 @@ def test_low_free_space_is_warned_about(client, backups_dir, monkeypatch):
     finally:
         conn.close()
     assert any("free on the data volume" in w for w in state["warnings"])
+
+
+def test_the_space_a_backup_needs_grows_with_the_database(client, backups_dir,
+                                                          monkeypatch):
+    """A fixed floor cannot answer "will the next backup fit?".
+
+    The ledger and the instance files have no bound, and a backup stages a copy
+    of both on the same volume. Three gigabytes of database with two free is a
+    backup that cannot finish, while a 1 GB floor reports all clear — the one
+    reading that matters, wrong in the reassuring direction.
+    """
+    three_gb = 3 * 1024 ** 3
+    monkeypatch.setattr(storage, "_database_bytes", lambda: three_gb)
+    monkeypatch.setattr(storage, "free_space", lambda: 2 * 1024 ** 3)
+    _write_manifest(backups_dir, date.fromisoformat(today_str()))
+
+    conn = _conn()
+    try:
+        state = storage.status(conn)
+    finally:
+        conn.close()
+    assert any("free on the data volume" in w for w in state["warnings"])
+
+    # And the floor still applies to a small instance, where the measured need
+    # is a rounding error next to the room a backup should have.
+    assert storage._space_a_backup_needs(1024, None) == limits.FREE_SPACE_FLOOR
+    assert storage._space_a_backup_needs(three_gb, None) == three_gb
+
+
+def test_a_previous_set_estimates_the_instance_archive(client, backups_dir):
+    """The archive beside the database is measured from the last set written —
+    the only figure available without walking the data directory on a GET."""
+    _write_manifest(backups_dir, date.fromisoformat(today_str()),
+                    db_bytes=1000, files_bytes=2000)
+    backup = storage.newest_backup()
+    # The set's total minus today's database is what else it carried.
+    assert storage._space_a_backup_needs(backup["bytes"], backup) == (
+        max(limits.FREE_SPACE_FLOOR, backup["bytes"]))
 
 
 def test_the_panel_writes_nothing(client, backups_dir, exports_dir):

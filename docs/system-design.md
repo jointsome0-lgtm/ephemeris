@@ -1239,17 +1239,26 @@ safe only because of the contract above: the stream is append-only, so the
 newest export contains everything its predecessors did. Full backup sets in
 `data/backups/` are a different mechanism with a different rule — the operator's
 `scripts/backup_db.py --keep N` — because a backup set is a point in time the
-current database cannot reproduce. Do not merge the two. One wrinkle worth
-keeping: the export just written is protected by identity, not by its name, so
-a wall clock that steps backwards (DST, an NTP correction) cannot stamp a fresh
-export behind the retained set and have retention delete it before the download
-starts.
+current database cannot reproduce. Do not merge the two.
+
+`limits.EXPORT_KEEP` is a floor rather than an exact count, on purpose. An
+export is streamed to the browser by a response that outlives the call which
+wrote it, so retention never removes a file touched within
+`limits.EXPORT_GRACE` seconds — that covers the export in hand *and* one
+written by an overlapping request, with no shared state between them. It also
+makes a backward clock step (DST, an NTP correction) harmless: a fresh export
+stamped behind the retained set is protected by when it was written, not by how
+its name sorts. A burst can leave the directory a few files over the count for
+a minute; the next export outside that window clears them.
 
 `GET /export` also renders a read-only storage panel (issue #23): database
 size, event count, the newest backup set's date and size, the export count and
 their total size, and free disk space. It warns when there is no backup set,
 when the newest one is older than `limits.BACKUP_STALE_DAYS`, or when free
-space is under `limits.FREE_SPACE_FLOOR`. It reads only — a GET in this app is
+space is under what the next backup set would need — the measured database plus
+the instance archive of the last set, never less than
+`limits.FREE_SPACE_FLOOR`, because a fixed number cannot describe an unbounded
+ledger. It reads only — a GET in this app is
 side-effect-free by contract (sec20 / `app/security.py`), so it never writes a
 backup or prunes anything.
 
