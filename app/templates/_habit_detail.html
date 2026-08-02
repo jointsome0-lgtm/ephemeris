@@ -41,8 +41,13 @@
   {% else %}
 
   {# binary today check-in — full page only; in the pane the list row's ring is the
-     check-in affordance (matches TickTick, whose pane has no check-in button) #}
-  {% if not pane %}
+     check-in affordance (matches TickTick, whose pane has no check-in button).
+     A habit that has not started yet offers no button: this page is reachable
+     from the command palette, which indexes every active habit, and the write
+     contract would reject the check-in anyway (#18). #}
+  {% if not pane and not_started %}
+  <p class="dp-pending">Starts {{ item.start_date }} — no check-ins before then.</p>
+  {% elif not pane %}
   <form method="post" action="/checkins" data-native style="margin-bottom:16px">
     <input type="hidden" name="date" value="{{ today }}">
     <input type="hidden" name="routine_item_id" value="{{ item.id }}">

@@ -48,6 +48,23 @@ def _check(item_id: int, date: str, status: str = "full_done") -> None:
         conn.close()
 
 
+def _backdated_check(item_id: int, date: str, status: str = "full_done") -> None:
+    """A row from before the habit's start — only reachable by moving the start
+    date forward after the fact, so it goes in under the write contract."""
+    from app.db import get_conn
+
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO checkins (date, routine_item_id, status, note, "
+                "created_at, updated_at) VALUES (?,?,?,NULL,'x','x')",
+                (date, item_id, status),
+            )
+    finally:
+        conn.close()
+
+
 def _listed_on(date: str) -> set[int]:
     """The ids today_view answers with for `date`."""
     from app.db import get_conn
@@ -118,6 +135,76 @@ def test_the_habit_tab_and_the_day_view_share_the_bound(client):
     before = (today - timedelta(days=2)).isoformat()
     assert "Start Bound Yesterday" not in c.get(f"/history?date={before}").text, (
         "but not on the day view for the day before it started"
+    )
+
+
+# --- the write bound -------------------------------------------------------
+
+
+def test_a_checkin_before_the_start_is_rejected(client):
+    """The detail page is palette-reachable, so the contract has to hold too."""
+    from app.db import get_conn, today_str
+    from app.services import checkins
+
+    today = _date.fromisoformat(today_str())
+    start = (today + timedelta(days=5)).isoformat()
+    item_id = _mk_habit("Start Bound Not Yet", start)
+
+    conn = get_conn()
+    try:
+        try:
+            checkins.upsert_checkin(
+                conn, today.isoformat(), item_id, status="full_done"
+            )
+        except checkins.CheckinError as exc:
+            assert start in str(exc), f"the refusal names the start date -- {exc}"
+        else:
+            raise AssertionError("a check-in before the start date was accepted")
+
+        # ...and on the start day it goes through
+        checkins.upsert_checkin(conn, start, item_id, status="full_done")
+        assert checkins.get_checkin(conn, start, item_id) is not None, (
+            "the start day itself accepts a check-in"
+        )
+    finally:
+        conn.close()
+
+
+def test_a_backdated_checkin_can_still_be_cleared(client):
+    """Moving a start date forward must not strand rows behind it."""
+    from app.db import get_conn
+    from app.services import checkins
+
+    item_id = _mk_habit("Start Bound Strand", "2026-05-20")
+    _backdated_check(item_id, "2026-05-04")
+
+    conn = get_conn()
+    try:
+        assert checkins.clear_checkin(conn, "2026-05-04", item_id), (
+            "a pre-start row is still removable"
+        )
+        assert checkins.get_checkin(conn, "2026-05-04", item_id) is None, "it is gone"
+    finally:
+        conn.close()
+
+
+def test_the_detail_page_offers_no_checkin_before_the_start(client):
+    from app.db import today_str
+
+    today = _date.fromisoformat(today_str())
+    start = (today + timedelta(days=5)).isoformat()
+    item_id = _mk_habit("Start Bound Detail", start)
+
+    page = client.get(f"/habit/{item_id}").text
+    assert "Check in for today" not in page, (
+        "no dead-end check-in button before the habit starts"
+    )
+    assert f"Starts {start}" in page, "the page says when it starts instead"
+
+    # a started habit still has its button
+    started_id = _mk_habit("Start Bound Detail Started", today.isoformat())
+    assert "Check in for today" in client.get(f"/habit/{started_id}").text, (
+        "a started habit keeps the check-in button"
     )
 
 
@@ -229,7 +316,7 @@ def test_pre_start_checkins_stay_visible_in_the_detail_heatmap(client):
     from app.services import stats
 
     item_id = _mk_habit("Start Bound Backdated", "2026-05-20")
-    _check(item_id, "2026-05-04")
+    _backdated_check(item_id, "2026-05-04")
 
     conn = get_conn()
     try:

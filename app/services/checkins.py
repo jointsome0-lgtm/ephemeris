@@ -57,11 +57,25 @@ def seed_if_empty(conn: sqlite3.Connection) -> int:
 
 def _require_item(conn: sqlite3.Connection, item_id: int) -> sqlite3.Row:
     item = conn.execute(
-        "SELECT id, title FROM routine_items WHERE id = ?", (item_id,)
+        "SELECT id, title, start_date FROM routine_items WHERE id = ?", (item_id,)
     ).fetchone()
     if item is None:
         raise CheckinError(f"unknown routine_item_id: {item_id}")
     return item
+
+
+def _require_started(item: sqlite3.Row, date: str) -> None:
+    """Reject a check-in on a day before the habit's start_date (#18).
+
+    `today_view` already hides an unstarted habit from every list, but the
+    per-item detail page is reachable from the command palette and offers a
+    "check in for today" button. Without this the write contract would accept a
+    day the read rule says the habit does not exist on. Clearing is deliberately
+    NOT guarded: a row that predates a start date moved forward stays removable.
+    """
+    start = item["start_date"]
+    if start and date < start:
+        raise CheckinError(f"{item['title']} doesn’t start until {start}")
 
 
 def get_checkin(conn: sqlite3.Connection, date: str, item_id: int) -> sqlite3.Row | None:
@@ -138,6 +152,7 @@ def upsert_checkin(
     - `note` only changes if provided (an absent field leaves the column alone).
     - A note save with no existing row is rejected: the flow is status-first, so
       there are no note-only rows (status stays NOT NULL).
+    - A date before the item's `start_date` is rejected (#18).
 
     Returns the resulting status.
     """
@@ -146,6 +161,7 @@ def upsert_checkin(
     if status is not None and status not in STATUSES:
         raise CheckinError(f"invalid status: {status!r}")
     item = _require_item(conn, item_id)
+    _require_started(item, date)
     existing = get_checkin(conn, date, item_id)
     ts = now_iso()
     with conn:  # row + event in ONE transaction; rollback both on failure

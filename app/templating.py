@@ -167,6 +167,8 @@ def _habit_detail_ctx(conn, item_id: int, month: str | None, base: str) -> dict 
         "month_next_url": f"{base}{sep}month={next_first.strftime('%Y-%m')}",
         "can_next": (year, mon) < (today_d.year, today_d.month),
         "today": today_str(),
+        # a habit whose start_date is still ahead cannot be checked in (#18)
+        "not_started": bool(item["start_date"] and today_str() < item["start_date"]),
         # Today check-in control in the pane (sec31)
         "today_status": today_row["status"] if today_row else None,
         "today_note": (today_row["note"] if today_row else "") or "",

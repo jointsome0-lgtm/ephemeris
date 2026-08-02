@@ -919,6 +919,10 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
 .dp-pill:hover { background: var(--hover); }
 .dp-spacer { flex: 1 1 auto; }
 .dp-flag { color: var(--faint); font-size: 16px; }
+/* a habit whose start_date is still ahead: says so where the button would be */
+.dp-pending { margin-bottom: 16px; padding: 0 12px; height: 40px; display: flex; align-items: center;
+  justify-content: center; font-size: 14px; color: var(--muted); background: var(--bg);
+  border: 1px dashed var(--border-2); border-radius: 8px; }
 .dp-close { color: var(--muted); font-size: 20px; line-height: 1; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 7px; }
 .dp-close:hover { background: var(--hover); color: var(--text); }
 
