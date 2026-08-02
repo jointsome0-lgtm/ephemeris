@@ -208,6 +208,43 @@ def test_the_detail_page_offers_no_checkin_before_the_start(client):
     )
 
 
+def test_a_future_start_habit_can_still_be_corrected(client):
+    """It is off every list, so the full page must carry Edit/Archive/Delete."""
+    from app.db import today_str
+
+    today = _date.fromisoformat(today_str())
+    mistyped = (today + timedelta(days=400)).isoformat()
+    item_id = _mk_habit("Start Bound Mistyped", mistyped)
+
+    page = client.get(f"/habit/{item_id}").text
+    assert f"/habits?sel=habit-{item_id}&edit=1" in page, (
+        "the full page links to the edit form"
+    )
+    assert f"/habits/{item_id}/delete" in page, "and offers delete"
+
+    # the edit pane renders for a habit that is on no list...
+    form = client.get(f"/habits?sel=habit-{item_id}&edit=1").text
+    assert f'action="/habits/{item_id}/edit"' in form, (
+        "the edit pane opens for an unlisted habit"
+    )
+
+    # ...and the date can be corrected back into range
+    r = client.post(
+        f"/habits/{item_id}/edit",
+        data={
+            "title": "Start Bound Mistyped",
+            "group_name": "Start Bound",
+            "emoji": "",
+            "start_date": today.isoformat(),
+            "return_to": "/habits",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303, f"edit 303 -- {r.status_code}"
+    assert item_row(item_id)["start_date"] == today.isoformat(), "date corrected"
+    assert item_id in _listed_on(today.isoformat()), "and the habit is back on today"
+
+
 # --- the statistics bound --------------------------------------------------
 
 
