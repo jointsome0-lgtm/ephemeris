@@ -177,7 +177,7 @@ def export_events(conn: sqlite3.Connection) -> tuple[Path, int]:
     # Both directory changes — the new name and the dropped temporary one — are
     # persisted before this call reports an export the caller can rely on.
     _fsync_dir(EXPORTS_DIR)
-    prune_exports()
+    prune_exports(keep=path)
     return path, count
 
 
@@ -198,7 +198,7 @@ def existing_exports() -> list[Path]:
                   key=lambda p: p.name, reverse=True)
 
 
-def prune_exports() -> list[Path]:
+def prune_exports(keep: Path | None = None) -> list[Path]:
     """Delete all but the `limits.EXPORT_KEEP` newest exports; return what went.
 
     Runs after every export, because that is the only moment the directory
@@ -208,12 +208,23 @@ def prune_exports() -> list[Path]:
     everything the ones behind it did. A backup set is not reproducible that
     way, which is why `scripts/backup_db.py` keeps its manual `--keep`.
 
+    `keep` is the export the caller is about to hand back, and it is treated as
+    the newest whatever its name says. Usually that is what the ordering
+    concludes anyway; it stops being true when the wall clock steps backwards —
+    a DST fallback, an NTP correction — and the fresh file is stamped an hour
+    behind thirty existing ones. Ordering alone would then delete the export
+    the route is about to stream, turning a clock adjustment into a failed
+    download. Being written is the stronger evidence of newness than a name.
+
     Best-effort by construction: a file that cannot be unlinked is left where
     it is rather than sinking an export that already succeeded. The next run
-    tries again, and the export the caller is about to be handed is by
-    definition the newest, so it is never a candidate.
+    tries again.
     """
-    doomed = existing_exports()[limits.EXPORT_KEEP:]
+    surviving = existing_exports()
+    if keep is not None and keep in surviving:
+        surviving.remove(keep)
+        surviving.insert(0, keep)
+    doomed = surviving[limits.EXPORT_KEEP:]
     if not doomed:
         return []
     removed = []

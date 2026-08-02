@@ -87,6 +87,13 @@ def _read_manifest(path: Path) -> dict | None:
     if created is None:
         return None
     files = manifest.get("files")
+    # Absent is fine — an older writer that named no members still dates the
+    # set. Present but not a mapping is not a manifest this module can read, and
+    # answering None sends the caller to the next-newest set, which is what the
+    # module contract promises. Anything else would be an AttributeError out of
+    # a page render.
+    if files is not None and not isinstance(files, dict):
+        return None
     total = _size_of(path)
     for entry in (files or {}).values():
         if not isinstance(entry, dict):

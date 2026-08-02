@@ -295,6 +295,9 @@ def test_the_ceiling_clears_every_per_route_cap():
     assert security.MAX_BODY_BYTES == limits.MAX_BODY_BYTES, (
         "the suite must run at the default ceiling; EPHEMERIS_MAX_BODY_BYTES is set"
     )
+    # The floor under any override is the same number, spelled once in limits
+    # because the perimeter must not import a router to learn it.
+    assert limits.LARGEST_ROUTE_CAP == max(route_caps.values()), route_caps
 
 
 def test_an_oversized_form_post_is_refused(client):
@@ -506,8 +509,25 @@ def test_a_bad_ceiling_setting_falls_back_to_the_constant(monkeypatch):
     for junk in ("", "nonsense", "0", "-5"):
         monkeypatch.setenv("EPHEMERIS_MAX_BODY_BYTES", junk)
         assert security._body_ceiling() == limits.MAX_BODY_BYTES, junk
-    monkeypatch.setenv("EPHEMERIS_MAX_BODY_BYTES", "4096")
-    assert security._body_ceiling() == 4096
+    monkeypatch.setenv("EPHEMERIS_MAX_BODY_BYTES", str(8 * 1024 * 1024))
+    assert security._body_ceiling() == 8 * 1024 * 1024
+
+
+def test_the_ceiling_cannot_be_set_below_the_largest_route_cap(monkeypatch):
+    """An override may raise the perimeter, never lower it past the route caps.
+
+    A ceiling under a Learn endpoint's own cap tightens nothing — that route
+    already bounds itself — but it does start answering perfectly valid saves
+    with this middleware's plain-text 413 instead of the typed JSON the lesson
+    agent parses. So the setting is declined and the default stands.
+    """
+    for too_small in (1024, limits.LARGEST_ROUTE_CAP - 1):
+        monkeypatch.setenv("EPHEMERIS_MAX_BODY_BYTES", str(too_small))
+        assert security._body_ceiling() == limits.MAX_BODY_BYTES, too_small
+    # Exactly at the largest cap is allowed: the route's own counter trips
+    # first at that size, so nothing it accepts is refused out here.
+    monkeypatch.setenv("EPHEMERIS_MAX_BODY_BYTES", str(limits.LARGEST_ROUTE_CAP))
+    assert security._body_ceiling() == limits.LARGEST_ROUTE_CAP
 
 
 # --- 3. export retention ---------------------------------------------------
@@ -541,9 +561,9 @@ def test_retention_keeps_only_the_newest_thirty(client, exports_dir, monkeypatch
 
 def test_retention_never_removes_the_export_it_just_wrote(client, exports_dir,
                                                           monkeypatch):
-    """The file the route is about to hand to the browser is the newest one, so
-    it can never be a retention candidate — asserted rather than assumed,
-    because a FileResponse over a deleted path is a 500 at download time."""
+    """The file the route is about to hand to the browser survives retention —
+    asserted rather than assumed, because a FileResponse over a deleted path is
+    a 500 at download time."""
     conn = _conn()
     try:
         for n in range(limits.EXPORT_KEEP + 3):
@@ -552,6 +572,34 @@ def test_retention_never_removes_the_export_it_just_wrote(client, exports_dir,
             assert path.exists(), path.name
     finally:
         conn.close()
+
+
+def test_a_clock_that_steps_backwards_does_not_delete_the_new_export(
+        client, exports_dir, monkeypatch):
+    """Being written beats being named: the export just produced is the newest
+    one however its stamp sorts.
+
+    The wall clock is not monotonic — a DST fallback or an NTP correction can
+    stamp a fresh export an hour behind thirty existing ones. Ordering by name
+    alone would then put it in the doomed slice and unlink it between the write
+    and the FileResponse, so pressing Export would fail exactly when the clock
+    happened to move.
+    """
+    for n in range(limits.EXPORT_KEEP):
+        (exports_dir / f"events-2037-05-05-{n:06d}.jsonl").write_text("{}\n")
+
+    conn = _conn()
+    try:
+        # An hour earlier than every file already there.
+        monkeypatch.setattr(export, "now_stamp", lambda: "2037-05-04-235959")
+        path, _count = export.export_events(conn)
+    finally:
+        conn.close()
+
+    assert path.exists(), "the export the caller was handed was pruned"
+    assert len(export.existing_exports()) == limits.EXPORT_KEEP
+    # It stayed by displacing the oldest of the thirty, not by growing the set.
+    assert not (exports_dir / "events-2037-05-05-000000.jsonl").exists()
 
 
 def test_an_export_in_progress_is_neither_counted_nor_deleted(client, exports_dir):
@@ -682,6 +730,42 @@ def test_the_newest_readable_manifest_wins_over_a_corrupt_newer_one(client,
     found = storage.newest_backup()
     assert found is not None
     assert found["name"] == "activity-2000-01-01-000001.manifest.json"
+
+
+@pytest.mark.parametrize("files", [["a", "b"], "activity.sqlite", 7, True])
+def test_a_manifest_whose_files_field_is_not_a_mapping_is_skipped(
+        client, backups_dir, files):
+    """Valid JSON, readable date, nonsense members — still not a backup set.
+
+    A manifest hand-edited, half-written, or produced by a future writer can
+    put anything under `files`. Iterating it as a mapping would raise out of a
+    page render and turn every GET /export into a 500 — while a perfectly good
+    older set sat behind it, which is the case the fallback exists for.
+    """
+    good = date.fromisoformat(today_str()) - timedelta(days=1)
+    _write_manifest(backups_dir, good, stamp="2000-01-01-000001")
+    (backups_dir / "activity-2999-01-01-000002.manifest.json").write_text(
+        json.dumps({"manifest_version": 1,
+                    "created_at": "2999-01-01T00:00:02+03:00",
+                    "files": files}), encoding="utf-8")
+
+    found = storage.newest_backup()
+    assert found is not None
+    assert found["name"] == "activity-2000-01-01-000001.manifest.json"
+
+    page = client.get("/export")
+    assert page.status_code == 200
+
+
+def test_a_manifest_that_names_no_files_still_dates_the_set(client, backups_dir):
+    """Absent `files` is not malformed — an older writer that listed no members
+    still answers "when was the last backup?", which is the panel's question."""
+    (backups_dir / "activity-2001-02-03-040506.manifest.json").write_text(
+        json.dumps({"created_at": "2001-02-03T04:05:06+03:00"}), encoding="utf-8")
+
+    found = storage.newest_backup()
+    assert found is not None
+    assert found["bytes"] > 0   # the manifest's own size, nothing claimed
 
 
 def test_low_free_space_is_warned_about(client, backups_dir, monkeypatch):

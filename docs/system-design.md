@@ -1239,7 +1239,11 @@ safe only because of the contract above: the stream is append-only, so the
 newest export contains everything its predecessors did. Full backup sets in
 `data/backups/` are a different mechanism with a different rule — the operator's
 `scripts/backup_db.py --keep N` — because a backup set is a point in time the
-current database cannot reproduce. Do not merge the two.
+current database cannot reproduce. Do not merge the two. One wrinkle worth
+keeping: the export just written is protected by identity, not by its name, so
+a wall clock that steps backwards (DST, an NTP correction) cannot stamp a fresh
+export behind the retained set and have retention delete it before the download
+starts.
 
 `GET /export` also renders a read-only storage panel (issue #23): database
 size, event count, the newest backup set's date and size, the export count and
