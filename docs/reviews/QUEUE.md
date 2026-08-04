@@ -64,7 +64,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `scripts/backup_db.py::_load_live_paths` instead of recomputing the path. At
   merge: `uv run pytest` 175 passed, `verify_restore.py` 34 passed 0 failed,
   public hygiene clean. Codex PR review approved at exact HEAD `113b1dd`. No
-  service action was performed.
+  service action was performed. Diagnosis-only drain 2026-08-04 →
+  `docs/reviews/2026-08-04-limits-retention-review.md`: 2 Low findings remain
+  open; the entry stays Pending for a separate reviewed repair PR.
 
 ## Done
 
