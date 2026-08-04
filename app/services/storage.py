@@ -58,6 +58,21 @@ Same tripwire as the version above: a role added there and not here would be a
 panel that reports sets the tooling cannot use.
 """
 
+_MAX_CLAIMED_BYTES = 2**63 - 1
+"""The largest size a manifest entry may claim before it stops being a size.
+
+A manifest's `bytes` field is a copy of what `stat()` reported for that member
+when the set was written — `scripts/backup_db.py::verify` compares the two
+directly — so the range a file size can take IS the range this field can take.
+That makes the bound the type's rather than a taste judgement: no `st_size`
+is negative, and none exceeds a signed 64-bit offset.
+
+The line has to be drawn somewhere below "any integer JSON can spell", because
+the panel formats this number and `export.human_size` starts with `float(n)`,
+which raises `OverflowError` past roughly 1e308. Drawing it here rather than in
+the formatter keeps the check where the value stops being trusted input.
+"""
+
 
 def _size_of(path: Path) -> int:
     """`path`'s size in bytes, or 0 if it is not there to be measured."""
@@ -87,7 +102,17 @@ def _parse_moment(value: object) -> datetime | None:
     dates in different calendars whenever the app is configured for a zone the
     machine is not in, and the stale warning would arrive a day early or late
     around midnight. It is also the only way candidates from different writers
-    can be compared at all. Normalizing here rather than at the comparison is what
+    can be compared at all.
+
+    A value carrying no offset is READ AS the ledger's zone, not converted into
+    it from the host's. `astimezone()` on a naive datetime silently supplies the
+    machine's zone first, which is the same day-early/day-late error one layer
+    down: `2040-01-01T00:30:00` in a `America/New_York` ledger on a Moscow host
+    would be dated 2039-12-31. The writer stamps an offset
+    (`scripts/backup_db.py::now_iso`), so this governs hand-written and foreign
+    manifests — which is precisely the input nothing else has vouched for.
+
+    Normalizing here rather than at the comparison is what
     makes "unusable timestamp" one answer instead of two: a value near the
     datetime boundary parses cleanly and then raises on conversion, and that
     must be a skipped manifest, not a 500 on a page whose whole promise is to
@@ -95,10 +120,15 @@ def _parse_moment(value: object) -> datetime | None:
     """
     if not isinstance(value, str):
         return None
+    tz = app_tz()
     try:
+        moment = datetime.fromisoformat(value)
+        if moment.tzinfo is None and tz is not None:
+            moment = moment.replace(tzinfo=tz)
         # astimezone(None) is the host zone, which is what app_tz() means by
-        # "unset" — so this is one expression for both configurations.
-        return datetime.fromisoformat(value).astimezone(app_tz())
+        # "unset" — so this is one expression for both configurations, and the
+        # branch above is a no-op in the one where they are the same zone.
+        return moment.astimezone(tz)
     except (ValueError, OverflowError, OSError):
         return None
 
@@ -118,6 +148,12 @@ def _read_manifest(path: Path) -> dict | None:
     The sizes come from the manifest's own `files` entries — what the set
     claimed to be when it was written — falling back to the bytes on disk for
     an entry that does not carry a number.
+
+    An entry that carries a number no file could ever have (see
+    `_MAX_CLAIMED_BYTES`) is damage rather than a measurement, and it makes the
+    whole manifest unreadable — the same answer as a truncated one. Formatting
+    it instead is how a single hand-edited digit turns every `GET /export` into
+    a 500, warnings and older sets and all.
     """
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -147,7 +183,9 @@ def _read_manifest(path: Path) -> dict | None:
             continue
         claimed = entry.get("bytes")
         name = entry.get("name")
-        if isinstance(claimed, int) and claimed >= 0:
+        if isinstance(claimed, int):
+            if not 0 <= claimed <= _MAX_CLAIMED_BYTES:
+                return None
             sizes[role] = claimed
         elif isinstance(name, str):
             sizes[role] = _size_of(path.parent / name)
@@ -176,9 +214,9 @@ def newest_backup() -> dict | None:
     which is what `--keep` keeps small; stopping at the first name would answer
     the panel's one question wrongly twice a year.
 
-    Timestamps arrive aware and local from `_parse_moment`, which reads a naive
-    one as local time — the zone the backup was taken in, on the machine it was
-    taken on — so every candidate is comparable and none of them can raise here.
+    Timestamps arrive aware and in the ledger's zone from `_parse_moment`,
+    which reads an offset-less one as that same zone rather than the host's, so
+    every candidate is comparable and none of them can raise here.
     """
     if not BACKUPS_DIR.is_dir():
         return None

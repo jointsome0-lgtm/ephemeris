@@ -753,6 +753,31 @@ def backups_dir(tmp_path, monkeypatch):
     return target
 
 
+@pytest.fixture
+def host_zone():
+    """Move the HOST's local zone for one test, and put it back afterwards.
+
+    Not the same knob as `app_tz`, and that is the point: everything the panel
+    dates is supposed to come out in the LEDGER's zone no matter what the
+    machine's is, so proving it takes a machine that disagrees. `TZ` plus
+    `time.tzset()` is what `datetime.astimezone()` reads for a naive value.
+    """
+    previous = os.environ.get("TZ")
+
+    def move(name: str) -> None:
+        os.environ["TZ"] = name
+        time.tzset()
+
+    try:
+        yield move
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+
 def _at(day: date, hour: int) -> str:
     """`day` at `hour` o'clock, written the way the backup script writes it.
 
@@ -907,6 +932,53 @@ def test_a_manifest_that_names_no_restorable_set_is_skipped(client, backups_dir,
     assert found["name"] == "activity-2000-01-01-000001.manifest.json"
 
 
+@pytest.mark.parametrize("claimed", [10**400, -1])
+def test_a_manifest_claiming_an_impossible_size_is_skipped(client, backups_dir,
+                                                           claimed):
+    """`bytes` mirrors a `stat()`, so a number no `stat()` can return is damage.
+
+    Reporting it is not the mild half of the failure. `export.human_size` starts
+    with `float(n)`, which raises `OverflowError` past roughly 1e308, and every
+    candidate is read on every render — so one hand-edited digit takes down the
+    whole `GET /export`, warnings included, while a good older set sits behind
+    it. A negative claim is quieter and just as wrong: believed, it makes the
+    damaged set look smaller than the one it hides.
+    """
+    good = date.fromisoformat(today_str()) - timedelta(days=1)
+    _write_manifest(backups_dir, good, stamp="2000-01-01-000001")
+    _write_manifest(backups_dir, date.fromisoformat(today_str()),
+                    stamp="2999-01-01-000006", db_bytes=claimed)
+
+    found = storage.newest_backup()
+    assert found is not None
+    assert found["name"] == "activity-2000-01-01-000001.manifest.json"
+    assert client.get("/export").status_code == 200
+
+
+def test_an_impossible_size_leaves_the_no_backup_warning_standing(client,
+                                                                  backups_dir):
+    """With nothing behind it, a skipped set has to read as no backup at all.
+
+    The fallback in the test above could be satisfied by a page that renders
+    the older set and swallows everything else; this is the case where there is
+    no older set, and the panel's whole job is to say so out loud.
+    """
+    _write_manifest(backups_dir, date.fromisoformat(today_str()),
+                    stamp="2999-01-01-000007", files_bytes=10**400)
+
+    conn = _conn()
+    try:
+        state = storage.status(conn)
+    finally:
+        conn.close()
+    assert state["backup"] is None
+    assert any("No backup set" in w for w in state["warnings"])
+
+    page = client.get("/export")
+    assert page.status_code == 200
+    assert "No backup set has been written yet" in page.text
+
+
 def test_the_newest_backup_is_the_one_that_says_it_is_newest(client, backups_dir):
     """The timestamp inside the manifest decides, not the stamp in the name.
 
@@ -1018,6 +1090,32 @@ def test_a_naive_timestamp_does_not_break_the_comparison(client, backups_dir):
     found = storage.newest_backup()
     assert found is not None
     assert found["name"] == "activity-2039-01-01-020000.manifest.json"
+
+
+def test_an_offset_less_timestamp_is_read_in_the_ledgers_zone(client, backups_dir,
+                                                              monkeypatch,
+                                                              host_zone):
+    """A `created_at` with no offset is a wall clock, and the panel must read it
+    in the calendar it dates everything else in.
+
+    `astimezone()` on a naive datetime supplies the HOST's zone before
+    converting, so 00:30 under an America/New_York ledger taken on a Moscow
+    machine would be dated the previous day — the age off by one, the stale
+    warning early or late, on exactly the input the writer's own offset does not
+    cover. Asserted against two different host zones, because a rule that only
+    holds on this machine is the bug it replaced.
+    """
+    from zoneinfo import ZoneInfo
+
+    ledger = ZoneInfo("America/New_York")
+    monkeypatch.setattr(storage, "app_tz", lambda: ledger)
+    _write_boundary_manifest(backups_dir, "2040-01-01T00:30:00")
+
+    for host in ("Europe/Moscow", "Pacific/Kiritimati"):
+        host_zone(host)
+        created = storage.newest_backup()["created"]
+        assert created.date() == date(2040, 1, 1)
+        assert created == datetime(2040, 1, 1, 0, 30, tzinfo=ledger)
 
 
 def test_a_same_second_collision_is_ordered_by_its_number(client, exports_dir):
