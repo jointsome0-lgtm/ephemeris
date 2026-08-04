@@ -67,6 +67,27 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   service action was performed. Diagnosis-only drain 2026-08-04 →
   `docs/reviews/2026-08-04-limits-retention-review.md`: 2 Low findings remain
   open; the entry stays Pending for a separate reviewed repair PR.
+  That repair is `fix/23-manifest-parse`, carried by PR #129 —
+  `app/services/storage.py`, `tests/test_130_limits.py`. `_read_manifest`
+  refuses the whole manifest when a `files.*.bytes` value is an integer outside
+  `0 .. 2**63 - 1` (new module constant `_MAX_CLAIMED_BYTES`), where it
+  previously accepted any non-negative integer and passed the total to
+  `export.human_size`, whose `float(n)` raises `OverflowError` past roughly
+  1e308, and read a negative one as the size on disk. An entry carrying no
+  integer still falls back to the size on disk. `_parse_moment` attaches
+  `app_tz()` to an offset-less `created_at` before converting, instead of
+  calling `astimezone()` on the naive value and taking the host zone first;
+  aware values, the boundary-normalization skip and the instant-based ordering
+  in `newest_backup` are unchanged, as are the module's other functions. Four
+  regressions: an impossible claimed size (`10**400` and `-1`) skipped in
+  favour of an older valid set with `GET /export` at 200, the same manifest
+  with nothing behind it leaving the no-backup warning standing, and a naive
+  timestamp read in the configured ledger zone under two host zones moved
+  through `TZ` plus `time.tzset()` (new `host_zone` fixture). All four fail on
+  `main`. No route, schema, write path, template, perimeter or service-layer
+  change. Host verification at the branch state: `uv run pytest` 179 passed,
+  `verify_restore.py` 34 passed 0 failed, public hygiene clean. The entry stays
+  Pending for the owner's re-drain; no merge or restart was performed.
 
 ## Done
 
