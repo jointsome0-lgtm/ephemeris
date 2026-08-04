@@ -86,8 +86,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   through `TZ` plus `time.tzset()` (new `host_zone` fixture). All four fail on
   `main`. No route, schema, write path, template, perimeter or service-layer
   change. Host verification at the branch state: `uv run pytest` 179 passed,
-  `verify_restore.py` 34 passed 0 failed, public hygiene clean. The entry stays
-  Pending for the owner's re-drain; no merge or restart was performed.
+  `verify_restore.py` 34 passed 0 failed, public hygiene clean. Codex PR review
+  approved at exact HEAD `c983b1d`; merged into `main` as `3d92e37` at branch
+  tip `c983b1d`, and the merged tree is byte-identical to that tip (both trees
+  `5684085`). Host verification on merged `main` at `3d92e37`: `uv run pytest`
+  179 passed, `verify_restore.py` 34 passed 0 failed, public hygiene clean. The
+  entry stays Pending for the owner's re-drain; no restart was performed.
 
 ## Done
 
