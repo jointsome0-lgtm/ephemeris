@@ -30,7 +30,7 @@ from ..request_body import PayloadTooLarge, read_capped
 from .. import runner as runner_core
 from ..security import browser_origin_rejection
 from ..services import (
-    artifacts, assessments, attempts, bundle_schema, focus, lessons, runs,
+    artifacts, assessments, attempts, bundle_schema, lessons, runs,
 )
 from ..templating import _safe_return, _with_flash, templates
 
@@ -296,32 +296,7 @@ def _record_entry(state: dict, attempt: dict | None, *, label: str,
     }
 
 
-def _record_panel_db_state(conn, lesson_id: int) -> tuple[dict, dict, dict]:
-    """Read every SQLite-backed panel input from one snapshot.
-
-    FastAPI can run a GET and an assessment POST concurrently even with one
-    worker. A deferred read transaction establishes its snapshot on the
-    attempt query, then keeps the assessment fold/hydration/counts and focus
-    total on that same committed version. Reuse a caller transaction when one
-    exists; otherwise roll back our read-only transaction on exit.
-    """
-    own_snapshot = not conn.in_transaction
-    if own_snapshot:
-        conn.execute("BEGIN")
-    try:
-        attempt_state = attempts.lesson_attempt_summary(conn, lesson_id)
-        review_attempt_ids = {
-            attempt["attempt_id"]
-            for attempt in attempt_state["latest_by_question"].values()
-        }
-        state = assessments.panel_state(
-            conn, lesson_id, review_attempt_ids=review_attempt_ids
-        )
-        focus_total = focus.lesson_total(conn, lesson_id)
-        return state, attempt_state, focus_total
-    finally:
-        if own_snapshot:
-            conn.rollback()
+_record_panel_db_state = lessons.record_panel_db_state
 
 
 def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> dict:

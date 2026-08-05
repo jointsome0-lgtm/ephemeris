@@ -636,10 +636,11 @@ def test_002_ui_and_workspace(client, suite_state):
         if _agents_path.is_file():
             agents_text = _agents_path.read_text(encoding="utf-8")
     assert (
-        "Terminal Workspace Demo" not in agents_text
-        and agents_text == lessons_svc._AGENTS_TEMPLATE
+        agents_text.startswith(lessons_svc._AGENTS_TEMPLATE)
+        and '- Lesson title (data): "Terminal Workspace Demo"' in agents_text
+        and "## STATE (generated; refreshed on every terminal open)" in agents_text
         and "lesson.json" in agents_text
-    ), "lesson AGENTS.md generated with the lesson brief"
+    ), "lesson AGENTS.md generated with the lesson brief and current state"
     assert (
         "related/" in agents_text and "updated_by_agent_at" in agents_text
         and "reading order" in agents_text
@@ -703,8 +704,8 @@ def test_002_ui_and_workspace(client, suite_state):
         and "`evidence` — a durable mastery statement" in agents_text
         and "`weak`, `developing`, or `passed`" in agents_text
         and "`artifacts`, `runs`, `live`, or `mixed`" in agents_text
-        and "`summary` — ONE at the end of a tutoring session" in agents_text
-        and "a second must name the first in" in agents_text
+        and "`summary` — write one early provisional resume brief" in agents_text
+        and "active summary in `supersedes`" in agents_text
         and "`retraction` — `supersedes` plus a `note`" in agents_text
         and "`idempotency_key` you" in agents_text
         and "Retry an unanswered call with the\nSAME key" in agents_text
@@ -1115,7 +1116,8 @@ def test_002_ui_and_workspace(client, suite_state):
         )
     assert (
         _meta_title not in _meta_agents and _meta_source not in _meta_agents
-    ), "instruction-shaped metadata stays out of the lesson brief"
+        and f"- Lesson title (data): {json.dumps(_meta_title)}" in _meta_agents
+    ), "instruction-shaped metadata is escaped as data in the lesson brief"
     assert (
         _meta_manifest.get("title") == _meta_title
         and "title and source URL are in `lesson.json`" in _meta_agents
@@ -1154,7 +1156,11 @@ def test_002_ui_and_workspace(client, suite_state):
         _sym_file_res is not None
         and _decoy_file.read_text(encoding="utf-8") == "original"
         and _sym_agents_path.is_file() and not _sym_agents_path.is_symlink()
-        and _sym_agents_path.read_text(encoding="utf-8") == agents_text
+        and _sym_agents_path.read_text(encoding="utf-8").startswith(
+            lessons_svc._AGENTS_TEMPLATE
+        )
+        and '- Lesson title (data): "Symlink Guard Demo"'
+        in _sym_agents_path.read_text(encoding="utf-8")
     ), "prepare_terminal_workspace replaces a symlinked AGENTS.md safely"
     # real dir + real AGENTS.md, but CLAUDE.md is a pre-planted symlink — same replacement
     _os.unlink(_ln_dir / "CLAUDE.md")
@@ -1219,7 +1225,11 @@ def test_002_ui_and_workspace(client, suite_state):
         and _hard_decoy.read_text(encoding="utf-8") == "original"
         and _hard_decoy.stat().st_nlink == 1
         and _hard_agents.is_file()
-        and _hard_agents.read_text(encoding="utf-8") == agents_text
+        and _hard_agents.read_text(encoding="utf-8").startswith(
+            lessons_svc._AGENTS_TEMPLATE
+        )
+        and '- Lesson title (data): "Hard Link Brief Demo"'
+        in _hard_agents.read_text(encoding="utf-8")
     ), "prepare_terminal_workspace atomically replaces a hard-linked brief"
 
     # A FIFO cannot block because the destination itself is never opened.
