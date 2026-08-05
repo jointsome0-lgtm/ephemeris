@@ -99,6 +99,63 @@ def test_finished_run_projects_one_well_formed_line(tmp_path):
     assert int((finished - started).total_seconds() * 1000) == 125
 
 
+def test_the_ledger_event_carries_no_output_body(tmp_path):
+    """The `lesson_run` event stays body-free (docs/lesson-artifacts-api.md):
+    only the bundle projection carries what the learner's code printed."""
+    bundle = tmp_path / "invented-body-free"
+    bundle.mkdir()
+    job = _job(bundle, "invented secret output\n")
+
+    assert runs._record_finish_sync(job) is True
+
+    payload = next(
+        item for item in _event_payloads() if item.get("run_id") == job.job_id
+    )
+    assert "output_tail" not in payload
+    assert "output_tail_truncated" not in payload
+    assert "invented secret output" not in json.dumps(payload)
+    assert payload["lesson_uid"] == job.request.lesson_uid
+    assert payload["exit_code"] == 2 and payload["cause"] == "exit"
+    projected = json.loads((bundle / runs.PROJECTION_NAME).read_text("utf-8"))
+    assert projected["output_tail"] == "invented secret output\n"
+
+
+def test_further_runs_append_to_an_existing_projection(tmp_path):
+    bundle = tmp_path / "invented-append"
+    bundle.mkdir()
+    jobs = [
+        _job(bundle, f"invented run {index}\n", exit_code=index)
+        for index in range(3)
+    ]
+
+    for job in jobs:
+        assert runs._record_finish_sync(job) is True
+
+    lines = (bundle / runs.PROJECTION_NAME).read_text(encoding="utf-8").splitlines()
+    records = [json.loads(line) for line in lines]
+    assert [record["run_id"] for record in records] == [job.job_id for job in jobs]
+    assert [record["output_tail"] for record in records] == [
+        "invented run 0\n", "invented run 1\n", "invented run 2\n",
+    ]
+    assert [record["exit_code"] for record in records] == [0, 1, 2]
+
+
+def test_a_projection_without_a_final_newline_is_refused_not_extended(tmp_path):
+    """The bundle is agent-writable; a half-written line is never adopted, and
+    refusing it must not cost the durable event."""
+    bundle = tmp_path / "invented-incomplete"
+    bundle.mkdir()
+    poisoned = '{"kind":"run","v":1}\n{"kind":"run"'
+    (bundle / runs.PROJECTION_NAME).write_text(poisoned, encoding="utf-8")
+    job = _job(bundle, "invented output after poisoning\n")
+
+    assert runs._record_finish_sync(job) is True
+
+    assert (bundle / runs.PROJECTION_NAME).read_text(encoding="utf-8") == poisoned
+    assert any(payload.get("run_id") == job.job_id for payload in _event_payloads())
+    assert not list(bundle.glob(".runs-*.tmp"))
+
+
 def test_output_tail_is_truncated_at_the_utf8_cap(tmp_path):
     bundle = tmp_path / "invented-large-output"
     bundle.mkdir()
@@ -111,6 +168,23 @@ def test_output_tail_is_truncated_at_the_utf8_cap(tmp_path):
     assert record["output_tail"] == output[-runs.OUTPUT_TAIL_BYTES:]
     assert len(record["output_tail"].encode("utf-8")) == runs.OUTPUT_TAIL_BYTES
     assert record["output_tail_truncated"] is True
+
+
+def test_output_tail_cuts_on_a_character_boundary(tmp_path):
+    bundle = tmp_path / "invented-multibyte-output"
+    bundle.mkdir()
+    # "ы" is two UTF-8 bytes, so the cap lands mid-character without the walk.
+    output = "ы" * (runs.OUTPUT_TAIL_BYTES // 2) + "x"
+    job = _job(bundle, output, exit_code=0)
+
+    assert runs._record_finish_sync(job) is True
+
+    record = json.loads((bundle / runs.PROJECTION_NAME).read_text(encoding="utf-8"))
+    tail = record["output_tail"]
+    assert record["output_tail_truncated"] is True
+    assert tail == "ы" * (runs.OUTPUT_TAIL_BYTES // 2 - 1) + "x"
+    assert len(tail.encode("utf-8")) == runs.OUTPUT_TAIL_BYTES - 1
+    assert output.endswith(tail)
 
 
 def test_projection_failure_keeps_the_committed_event(tmp_path, monkeypatch):

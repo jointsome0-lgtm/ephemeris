@@ -50,6 +50,7 @@ data/lessons/<slug>/
   attempts/        learner-authored work (default artifact root)
   attempts.jsonl   app-owned projection of recorded attempts (§6)
   assessments.jsonl   app-owned projection of the tutor's active record (§6.5)
+  runs.jsonl       app-owned log of finished editor runs (§6.6)
   AGENTS.md        app-generated agent brief — regenerated, never authored
   CLAUDE.md        app-generated shim for AGENTS.md — regenerated
   .claude/         app-generated agent-harness config for the bundle
@@ -57,8 +58,8 @@ data/lessons/<slug>/
 ```
 
 Reserved names, which no page, block file, or artifact root may claim:
-`lesson.json`, `attempts.jsonl`, `assessments.jsonl`, `AGENTS.md`,
-`CLAUDE.md`, `.claude`.
+`lesson.json`, `attempts.jsonl`, `assessments.jsonl`, `runs.jsonl`,
+`AGENTS.md`, `CLAUDE.md`, `.claude`.
 
 `AGENTS.md`, `CLAUDE.md` and everything the app writes under `.claude/` are
 regenerated, never authored: the app rewrites them on every lesson-agent
@@ -510,6 +511,39 @@ only what the bundle contains.
   the study agent records verdicts THROUGH the endpoint, never by writing
   this file.
 
+### 6.6 Runs (`runs.jsonl`)
+
+Attempts record what the learner answered, assessments what the tutor
+concluded; runs record what the learner's code DID. Run endpoint semantics
+live in [lesson-artifacts-api.md](lesson-artifacts-api.md); this section
+fixes only what the bundle contains (#135).
+
+- **Authority**: the `lesson_run` ledger event, committed before any
+  filesystem work — the same commit-then-project ordering as §6.1 and §6.5.
+  Per §8 that event is body-free: run identity and result only, never the
+  bytes the program printed.
+- **Projection**: `runs.jsonl` at the bundle root is the HISTORY, not active
+  state — one line per finished run, in finish order, appended under the same
+  app-private per-lesson lock and published by temporary file plus atomic
+  rename. A projection failure never fails the durable event; unlike §6.5
+  there is no reconcile trigger, so a failed line is lost from the file and
+  survives only in the ledger. The file is app-owned: the app never adopts a
+  foreign object on the name, and refuses rather than repairs a file whose
+  last line has no terminating newline.
+- **Record format**, one JSON object per line: `kind` (`"run"`), `v` (`1`),
+  `run_id`, `lesson_uid`, `block_id`, `runner_id`, `file_rev`, `cause`,
+  `exit_code`, `signal`, `duration_ms`, `truncated`, `started_at`,
+  `finished_at`, `output_tail`, `output_tail_truncated`.
+- **Size**: `output_tail` is the newest 8192 UTF-8 bytes of the combined
+  stdout/stderr stream, cut on a character boundary, with
+  `output_tail_truncated` telling the reader whether anything was dropped.
+  The file itself has no ceiling and no compaction — it grows with lifetime
+  runs, not with current state — so a reader treats it like §6.5: read it
+  whole while it fits, otherwise read the newest complete lines and declare
+  the omission.
+- The manifest does NOT list runs, and a lesson with no finished run has no
+  file. Read-only for the study agent and the learner alike.
+
 ## 7. Artifact roots and deterministic discovery
 
 `artifact_roots` (default `["attempts"]`) bounds where learner-authored work
@@ -803,12 +837,13 @@ stability, and current-entry head-insertion (§10).
 | lesson pages / `assets/` | creation placeholder | ✎ authors | byte-preserved | — |
 | `attempts.jsonl` | owns (projection + reconcile) | read-only | — | read-only |
 | `assessments.jsonl` | owns (projection + reconcile) | read-only; records verdicts through the endpoint (§6.5) | — | read-only |
+| `runs.jsonl` | owns (projection, §6.6) | read-only | — | read-only |
 | `attempts/` files | editor save endpoint (F1) | read (SHOULD not edit learner work — #35) | — | ✎ via terminal/editor |
 | `AGENTS.md`, `CLAUDE.md` | regenerates (B1 writer) | overwritten | — | — |
 
 The agent MUST NOT: change `lesson_uid` or `schema_version`, reuse retired
-ids, write `attempts.jsonl` or `assessments.jsonl`, or put commands into the
-manifest (§4.4).
+ids, write `attempts.jsonl`, `assessments.jsonl` or `runs.jsonl`, or put
+commands into the manifest (§4.4).
 Agent-caused violations degrade or reject visibly per §9.2 — the app never
 silently rewrites an agent's manifest to "fix" it.
 

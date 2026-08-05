@@ -28,6 +28,11 @@ PROJECTION_STATE_DIR = DATA_DIR / "run-projections"
 OUTPUT_TAIL_BYTES = 8 * 1024
 RECORD_KIND = "run"
 RECORD_VERSION = 1
+# The `lesson_run` ledger event stays body-free — the documented contract
+# (docs/lesson-artifacts-api.md, docs/learn-bundle-spec.md §8). The bounded
+# output tail is a bundle-projection field only: the ledger and its JSONL
+# export carry run identity and result, never what the learner's code printed.
+EVENT_OMITTED_FIELDS = ("output_tail", "output_tail_truncated")
 
 _monotonic = time.monotonic
 _rate_lock = threading.Lock()
@@ -349,7 +354,10 @@ def _record_finish_sync(job: runner.RunnerJob) -> bool:
     payload: dict[str, object] = {
         "lesson_id": job.request.lesson_id,
         "slug": job.request.slug,
-        **record,
+        **{
+            name: value for name, value in record.items()
+            if name not in EVENT_OMITTED_FIELDS
+        },
     }
     conn = get_conn()
     try:

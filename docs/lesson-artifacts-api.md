@@ -224,10 +224,18 @@ cancel return `job-missing`. Its idempotency replay entry remains valid for as
 long as an attached reader keeps the job retained, even past the ordinary TTL.
 
 Each terminal job attempts one best-effort `lesson_run` event containing
-`lesson_uid`, `lesson_id`, `slug`, `block_id`, `runner_id`, `file_rev`, `cause`,
-optional `exit_code`, `truncated`, and `duration_ms`. It contains no stdout or
+`kind` (`"run"`), `v`, `run_id`, `lesson_uid`, `lesson_id`, `slug`, `block_id`,
+`runner_id`, `file_rev`, `cause`, `exit_code`, `signal`, `truncated`,
+`duration_ms`, `started_at`, and `finished_at`. It contains no stdout or
 stderr. Terminal status waits for this attempt so `event_recorded` is an honest
 boolean. Shutdown jobs use the same path.
+
+After that event commits, the same record — plus the bounded `output_tail` /
+`output_tail_truncated` pair the ledger deliberately omits — is appended to the
+bundle's `runs.jsonl` (learn-bundle-spec §6.6), the study agent's read-only
+view of what ran and what it printed. The projection is best-effort: it never
+fails or delays the committed event, and it has no reconcile trigger, so a run
+missing from the file is still in the ledger.
 
 ## Consolidated refusal matrix
 
