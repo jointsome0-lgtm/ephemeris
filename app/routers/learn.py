@@ -150,6 +150,7 @@ def get_learn(
     for track in tracks:
         if track["next"]:
             track["next"]["href"] = _learn_url(lesson_id=track["next"]["id"])
+    groups, ungrouped = _lesson_groups(rows, tracks, selected)
     return templates.TemplateResponse(request, "learn.html", {
         "request": request,
         "rail": "learn",
@@ -158,11 +159,65 @@ def get_learn(
         "show_archived": show_archived,
         "counts": counts,
         "tracks": tracks,
+        "groups": groups,
+        "ungrouped": ungrouped,
         "status_tabs": [{"key": key, "label": lessons.STATUS_LABELS[key]} for key in lessons.STATUSES],
         "selected": selected,
         "self_url": self_url,
         "flash": flash,
     })
+
+
+def _lesson_groups(
+    rows: list[dict],
+    tracks: list[dict],
+    selected: dict | None,
+) -> tuple[list[dict], list[dict]]:
+    """Split the rendered list into one collapsible block per track, plus the rest.
+
+    A course seeded as fourteen lessons buries every other lesson in a flat
+    list, so a track renders as one group instead of fourteen rows. The split
+    is presentational: `rows` is whatever the status/archived filter already
+    chose, and grouping neither adds a row to it nor removes one.
+
+    The header keeps the whole-track numbers from `track_progress` (#81: they
+    are the unfiltered list, so a status pill cannot make them jump) while the
+    rows inside are the filtered ones — which is why a group can read "1 of 14"
+    over a single row without either number being wrong. A track no filtered
+    row belongs to is dropped entirely rather than left as an empty header.
+
+    Members keep the track's own step order, not the list's recency order: a
+    course is read forwards. Membership comes from `track_progress` for the
+    same reason its counts do — one owner for the rule (see its docstring).
+
+    Archived lessons reach `rows` only under `?archived=1`, and archiving drops
+    a lesson from its track, so they land in the ungrouped tail — the same
+    answer the #81 strip already gives.
+    """
+    shown = {row["id"]: row for row in rows}
+    selected_id = selected["id"] if selected else None
+    grouped: set[int] = set()
+    groups = []
+    for track in tracks:
+        grouped.update(track["ids"])
+        members = [shown[lesson_id] for lesson_id in track["ids"] if lesson_id in shown]
+        if not members:
+            continue
+        groups.append({
+            **track,
+            "rows": members,
+            # Integer percent for the bar's width; the readable count beside it
+            # stays "N of M", which reads better than "0%" for an untouched
+            # track. Rounds toward 0 so a bar only fills when the step is done.
+            "pct": track["studied"] * 100 // track["total"],
+            # Whether the lesson on screen is one of this track's. It is the
+            # server's default for "open" — a learner who navigated into a
+            # track should land with it unfolded — and it stays true after the
+            # stored preference overrides that default, so a group deliberately
+            # kept folded can still show that the current lesson is inside it.
+            "selected": selected_id in track["ids"],
+        })
+    return groups, [row for row in rows if row["id"] not in grouped]
 
 
 def _learn_url(

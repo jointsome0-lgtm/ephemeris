@@ -504,14 +504,31 @@ body {
   grid-column: 1; min-width: 0; min-height: 0; overflow-y: auto;
   display: flex; flex-direction: column;
 }
-.lesson-panel .learn-add { grid-template-columns: auto minmax(0, 1fr); padding: 10px 14px; }
-.lesson-panel .learn-add .qa-plus { grid-row: 1 / 3; align-self: start; margin-top: 6px; }
-.lesson-panel .learn-url-input { grid-column: 2; }
-.lesson-panel .learn-add .btn-primary { grid-column: 2; }
+/* The list is the one thing in this column that gives up height, because it is
+   the one thing that scrolls. Without this the flex algorithm shrinks the
+   chrome too, and `.learn-add` is the child that lets it: an explicit
+   `min-height` REPLACES a flex item's automatic minimum size, so the form —
+   three stacked rows once the panel is narrow — was free to collapse back to
+   the 46px of its one-row era and paint its own rows over the filters below.
+   Only the chrome is pinned; the panel keeps `overflow-y: auto` for the case
+   where even the list's floor is not enough to fit it. */
+.lesson-panel > .learn-add,
+.lesson-panel > .learn-filters,
+.lesson-panel > .learn-tracks { flex: 0 0 auto; }
+/* Stacked, because the panel is never wide enough for the page's four-column
+   form. Two rows rather than three: the title gets a line to itself, and the
+   source URL shares the second with the button that submits it — a third row
+   turned Add into a full-width bar louder than anything it sits above, and
+   cost the list ~46px of a column that no longer scrolls (#132). */
+.lesson-panel .learn-add { grid-template-columns: auto minmax(0, 1fr) auto; padding: 10px 14px; }
+.lesson-panel .learn-add .qa-plus { grid-row: 1 / 3; grid-column: 1; align-self: start; margin-top: 6px; }
+.lesson-panel .learn-add .qa-input { grid-row: 1; grid-column: 2 / span 2; }
+.lesson-panel .learn-url-input { grid-row: 2; grid-column: 2; }
+.lesson-panel .learn-add .btn-primary { grid-row: 2; grid-column: 3; }
 .learn-add {
   display: grid; grid-template-columns: auto minmax(180px, 1.1fr) minmax(180px, .9fr) auto;
   align-items: center; gap: 9px;
-  min-height: 46px; padding: 0 14px; margin-bottom: 12px;
+  padding: 0 14px; margin-bottom: 12px;
   border-radius: 10px; background: var(--card-bg);
   border: 1px solid var(--border);
 }
@@ -531,6 +548,10 @@ body {
 .learn-filter.on { background: var(--primary-soft); color: var(--primary); border-color: transparent; }
 .learn-filter span { color: var(--faint); font-size: 12px; }
 .learn-filter-archive { margin-left: auto; }
+/* On the page the auto margin sets Archived apart from the status filters; in
+   the panel the row has already wrapped by the time it gets there, so the
+   wrap does that job and the margin only strands the pill alone on a line. */
+.lesson-panel .learn-filter-archive { margin-left: 0; }
 /* #81 track progress: one line per track, borrowing the count-pill grammar
    above without becoming a control — text, not a filter. */
 .learn-tracks { display: flex; flex-direction: column; gap: 4px; margin: -4px 0 12px; }
@@ -541,6 +562,64 @@ body {
    wrapped onto whole, and ellipsises rather than growing the strip. */
 .learn-track-next { flex: 1 0 100%; min-width: 0; color: var(--primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .learn-track-next:hover { text-decoration: underline; }
+/* A track, folded into one row of the list. A seeded course is fourteen
+   near-identical rows, so it reads as one line with its progress on it until
+   the learner opens it — the strip above is then redundant and not rendered.
+   The head is a disclosure, not a card: no fill of its own, so an open group
+   reads as a section of the list rather than a box inside a box.
+   The gap is tighter than the 8px the list puts between groups: a head and its
+   next-step link have to read as one unit, or the link floats halfway between
+   its own track and the one below and belongs to neither. */
+.lesson-group { display: flex; flex-direction: column; gap: 3px; }
+.lesson-group-head {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px;
+  padding: 7px 10px; border-radius: 8px; cursor: pointer; list-style: none;
+  border: 1px solid transparent;
+}
+.lesson-group-head::-webkit-details-marker { display: none; }
+/* Leading caret, drawn the way every other disclosure here draws one
+   (.rec-chip-head), but before the name: this one heads a list of rows, and a
+   tree is read from its left edge. */
+.lesson-group-head::before {
+  content: ""; flex: 0 0 auto; width: 5px; height: 5px; margin: 0 3px 0 1px;
+  border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted);
+  transform: rotate(-45deg); transition: transform .15s ease;
+}
+.lesson-group-d[open] > .lesson-group-head::before { transform: translateY(-1px) rotate(45deg); }
+.lesson-group-head:hover { background: var(--hover); }
+.lesson-group-head:focus-visible { border-color: var(--primary); outline: none; }
+/* A group the learner folded away can still be the one holding the lesson on
+   screen — the stored preference wins over the server's `open`, the same rule
+   the record sheet follows. Then the head carries the selected row's own
+   colour, so the panel still answers "where am I" without unfolding itself. */
+.lesson-group.has-sel .lesson-group-d:not([open]) > .lesson-group-head {
+  background: var(--primary-soft); border-color: var(--primary);
+}
+.lesson-group.has-sel .lesson-group-d:not([open]) > .lesson-group-head .lesson-group-name { color: var(--primary); }
+.lesson-group-name {
+  flex: 1 1 auto; min-width: 0; color: var(--text); font-size: 13px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lesson-group-count { flex: 0 0 auto; color: var(--faint); font-size: 12px; }
+/* The bar takes the row it wrapped onto whole: at the widths this panel is
+   dragged to, a bar sharing a line with the name would be a few pixels long. */
+.lesson-group-bar {
+  flex: 1 0 100%; height: 3px; border-radius: 2px; background: var(--border);
+  overflow: hidden;
+}
+.lesson-group-bar i { display: block; height: 100%; background: var(--gold); }
+.lesson-group-rows {
+  display: flex; flex-direction: column; gap: 8px;
+  margin: 8px 0 0 5px; padding-left: 9px; border-left: 1px solid var(--border);
+}
+.lesson-group-next {
+  margin-left: 12px; min-width: 0; color: var(--primary); font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lesson-group-next:hover { text-decoration: underline; }
+/* Open, the rows are the answer to "where was I" — the link would repeat one
+   of them a few pixels above itself. */
+.lesson-group-d[open] + .lesson-group-next { display: none; }
 .lesson-list { min-height: 96px; display: flex; flex-direction: column; gap: 8px; overflow: auto; padding-right: 2px; }
 .lesson-row {
   display: flex; align-items: center; gap: 16px; min-height: 72px;
@@ -865,11 +944,11 @@ body {
   /* Single-column layout: the columns are height:auto below (the document
      scrolls), so pad the document under the drawer instead of shrinking them. */
   body.term-open { padding-bottom: calc(var(--term-h, 0px) + 58px + env(safe-area-inset-bottom, 0px)); }
-  .learn-add { grid-template-columns: auto minmax(0, 1fr); padding: 10px 14px; }
-  .learn-add .qa-plus { grid-row: 1 / 3; align-self: start; margin-top: 6px; }
-  .learn-url-input { grid-column: 2; }
-  .learn-add .btn-primary { grid-column: 2; }
-  .learn-filter-archive { margin-left: 0; }
+  /* The add form and the Archived pill are the lesson panel's, and the panel's
+     own rules stack them at every width — these breakpoint copies never won on
+     specificity and are gone. Reading them as the thing that stacks the form is
+     what made this layout look like a media-query gap rather than the flex
+     shrink it was; leave the panel as the single owner. */
   /* Reading mode is a two-column, viewport-locked idea (#132). Here the
      workspace stacks, so the page scrolls and the record is a block again. */
   .content.learn-page { overflow-y: auto; }
