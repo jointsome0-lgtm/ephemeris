@@ -485,6 +485,19 @@ def test_the_record_panel_carries_the_poll_target_and_the_unread_badge(client):
     css = Path("app/static/style.css").read_text(encoding="utf-8")
     assert ".rec-unread[hidden] { display: none; }" in css
 
+    # #132: the sheet's state is restored INLINE, after the panel and before
+    # every deferred script — the runtime below reads `open` to decide whether
+    # these rows count as this browser's first look, and a script that runs
+    # later would answer for a panel the learner had already chosen to shut.
+    restore = body.rsplit("</details>", 1)[-1]
+    assert (
+        'localStorage.getItem("al-record-open")' in restore
+        and 'rec.open = stored === "1"' in restore
+        and 'localStorage.setItem("al-record-open", rec.open ? "1" : "0")' in restore
+        and 'new ResizeObserver(fit).observe(wrap)' in restore
+        and 'rec.style.setProperty("--rec-max"' in restore
+    ), "the record sheet restores its own state and caps its own height"
+
     source = Path("app/static/src/learn-bridge.ts").read_text(encoding="utf-8")
     emitted = Path("app/static/learn-bridge.js").read_text(encoding="utf-8")
     for token in ("al-record-seen:", "recordCountsUrl", "rec-unread"):
@@ -499,7 +512,10 @@ def test_the_record_panel_carries_the_poll_target_and_the_unread_badge(client):
                   # Seeded through `writeSeen`, so the baseline OUTLIVES a
                   # visit that ends without a click: re-seeding from the next
                   # render would adopt anything written in between as seen.
-                  'writeSeen(recordPanel.dataset["recordCursor"]',
+                  # #132: and only a panel that was OPEN counts as a look — a
+                  # closed sheet baselines at the zero cursor instead, so what
+                  # is already recorded still gets announced.
+                  '(recordPanel.open && recordPanel.dataset["recordCursor"])',
                   "readSeen() !== asked",
                   # A cursor past the baseline with nothing unread is a REMOVAL
                   # (or an evidence/summary write): refresh the rows quietly,

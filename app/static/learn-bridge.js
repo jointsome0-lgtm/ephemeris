@@ -1449,8 +1449,16 @@ if (recordPanel && recordCountsUrl && recordKey) {
          * nothing — so a visit that ends without a badge click would leave the
          * lesson unbaselined. The next visit would then seed from ITS render, and
          * a verdict written in between would be adopted as already-seen: the
-         * silent arrival this whole panel exists to stop. */
-        writeSeen(recordPanel.dataset["recordCursor"] || RECORD_ZERO_CURSOR);
+         * silent arrival this whole panel exists to stop.
+         *
+         * #132: what makes a render a LOOK is the rows being on screen, and the
+         * panel is now a sheet the learner can keep shut across visits. A closed
+         * first sight has shown nothing, so it baselines at the zero cursor and
+         * lets the badge announce what is already in there — the same rule as an
+         * empty record, for the same reason. Reading `open` is safe here: the
+         * stored state is restored by an inline script right after the panel, so
+         * it is settled before this deferred module runs. */
+        writeSeen((recordPanel.open && recordPanel.dataset["recordCursor"]) || RECORD_ZERO_CURSOR);
     }
     /* The newest cursor the server has reported. Acknowledging is local and
      * instant: the next poll confirms it. */

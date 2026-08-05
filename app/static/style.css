@@ -653,11 +653,12 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
    hidden state needs its own selector — the idiom the drawer widgets use. */
 .rec-unread[hidden] { display: none; }
 /* The sheet: anchored to the top edge of its summary bar (`bottom: 100%`), so
-   it rises over the lesson instead of shortening it, and is clipped by the
-   preview card like every other layer in it. */
+   it rises over the lesson instead of shortening it. The preview card clips it,
+   so it also never grows past the lesson it covers: --rec-max is the frame
+   wrap's live height (app.js), and 46vh is the reading cap under it. */
 .lesson-record-body {
   position: absolute; left: 0; right: 0; bottom: 100%; z-index: 3;
-  max-height: 46vh; overflow: auto; padding: 12px 14px 16px;
+  max-height: min(46vh, var(--rec-max, 46vh)); overflow: auto; padding: 12px 14px 16px;
   display: flex; flex-direction: column; gap: 14px;
   border-top: 1px solid var(--border); background: var(--panel);
   box-shadow: 0 -10px 26px rgba(0, 0, 0, .16);

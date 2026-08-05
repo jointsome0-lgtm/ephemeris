@@ -624,11 +624,14 @@ def test_002_ui_and_workspace(client, suite_state):
         and "position: absolute; left: 0; right: 0; bottom: 100%; z-index: 3;" in css.text
         and "position: static; max-height: 60vh;" in css.text
     ), "the record body opens as a sheet over the lesson (a block again on mobile)"
+    # The card clips the sheet, so a sheet taller than the frame would put its
+    # own top rows out of reach instead of behind a scroll: it is capped at the
+    # frame wrap's live height, which follows the window, the split and the
+    # terminal drawer. (The script that measures it is asserted on the rendered
+    # page in test_160_record_context.py, where a lesson HAS a record.)
     assert (
-        'REC_KEY = "al-record-open"' in app_js
-        and 'rec.open = stored === "1"' in app_js
-        and 'rec.addEventListener("toggle"' in app_js
-    ), "app.js remembers whether the record sheet is open"
+        "max-height: min(46vh, var(--rec-max, 46vh));" in css.text
+    ), "the record sheet never grows past the lesson it covers"
     # --- Learn lesson terminal: lesson-scoped cwd + generated AGENTS.md ---
     from app.services import lessons as lessons_svc  # local: only these checks use it
     _lt_conn = get_conn()
