@@ -108,7 +108,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   2 MiB bounded-read rule plus a data-boundary line for run output in the
   generated brief (`735893b`); the same seal checked at lesson-terminal open
   via a new `prepare_terminal_workspace` step, plus staged-inode and state-
-  directory durability fixes in the publish path (`0627649`).
+  directory durability fixes in the publish path (`0627649`). Squash-merged to
+  `main` as `64c2fb0` (PR #140).
 
 ## Done
 
