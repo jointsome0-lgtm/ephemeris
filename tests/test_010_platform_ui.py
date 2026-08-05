@@ -591,6 +591,53 @@ def test_002_ui_and_workspace(client, suite_state):
         and "body.learner-term-open .term-drawer.agent-drawer" in css.text
     ), "shared --term-h inset accounts for both terminal surfaces"
 
+    # --- #131: one right stack on Learn -----------------------------------
+    # Both surfaces dock right on Learn, so a pane in the stack stops counting
+    # as a bottom drawer — that is how the content lift dies on Learn and only
+    # there.
+    for src in (terminal_ts, terminal_js):
+        assert (
+            "function inRightStack" in src
+            and "config.kind === 'agent' && inRightStack()" in src
+            and "learnerOpen && !learnerRight ?" in src
+            and "'term-stack-open', agentRight || learnerRight" in src
+        ), "the stack holds both surfaces and neither lifts the content"
+        assert (
+            "STACK_W_KEY = 'al-term-w'" in src
+            and "LESSON_FLOOR = 680 + 60" in src
+            and "Math.max(DOCK_MIN, Math.min(px, maxStackWidth()))" in src
+            and "setProperty('--term-w', value)" in src
+        ), "one shared, clamped width for the whole stack, published on <body>"
+        assert (
+            "var agentMin = agentRight && agent" in src
+            and "'--term-agent-h'" in src
+            and "'term-right-min', agentMin" in src
+        ), "a collapsed agent publishes the height the learner starts below"
+    assert (
+        "--term-stack-w: clamp(300px," in css.text
+        and "var(--term-w, clamp(560px, 812px, 45vw))" in css.text
+        and "calc(100vw - var(--rail-w) - 680px - 60px)" in css.text
+        and "body.term-stack-open .tt-shell { padding-right: var(--term-stack-w); }" in css.text
+        and "width: var(--term-stack-w); min-height: 0;" in css.text
+        and "42vw; min-width: 300px; max-width" not in css.text
+    ), "the stack's width is derived once and keeps the lesson above its floor"
+    assert (
+        "body.learner-term-open .term-drawer.agent-drawer.right-dock { bottom: var(--term-learner-h, 0px); }"
+        in css.text
+        and "body.term-right-open .term-drawer.learner-drawer.right-dock {\n    top: auto;"
+        in css.text
+        and "body.term-right-min .term-drawer.learner-drawer.right-dock {\n    top: var(--term-agent-h, 0px);"
+        in css.text
+        and "body:not(.term-right-open) .term-drawer.learner-drawer.right-dock .term-resize," in css.text
+        and "width: 44px !important" not in css.text
+    ), "agent above, learner below, and no hole when either one collapses"
+    assert (
+        "@container learn-board (max-width: 944px) {" in css.text
+        and "@media (min-width: 861px) and (max-width: 1030px) {" in css.text
+        and ".term-drawer.learner-drawer.right-dock #learner-term-min { display: none; }"
+        in css.text
+    ), "the ladder: the lesson list goes first, then the learner's screen"
+
     # --- Learn split: resizable / collapsible lesson list -----------------
     r = c.get("/learn")
     assert r.status_code == 200, "GET /learn 200"
@@ -615,7 +662,8 @@ def test_002_ui_and_workspace(client, suite_state):
     assert (
         ".content.learn-page { overflow-y: hidden; }" in css.text
         and ".learn-page .content-inner {\n  max-width: none; height: 100%;" in css.text
-        and ".learn-board { flex: 1 1 auto; min-height: 0;" in css.text
+        and ".learn-board { container: learn-board / inline-size; flex: 1 1 auto; min-height: 0;"
+        in css.text
         and ".lesson-frame-wrap { flex: 1 1 auto; min-height: 0; background: #fff; }" in css.text
         and "min-height: 560px" not in css.text
     ), "the Learn column is viewport-locked and the iframe grows into it"

@@ -221,7 +221,7 @@ button { font: inherit; }
 
 /* ===== shell ============================================================= */
 .tt-shell { display: flex; min-height: 100vh; }
-body.term-right-open .tt-shell { padding-right: var(--term-w, 42vw); }
+body.term-stack-open .tt-shell { padding-right: var(--term-stack-w); }
 
 /* --- icon rail --- */
 .rail {
@@ -330,7 +330,7 @@ html[data-theme="light"] .content { background-image:
   box-shadow: 0 -8px 24px rgba(0,0,0,.28);
 }
 .term-drawer[hidden] { display: none; }
-.term-drawer.learner-drawer { right: var(--term-w, 0px); z-index: 61; }
+.term-drawer.learner-drawer { z-index: 61; }
 body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
   bottom: var(--term-learner-h, 0px);
 }
@@ -394,26 +394,76 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
 .term-screen .xterm, .term-screen .xterm-viewport, .term-screen .xterm-screen { height: 100% !important; }
 .term-status { flex: 0 0 auto; padding: 8px 14px; color: var(--term-bright-red); font-size: 13px;
   background: var(--term-background); border-top: 1px solid var(--term-border); }
+/* --- the right stack (#131) ---------------------------------------------
+   On Learn both terminals live in ONE right column — agent above, learner
+   below — instead of a right dock and a bottom drawer cutting the page from
+   two sides. The learner's top edge is the seam between them. Off Learn none
+   of this applies: `right-dock` is only ever set on Learn at >=861px, so the
+   bottom drawer and the `--term-h` content lift it drives are untouched.
+
+   The column's width is derived once, here: the width the learner dragged
+   (`--term-w`, written by terminal.js) or, by default, ~100 columns of the
+   13px terminal font (100 * ~7.8px plus the screen's padding and scrollbar),
+   never past 45vw and never so wide that the lesson column reads under its
+   680px floor — when space runs short the dock is what yields. */
+body {
+  --term-stack-w: clamp(300px,
+    var(--term-w, clamp(560px, 812px, 45vw)),
+    /* 680px of lesson plus the chrome it reads inside: the content column's
+       2 x 28px padding and the 2 + 2px grid gaps the collapsed list leaves */
+    calc(100vw - var(--rail-w) - 680px - 60px));
+}
 .term-drawer.right-dock {
   left: auto; top: 0; bottom: 0; right: 0;
-  width: 42vw; min-width: 300px; max-width: calc(100vw - var(--rail-w) - 220px);
-  height: auto !important; min-height: 0;
+  width: var(--term-stack-w); min-height: 0;
   border-top: none; border-left: 1px solid var(--term-border);
   box-shadow: -8px 0 24px rgba(0,0,0,.26);
 }
-.term-drawer.right-dock.minimized { width: 44px !important; min-width: 44px; }
-.term-drawer.right-dock.minimized .term-head { justify-content: center; gap: 0; padding: 7px 9px; }
-.term-drawer.right-dock.minimized .term-dot,
-.term-drawer.right-dock.minimized .term-tabs,
-.term-drawer.right-dock.minimized .term-find,
-.term-drawer.right-dock.minimized .term-copysel,
-.term-drawer.right-dock.minimized .term-new,
-.term-drawer.right-dock.minimized .term-meta,
-.term-drawer.right-dock.minimized .term-close { display: none; }
-.term-drawer.right-dock .term-resize { top: 0; bottom: 0; left: -3px; right: auto; width: 7px; height: auto; cursor: ew-resize; }
-.term-drawer.right-dock .term-resize::before {
-  left: 3px; top: 50%; transform: translateY(-50%);
-  width: 3px; height: 38px;
+/* Everything that splits the column into two panes is gated on the same
+   breakpoint terminal.js uses, so a class left over from a viewport that
+   crossed 861px before the drawer re-docked cannot outrank the mobile rules
+   further down (these are the specific, !important ones). */
+@media (min-width: 861px) {
+  .term-drawer.agent-drawer.right-dock { height: auto !important; }
+  /* the seam: the learner keeps the height it was dragged to (inline, stored
+     under al-term-learner-h), and the agent ends where the learner starts */
+  body.learner-term-open .term-drawer.agent-drawer.right-dock { bottom: var(--term-learner-h, 0px); }
+  body.term-right-open .term-drawer.learner-drawer.right-dock {
+    top: auto; height: 40vh; border-top: 1px solid var(--term-border);
+  }
+  /* nothing above it but a closed or collapsed agent: the learner takes the
+     rest of the column, and there is no seam left to drag */
+  body:not(.term-right-open) .term-drawer.learner-drawer.right-dock { height: auto !important; }
+  body.term-right-min .term-drawer.learner-drawer.right-dock {
+    top: var(--term-agent-h, 0px); height: auto !important;
+  }
+  body:not(.term-right-open) .term-drawer.learner-drawer.right-dock .term-resize,
+  body.term-right-min .term-drawer.learner-drawer.right-dock .term-resize { display: none; }
+  /* a minimized pane keeps the column's width and collapses to its head bar —
+     which the agent can only do by giving up the `bottom` that stretches it */
+  .term-drawer.right-dock.minimized { min-width: 0; }
+  .term-drawer.agent-drawer.right-dock.minimized { bottom: auto !important; }
+  /* the column's outer edge is the agent's to drag (it sets the stack width);
+     the learner's edge stays the horizontal seam it already was */
+  .term-drawer.agent-drawer.right-dock .term-resize { top: 0; bottom: 0; left: -3px; right: auto; width: 7px; height: auto; cursor: ew-resize; }
+  .term-drawer.agent-drawer.right-dock .term-resize::before {
+    left: 3px; top: 50%; transform: translateY(-50%);
+    width: 3px; height: 38px;
+  }
+}
+/* Degradation, second rung (#131): past the first rung the dock has nothing
+   left to give — 50 (rail) + 300 (dock floor) + 680 (lesson floor) = 1030 —
+   and a column that narrow cannot carry two screens. The learner keeps its
+   head as a tab strip, the agent keeps the height, and the minimize button
+   goes with it: there is no expanded state to return to at this width. */
+@media (min-width: 861px) and (max-width: 1030px) {
+  body.term-right-open .term-drawer.learner-drawer.right-dock { height: auto !important; }
+  .term-drawer.learner-drawer.right-dock .term-screens,
+  .term-drawer.learner-drawer.right-dock .term-status,
+  .term-drawer.learner-drawer.right-dock .term-resize,
+  .term-drawer.learner-drawer.right-dock #learner-term-min { display: none; }
+  /* at this width the trailing label only wraps a head onto three lines */
+  .term-drawer.right-dock .term-meta { display: none; }
 }
 /* --- reading mode (#132) ------------------------------------------------
    Learn is a reading surface, so the lesson document — and only it — scrolls.
@@ -427,7 +477,9 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
   max-width: none; height: 100%; padding: 18px 28px;
   display: flex; flex-direction: column;
 }
-.learn-board { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+/* the board is a container so the workspace can answer to the width the stack
+   leaves it, not to the viewport's (#131, first rung of the ladder below) */
+.learn-board { container: learn-board / inline-size; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 .learn-workspace {
   flex: 1 1 auto; min-height: 0;
   display: grid; grid-template-columns: var(--lesson-w, minmax(250px, .42fr)) auto minmax(320px, 1fr);
@@ -566,6 +618,20 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
 .learn-workspace.panel-collapsed .learn-split { cursor: default; }
 .learn-workspace.panel-collapsed .learn-split::before { display: none; }
 .learn-workspace.panel-collapsed .learn-split-btn svg { transform: rotate(180deg); }
+/* Degradation, first rung (#131): when the row can no longer hold the lesson
+   list at its minimum AND the lesson at its 680px floor, the list goes and the
+   lesson keeps reading. A container query, not a media query, because what
+   runs out is the board's own width — the viewport minus whatever the stack
+   currently takes. 250 (list min) + 2 + 10 (gutter) + 2 + 680 = 944. The
+   breakpoint still gates it: below 861px the workspace is one column, the
+   list stacks above the lesson instead of competing with it, and a narrow
+   board is the normal state rather than a shortage. */
+@media (min-width: 861px) {
+  @container learn-board (max-width: 944px) {
+    .learn-workspace { grid-template-columns: 0 auto minmax(320px, 1fr); }
+    .lesson-panel, .learn-split { display: none; }
+  }
+}
 /* while dragging, the preview iframe must not swallow mouse events */
 .learn-workspace.splitting .lesson-frame { pointer-events: none; }
 .lesson-preview {
@@ -788,7 +854,7 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
     left: 50%; top: 3px; transform: translateX(-50%);
     width: 38px; height: 3px;
   }
-  body.term-right-open .tt-shell { padding-right: 0; }
+  body.term-stack-open .tt-shell { padding-right: 0; }
   /* Single-column layout: the columns are height:auto below (the document
      scrolls), so pad the document under the drawer instead of shrinking them. */
   body.term-open { padding-bottom: calc(var(--term-h, 0px) + 58px + env(safe-area-inset-bottom, 0px)); }
