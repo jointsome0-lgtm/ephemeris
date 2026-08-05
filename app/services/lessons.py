@@ -1116,7 +1116,9 @@ offline from this bundle before you shipped it.
 
 - `lesson.json` — manifest: the machine-readable index of the bundle.
   Consumers read the manifest, never parse pages to discover structure.
-- `index.html` — the lesson's main page.
+- `index.html` — the lesson's cover page: a short overview and the
+  reading order, never the teaching itself (rule under manifest
+  conventions below).
 - `related/` — one self-contained HTML page per lesson stage or section.
 - `assets/` — images, data files, and pinned libraries, referenced from
   pages by relative path.
@@ -1186,9 +1188,19 @@ font, image) is forbidden.
   near-synonyms.
 - Learner-facing work files belong under `attempts/` (or another declared
   artifact root) — files outside them are invisible to later consumers.
-- Prefer editing the one page for the current stage over growing
-  index.html. The app's Learn preview live-reloads the open page when you
-  save it and shows every manifest page as a tab.
+- Teaching content never grows index.html: it stays the cover — overview
+  and reading order — and every stage lives in its own `related/` page.
+  This is mechanics, not taste: live-reload and attempt staleness both
+  work on whole pages. On one big page, saving any section reloads
+  everything the learner has open, and an answer submitted against the
+  pre-save revision records `stale` even when your edit touched an
+  unrelated section; per-stage pages confine both to the stage actually
+  edited. The manifest's page list is also the lesson's visible map: the
+  Learn preview shows every page as a tab. If you inherit a bundle whose
+  index.html already carries teaching sections, split them into
+  `related/` pages at the natural moment (before growing them further):
+  new `pg_` ids for the new pages, each affected question re-bound by
+  updating its `page` field — the `q_` ids themselves never change.
 
 ## Editor and run blocks
 
