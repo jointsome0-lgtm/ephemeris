@@ -112,6 +112,10 @@ def get_learn(
         # capability instead of advertising a route it does not have.
         selected["artifacts_url"] = f"/learn/lessons/{selected['id']}/blocks"
         selected["runs_url"] = f"/learn/lessons/{selected['id']}/blocks"
+        # #133 endpoint discovery, guarded in the template for the same
+        # reason: a live pre-#133 backend rendering this template must render
+        # no poll target rather than one that 404s every few seconds.
+        selected["record_counts_url"] = f"/learn/lessons/{selected['id']}/record-counts"
         # D2: the iframe sandbox attribute follows the effective profile
         # (same owner as the header-level directive); the profile is folded
         # into the version token, so a flip reloads the frame and the parent
@@ -198,6 +202,13 @@ def _learn_url(
 # stable between renders. Unknown levels cannot occur (closed vocabulary,
 # CHECK-enforced) but sort last rather than crashing the page.
 _EVIDENCE_ORDER = {"weak": 0, "developing": 1, "seen": 2, "passed": 3}
+
+
+def _focus_label(focus_total: dict) -> str:
+    """The focused magnitude for the counts line. `_dur_label` spells nothing
+    as "0s"; the line is a row of magnitudes, so an empty one keeps the minutes
+    unit of the rest. One owner, because the poll refreshes the same cell."""
+    return focus_total["label"] if focus_total["seconds"] else "0m"
 
 
 def _record_date(iso: str | None) -> str:
@@ -293,7 +304,39 @@ def _record_entry(state: dict, attempt: dict | None, *, label: str,
         "review_date": _record_date(review["created_at"]) if review else "",
         "review_exam": bool(review and review["mode"] == "exam"),
         "earlier_reviews": earlier,
+        # Filled by `_attach_successors` once every row exists (#133 tier 1).
+        "successor": None,
     }
+
+
+def _attach_successors(rows: list[dict], declared: list[dict]) -> None:
+    """Point a RETIRED row at the declared question that says it `replaces` it.
+
+    Durable ids are never reused, so a rewritten question arrives under a new
+    id and everything recorded about the old one keeps standing alone at the
+    foot of the panel. The manifest is the only place that can say the two are
+    the same question, and the reader has already refused every ambiguous or
+    self-referential claim, so this is a plain lookup — a link between two rows
+    the panel is showing anyway, never a move of history between them.
+
+    Only retired rows take the link (§4.3: a predecessor is by definition no
+    longer declared). The reader can only compare the claim against the
+    questions that VALIDATED, while retirement is decided here, against the
+    ids the document still names — so a claim on a question the manifest still
+    names but could not validate is refused at this end, where that is known.
+    """
+    successors = {
+        question["replaces"]: {
+            "question_id": question["id"],
+            "label": question["label"] or question["id"],
+        }
+        for question in declared
+        if question.get("replaces")
+    }
+    for row in rows:
+        row["successor"] = (
+            successors.get(row["question_id"]) if row["retired"] else None
+        )
 
 
 _record_panel_db_state = lessons.record_panel_db_state
@@ -361,6 +404,7 @@ def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> d
         # Not retired — just unlabelled, because the manifest could not be read.
         questions = [dict(row, retired=False) for row in retired]
         retired = []
+    _attach_successors(questions + retired, declared)
 
     evidence = sorted(
         (
@@ -389,12 +433,22 @@ def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> d
         "questions": questions,
         "retired": retired,
         "declared_known": declared_known,
+        # Kept beside `counts` rather than inside it: the count line is the
+        # panel's own shape, and the record-counts poll below is the second
+        # reader of these two.
+        "verdict_count": len(state["reviews_by_attempt"]),
+        # How far THIS rendering of the panel reads. What the learner
+        # acknowledges is the snapshot in front of them, so the cursor travels
+        # with the rendered rows rather than being taken from whichever poll
+        # happened to answer last. A watermark over both tables, not the newest
+        # standing review: a retraction takes a row AWAY and a Check rewrites
+        # one, and a cursor derived from the fold would hold still (or move
+        # backwards) through either.
+        "cursor": _record_signal(state, attempt_state),
         "counts": {
             "attempts": attempt_state["total"],
             "assessments": state["active_count"],
-            # `_dur_label` spells nothing as "0s"; the counts line is a row of
-            # magnitudes, so an empty one keeps the minutes unit of the rest.
-            "focus": focus_total["label"] if focus_total["seconds"] else "0m",
+            "focus": _focus_label(focus_total),
             "focus_seconds": focus_total["seconds"],
         },
         "empty": not (
@@ -619,6 +673,107 @@ def get_lesson_preview_meta(lesson_id: int, entry: str | None = None,
         "preview_url": _lesson_preview_url(lesson_id, info["entry"], exists=info["exists"]),
         "file_url": _lesson_preview_url(lesson_id, info["entry"]),
     })
+
+
+# Longest `since` a caller can hand the record poll. The value is only ever
+# compared as a string against cursors this app minted, but an unbounded query
+# parameter should not reach a comparison loop at all.
+_MAX_SINCE_LEN = 64
+# Width the assessment `seq` is padded to so plain string ordering agrees with
+# numeric ordering. 20 digits covers the full SQLite rowid range.
+_CURSOR_WIDTH = 20
+
+
+def _record_cursor(seq: int) -> str:
+    """The opaque recency cursor for one assessment row.
+
+    Deliberately `seq`, not `created_at`: the rowid is this table's recency
+    AUTHORITY (assessments.py) and is unique by construction, while two rows
+    can carry the same microsecond stamp and then have no order at all —
+    a verdict sharing a stamp with an acknowledged one would never be counted
+    unread. Padded so the client can treat it as an opaque string it only ever
+    hands back.
+    """
+    return f"{seq:0{_CURSOR_WIDTH}d}"
+
+
+def _record_signal(state: dict, attempt_state: dict) -> str:
+    """How far a rendering of the panel reads, over BOTH tables behind it.
+
+    The rows are a join: a Check recorded while the page is open replaces an
+    answer (or fills in a "Not attempted" row) without touching
+    `lesson_assessments`, exactly as a retraction removes a verdict without
+    adding a standing one. A signal built on either table alone therefore
+    holds still while the counts line beside it moves, and the panel would sit
+    on a stale body until a full reload.
+
+    Both fields are fixed width with a constant separator, so comparing two
+    signals as plain strings compares recency — and the assessment field keeps
+    its own leading position, which is what lets `unread` be counted against
+    `signal[:_CURSOR_WIDTH]` without parsing anything a client handed back.
+    """
+    if not (state["watermark"] or attempt_state["watermark"]):
+        return ""
+    return (f"{_record_cursor(state['watermark'])}"
+            f"-{_record_cursor(attempt_state['watermark'])}")
+
+
+@router.get("/learn/lessons/{lesson_id}/record-counts")
+def get_lesson_record_counts(lesson_id: int, since: str | None = None,
+                             conn: sqlite3.Connection = Depends(get_db)):
+    """The Record panel's counts, so a verdict written while the page is open
+    reaches the learner (#133 tier 1).
+
+    The panel itself is server-rendered on GET and the live-reload poll only
+    watches the lesson FILE, so before this a verdict landed silently and the
+    learner had to guess that reloading was worth it. This answers with the
+    same numbers the panel folds — no note text, no per-question shape: it is a
+    signal that the record moved, not a second rendering of it.
+
+    Read state is the CLIENT's: `since` is the cursor the learner last
+    acknowledged, and `unread` counts the standing verdicts recorded after it.
+    Nothing is stored server-side, so this stays a pure read and two browsers
+    on the same lesson keep their own idea of what they have seen. Absent
+    `since` = no baseline yet (a first visit), which is nothing unread rather
+    than everything; the client acknowledges an empty record with the zero
+    cursor, so the FIRST verdict of a lesson still announces itself.
+
+    `cursor` is the panel's WATERMARK over both tables behind it, which is a
+    strictly wider signal than `unread`: a retraction, an evidence/summary
+    write, or a Check recorded from the editor changes the rendered rows
+    without adding a standing verdict to announce. The watermark still moves
+    for all of those, and the client reads a cursor past its baseline with
+    nothing unread as "the record changed quietly" — refresh the body, no
+    badge. A count that only ever went up would leave a retracted verdict on
+    screen under a header already reading `0 verdicts`.
+    """
+    lesson = _lesson_or_404(conn, lesson_id)
+    state, attempt_state, focus_total = _record_panel_db_state(conn, lesson["id"])
+    reviews = list(state["reviews_by_attempt"].values())
+    cursors = sorted(_record_cursor(review["seq"]) for review in reviews)
+    baseline = since[:_MAX_SINCE_LEN] if since else None
+    return JSONResponse(
+        {
+            "ok": True,
+            "attempts": attempt_state["total"],
+            "assessments": state["active_count"],
+            "verdicts": len(reviews),
+            # Against the ASSESSMENT field of the baseline only: what counts as
+            # unread is a standing verdict recorded after it, and the attempt
+            # half of the signal must not make old verdicts look new again.
+            # Fixed-width fields make that a slice, not a parse of client input.
+            "unread": (
+                sum(1 for cursor in cursors if cursor > baseline[:_CURSOR_WIDTH])
+                if baseline else 0
+            ),
+            "cursor": _record_signal(state, attempt_state),
+            # The whole counts line, not a subset: a focus session finished in
+            # the drawer beside this panel moves it too, and half a line that
+            # refreshes is worse than one that plainly does not.
+            "focus": _focus_label(focus_total),
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 # --- lesson artifacts (phase F1 editor backend) ----------------------------

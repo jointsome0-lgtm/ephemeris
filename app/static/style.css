@@ -623,16 +623,50 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
 .lesson-record[open] .lesson-record-head::after { transform: rotate(225deg); }
 .lesson-record-title { font-family: var(--font-display); font-size: 17px; font-weight: 600; }
 .lesson-record-counts { min-width: 0; color: var(--muted); font-size: 12px; }
+/* Verdicts written since this browser last acknowledged the record. Gold, like
+   every other actionable state in the panel; hidden until there are any. */
+.rec-unread {
+  flex: 0 0 auto; height: 19px; display: inline-flex; align-items: center; padding: 0 8px;
+  border: 1px solid var(--astral); border-radius: var(--radius-pill);
+  background: var(--glow); color: var(--gold); cursor: pointer;
+  font-family: inherit; font-size: 10px; font-weight: 600; line-height: 1;
+  letter-spacing: .06em; text-transform: uppercase;
+}
+.rec-unread:hover { border-color: var(--gold); }
+/* The author-level `display` above outranks the UA's [hidden] rule, so the
+   hidden state needs its own selector — the idiom the drawer widgets use. */
+.rec-unread[hidden] { display: none; }
 .lesson-record-body {
   max-height: 46vh; overflow: auto; padding: 12px 14px 16px;
   display: flex; flex-direction: column; gap: 14px;
 }
 .rec-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.rec-chip-item { display: flex; min-width: 0; }
 .rec-chip {
   display: inline-flex; align-items: center; gap: 6px; min-height: 26px; padding: 3px 9px;
   border: 1px solid var(--border); border-radius: var(--radius-pill);
   background: var(--card-bg); font-size: 12px;
 }
+/* A chip carrying a note unfolds in place: pill closed, card open, and open it
+   claims the whole row so the note reads as prose rather than in a column the
+   width of a concept name. */
+.rec-chip-fold { display: block; padding: 0; }
+.rec-chip-head {
+  display: flex; align-items: center; gap: 6px; min-height: 26px; padding: 3px 9px;
+  cursor: pointer; list-style: none;
+}
+.rec-chip-head::-webkit-details-marker { display: none; }
+.rec-chip-head::after {
+  content: ""; flex: 0 0 auto; width: 5px; height: 5px; margin-left: 1px;
+  border-right: 1.5px solid var(--faint); border-bottom: 1.5px solid var(--faint);
+  transform: translateY(-1px) rotate(45deg); transition: transform .15s ease;
+}
+.rec-chip-fold[open] { border-radius: var(--radius); }
+.rec-chip-fold[open] .rec-chip-head::after { transform: translateY(1px) rotate(225deg); }
+.rec-chip-item:has(.rec-chip-fold[open]) { flex: 1 1 100%; }
+.rec-chip-fold[open] .rec-chip-head { border-bottom: 1px solid var(--border); }
+.rec-chip-body { padding: 7px 11px 9px; }
+.rec-chip-body .rec-note { margin-top: 3px; }
 .rec-chip-concept { overflow-wrap: anywhere; }
 .rec-chip-level { color: var(--muted); font-size: 11px; }
 .rec-chip.rec-lv-weak { border-color: var(--astral); background: var(--glow); }
@@ -692,6 +726,10 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
 .rec-moved { background: var(--hover); color: var(--muted); }
 .rec-unvalidated { background: rgba(245, 158, 11, .14); color: var(--prio-medium); }
 .rec-q-retired { opacity: .82; }
+/* Where a retired question's work continues (#133): the manifest's `replaces`
+   claim, rendered as the link between the two rows. */
+.rec-succ { margin: 5px 0 0; color: var(--faint); font-size: 12px; }
+.rec-succ a { color: var(--primary); }
 .rec-block-retired .rec-q { background: var(--panel); }
 .learn-empty {
   flex: 1 1 auto; min-height: 360px;

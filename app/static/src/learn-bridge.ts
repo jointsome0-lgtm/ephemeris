@@ -1441,3 +1441,257 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
   setInterval(() => void tick(), POLL_MS);
   document.addEventListener("visibilitychange", () => void tick());
 }
+
+/* ---- record counts poll (#133 tier 1) ------------------------------------
+ *
+ * The Record panel is server-rendered on GET, so a verdict the tutor writes
+ * while the learner sits on the page changes nothing on screen. This polls the
+ * counts — numbers only, no note text — and puts the difference on the summary
+ * row, so the learner learns that looking is worth it.
+ *
+ * Deliberately NOT part of the bridge above: it neither knows nor asks about
+ * the iframe, adds no operation to the ABI (reading the record INTO the lesson
+ * page is #133 tier 2, a designed ABI addition), and must keep working on a
+ * page whose bridge never arms. It runs slower than the reload poll for the
+ * same reason: a verdict is a human-scale event and each read folds the
+ * lesson's whole assessment state.
+ *
+ * Read state is the browser's. The server holds no per-learner "seen" mark, so
+ * the acknowledged cursor lives in localStorage and the poll asks how many
+ * standing verdicts are newer than it. First sight of a lesson silently takes
+ * the current cursor as the baseline: "new" means new to this reader, and
+ * before a first look nothing can be. An EMPTY record baselines at the zero
+ * cursor rather than at nothing, so the lesson's first verdict still
+ * announces itself instead of being read as another first sight. */
+const RECORD_POLL_MS = 6000;
+const RECORD_SEEN_PREFIX = "al-record-seen:";
+/* Sorts below every cursor the server mints (those are zero-padded digits), so
+ * it means "acknowledged an empty record", never "acknowledged nothing". */
+const RECORD_ZERO_CURSOR = "0";
+
+interface RecordCounts {
+  ok?: unknown;
+  attempts?: unknown;
+  assessments?: unknown;
+  verdicts?: unknown;
+  unread?: unknown;
+  cursor?: unknown;
+  focus?: unknown;
+}
+
+const recordPanel = document.getElementById("lesson-record") as HTMLDetailsElement | null;
+const recordCountsUrl = recordPanel?.dataset["recordCountsUrl"] || null;
+const recordKey = recordPanel?.dataset["recordKey"] || null;
+
+if (recordPanel && recordCountsUrl && recordKey) {
+  const badge = document.getElementById("rec-unread") as HTMLButtonElement | null;
+  const seenKey = RECORD_SEEN_PREFIX + recordKey;
+  /* Storage can be unavailable or full (cookies/site data disabled). What is
+   * acknowledged is then remembered for THIS page only, in memory: reading an
+   * empty value on every poll would make each tick look like a first sight and
+   * the badge would never appear. Persistence across visits is what such a
+   * browser loses, not the signal itself. */
+  let sessionSeen = "";
+  /* The later of the two, because acknowledging only ever moves forward and a
+   * write can fail against storage a read still answers (a full quota): the
+   * stored cursor would then keep winning and every poll would report the same
+   * verdicts unread again. Both values are server-minted cursors (or the zero
+   * sentinel), so comparing them as strings is comparing recency. */
+  const readSeen = (): string => {
+    let stored = "";
+    try {
+      stored = window.localStorage.getItem(seenKey) || "";
+    } catch {
+      stored = "";
+    }
+    return stored > sessionSeen ? stored : sessionSeen;
+  };
+  const writeSeen = (cursor: string): void => {
+    sessionSeen = cursor;
+    try {
+      window.localStorage.setItem(seenKey, cursor);
+    } catch {
+      /* in-memory only for this page */
+    }
+  };
+
+  /* First sight of this lesson: the page in front of the learner IS the first
+   * look, so the baseline is the cursor ITS rows read to, taken at render
+   * time. Waiting for the first poll to supply one would swallow any verdict
+   * written in between — the poll would report it while the learner had never
+   * seen it, and the first-sight branch would silently adopt it. A learner who
+   * has acknowledged before keeps that mark instead (`readSeen` takes the
+   * later of the two), so the badge still spans visits. */
+  if (!readSeen()) {
+    /* An EMPTY rendered record baselines at the zero cursor, never at nothing:
+     * "" would read as no baseline again on the first poll, and the lesson's
+     * first verdict — written between this render and that poll — would be
+     * acknowledged instead of announced.
+     *
+     * WRITTEN, not just held in memory. Nothing else persists this baseline —
+     * the first poll finds `readSeen()` already answering and acknowledges
+     * nothing — so a visit that ends without a badge click would leave the
+     * lesson unbaselined. The next visit would then seed from ITS render, and
+     * a verdict written in between would be adopted as already-seen: the
+     * silent arrival this whole panel exists to stop. */
+    writeSeen(recordPanel.dataset["recordCursor"] || RECORD_ZERO_CURSOR);
+  }
+
+  /* The newest cursor the server has reported. Acknowledging is local and
+   * instant: the next poll confirms it. */
+  let latestCursor = "";
+
+  const setCount = (name: string, value: string): void => {
+    const cell = recordPanel.querySelector(`[data-record-count="${name}"]`);
+    /* A pre-#133 backend renders no verdicts cell; the others always exist. */
+    if (cell && cell.textContent !== value) cell.textContent = value;
+  };
+
+  const showUnread = (count: number): void => {
+    if (!badge) return;
+    badge.hidden = count <= 0;
+    const text = count > 0 ? `${count} new` : "";
+    if (badge.textContent !== text) badge.textContent = text;
+  };
+
+  const acknowledge = (cursor: string): void => {
+    writeSeen(cursor || RECORD_ZERO_CURSOR);
+    showUnread(0);
+  };
+
+  /* Re-render the panel body from the server before the badge is cleared.
+   * The body is the GET snapshot: clearing "N new" over rows that predate the
+   * verdict would spend the only signal the learner had and show them the old
+   * reading. Same-origin HTML this app rendered and escaped, parsed inert (a
+   * DOMParser document runs no script) and adopted by insertion; on any
+   * failure the badge stays up and the click can be repeated.
+   *
+   * Returns the cursor the SWAPPED-IN rows read to, which is what may then be
+   * acknowledged: a poll completing during the fetch can move `latestCursor`
+   * past a verdict this snapshot does not contain, and acknowledging that
+   * would clear the badge for a row the learner was never shown. */
+  const refreshBody = async (): Promise<string | null> => {
+    try {
+      const response = await fetch(window.location.href, { cache: "no-store" });
+      if (!response.ok) return null;
+      const parsed = new DOMParser().parseFromString(await response.text(), "text/html");
+      const panel = parsed.querySelector("#lesson-record");
+      /* `/learn` resolves its own selection: a filter, an archive, or a status
+       * change in another tab can make this URL answer with a DIFFERENT
+       * lesson. Swapping that body in would show the wrong record and then
+       * acknowledge THIS lesson's cursor over it, so the key is checked first
+       * and a mismatch simply leaves the badge up. */
+      if (!panel || panel.getAttribute("data-record-key") !== recordKey) return null;
+      const fresh = panel.querySelector(".lesson-record-body");
+      const current = recordPanel.querySelector(".lesson-record-body");
+      if (!fresh || !current) return null;
+      current.replaceWith(fresh);
+      /* Absent only on a backend that renders no cursor — which is also a
+       * backend with no poll route — so the empty (zero) cursor is right. */
+      return panel.getAttribute("data-record-cursor") ?? "";
+    } catch {
+      return null;
+    }
+  };
+
+  /* One body swap at a time: the poll's quiet refresh and a badge click can
+   * otherwise both be fetching `/learn`, and the later answer would replace
+   * rows the other had just adopted. */
+  let refreshing = false;
+  const guardedRefresh = async (): Promise<string | null> => {
+    if (refreshing) return null;
+    refreshing = true;
+    try {
+      return await refreshBody();
+    } finally {
+      refreshing = false;
+    }
+  };
+
+  let inFlight = false;
+  const pollCounts = async (): Promise<void> => {
+    if (document.hidden || inFlight) return;
+    inFlight = true;
+    try {
+      const asked = readSeen();
+      const response = await fetch(
+        `${recordCountsUrl}?since=${encodeURIComponent(asked)}`,
+        { cache: "no-store" },
+      );
+      const data: unknown = await response.json();
+      if (typeof data !== "object" || data === null) return;
+      const counts = data as RecordCounts;
+      if (counts.ok !== true) return;
+      /* The baseline moved while this was in flight — a badge click refreshed
+       * the body and acknowledged. This answer was computed against the OLD
+       * cursor, so applying it would put the same "N new" back over rows the
+       * learner has just been shown. Drop it whole; the next tick asks again. */
+      if (readSeen() !== asked) return;
+      if (typeof counts.cursor === "string") latestCursor = counts.cursor;
+      for (const name of ["attempts", "assessments", "verdicts"] as const) {
+        const value = counts[name];
+        if (typeof value === "number" && Number.isFinite(value)) {
+          setCount(name, String(value));
+        }
+      }
+      /* Already a magnitude the server spelled ("25m"), not a number to
+       * format here: the label has one owner and it is `_focus_label`. */
+      if (typeof counts.focus === "string" && counts.focus.length <= 16) {
+        setCount("focus", counts.focus);
+      }
+      if (!readSeen()) {
+        /* First sight of this lesson in this browser: adopt the current cursor
+         * as the baseline instead of announcing the whole history as new. */
+        acknowledge(latestCursor);
+        return;
+      }
+      const unread =
+        typeof counts.unread === "number" && Number.isFinite(counts.unread)
+          ? counts.unread
+          : 0;
+      showUnread(unread);
+      /* Nothing to ANNOUNCE, yet the record has moved past the snapshot the
+       * learner is looking at: a retraction took a verdict away, or evidence
+       * or a summary landed. There is no honest badge for a removal — "1 new"
+       * over a row that just disappeared is worse than silence — but leaving
+       * the old rows under a header this same response already corrected is
+       * worse still. So the body is quietly brought up to date instead, and
+       * only the cursor of the rows actually swapped in is acknowledged. */
+      if (unread === 0 && latestCursor > asked) {
+        const shown = await guardedRefresh();
+        /* Never past the cursor this ZERO-UNREAD answer was computed at, even
+         * though the refreshed body may read further: a verdict written
+         * between the two requests is on screen but was never counted, and
+         * acknowledging it here would spend its badge while the panel sits
+         * closed. Acknowledge the narrower of the two and let the next poll
+         * announce anything beyond it — a badge over a row already rendered is
+         * a redundant nudge, a verdict silently marked seen is a lost one. */
+        const upTo = shown !== null && shown < latestCursor ? shown : latestCursor;
+        /* A badge click may have acknowledged something newer while this was
+         * fetching; the seen cursor only ever moves forward. */
+        if (shown !== null && readSeen() === asked) acknowledge(upTo);
+      }
+    } catch {
+      /* best-effort; the next tick retries */
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  badge?.addEventListener("click", (ev) => {
+    /* The badge sits inside the <summary>: its own click must OPEN the panel,
+     * never toggle a panel the learner just asked to see. The record is
+     * refreshed first and acknowledged only once the new rows are on screen. */
+    ev.preventDefault();
+    ev.stopPropagation();
+    recordPanel.open = true;
+    void (async () => {
+      const shown = await guardedRefresh();
+      if (shown !== null) acknowledge(shown);
+    })();
+  });
+
+  setInterval(() => void pollCounts(), RECORD_POLL_MS);
+  document.addEventListener("visibilitychange", () => void pollCounts());
+  void pollCounts();
+}

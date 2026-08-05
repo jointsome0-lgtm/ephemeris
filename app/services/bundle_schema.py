@@ -673,7 +673,55 @@ def _read_questions(read: ManifestRead, raw: dict, page_ids: set[str]) -> list[d
         if label is not None and not (isinstance(label, str) and len(label) <= MAX_LABEL_LEN):
             read.add("invalid-value", f"question {qid} label dropped")
             label = None
-        questions.append({"id": qid, "page": page, "kind": kind, "label": label})
+        replaces = item.get("replaces")
+        if replaces is not None and not (
+            isinstance(replaces, str) and QUESTION_ID_RE.match(replaces)
+        ):
+            read.add("invalid-value", f"question {qid} replaces dropped")
+            replaces = None
+        if replaces == qid:
+            read.add("invalid-value", f"question {qid} replaces itself")
+            replaces = None
+        questions.append({
+            "id": qid, "page": page, "kind": kind, "label": label,
+            "replaces": replaces,
+        })
+    return _resolve_replaces(read, questions)
+
+
+def _resolve_replaces(read: ManifestRead, questions: list[dict]) -> list[dict]:
+    """Second pass over `questions[].replaces` (§4.3), where the whole
+    declaration set is known.
+
+    A predecessor is by definition RETIRED — a durable id the manifest no
+    longer declares — so a `replaces` naming a still-declared question, or two
+    successors claiming one predecessor, cannot be what the author meant. The
+    binding is dropped and the question keeps its place: a bad succession claim
+    loses the retired row's link to it, not the question itself.
+    """
+    declared = {question["id"] for question in questions}
+    claimants: dict[str, list[str]] = {}
+    for question in questions:
+        if question["replaces"] is not None:
+            claimants.setdefault(question["replaces"], []).append(question["id"])
+    for target, ids in claimants.items():
+        if target in declared:
+            read.add(
+                "invalid-value",
+                f"question {ids[0]} replaces still-declared {target}",
+            )
+        elif len(ids) > 1:
+            # Ambiguous succession: drop EVERY claim, never the first-wins one.
+            # Which successor the author meant is exactly what is unknown.
+            read.add(
+                "invalid-value",
+                f"questions {', '.join(ids)} all replace {target}",
+            )
+        else:
+            continue
+        for question in questions:
+            if question["replaces"] == target:
+                question["replaces"] = None
     return questions
 
 
@@ -889,7 +937,7 @@ _TOP_LEVEL_ORDER = (
 )
 _ITEM_ORDER = {
     "pages": ("id", "path", "title"),
-    "questions": ("id", "page", "kind", "label"),
+    "questions": ("id", "page", "kind", "label", "replaces"),
     "blocks": ("id", "page", "kind", "language", "file", "runner_id"),
     "runtime": ("profile",),
 }

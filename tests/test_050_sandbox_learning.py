@@ -867,8 +867,10 @@ def test_sandbox_learning(client, suite_state):
         '<details class="lesson-record"' in _s4_html
         and _s4_ctx["counts"] == {"attempts": 4, "assessments": 6,
                                 "focus": "25m", "focus_seconds": 1500}
-        and "4 attempts" in _s4_body and "6 active" in _s4_body
-        and "25m focused" in _s4_body
+        and 'data-record-count="attempts">4</span> attempts' in _s4_body
+        and 'data-record-count="assessments">6</span> active' in _s4_body
+        and 'data-record-count="verdicts">2</span> verdicts' in _s4_body
+        and 'data-record-count="focus">25m</span> focused' in _s4_body
     ), (
         "S4 panel renders on the selected lesson with its counts line" + "  -- " + (str(_s4_ctx["counts"]))
     )
@@ -877,7 +879,7 @@ def test_sandbox_learning(client, suite_state):
         for chip in _s4_ctx["evidence"]]
         == [("channels & <select>", "weak", False), ("goroutines", "passed", True)]
         and "s4-evidence-superseded" not in _s4_html
-        and 'class="rec-chip rec-lv-weak"' in _s4_body
+        and 'class="rec-chip rec-chip-fold rec-lv-weak"' in _s4_body
     ), (
         "S4 evidence chips fold to the latest ACTIVE row per concept, weak first" + "  -- " + (str(_s4_ctx["evidence"]))
     )
