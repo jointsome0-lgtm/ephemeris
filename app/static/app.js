@@ -168,6 +168,25 @@
     });
   })();
 
+  // --- Learn record sheet: remember whether it is open (#132) -----------------
+  // The record now opens as a sheet over the lesson rather than a block under
+  // it, so "open" is a reading preference about the surface, not data about one
+  // lesson: one key, like the collapsed list above. The `toggle` event is the
+  // single signal, which also records the runtime opening the panel from the
+  // unread badge (learn-bridge.ts). Until the learner touches it, the panel
+  // keeps whatever the server rendered — no stored state, no opinion.
+  (() => {
+    const rec = document.getElementById("lesson-record");
+    if (!rec) return;
+    const REC_KEY = "al-record-open";
+    let stored = null;
+    try { stored = localStorage.getItem(REC_KEY); } catch (_) {}
+    if (stored !== null) rec.open = stored === "1";
+    rec.addEventListener("toggle", () => {
+      try { localStorage.setItem(REC_KEY, rec.open ? "1" : "0"); } catch (_) {}
+    });
+  })();
+
   // --- theme: tri-state (system | light | dark); default follows the OS --------
   // The storage key, resolve rule and system media query live in ONE place:
   // window.alTheme, defined by base.html's pre-paint head script (which always

@@ -415,16 +415,27 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
   left: 3px; top: 50%; transform: translateY(-50%);
   width: 3px; height: 38px;
 }
-.learn-page .content-inner { max-width: none; min-height: 100%; padding: 18px 28px 80px; }
-.learn-board { min-height: calc(100vh - 116px); display: flex; flex-direction: column; }
+/* --- reading mode (#132) ------------------------------------------------
+   Learn is a reading surface, so the lesson document — and only it — scrolls.
+   The content column is already exactly the viewport minus the terminal
+   drawer (--term-h, above); the board takes that height instead of asking for
+   a minimum, and every box down to the iframe wrap passes it on with
+   `min-height: 0` so a long lesson cannot push the column past its bounds.
+   Below 860px this reverts: the workspace stacks and the page scrolls again. */
+.content.learn-page { overflow-y: hidden; }
+.learn-page .content-inner {
+  max-width: none; height: 100%; padding: 18px 28px;
+  display: flex; flex-direction: column;
+}
+.learn-board { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 .learn-workspace {
-  flex: 1 1 auto; min-height: calc(100vh - 124px);
+  flex: 1 1 auto; min-height: 0;
   display: grid; grid-template-columns: var(--lesson-w, minmax(250px, .42fr)) auto minmax(320px, 1fr);
   gap: 14px; column-gap: 2px; align-items: stretch;
 }
 /* children pinned to their tracks: with the panel display:none (collapsed),
    auto-placement would otherwise slide the gutter/preview into columns 1-2 */
-.lesson-panel { grid-column: 1; min-width: 0; display: flex; flex-direction: column; }
+.lesson-panel { grid-column: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .lesson-panel .learn-add { grid-template-columns: auto minmax(0, 1fr); padding: 10px 14px; }
 .lesson-panel .learn-add .qa-plus { grid-row: 1 / 3; align-self: start; margin-top: 6px; }
 .lesson-panel .learn-url-input { grid-column: 2; }
@@ -601,13 +612,18 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
   background: var(--bg); color: var(--muted); font-size: 12px;
 }
 .lesson-preview-tools .learner-term-toggle:hover { background: var(--hover); color: var(--text); }
-.lesson-frame-wrap { flex: 1 1 auto; min-height: 560px; background: #fff; }
+/* the lesson takes whatever the column has left — no letterbox minimum, and
+   nothing below it changes that height (#132) */
+.lesson-frame-wrap { flex: 1 1 auto; min-height: 0; background: #fff; }
 .lesson-frame { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
 /* --- the record panel: what the tutor concluded (#4 phase S, D-S3-1) ---
    Sits at the foot of the preview card as its own layer, so consulting the
    record never displaces the lesson itself. Levels carry the colour; `weak`
-   takes the celestial gold because it is the actionable state. */
-.lesson-record { flex: 0 0 auto; border-top: 1px solid var(--border); background: var(--panel); }
+   takes the celestial gold because it is the actionable state.
+   #132: only the summary bar is in the column's vertical flow; the body opens
+   as a sheet above it (below), so the record is a toggle over the lesson and
+   the iframe keeps the same height open or closed. */
+.lesson-record { position: relative; flex: 0 0 auto; border-top: 1px solid var(--border); background: var(--panel); }
 .lesson-record-head {
   display: flex; align-items: center; gap: 10px; padding: 9px 14px;
   background: var(--card-bg); cursor: pointer; list-style: none;
@@ -636,9 +652,15 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
 /* The author-level `display` above outranks the UA's [hidden] rule, so the
    hidden state needs its own selector — the idiom the drawer widgets use. */
 .rec-unread[hidden] { display: none; }
+/* The sheet: anchored to the top edge of its summary bar (`bottom: 100%`), so
+   it rises over the lesson instead of shortening it, and is clipped by the
+   preview card like every other layer in it. */
 .lesson-record-body {
+  position: absolute; left: 0; right: 0; bottom: 100%; z-index: 3;
   max-height: 46vh; overflow: auto; padding: 12px 14px 16px;
   display: flex; flex-direction: column; gap: 14px;
+  border-top: 1px solid var(--border); background: var(--panel);
+  box-shadow: 0 -10px 26px rgba(0, 0, 0, .16);
 }
 .rec-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
 .rec-chip-item { display: flex; min-width: 0; }
@@ -765,6 +787,10 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
   .learn-url-input { grid-column: 2; }
   .learn-add .btn-primary { grid-column: 2; }
   .learn-filter-archive { margin-left: 0; }
+  /* Reading mode is a two-column, viewport-locked idea (#132). Here the
+     workspace stacks, so the page scrolls and the record is a block again. */
+  .content.learn-page { overflow-y: auto; }
+  .learn-page .content-inner { height: auto; min-height: 100%; padding: 18px 28px 80px; }
   .learn-workspace { display: flex; flex-direction: column; min-height: 0; }
   .learn-split { display: none; }   /* single-column: nothing to resize/collapse */
   .learn-workspace.panel-collapsed .lesson-panel { display: flex; }  /* ignore desktop collapse on mobile */
@@ -775,7 +801,10 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
   .lesson-preview-tools { flex-wrap: wrap; }
   .lesson-frame-wrap { min-height: 480px; }
   /* compact record panel: the same content, less of the screen */
-  .lesson-record-body { max-height: 60vh; padding: 10px 12px 14px; gap: 10px; }
+  .lesson-record-body {
+    position: static; max-height: 60vh; padding: 10px 12px 14px; gap: 10px;
+    border-top: none; box-shadow: none;
+  }
   .lesson-record-title { font-size: 15px; }
   .rec-answer { font-size: 11px; }
 }
