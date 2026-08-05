@@ -181,6 +181,7 @@ def test_run_api(client, suite_state):
             and "output" not in _f4_event
             and "stdout" not in _f4_event
             and "stderr" not in _f4_event
+            and "output_tail" not in _f4_event
         ), "F4 terminal job records one body-free lesson_run event"
 
         def _f4_bundle_state():

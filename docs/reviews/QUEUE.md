@@ -93,6 +93,23 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   179 passed, `verify_restore.py` 34 passed 0 failed, public hygiene clean. The
   entry stays Pending for the owner's re-drain; no restart was performed.
 
+- [ ] 2026-08-05 — `d71cff5`..`0627649` on `fix/135-runs-projection` —
+  `app/services/runs.py`, `app/services/bundle_schema.py`,
+  `app/services/lessons.py`, `tests/test_170_runs_projection.py`,
+  `tests/test_070_run_api.py`, `docs/learn-bundle-spec.md`,
+  `docs/lesson-artifacts-api.md`, `docs/reviews/QUEUE.md` — issue #135, the
+  lesson bundle gains the generated file `runs.jsonl` containing run metadata
+  and a bounded 8 KiB output tail, which sandboxed study sessions read. Over
+  the review rounds the same surface also gained: the output tail excluded
+  from the `lesson_run` ledger event and its export (`f8b4646`); an
+  app-private seal of the last published file, in-place append only on a
+  match, and a `runs.jsonl.collision-<hex>` move-aside otherwise (`83b28f2`);
+  the `assessments.py` bundle-identity gate applied before publishing, and a
+  2 MiB bounded-read rule plus a data-boundary line for run output in the
+  generated brief (`735893b`); the same seal checked at lesson-terminal open
+  via a new `prepare_terminal_workspace` step, plus staged-inode and state-
+  directory durability fixes in the publish path (`0627649`).
+
 ## Done
 
 - [x] 2026-08-02 — `06f6df5` and `63e7a1e` on `fix/terminal-job-control`,
