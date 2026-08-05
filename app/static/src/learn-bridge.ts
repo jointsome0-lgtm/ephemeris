@@ -1457,12 +1457,17 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
  * lesson's whole assessment state.
  *
  * Read state is the browser's. The server holds no per-learner "seen" mark, so
- * the acknowledged stamp lives in localStorage and the poll asks how many
+ * the acknowledged cursor lives in localStorage and the poll asks how many
  * standing verdicts are newer than it. First sight of a lesson silently takes
- * the current stamp as the baseline: "new" means new to this reader, and
- * before a first look nothing can be. */
+ * the current cursor as the baseline: "new" means new to this reader, and
+ * before a first look nothing can be. An EMPTY record baselines at the zero
+ * cursor rather than at nothing, so the lesson's first verdict still
+ * announces itself instead of being read as another first sight. */
 const RECORD_POLL_MS = 6000;
 const RECORD_SEEN_PREFIX = "al-record-seen:";
+/* Sorts below every cursor the server mints (those are zero-padded digits), so
+ * it means "acknowledged an empty record", never "acknowledged nothing". */
+const RECORD_ZERO_CURSOR = "0";
 
 interface RecordCounts {
   ok?: unknown;
@@ -1470,7 +1475,7 @@ interface RecordCounts {
   assessments?: unknown;
   verdicts?: unknown;
   unread?: unknown;
-  latest_at?: unknown;
+  cursor?: unknown;
 }
 
 const recordPanel = document.getElementById("lesson-record") as HTMLDetailsElement | null;
@@ -1490,18 +1495,17 @@ if (recordPanel && recordCountsUrl && recordKey) {
       return "";
     }
   };
-  const writeSeen = (stamp: string): void => {
+  const writeSeen = (cursor: string): void => {
     try {
-      window.localStorage.setItem(seenKey, stamp);
+      window.localStorage.setItem(seenKey, cursor);
     } catch {
       /* ignore */
     }
   };
 
-  /* The stamp the badge is currently counting from, and the newest stamp the
-   * server has reported. Acknowledging is local and instant: the next poll
-   * confirms it. */
-  let latestAt = "";
+  /* The newest cursor the server has reported. Acknowledging is local and
+   * instant: the next poll confirms it. */
+  let latestCursor = "";
 
   const setCount = (name: string, value: number): void => {
     const cell = recordPanel.querySelector(`[data-record-count="${name}"]`);
@@ -1517,8 +1521,29 @@ if (recordPanel && recordCountsUrl && recordKey) {
   };
 
   const acknowledge = (): void => {
-    if (latestAt) writeSeen(latestAt);
+    writeSeen(latestCursor || RECORD_ZERO_CURSOR);
     showUnread(0);
+  };
+
+  /* Re-render the panel body from the server before the badge is cleared.
+   * The body is the GET snapshot: clearing "N new" over rows that predate the
+   * verdict would spend the only signal the learner had and show them the old
+   * reading. Same-origin HTML this app rendered and escaped, parsed inert (a
+   * DOMParser document runs no script) and adopted by insertion; on any
+   * failure the badge stays up and the click can be repeated. */
+  const refreshBody = async (): Promise<boolean> => {
+    try {
+      const response = await fetch(window.location.href, { cache: "no-store" });
+      if (!response.ok) return false;
+      const parsed = new DOMParser().parseFromString(await response.text(), "text/html");
+      const fresh = parsed.querySelector("#lesson-record .lesson-record-body");
+      const current = recordPanel.querySelector(".lesson-record-body");
+      if (!fresh || !current) return false;
+      current.replaceWith(fresh);
+      return true;
+    } catch {
+      return false;
+    }
   };
 
   let inFlight = false;
@@ -1534,13 +1559,13 @@ if (recordPanel && recordCountsUrl && recordKey) {
       if (typeof data !== "object" || data === null) return;
       const counts = data as RecordCounts;
       if (counts.ok !== true) return;
-      if (typeof counts.latest_at === "string") latestAt = counts.latest_at;
+      if (typeof counts.cursor === "string") latestCursor = counts.cursor;
       for (const name of ["attempts", "assessments", "verdicts"] as const) {
         const value = counts[name];
         if (typeof value === "number" && Number.isFinite(value)) setCount(name, value);
       }
       if (!readSeen()) {
-        /* First sight of this lesson in this browser: adopt the current stamp
+        /* First sight of this lesson in this browser: adopt the current cursor
          * as the baseline instead of announcing the whole history as new. */
         acknowledge();
         return;
@@ -1558,12 +1583,15 @@ if (recordPanel && recordCountsUrl && recordKey) {
   };
 
   badge?.addEventListener("click", (ev) => {
-    /* The badge sits inside the <summary>: its own click must acknowledge and
-     * OPEN the panel, never toggle a panel the learner just asked to see. */
+    /* The badge sits inside the <summary>: its own click must OPEN the panel,
+     * never toggle a panel the learner just asked to see. The record is
+     * refreshed first and acknowledged only once the new rows are on screen. */
     ev.preventDefault();
     ev.stopPropagation();
     recordPanel.open = true;
-    acknowledge();
+    void (async () => {
+      if (await refreshBody()) acknowledge();
+    })();
   });
 
   setInterval(() => void pollCounts(), RECORD_POLL_MS);

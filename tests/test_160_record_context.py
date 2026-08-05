@@ -216,6 +216,27 @@ def test_a_dropped_successor_claim_leaves_the_retired_row_unlinked(client):
     assert "href=\"#rec-q-" not in client.get(f"/learn?lesson={lesson['id']}").text
 
 
+def test_a_still_named_but_unvalidated_question_never_takes_the_link(client):
+    """A question the manifest still names but the reader could not validate is
+    UNVALIDATED, not retired (§4.3: a predecessor is no longer declared). The
+    reader can only compare a claim against what validated, so the panel — the
+    layer that decides retirement — refuses the link."""
+    lesson, lesson_dir, manifest = _lesson_with_record("Unvalidated Target Fixture")
+    manifest["questions"] = [
+        # still named, but dangling: dropped from the read model, not retired
+        {"id": "q_recold001", "page": "pg_nosuchpage"},
+        {"id": "q_recnew001", "page": manifest["pages"][0]["id"],
+         "label": "New wording", "replaces": "q_recold001"},
+    ]
+    bundle_schema.write_manifest(lesson_dir / lessons.MANIFEST_NAME, manifest)
+    panel = _panel(lesson)
+    assert panel["retired"] == []
+    unvalidated = [q for q in panel["questions"] if q["question_id"] == "q_recold001"]
+    assert unvalidated and unvalidated[0]["unvalidated"] is True
+    assert all(q["successor"] is None for q in panel["questions"])
+    assert 'href="#rec-q-' not in client.get(f"/learn?lesson={lesson['id']}").text
+
+
 def test_evidence_notes_render_in_full_instead_of_a_truncated_tooltip(client):
     lesson, _dir, _manifest = _lesson_with_record("Evidence Note Fixture")
     body = client.get(f"/learn?lesson={lesson['id']}").text
@@ -240,8 +261,8 @@ def test_record_counts_answers_the_poll_and_counts_unread_against_since(client):
     assert (first["attempts"], first["assessments"], first["verdicts"]) == (1, 2, 1)
     # No baseline yet is nothing unread — not a whole history announced as new.
     assert first["unread"] == 0
-    stamp = first["latest_at"]
-    assert stamp and client.get(url, params={"since": stamp}).json()["unread"] == 0
+    cursor = first["cursor"]
+    assert cursor and client.get(url, params={"since": cursor}).json()["unread"] == 0
 
     conn = get_conn()
     try:
@@ -256,13 +277,99 @@ def test_record_counts_answers_the_poll_and_counts_unread_against_since(client):
     finally:
         conn.close()
 
-    after = client.get(url, params={"since": stamp}).json()
+    after = client.get(url, params={"since": cursor}).json()
     assert after["unread"] == 1
-    assert after["latest_at"] > stamp
+    assert after["cursor"] > cursor
     # The standing fold, not the history: one verdict per answered question.
     assert after["verdicts"] == 1
-    assert client.get(url, params={"since": after["latest_at"]}).json()["unread"] == 0
+    assert client.get(url, params={"since": after["cursor"]}).json()["unread"] == 0
     assert client.get(f"/learn/lessons/{lesson['id'] + 9999}/record-counts").status_code == 404
+
+
+def test_the_unread_cursor_is_the_seq_authority_not_the_display_stamp(client,
+                                                                     monkeypatch):
+    """`created_at` is display metadata and two rows can share a microsecond;
+    `seq` is the recency authority (assessments.py). A verdict that shares its
+    stamp with an acknowledged one must still count as unread."""
+    lesson, _dir, _manifest = _lesson_with_record("Record Cursor Fixture")
+    url = f"/learn/lessons/{lesson['id']}/record-counts"
+    frozen = "2026-08-05T00:00:00.000000+00:00"
+    monkeypatch.setattr(assessments, "_utc_now_iso", lambda: frozen)
+
+    conn = get_conn()
+    try:
+        fresh = lessons.get_lesson(conn, lesson["id"])
+        attempt_id = attempts.lesson_attempt_summary(
+            conn, fresh["id"]
+        )["latest_by_question"]["q_recold001"]["attempt_id"]
+        for n in (1, 2):
+            assessments.record_assessment(conn, fresh, {
+                "kind": "review", "level": "correct", "attempt_id": attempt_id,
+                "note": f"Same-microsecond verdict {n}.",
+                "idempotency_key": f"{fresh['slug']}-tie-{n}",
+            })
+        stamps = [row["created_at"] for row in conn.execute(
+            "SELECT created_at FROM lesson_assessments WHERE lesson_id = ? "
+            "AND kind = 'review'", (fresh["id"],))]
+    finally:
+        conn.close()
+    assert stamps.count(frozen) == 2  # the collision the cursor must survive
+
+    first = client.get(url).json()
+    # Acknowledge the state as of the FIRST of the two identical stamps.
+    conn = get_conn()
+    try:
+        seqs = sorted(row["id"] for row in conn.execute(
+            "SELECT id FROM lesson_assessments WHERE lesson_id = ? "
+            "AND kind = 'review'", (lesson["id"],)))
+    finally:
+        conn.close()
+    assert client.get(
+        url, params={"since": learn._record_cursor(seqs[-2])}
+    ).json()["unread"] == 1
+    assert first["cursor"] == learn._record_cursor(seqs[-1])
+
+
+def test_an_empty_record_baselines_so_the_first_verdict_still_announces(client):
+    """The zero cursor is what "acknowledged an empty record" looks like: the
+    client stores it, and the very first verdict of the lesson counts unread."""
+    conn = get_conn()
+    try:
+        lesson_id = lessons.create_lesson(conn, "Empty Record Baseline Fixture")
+        lesson = lessons.get_lesson(conn, lesson_id)
+    finally:
+        conn.close()
+    url = f"/learn/lessons/{lesson_id}/record-counts"
+    empty = client.get(url).json()
+    assert (empty["verdicts"], empty["unread"], empty["cursor"]) == (0, 0, "")
+
+    page_id = json.loads(
+        (Path(lessons.LESSONS_DIR) / lesson["slug"] / lessons.MANIFEST_NAME)
+        .read_text(encoding="utf-8")
+    )["pages"][0]["id"]
+    lesson_dir = Path(lessons.LESSONS_DIR) / lesson["slug"]
+    manifest = json.loads(
+        (lesson_dir / lessons.MANIFEST_NAME).read_text(encoding="utf-8")
+    )
+    manifest["questions"] = [{"id": "q_recfirst1", "page": page_id}]
+    bundle_schema.write_manifest(lesson_dir / lessons.MANIFEST_NAME, manifest)
+    page = lesson_dir / "index.html"
+    page.write_text("<html>First verdict fixture</html>", encoding="utf-8")
+    conn = get_conn()
+    try:
+        attempt = attempts.record_attempt(conn, lesson, {
+            "question_id": "q_recfirst1", "page_id": page_id,
+            "page_rev": "sha256:" + hashlib.sha256(page.read_bytes()).hexdigest(),
+            "answer": "First answer", "idempotency_key": f"{lesson['slug']}-a",
+        })
+        assessments.record_assessment(conn, lesson, {
+            "kind": "review", "level": "correct",
+            "attempt_id": attempt["attempt_id"], "note": "The first verdict.",
+            "idempotency_key": f"{lesson['slug']}-r",
+        })
+    finally:
+        conn.close()
+    assert client.get(url, params={"since": "0"}).json()["unread"] == 1
 
 
 def test_the_record_panel_carries_the_poll_target_and_the_unread_badge(client):
@@ -274,6 +381,11 @@ def test_the_record_panel_carries_the_poll_target_and_the_unread_badge(client):
     # The badge ships hidden and empty: unread is this browser's state, and the
     # server has no opinion about what the learner has already seen.
     assert '<button type="button" class="rec-unread" id="rec-unread" hidden' in body
+
+    # The author-level display rule needs its own hidden selector or the empty
+    # pill would show through `badge.hidden`.
+    css = Path("app/static/style.css").read_text(encoding="utf-8")
+    assert ".rec-unread[hidden] { display: none; }" in css
 
     source = Path("app/static/src/learn-bridge.ts").read_text(encoding="utf-8")
     emitted = Path("app/static/learn-bridge.js").read_text(encoding="utf-8")

@@ -633,6 +633,9 @@ body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
   letter-spacing: .06em; text-transform: uppercase;
 }
 .rec-unread:hover { border-color: var(--gold); }
+/* The author-level `display` above outranks the UA's [hidden] rule, so the
+   hidden state needs its own selector — the idiom the drawer widgets use. */
+.rec-unread[hidden] { display: none; }
 .lesson-record-body {
   max-height: 46vh; overflow: auto; padding: 12px 14px 16px;
   display: flex; flex-direction: column; gap: 14px;

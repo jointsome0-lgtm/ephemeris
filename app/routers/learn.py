@@ -303,7 +303,7 @@ def _record_entry(state: dict, attempt: dict | None, *, label: str,
 
 
 def _attach_successors(rows: list[dict], declared: list[dict]) -> None:
-    """Point a row at the declared question that says it `replaces` it (§4.3).
+    """Point a RETIRED row at the declared question that says it `replaces` it.
 
     Durable ids are never reused, so a rewritten question arrives under a new
     id and everything recorded about the old one keeps standing alone at the
@@ -311,6 +311,12 @@ def _attach_successors(rows: list[dict], declared: list[dict]) -> None:
     the same question, and the reader has already refused every ambiguous or
     self-referential claim, so this is a plain lookup — a link between two rows
     the panel is showing anyway, never a move of history between them.
+
+    Only retired rows take the link (§4.3: a predecessor is by definition no
+    longer declared). The reader can only compare the claim against the
+    questions that VALIDATED, while retirement is decided here, against the
+    ids the document still names — so a claim on a question the manifest still
+    names but could not validate is refused at this end, where that is known.
     """
     successors = {
         question["replaces"]: {
@@ -321,7 +327,9 @@ def _attach_successors(rows: list[dict], declared: list[dict]) -> None:
         if question.get("replaces")
     }
     for row in rows:
-        row["successor"] = successors.get(row["question_id"])
+        row["successor"] = (
+            successors.get(row["question_id"]) if row["retired"] else None
+        )
 
 
 _record_panel_db_state = lessons.record_panel_db_state
@@ -655,9 +663,25 @@ def get_lesson_preview_meta(lesson_id: int, entry: str | None = None,
 
 
 # Longest `since` a caller can hand the record poll. The value is only ever
-# compared as a string against ISO stamps this app wrote, but an unbounded
-# query parameter should not reach a comparison loop at all.
+# compared as a string against cursors this app minted, but an unbounded query
+# parameter should not reach a comparison loop at all.
 _MAX_SINCE_LEN = 64
+# Width the assessment `seq` is padded to so plain string ordering agrees with
+# numeric ordering. 20 digits covers the full SQLite rowid range.
+_CURSOR_WIDTH = 20
+
+
+def _record_cursor(seq: int) -> str:
+    """The opaque recency cursor for one assessment row.
+
+    Deliberately `seq`, not `created_at`: the rowid is this table's recency
+    AUTHORITY (assessments.py) and is unique by construction, while two rows
+    can carry the same microsecond stamp and then have no order at all —
+    a verdict sharing a stamp with an acknowledged one would never be counted
+    unread. Padded so the client can treat it as an opaque string it only ever
+    hands back.
+    """
+    return f"{seq:0{_CURSOR_WIDTH}d}"
 
 
 @router.get("/learn/lessons/{lesson_id}/record-counts")
@@ -672,17 +696,18 @@ def get_lesson_record_counts(lesson_id: int, since: str | None = None,
     same numbers the panel folds — no note text, no per-question shape: it is a
     signal that the record moved, not a second rendering of it.
 
-    Read state is the CLIENT's: `since` is the stamp the learner last
-    acknowledged, and `unread` counts the standing verdicts written after it.
+    Read state is the CLIENT's: `since` is the cursor the learner last
+    acknowledged, and `unread` counts the standing verdicts recorded after it.
     Nothing is stored server-side, so this stays a pure read and two browsers
     on the same lesson keep their own idea of what they have seen. Absent
     `since` = no baseline yet (a first visit), which is nothing unread rather
-    than everything.
+    than everything; the client acknowledges an empty record with the zero
+    cursor, so the FIRST verdict of a lesson still announces itself.
     """
     lesson = _lesson_or_404(conn, lesson_id)
     state, attempt_state, focus_total = _record_panel_db_state(conn, lesson["id"])
     reviews = list(state["reviews_by_attempt"].values())
-    stamps = sorted(review["created_at"] or "" for review in reviews)
+    cursors = sorted(_record_cursor(review["seq"]) for review in reviews)
     baseline = since[:_MAX_SINCE_LEN] if since else None
     return JSONResponse(
         {
@@ -690,13 +715,11 @@ def get_lesson_record_counts(lesson_id: int, since: str | None = None,
             "attempts": attempt_state["total"],
             "assessments": state["active_count"],
             "verdicts": len(reviews),
-            # The stamps are ISO-8601 UTC written by this app alone (one
-            # format, fixed width), so ordering them is a string compare.
             "unread": (
-                sum(1 for stamp in stamps if stamp > baseline)
+                sum(1 for cursor in cursors if cursor > baseline)
                 if baseline else 0
             ),
-            "latest_at": stamps[-1] if stamps else "",
+            "cursor": cursors[-1] if cursors else "",
             "focus_seconds": focus_total["seconds"],
         },
         headers={"Cache-Control": "no-store"},
