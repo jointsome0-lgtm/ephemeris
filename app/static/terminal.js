@@ -24,6 +24,10 @@
      * content padding and grid gaps it reads inside. */
     var LESSON_FLOOR = 680 + 60;
     var DOCK_MIN = 300;
+    /* What the seam may never take from the pane above it, and the smallest a
+     * pane is worth drawing at all. */
+    var AGENT_PANE_FLOOR = 160;
+    var PANE_MIN = 120;
     function railWidth() {
         return parseInt(getComputedStyle(document.documentElement).getPropertyValue('--rail-w'), 10) || 50;
     }
@@ -92,8 +96,19 @@
         /* Only ever cleared here: the width is an input, set by applyStackWidth. */
         if (!agentRight && !learnerRight)
             document.body.style.removeProperty('--term-w');
-        /* ORDER MATTERS, and this is the whole of it: the classes and
-         * `--term-agent-h` above decide how CSS lays the learner out, and the
+        /* The seam is fitted here because only this function sees both panes. A
+         * learner that opened alone was clamped against a column it had to
+         * itself; when the agent joins or grows back, that height has to give the
+         * pane above its floor. Storage keeps what the learner asked for — this
+         * decides what fits right now, and applyDock restores it on every resize. */
+        if (learnerRight && agentRight && !agentMin) {
+            var seamMax = Math.max(PANE_MIN, window.innerHeight - AGENT_PANE_FLOOR);
+            var seam = parseInt(learner.style.height, 10);
+            if (seam > seamMax)
+                learner.style.height = seamMax + 'px';
+        }
+        /* ORDER MATTERS, and this is the whole of it: the classes, `--term-agent-h`
+         * and the seam above decide how CSS lays the learner out, and the
          * offsetHeight below forces the layout that answers them. Measure first
          * and the agent would get its `bottom` from the pane's previous state —
          * a full-height learner it is about to stop being. */
@@ -880,10 +895,13 @@
         function clamp(n, min, max) {
             return Math.max(min, Math.min(max, n));
         }
-        /* In the stack the seam may not swallow the pane above it. */
+        /* In the stack the seam may not swallow the pane above it. Opening alone is
+         * not an exemption, only a later measurement — syncTerminalInsets re-fits
+         * the seam when the agent joins the column. */
         function clampDrawerHeight(px) {
-            var floor = config.kind === 'learner' && inRightStack() && agentPaneStacked() ? 160 : 80;
-            return clamp(px, 120, Math.max(120, window.innerHeight - floor));
+            var floor = config.kind === 'learner' && inRightStack() && agentPaneStacked()
+                ? AGENT_PANE_FLOOR : 80;
+            return clamp(px, PANE_MIN, Math.max(PANE_MIN, window.innerHeight - floor));
         }
         function setDrawerSize(px) {
             if (ownsStackWidth()) {

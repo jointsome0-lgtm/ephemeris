@@ -638,6 +638,9 @@ def test_002_ui_and_workspace(client, suite_state):
         and "body.term-right-min .term-drawer.learner-drawer.right-dock {\n    top: var(--term-agent-h, 0px);"
         in css.text
         and "body:not(.term-right-open) .term-drawer.learner-drawer.right-dock .term-resize," in css.text
+        and ".term-drawer.agent-drawer.right-dock.minimized { bottom: auto !important; }" in css.text
+        and ".term-drawer.learner-drawer.right-dock.minimized { top: auto !important; bottom: 0; }"
+        in css.text
         and "width: 44px !important" not in css.text
     ), "agent above, learner below, and no hole when either one collapses"
     assert (
@@ -652,10 +655,17 @@ def test_002_ui_and_workspace(client, suite_state):
     for src in (terminal_ts, terminal_js):
         assert (
             "function clampDrawerHeight" in src
-            and "agentPaneStacked() ? 160 : 80" in src
+            and "? AGENT_PANE_FLOOR : 80" in src
             and "if (h > 0)" in src
             and "clampDrawerHeight(h)" in src
         ), "the seam is clamped when restored, not only when dragged"
+        # Opening alone sizes the learner against a column it has to itself, so
+        # the pane above reclaims its floor when it arrives.
+        assert (
+            "if (learnerRight && agentRight && !agentMin)" in src
+            and "window.innerHeight - AGENT_PANE_FLOOR" in src
+            and "if (seam > seamMax)" in src
+        ), "the seam is re-fitted when the agent joins the column"
 
     # --- Learn split: resizable / collapsible lesson list -----------------
     r = c.get("/learn")

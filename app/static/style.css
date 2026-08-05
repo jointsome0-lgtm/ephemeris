@@ -439,10 +439,14 @@ body {
   }
   body:not(.term-right-open) .term-drawer.learner-drawer.right-dock .term-resize,
   body.term-right-min .term-drawer.learner-drawer.right-dock .term-resize { display: none; }
-  /* a minimized pane keeps the column's width and collapses to its head bar —
-     which the agent can only do by giving up the `bottom` that stretches it */
+  /* A minimized pane keeps the column's width and collapses to its head bar.
+     Both ends of the column stretch an auto height, so each pane gives up the
+     one it does not sit on: the agent its `bottom`, the learner its `top` —
+     including when the learner holds the column alone and would otherwise
+     stay a full-height box with nothing drawn in it. */
   .term-drawer.right-dock.minimized { min-width: 0; }
   .term-drawer.agent-drawer.right-dock.minimized { bottom: auto !important; }
+  .term-drawer.learner-drawer.right-dock.minimized { top: auto !important; bottom: 0; }
   /* the column's outer edge is the agent's to drag (it sets the stack width);
      the learner's edge stays the horizontal seam it already was */
   .term-drawer.agent-drawer.right-dock .term-resize { top: 0; bottom: 0; left: -3px; right: auto; width: 7px; height: auto; cursor: ew-resize; }
