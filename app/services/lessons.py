@@ -7,13 +7,16 @@ soft archive, and the matching ledger events.
 from __future__ import annotations
 
 import hashlib
+import json
 import mimetypes
 import os
 import re
 import sqlite3
 import stat as stat_module
 import tempfile
+from datetime import datetime, timezone
 from html import escape
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from threading import Lock
 from urllib.parse import urlsplit
@@ -641,6 +644,37 @@ def read_bundle_readonly(lesson: dict) -> bundle_schema.ManifestRead:
     return read
 
 
+def record_panel_db_state(
+    conn: sqlite3.Connection, lesson_id: int
+) -> tuple[dict, dict, dict]:
+    """Read every SQLite-backed Record-panel input from one snapshot.
+
+    FastAPI can run a GET and an assessment POST concurrently even with one
+    worker. A deferred read transaction establishes its snapshot on the
+    attempt query, then keeps the assessment fold/hydration/counts and focus
+    total on that same committed version. Reuse a caller transaction when one
+    exists; otherwise roll back our read-only transaction on exit.
+    """
+    from . import assessments, attempts, focus
+
+    own_snapshot = not conn.in_transaction
+    if own_snapshot:
+        conn.execute("BEGIN")
+    try:
+        attempt_state = attempts.lesson_attempt_summary(conn, lesson_id)
+        review_attempt_ids = {
+            attempt["attempt_id"]
+            for attempt in attempt_state["latest_by_question"].values()
+        }
+        state = assessments.panel_state(
+            conn, lesson_id, review_attempt_ids=review_attempt_ids
+        )
+        return state, attempt_state, focus.lesson_total(conn, lesson_id)
+    finally:
+        if own_snapshot:
+            conn.rollback()
+
+
 def hash_bundle_page(lesson: dict, ref: str) -> str | None:
     """sha256 hex of a bundle page's current raw bytes, or None when the path
     is missing, symlinked (§2), or not a regular file. Used by the attempt
@@ -882,6 +916,238 @@ CLAUDE_FILENAME = "CLAUDE.md"
 CLAUDE_DIR_NAME = ".claude"
 SETTINGS_FILENAME = "settings.json"
 
+_STATE_FILE_MAX_BYTES = 64 * 1024
+
+
+class _TextareaDefaults(HTMLParser):
+    """Default text of a page's textareas, plus the ones a `data-block`
+    attribute binds to an editor block. A page mixes editor textareas with
+    answer and output textareas, so only the marked ones (or a page whose
+    single textarea is its single block) identify a starter."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.values: list[str] = []
+        self.by_block: dict[str, str] = {}
+        self._parts: list[str] | None = None
+        self._block: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "textarea" and self._parts is None:
+            self._parts = []
+            self._block = next(
+                (value for name, value in attrs if name == "data-block" and value),
+                None,
+            )
+
+    def handle_data(self, data: str) -> None:
+        if self._parts is not None:
+            self._parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "textarea" and self._parts is not None:
+            value = "".join(self._parts)
+            self.values.append(value)
+            if self._block is not None:
+                self.by_block.setdefault(self._block, value)
+            self._parts = None
+            self._block = None
+
+
+def _state_file_snapshot(path: Path) -> tuple[bytes, os.stat_result] | None:
+    """Bounded, no-follow snapshot of one learner artifact."""
+    try:
+        fd = os.open(
+            path,
+            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except OSError:
+        return None
+    try:
+        before = os.fstat(fd)
+        if (
+            not stat_module.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size > _STATE_FILE_MAX_BYTES
+        ):
+            return None
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1
+            data = fh.read(_STATE_FILE_MAX_BYTES + 1)
+            after = os.fstat(fh.fileno())
+        if (
+            len(data) > _STATE_FILE_MAX_BYTES
+            or _digest_key(before) != _digest_key(after)
+        ):
+            return None
+        return data, after
+    except OSError:
+        return None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _state_artifact_files(
+    lesson: dict, roots: list[str]
+) -> list[tuple[str, Path, os.stat_result]]:
+    """Apply the bundle's bounded artifact discovery contract."""
+    bundle_dir = _lesson_dir(lesson["slug"])
+    found = []
+    for root in roots:
+        root_path = bundle_dir / PurePosixPath(root)
+        if bundle_schema.path_has_symlink(bundle_dir, root):
+            continue
+        seen = 0
+
+        def walk(current: Path, depth: int) -> None:
+            nonlocal seen
+            try:
+                with os.scandir(current) as iterator:
+                    entries = sorted(iterator, key=lambda entry: entry.name)
+            except OSError:
+                return
+            for entry in entries:
+                if seen >= 512:
+                    return
+                seen += 1
+                try:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        if depth < 3:
+                            walk(Path(entry.path), depth + 1)
+                        continue
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    stat = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                path = Path(entry.path)
+                rel = path.relative_to(bundle_dir).as_posix()
+                if bundle_schema.path_has_symlink(bundle_dir, rel):
+                    continue
+                if stat_module.S_ISREG(stat.st_mode):
+                    found.append((rel, path, stat))
+
+        walk(root_path, 0)
+    return sorted(found, key=lambda item: item[0])
+
+
+def _page_starters(
+    lesson: dict, page: str
+) -> tuple[dict[str, bytes], tuple[bytes, ...]]:
+    """Starter text of one page: keyed by the block id a textarea declares in
+    `data-block`, plus every textarea default in document order."""
+    snapshot = _read_page_snapshot(_entry_path(lesson["slug"], page))
+    if snapshot is None:
+        return {}, ()
+    text = snapshot[0].decode("utf-8", errors="replace")
+    parser = _TextareaDefaults()
+    parser.feed(text)
+
+    def starter(raw: str) -> bytes:
+        value = raw.replace("\r\n", "\n").replace("\r", "\n")
+        if value.startswith("\n"):
+            value = value[1:]
+        return value.encode("utf-8")
+
+    return (
+        {block_id: starter(raw) for block_id, raw in parser.by_block.items()},
+        tuple(starter(raw) for raw in parser.values),
+    )
+
+
+def _go_on_agent_path() -> bool:
+    home = os.path.expanduser("~")
+    path = f"{home}/.local/bin:/usr/local/bin:" + os.environ.get(
+        "PATH", "/usr/bin:/bin"
+    )
+    return any(
+        os.access(Path(directory) / "go", os.X_OK)
+        for directory in path.split(os.pathsep)
+    )
+
+
+def _render_lesson_state(
+    conn: sqlite3.Connection,
+    lesson: dict,
+    read: bundle_schema.ManifestRead,
+) -> str:
+    """Serialize the current lesson record for the regenerated agent brief."""
+    state, attempt_state, _focus_total = record_panel_db_state(conn, lesson["id"])
+    latest = attempt_state["latest_by_question"]
+    try:
+        current = None if read.rejected else _resolve_entry(lesson, read, None)
+    except LessonError:
+        current = read.entry
+    lines = [
+        "\n## STATE (generated; refreshed on every terminal open)\n",
+        f"- Lesson title (data): {json.dumps(lesson['title'])}",
+        f"- Lesson slug: `{lesson['slug']}`",
+        f"- Current page (data): {json.dumps(current or 'unavailable')}",
+        "- Questions:",
+    ]
+    for question in read.questions:
+        attempt = latest.get(question["id"])
+        review = (
+            state["reviews_by_attempt"].get(attempt["attempt_id"])
+            if attempt else None
+        )
+        verdict = review["level"] if review else "none"
+        lines.append(
+            f"  - `{question['id']}`: "
+            f"{'answered' if attempt else 'unanswered'}; verdict={verdict}"
+        )
+    if not read.questions:
+        lines.append("  - none declared")
+    lines.append("- Artifacts:")
+    pages = {page["id"]: page["path"] for page in read.pages}
+    blocks = {block["file"]: block for block in read.blocks}
+    starter_by_file: dict[str, bytes] = {}
+    for page_id, page in pages.items():
+        page_blocks = [block for block in read.blocks if block["page"] == page_id]
+        if not page_blocks:
+            continue
+        by_block, starters = _page_starters(lesson, page)
+        for block in page_blocks:
+            starter = by_block.get(block["id"])
+            # Unmarked pages only resolve when there is nothing to confuse:
+            # one block and one textarea. Pairing by document order would
+            # silently take an answer or output textarea for a starter.
+            if starter is None and len(page_blocks) == len(starters) == 1:
+                starter = starters[0]
+            if starter is not None:
+                starter_by_file[block["file"]] = starter
+    artifacts = _state_artifact_files(lesson, read.artifact_roots)
+    for rel, path, stat in artifacts:
+        equal = "unknown"
+        block = blocks.get(rel)
+        snapshot = _state_file_snapshot(path) if block else None
+        if block and snapshot is not None:
+            data, stat = snapshot
+            starter = starter_by_file.get(rel)
+            if starter is not None:
+                equal = str(data == starter).lower()
+        mtime = datetime.fromtimestamp(
+            stat.st_mtime, timezone.utc
+        ).isoformat(timespec="seconds").replace("+00:00", "Z")
+        lines.append(
+            f"  - {json.dumps(rel)}: mtime={mtime}; equal_to_starter={equal}"
+        )
+    if not artifacts:
+        lines.append("  - none found")
+    lines.extend([
+        f"- Summary exists: {'yes' if state['summary'] else 'no'}",
+        "- Assessment env names: `EPHEMERIS_ASSESS_URL`, "
+        "`EPHEMERIS_ASSESS_TOKEN` (never print the token value)",
+        "- Environment: Go on PATH (this agent shell)="
+        f"{'yes' if _go_on_agent_path() else 'no'}",
+        "",
+    ])
+    return "\n".join(lines)
+
+
 _AGENTS_TEMPLATE = """\
 # Lesson workspace
 
@@ -1045,9 +1311,9 @@ The call is ordinary HTTP: POST a JSON object to that URL with
   `artifacts`, `runs`, `live`, or `mixed`. `live` means you watched it and
   nothing replays it; recording it as such is legitimate, calling a spoken
   answer a recorded attempt is not.
-- `summary` — ONE at the end of a tutoring session: where the learner
-  stands, plus an optional short `next_action`. Your session may have only
-  one active summary; a second must name the first in `supersedes`.
+- `summary` — write one early provisional resume brief: where the learner
+  stands, plus an optional short `next_action`. Update it later by naming the
+  active summary in `supersedes`; only one summary may be active per session.
 - `retraction` — `supersedes` plus a `note` saying why that record was
   wrong. Use it for a review of the wrong attempt, a mistagged concept, or
   a verdict you no longer stand behind.
@@ -1226,7 +1492,11 @@ are read-only for you, so never create or change that file. Put starter
 text in the page's textarea/default editor state; the artifact appears only
 when the learner saves it.
 
-Author a plain textarea with Load and Save. When the block declares a
+Author a plain textarea with Load and Save, and mark it
+`data-block="blk_<id>"` with that block's id: STATE below reads its default
+text as the starter and tells you whether the saved artifact still matches it
+byte for byte. Without that attribute the flag stays `unknown` unless the page
+holds exactly one block and one textarea. When the block declares a
 registered runner, add Run and Cancel while a run is active. For that
 runner-backed page, the one ready announcement is
 `{"ephemeris":"lesson-bridge","type":"ready","abi":[1],"want":["editor","run"]}`.
@@ -1577,8 +1847,13 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
         if resolved is None:
             return None
         slug, lesson, lesson_dir = resolved
-        _ensure_bundle_manifest(lesson)
-        _write_brief(lesson_dir / AGENTS_FILENAME, _AGENTS_TEMPLATE)
+        read = _ensure_bundle_manifest(lesson)
+        conn = get_conn()
+        try:
+            state = _render_lesson_state(conn, lesson, read)
+        finally:
+            conn.close()
+        _write_brief(lesson_dir / AGENTS_FILENAME, _AGENTS_TEMPLATE + state)
         _write_brief(lesson_dir / CLAUDE_FILENAME, _CLAUDE_TEMPLATE)
         settings_path = _ensure_settings_dir(lesson_dir) / SETTINGS_FILENAME
         _preserve_foreign(settings_path, _SETTINGS_BYTES)
