@@ -633,10 +633,20 @@ def test_002_ui_and_workspace(client, suite_state):
     ), "agent above, learner below, and no hole when either one collapses"
     assert (
         "@container learn-board (max-width: 944px) {" in css.text
-        and "@media (min-width: 861px) and (max-width: 1030px) {" in css.text
-        and ".term-drawer.learner-drawer.right-dock #learner-term-min { display: none; }"
+        and "@media (min-width: 861px) and (max-width: 1090px) {" in css.text
+        and "body.term-right-open:not(.term-right-min) .term-drawer.learner-drawer.right-dock #learner-term-min { display: none; }"
         in css.text
     ), "the ladder: the lesson list goes first, then the learner's screen"
+    # A pane sharing the column is what the second rung is about — a learner
+    # holding it alone keeps its screen, and a restored seam is re-clamped
+    # against the window it is actually opening in.
+    for src in (terminal_ts, terminal_js):
+        assert (
+            "function clampDrawerHeight" in src
+            and "agentPaneStacked() ? 160 : 80" in src
+            and "if (h > 0)" in src
+            and "clampDrawerHeight(h)" in src
+        ), "the seam is clamped when restored, not only when dragged"
 
     # --- Learn split: resizable / collapsible lesson list -----------------
     r = c.get("/learn")

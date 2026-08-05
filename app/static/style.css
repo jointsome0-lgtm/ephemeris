@@ -452,16 +452,19 @@ body {
   }
 }
 /* Degradation, second rung (#131): past the first rung the dock has nothing
-   left to give — 50 (rail) + 300 (dock floor) + 680 (lesson floor) = 1030 —
-   and a column that narrow cannot carry two screens. The learner keeps its
-   head as a tab strip, the agent keeps the height, and the minimize button
-   goes with it: there is no expanded state to return to at this width. */
-@media (min-width: 861px) and (max-width: 1030px) {
-  body.term-right-open .term-drawer.learner-drawer.right-dock { height: auto !important; }
-  .term-drawer.learner-drawer.right-dock .term-screens,
-  .term-drawer.learner-drawer.right-dock .term-status,
-  .term-drawer.learner-drawer.right-dock .term-resize,
-  .term-drawer.learner-drawer.right-dock #learner-term-min { display: none; }
+   left to give — 50 (rail) + 300 (dock floor) + 680 (lesson) + 60 (its chrome)
+   = 1090, the width at which --term-stack-w is pinned to its floor — and a
+   column that narrow cannot carry two screens. The learner keeps its head as a
+   tab strip, the agent keeps the height, and the minimize button goes with it:
+   there is no expanded state to return to at this width. Only when an expanded
+   agent is actually sharing the column, though: a learner holding the column
+   alone is the one screen there is, and it stays. */
+@media (min-width: 861px) and (max-width: 1090px) {
+  body.term-right-open:not(.term-right-min) .term-drawer.learner-drawer.right-dock { height: auto !important; }
+  body.term-right-open:not(.term-right-min) .term-drawer.learner-drawer.right-dock .term-screens,
+  body.term-right-open:not(.term-right-min) .term-drawer.learner-drawer.right-dock .term-status,
+  body.term-right-open:not(.term-right-min) .term-drawer.learner-drawer.right-dock .term-resize,
+  body.term-right-open:not(.term-right-min) .term-drawer.learner-drawer.right-dock #learner-term-min { display: none; }
   /* at this width the trailing label only wraps a head onto three lines */
   .term-drawer.right-dock .term-meta { display: none; }
 }

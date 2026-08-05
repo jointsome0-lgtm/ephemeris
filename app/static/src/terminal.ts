@@ -687,8 +687,12 @@ interface SurfaceConfig {
       drawer.style.width = '';
     } else {
       drawer.style.width = '';
-      var h = localStorage.getItem(H_KEY);
-      if (h) drawer.style.height = h;
+      /* Through the same clamp as a drag: a height stored on a taller window,
+       * or as a bottom drawer, would otherwise leave the pane above it nothing.
+       * Storage keeps the height the learner asked for — this only decides what
+       * fits here, and applyDock runs again on every resize. */
+      var h = parseInt(localStorage.getItem(H_KEY) || '', 10);
+      if (h > 0) drawer.style.height = clampDrawerHeight(h) + 'px';
     }
     syncInset();
   }
@@ -836,14 +840,17 @@ interface SurfaceConfig {
     return Math.max(min, Math.min(max, n));
   }
 
+  /* In the stack the seam may not swallow the pane above it. */
+  function clampDrawerHeight(px: number) {
+    var floor = config.kind === 'learner' && inRightStack() && agentPaneStacked() ? 160 : 80;
+    return clamp(px, 120, Math.max(120, window.innerHeight - floor));
+  }
+
   function setDrawerSize(px: number) {
     if (ownsStackWidth()) {
       applyStackWidth(px);
     } else {
-      /* In the stack the seam may not swallow the pane above it. */
-      var floor = config.kind === 'learner' && inRightStack() && agentPaneStacked() ? 160 : 80;
-      var h = clamp(px, 120, Math.max(120, window.innerHeight - floor));
-      drawer.style.height = h + 'px';
+      drawer.style.height = clampDrawerHeight(px) + 'px';
       localStorage.setItem(H_KEY, drawer.style.height);
     }
     syncInset();
