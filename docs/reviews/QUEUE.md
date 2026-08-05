@@ -93,7 +93,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   179 passed, `verify_restore.py` 34 passed 0 failed, public hygiene clean. The
   entry stays Pending for the owner's re-drain; no restart was performed.
 
-- [ ] 2026-08-05 — `d71cff5`..`735893b` on `fix/135-runs-projection` —
+- [ ] 2026-08-05 — `d71cff5`..`0627649` on `fix/135-runs-projection` —
   `app/services/runs.py`, `app/services/bundle_schema.py`,
   `app/services/lessons.py`, `tests/test_170_runs_projection.py`,
   `tests/test_070_run_api.py`, `docs/learn-bundle-spec.md`,
@@ -106,7 +106,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   match, and a `runs.jsonl.collision-<hex>` move-aside otherwise (`83b28f2`);
   the `assessments.py` bundle-identity gate applied before publishing, and a
   2 MiB bounded-read rule plus a data-boundary line for run output in the
-  generated brief (`735893b`).
+  generated brief (`735893b`); the same seal checked at lesson-terminal open
+  via a new `prepare_terminal_workspace` step, plus staged-inode and state-
+  directory durability fixes in the publish path (`0627649`).
 
 ## Done
 
