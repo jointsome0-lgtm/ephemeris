@@ -1607,6 +1607,12 @@ if (recordPanel && recordCountsUrl && recordKey) {
             inFlight = false;
         }
     };
+    /* Put the current rows on screen, then acknowledge exactly what was shown. */
+    const showAndAcknowledge = async () => {
+        const shown = await guardedRefresh();
+        if (shown !== null)
+            acknowledge(shown);
+    };
     badge?.addEventListener("click", (ev) => {
         /* The badge sits inside the <summary>: its own click must OPEN the panel,
          * never toggle a panel the learner just asked to see. The record is
@@ -1614,11 +1620,23 @@ if (recordPanel && recordCountsUrl && recordKey) {
         ev.preventDefault();
         ev.stopPropagation();
         recordPanel.open = true;
-        void (async () => {
-            const shown = await guardedRefresh();
-            if (shown !== null)
-                acknowledge(shown);
-        })();
+        void showAndAcknowledge();
+    });
+    /* Opening the panel by hand IS the look the badge was asking for, so it
+     * acknowledges what it shows on the same path. A sheet the learner keeps shut
+     * (#132) baselines at the zero cursor, and without this the badge it raises
+     * would survive being read: nothing else advances the seen cursor, so every
+     * poll and every later visit would report the same verdicts new again.
+     * Reaching the newest cursor this page knows of means there is nothing to
+     * acknowledge — and no fetch to make. A badge click gets here too, after its
+     * own acknowledgement has already satisfied that test. */
+    recordPanel.addEventListener("toggle", () => {
+        if (!recordPanel.open)
+            return;
+        const newest = latestCursor || recordPanel.dataset["recordCursor"] || "";
+        if (!newest || readSeen() >= newest)
+            return;
+        void showAndAcknowledge();
     });
     setInterval(() => void pollCounts(), RECORD_POLL_MS);
     document.addEventListener("visibilitychange", () => void pollCounts());

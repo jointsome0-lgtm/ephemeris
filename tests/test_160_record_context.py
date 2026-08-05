@@ -522,6 +522,14 @@ def test_the_record_panel_carries_the_poll_target_and_the_unread_badge(client):
                   # under the one guard that keeps two body swaps apart.
                   "unread === 0 && latestCursor > asked",
                   "guardedRefresh",
+                  # #132: opening the panel by hand is the look the badge asked
+                  # for. A closed sheet baselines at zero, so without this the
+                  # badge would outlive being read — nothing else moves the
+                  # seen cursor — and a panel already at the newest cursor
+                  # acknowledges nothing and fetches nothing.
+                  'recordPanel.addEventListener("toggle"',
+                  "readSeen() >= newest",
+                  "void showAndAcknowledge()",
                   # …and the quiet refresh acknowledges only as far as the
                   # zero-unread answer read, never as far as a body that may
                   # have picked up a verdict written after it: that verdict
