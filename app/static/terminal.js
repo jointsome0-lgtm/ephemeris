@@ -7,31 +7,121 @@
 // (#term-drawer) is gated server-side the same way, and the websocket itself
 // re-verifies the peer, so this file being world-readable under /static is fine.
 (function () {
+    /* The right stack (#131). On Learn both terminals live in ONE right column —
+     * agent above, learner below, a draggable seam between them — so the page is
+     * governed by a single axis. Off Learn nothing here applies: neither drawer
+     * takes `right-dock`, so the bottom drawer and its `--term-h` content lift
+     * behave exactly as before.
+     *
+     * The stack's width is ONE value with ONE owner: `--term-w` on <body> is the
+     * width the learner asked for (or nothing, for the default), and style.css
+     * derives `--term-stack-w` from it — clamped so the lesson column keeps its
+     * floor. Nothing measures a drawer to publish it: a measurement would be the
+     * clamp's OUTPUT and could not also be its input. */
+    var STACK_W_KEY = 'al-term-w'; /* the agent dock's old key: widths carry over */
+    /* Mirrors the floor in style.css (`--term-stack-w`): the dock yields first,
+     * and the lesson column never reads narrower than 680px — plus the 60px of
+     * content padding and grid gaps it reads inside. */
+    var LESSON_FLOOR = 680 + 60;
+    var DOCK_MIN = 300;
+    /* What the seam may never take from the pane above it, and the smallest a
+     * pane is worth drawing at all. */
+    var AGENT_PANE_FLOOR = 160;
+    var PANE_MIN = 120;
+    function railWidth() {
+        return parseInt(getComputedStyle(document.documentElement).getPropertyValue('--rail-w'), 10) || 50;
+    }
+    function maxStackWidth() {
+        return Math.max(DOCK_MIN, window.innerWidth - railWidth() - LESSON_FLOOR);
+    }
+    /* Publish the stored stack width (or a caller's new one) as `--term-w`. */
+    function applyStackWidth(px) {
+        var value = null;
+        if (typeof px === 'number') {
+            value = Math.max(DOCK_MIN, Math.min(px, maxStackWidth())) + 'px';
+            try {
+                localStorage.setItem(STACK_W_KEY, value);
+            }
+            catch (_) { }
+        }
+        else {
+            try {
+                value = localStorage.getItem(STACK_W_KEY);
+            }
+            catch (_) {
+                value = null;
+            }
+        }
+        if (value)
+            document.body.style.setProperty('--term-w', value);
+        else
+            document.body.style.removeProperty('--term-w');
+    }
+    function forgetStackWidth() {
+        try {
+            localStorage.removeItem(STACK_W_KEY);
+        }
+        catch (_) { }
+        document.body.style.removeProperty('--term-w');
+    }
     function syncTerminalInsets() {
         var agent = document.getElementById('term-drawer');
         var learner = document.getElementById('learner-term-drawer');
         var agentOpen = !!agent && !agent.hidden;
         var learnerOpen = !!learner && !learner.hidden;
         var agentRight = agentOpen && agent.classList.contains('right-dock');
+        var learnerRight = learnerOpen && learner.classList.contains('right-dock');
+        /* A pane in the stack is not a bottom drawer: it lifts nothing, which is
+         * how `--term-h` dies on Learn while every other page keeps it. */
         var bottomHeight = (agentOpen && !agentRight ? agent.offsetHeight : 0)
-            + (learnerOpen ? learner.offsetHeight : 0);
+            + (learnerOpen && !learnerRight ? learner.offsetHeight : 0);
+        /* A minimized agent is a head bar the learner has to start below, and CSS
+         * cannot measure it — the one height the stack publishes upward. It is
+         * safe only in this state: an expanded agent's height is derived from the
+         * learner's, so publishing it always would close a loop. */
+        var agentMin = agentRight && agent.classList.contains('minimized');
+        if (agentMin)
+            document.body.style.setProperty('--term-agent-h', agent.offsetHeight + 'px');
+        else
+            document.body.style.removeProperty('--term-agent-h');
         document.body.classList.toggle('term-open', agentOpen || learnerOpen);
         document.body.classList.toggle('term-right-open', agentRight);
+        document.body.classList.toggle('term-right-min', agentMin);
+        document.body.classList.toggle('term-stack-open', agentRight || learnerRight);
         document.body.classList.toggle('learner-term-open', learnerOpen);
         if (bottomHeight)
             document.body.style.setProperty('--term-h', bottomHeight + 'px');
         else
             document.body.style.removeProperty('--term-h');
-        if (agentRight)
-            document.body.style.setProperty('--term-w', agent.offsetWidth + 'px');
-        else
+        /* Only ever cleared here: the width is an input, set by applyStackWidth. */
+        if (!agentRight && !learnerRight)
             document.body.style.removeProperty('--term-w');
+        /* The seam is fitted here because only this function sees both panes. A
+         * learner that opened alone was clamped against a column it had to
+         * itself; when the agent joins or grows back, that height has to give the
+         * pane above its floor. Storage keeps what the learner asked for — this
+         * decides what fits right now, and applyDock restores it on every resize. */
+        if (learnerRight && agentRight && !agentMin) {
+            var seamMax = Math.max(PANE_MIN, window.innerHeight - AGENT_PANE_FLOOR);
+            var seam = parseInt(learner.style.height, 10);
+            if (seam > seamMax)
+                learner.style.height = seamMax + 'px';
+        }
+        /* ORDER MATTERS, and this is the whole of it: the classes, `--term-agent-h`
+         * and the seam above decide how CSS lays the learner out, and the
+         * offsetHeight below forces the layout that answers them. Measure first
+         * and the agent would get its `bottom` from the pane's previous state —
+         * a full-height learner it is about to stop being. */
         if (learnerOpen) {
             document.body.style.setProperty('--term-learner-h', learner.offsetHeight + 'px');
         }
         else {
             document.body.style.removeProperty('--term-learner-h');
         }
+    }
+    function agentPaneStacked() {
+        var agent = document.getElementById('term-drawer');
+        return !!agent && !agent.hidden && agent.classList.contains('right-dock');
     }
     function initSurface(config) {
         var drawer = document.getElementById(config.idPrefix + '-drawer');
@@ -48,7 +138,6 @@
         var TABS_KEY = keyStem + 'tabs';
         var ACTIVE_KEY = keyStem + 'active';
         var H_KEY = keyStem + 'h';
-        var W_KEY = keyStem + 'w';
         var MIN_KEY = keyStem + 'min';
         var COPY_SELECT_KEY = keyStem + 'copyselect';
         var MAX_TABS = 8;
@@ -605,28 +694,40 @@
                     tab.term.focus();
             }, 60);
         }
-        function isDesktopRightDock() {
-            return config.kind === 'agent' && document.body.dataset.rail === 'learn' &&
-                window.matchMedia &&
+        /* Learn, wide enough: both surfaces belong to the right stack. */
+        function inRightStack() {
+            return document.body.dataset.rail === 'learn' &&
+                !!window.matchMedia &&
                 window.matchMedia('(min-width: 861px)').matches;
+        }
+        /* Only the agent drags the stack's outer edge, and it drags a width. The
+         * learner keeps dragging a height — in the stack that drag IS the seam. */
+        function ownsStackWidth() {
+            return config.kind === 'agent' && inRightStack();
         }
         function syncInset() {
             syncTerminalInsets();
         }
         function applyDock() {
-            var right = isDesktopRightDock();
-            drawer.classList.toggle('right-dock', right);
-            if (right) {
+            var stacked = inRightStack();
+            drawer.classList.toggle('right-dock', stacked);
+            /* The stack's width is shared, so it lives on <body>, not on one pane —
+             * and either pane arriving alone still has to publish it. */
+            if (stacked)
+                applyStackWidth();
+            if (ownsStackWidth()) {
                 drawer.style.height = '';
-                var w = localStorage.getItem(W_KEY);
-                if (w)
-                    drawer.style.width = w;
+                drawer.style.width = '';
             }
             else {
                 drawer.style.width = '';
-                var h = localStorage.getItem(H_KEY);
-                if (h)
-                    drawer.style.height = h;
+                /* Through the same clamp as a drag: a height stored on a taller window,
+                 * or as a bottom drawer, would otherwise leave the pane above it nothing.
+                 * Storage keeps the height the learner asked for — this only decides what
+                 * fits here, and applyDock runs again on every resize. */
+                var h = parseInt(localStorage.getItem(H_KEY) || '', 10);
+                if (h > 0)
+                    drawer.style.height = clampDrawerHeight(h) + 'px';
             }
             syncInset();
         }
@@ -794,17 +895,20 @@
         function clamp(n, min, max) {
             return Math.max(min, Math.min(max, n));
         }
+        /* In the stack the seam may not swallow the pane above it. Opening alone is
+         * not an exemption, only a later measurement — syncTerminalInsets re-fits
+         * the seam when the agent joins the column. */
+        function clampDrawerHeight(px) {
+            var floor = config.kind === 'learner' && inRightStack() && agentPaneStacked()
+                ? AGENT_PANE_FLOOR : 80;
+            return clamp(px, PANE_MIN, Math.max(PANE_MIN, window.innerHeight - floor));
+        }
         function setDrawerSize(px) {
-            if (isDesktopRightDock()) {
-                var rail = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--rail-w'), 10) || 50;
-                var maxW = Math.max(300, window.innerWidth - rail - 220);
-                var w = clamp(px, 300, maxW);
-                drawer.style.width = w + 'px';
-                localStorage.setItem(W_KEY, drawer.style.width);
+            if (ownsStackWidth()) {
+                applyStackWidth(px);
             }
             else {
-                var h = clamp(px, 120, window.innerHeight - 80);
-                drawer.style.height = h + 'px';
+                drawer.style.height = clampDrawerHeight(px) + 'px';
                 localStorage.setItem(H_KEY, drawer.style.height);
             }
             syncInset();
@@ -812,14 +916,15 @@
         function adjustSize(dir) {
             if (drawer.hidden || drawer.classList.contains('minimized'))
                 return;
-            var step = Math.round((isDesktopRightDock() ? window.innerWidth : window.innerHeight) * 0.08);
-            setDrawerSize((isDesktopRightDock() ? drawer.offsetWidth : drawer.offsetHeight) + dir * step);
+            var wide = ownsStackWidth();
+            var step = Math.round((wide ? window.innerWidth : window.innerHeight) * 0.08);
+            setDrawerSize((wide ? drawer.offsetWidth : drawer.offsetHeight) + dir * step);
             focusSoon();
         }
         function resetSize() {
-            if (isDesktopRightDock()) {
+            if (ownsStackWidth()) {
                 drawer.style.width = '';
-                localStorage.removeItem(W_KEY);
+                forgetStackWidth();
             }
             else {
                 drawer.style.height = '';
@@ -920,7 +1025,7 @@
         var handle = document.getElementById(config.idPrefix + '-resize');
         if (handle) {
             var onDrag = function (e) {
-                if (isDesktopRightDock())
+                if (ownsStackWidth())
                     setDrawerSize(window.innerWidth - e.clientX);
                 else
                     setDrawerSize(window.innerHeight - e.clientY);
