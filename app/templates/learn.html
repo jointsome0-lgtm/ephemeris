@@ -10,6 +10,50 @@
    this shape. Every string here is agent- or learner-authored and renders as
    escaped text — no markdown: the lesson iframe's protections stop at the
    frame, and this is the parent page. #}
+{# One lesson in the list. Shared by the track groups and the ungrouped tail
+   below them, which differ only in where the row sits — a row inside a group
+   keeps every affordance a loose one has. #}
+{% macro lesson_row(lesson) -%}
+<article class="lesson-row{% if lesson.archived %} archived{% endif %}{% if lesson.selected %} sel{% endif %}">
+  <a class="lesson-main" href="{{ lesson.href }}">
+    <div class="lesson-title-line">
+      <h2>{{ lesson.title }}</h2>
+      <span class="lesson-status st-{{ lesson.status }}">{{ lesson.status_label }}</span>
+    </div>
+    <div class="lesson-meta">
+      {% if lesson.source_url %}
+      <span>{{ lesson.source_url }}</span>
+      {% else %}
+      <span>{{ lesson.slug }}</span>
+      {% endif %}
+      {% if lesson.archived %}<span>Archived</span>{% endif %}
+    </div>
+  </a>
+  <div class="lesson-actions">
+    {% if not lesson.archived %}
+      {% for tab in status_tabs %}
+        {% if tab.key != lesson.status %}
+        <form method="post" action="/learn/lessons/{{ lesson.id }}/status">
+          <input type="hidden" name="status" value="{{ tab.key }}">
+          <input type="hidden" name="return_to" value="{{ self_url }}">
+          <button type="submit" class="btn-text">{{ tab.label }}</button>
+        </form>
+        {% endif %}
+      {% endfor %}
+      <form method="post" action="/learn/lessons/{{ lesson.id }}/archive">
+        <input type="hidden" name="return_to" value="{{ self_url }}">
+        <button type="submit" class="icon-btn danger" title="Archive">{{ ic.icon('archive') }}</button>
+      </form>
+    {% else %}
+      <form method="post" action="/learn/lessons/{{ lesson.id }}/restore">
+        <input type="hidden" name="return_to" value="{{ self_url }}">
+        <button type="submit" class="btn-text">Restore</button>
+      </form>
+    {% endif %}
+  </div>
+</article>
+{%- endmacro %}
+
 {% macro record_question(q) -%}
 <li class="rec-q{% if q.retired %} rec-q-retired{% endif %}" id="rec-q-{{ q.question_id }}">
   <div class="rec-q-head">
@@ -90,8 +134,13 @@
          header — #4 and #75 both queue additions there). `tracks is defined`
          guards the live process: Jinja re-reads this file per render, so the
          pre-#81 backend renders the new template with the old context until
-         its restart, and must omit the strip rather than fail the page. #}
-      {% if tracks is defined and tracks %}
+         its restart, and must omit the strip rather than fail the page.
+
+         The strip is now the FALLBACK rendering only: a backend that also
+         sends `groups` carries the same numbers on the group headers below,
+         and two copies of "0 of 14" on one narrow panel is the duplication
+         this change set out to remove. #}
+      {% if tracks is defined and tracks and groups is not defined %}
       <div class="learn-tracks">
         {% for track in tracks %}
         <p class="learn-track">
@@ -105,49 +154,73 @@
       </div>
       {% endif %}
 
+      {# Grouped rendering needs both new context vars; without them (the live
+         pre-change process) `flat_rows` is the whole list and the page is
+         exactly what it was. #}
+      {% set grouped = groups is defined and ungrouped is defined %}
+      {% set flat_rows = ungrouped if grouped else rows %}
       {% if rows %}
       <div class="lesson-list">
-        {% for lesson in rows %}
-        <article class="lesson-row{% if lesson.archived %} archived{% endif %}{% if lesson.selected %} sel{% endif %}">
-          <a class="lesson-main" href="{{ lesson.href }}">
-            <div class="lesson-title-line">
-              <h2>{{ lesson.title }}</h2>
-              <span class="lesson-status st-{{ lesson.status }}">{{ lesson.status_label }}</span>
+        {% if grouped %}
+        {% for group in groups %}
+        <section class="lesson-group{% if group.selected %} has-sel{% endif %}">
+          <details class="lesson-group-d" data-track="{{ group.path }}"{% if group.selected %} open{% endif %}>
+            <summary class="lesson-group-head">
+              <span class="lesson-group-name">{{ group.path }}</span>
+              <span class="lesson-group-count">{{ group.studied }} of {{ group.total }}</span>
+              {# The bar restates the count for the eye; the count is the text
+                 an assistive reader gets, so the bar stays decorative. #}
+              <span class="lesson-group-bar" aria-hidden="true"><i style="width: {{ group.pct }}%"></i></span>
+            </summary>
+            <div class="lesson-group-rows">
+              {% for lesson in group.rows %}{{ lesson_row(lesson) }}{% endfor %}
             </div>
-            <div class="lesson-meta">
-              {% if lesson.source_url %}
-              <span>{{ lesson.source_url }}</span>
-              {% else %}
-              <span>{{ lesson.slug }}</span>
-              {% endif %}
-              {% if lesson.archived %}<span>Archived</span>{% endif %}
-            </div>
-          </a>
-          <div class="lesson-actions">
-            {% if not lesson.archived %}
-              {% for tab in status_tabs %}
-                {% if tab.key != lesson.status %}
-                <form method="post" action="/learn/lessons/{{ lesson.id }}/status">
-                  <input type="hidden" name="status" value="{{ tab.key }}">
-                  <input type="hidden" name="return_to" value="{{ self_url }}">
-                  <button type="submit" class="btn-text">{{ tab.label }}</button>
-                </form>
-                {% endif %}
-              {% endfor %}
-              <form method="post" action="/learn/lessons/{{ lesson.id }}/archive">
-                <input type="hidden" name="return_to" value="{{ self_url }}">
-                <button type="submit" class="icon-btn danger" title="Archive">{{ ic.icon('archive') }}</button>
-              </form>
-            {% else %}
-              <form method="post" action="/learn/lessons/{{ lesson.id }}/restore">
-                <input type="hidden" name="return_to" value="{{ self_url }}">
-                <button type="submit" class="btn-text">Restore</button>
-              </form>
-            {% endif %}
-          </div>
-        </article>
+          </details>
+          {# Where a collapsed track is resumed from. Deliberately a sibling of
+             the <details>, not a child of the <summary>: a summary maps to a
+             button, and a link inside a button is not reachable as a link. It
+             hides once the group is open, where the rows say the same thing. #}
+          {% if group.next %}
+          <a class="lesson-group-next" href="{{ group.next.href }}" title="{{ group.next.title }}">Next: {{ group.next.title }}</a>
+          {% endif %}
+        </section>
         {% endfor %}
+        {% endif %}
+        {% for lesson in flat_rows %}{{ lesson_row(lesson) }}{% endfor %}
       </div>
+      {% if grouped and groups %}
+      {# Which tracks the learner keeps open, one key per track. Inline and
+         synchronous for the same reason the record sheet's script is (below):
+         it must beat the first paint, or a group the learner folded away
+         flashes open on every navigation. With nothing stored the group keeps
+         what the server rendered — collapsed, except the one holding the
+         lesson on screen.
+
+         Only a real toggle is a preference. A <details> parsed with `open`
+         queues a toggle event of its own, and so does the assignment below, so
+         a listener that trusts the event would record "the learner opened this
+         track" for every track they merely visited — and, since /learn always
+         selects a lesson, unfold the list again one track per visit. The state
+         we already know is therefore the thing compared against, not the
+         event: an event that reports what we last knew changed nothing. #}
+      <script>
+        (function () {
+          var groups = document.querySelectorAll(".lesson-group-d[data-track]");
+          Array.prototype.forEach.call(groups, function (d) {
+            var key = "al-learn-group-" + d.getAttribute("data-track");
+            var stored = null;
+            try { stored = localStorage.getItem(key); } catch (e) {}
+            if (stored !== null) d.open = stored === "1";
+            var known = d.open;
+            d.addEventListener("toggle", function () {
+              if (d.open === known) return;
+              known = d.open;
+              try { localStorage.setItem(key, known ? "1" : "0"); } catch (e) {}
+            });
+          });
+        })();
+      </script>
+      {% endif %}
       {% else %}
       <div class="learn-empty">
         {{ ic.constellation_book('learn-mark') }}

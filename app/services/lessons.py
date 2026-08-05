@@ -2215,6 +2215,11 @@ def track_progress(
 
     Members order by `step`, then slug so a track without steps still renders
     deterministically; tracks order by `path` (no notion of a "main" track).
+    `ids` carries that member order out, so a caller rendering the track as a
+    group of lesson rows groups by the same membership rule that produced the
+    counts — the gate below is subtle enough that a second derivation of it
+    elsewhere would drift, and a row counted in "N of M" but filed outside its
+    group (or the reverse) is exactly the disagreement the learner would see.
     """
     by_path: dict[str, list[dict]] = {}
     for row in rows:
@@ -2246,6 +2251,7 @@ def track_progress(
             "studied": sum(1 for m in members if m["row"]["status"] == "studied"),
             "total": len(members),
             "next": {"id": nxt["id"], "title": nxt["title"]} if nxt else None,
+            "ids": [m["row"]["id"] for m in members],
         })
     return tracks
 

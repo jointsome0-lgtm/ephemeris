@@ -144,24 +144,89 @@ def test_track_progress(client, suite_state):
         {t["path"]: t["total"] for t in _reused}["zz-track-one"] == 2
     ), "a supplied manifest read replaces the file read for that lesson"
 
-    # --- the rendered strip --------------------------------------------------
+    # Membership travels with the counts, so a caller grouping rows applies the
+    # same gate that produced them rather than deriving it a second time.
+    assert (
+        _gated["zz-track-one"]["ids"] == [made["t1_a"]["id"], made["t1_b"]["id"],
+                                          made["t1_c"]["id"]]
+        and _bad["rejected"]["id"] not in _gated["zz-track-one"]["ids"]
+    ), "`ids` lists exactly the counted members, in step order"
+
+    # --- the rendered groups -------------------------------------------------
+    # A track renders as one collapsible group carrying its progress, and the
+    # #81 strip is not rendered beside it: two copies of the same numbers on one
+    # narrow panel is what folding the track into the list set out to remove.
     r = c.get("/learn")
     assert r.status_code == 200, "GET /learn 200"
     assert (
-        'class="learn-tracks"' in r.text
-        and "zz-track-one" in r.text
-        and "1 of 3 studied" in r.text
-    ), "the strip renders one line per track, above the list"
+        'class="lesson-group-head"' in r.text
+        and 'data-track="zz-track-one"' in r.text
+        and ">1 of 3</span>" in r.text
+        and 'class="learn-tracks"' not in r.text
+    ), "each track is a group head with its count, and the strip is gone"
     assert (
-        f'class="learn-track-next" href="/learn?lesson={made["t1_b"]["id"]}"' in r.text
+        'style="width: 33%"' in r.text
+    ), "the progress bar fills to the studied share of the track"
+    assert (
+        f'class="lesson-group-next" href="/learn?lesson={made["t1_b"]["id"]}"' in r.text
     ), "the next-step link points at the lesson, with no status filter attached"
 
+    def _row_ids(html: str) -> list[int]:
+        """Every lesson id the list rendered, in order, one hit per row."""
+        import re
+
+        return [int(m) for m in re.findall(r"/learn/lessons/(\d+)/(?:archive|restore)",
+                                           html)]
+
+    _ids = _row_ids(r.text)
+    assert (
+        _ids.count(made["t1_a"]["id"]) == 1 and _ids.count(made["loose"]["id"]) == 1
+    ), "grouping moves a row, it never renders one twice"
+    # The loose lesson has no track, so it follows every group in the tail.
+    assert (
+        _ids.index(made["loose"]["id"]) > _ids.index(made["t1_c"]["id"])
+    ), "lessons in no track render after the groups, not inside one"
+    # Members follow the track's own step order, not the list's recency order:
+    # t1_c was created first but declares the last step.
+    assert (
+        _ids.index(made["t1_a"]["id"])
+        < _ids.index(made["t1_b"]["id"])
+        < _ids.index(made["t1_c"]["id"])
+    ), "a group orders its rows by step, not by the list's order"
+
+    # The group holding the lesson on screen is open; the others start folded,
+    # which is the whole point when a seeded course is fourteen rows long.
+    _sel = c.get(f"/learn?lesson={made['t1_b']['id']}")
+    assert (
+        'data-track="zz-track-one" open>' in _sel.text
+        and 'data-track="zz-track-two" open>' not in _sel.text
+    ), "only the selected lesson's group renders open"
+    # A <details> parsed with `open` queues a toggle event of its own, so the
+    # state-remembering script must compare against what it already knows
+    # instead of trusting the event. Trusting it recorded "the learner opened
+    # this track" for every track merely visited — and /learn always selects a
+    # lesson, so the folded list unfolded itself again one track per visit.
+    assert (
+        "if (d.open === known) return;" in _sel.text
+    ), "the open-state script ignores a toggle that reports no change"
+
     # Recommendation 1 in the #81 brief: the numbers are the whole active list,
-    # so clicking a status pill cannot make "N of M" jump.
+    # so clicking a status pill cannot make "N of M" jump — even though the pill
+    # does decide which of the track's rows appear under the head.
     _filtered = c.get("/learn?status=backlog")
     assert (
-        "1 of 3 studied" in _filtered.text
+        ">1 of 3</span>" in _filtered.text
     ), "the status filter does not change the track numbers"
+    _filtered_ids = _row_ids(_filtered.text)
+    assert (
+        made["t1_c"]["id"] in _filtered_ids
+        and made["t1_a"]["id"] not in _filtered_ids
+    ), "the filter still decides which rows render inside the group"
+    # zz-track-two's only member is studied, so nothing of it survives `backlog`
+    # and an empty head would be a track that looks like it has no lessons.
+    assert (
+        'data-track="zz-track-two"' not in _filtered.text
+    ), "a track with no row left under the filter is dropped, not left empty"
 
     # An archived member leaves the track: it left the active list.
     conn = get_conn()
@@ -170,13 +235,20 @@ def test_track_progress(client, suite_state):
     finally:
         conn.close()
     assert (
-        "1 of 2 studied" in c.get("/learn").text
+        ">1 of 2</span>" in c.get("/learn").text
     ), "archiving a member drops it from its track"
+    _arch = c.get("/learn?archived=1")
+    assert (
+        "lesson-group-head" not in _arch.text
+        and made["t1_c"]["id"] in _row_ids(_arch.text)
+    ), "an archived member renders flat: archiving already removed it from the track"
 
     # --- deploy safety -------------------------------------------------------
-    # Jinja re-reads templates per render, so the live pre-#81 process serves
-    # this template against a context with no `tracks`. It must omit the strip,
-    # not raise, or the merge breaks /learn until the next restart.
+    # Jinja re-reads templates per render, so the live pre-change process serves
+    # this template against a context with neither `groups` nor `ungrouped` (and
+    # the pre-#81 one without `tracks` either). It must fall back to the flat
+    # list and the strip, not raise, or the merge breaks /learn until the next
+    # restart.
     from starlette.requests import Request as _Request
 
     from app.templating import templates as _tpl
@@ -185,20 +257,46 @@ def test_track_progress(client, suite_state):
         "type": "http", "method": "GET", "path": "/learn", "headers": [],
         "query_string": b"", "client": ("127.0.0.1", 1234),
     })
-    _no_ctx = _tpl.get_template("learn.html").render(
-        request=_req, rail="learn", rows=[], status_filter=None,
+    _base_ctx = dict(
+        request=_req, rail="learn", status_filter=None,
         show_archived=False, counts={"all": 0, "archived": 0,
                                      **{k: 0 for k in lessons_svc.STATUSES}},
         status_tabs=[], selected=None, self_url="/learn", flash=None,
     )
+    _no_ctx = _tpl.get_template("learn.html").render(rows=[], **_base_ctx)
     assert (
         "learn-tracks" not in _no_ctx and "Lesson title" in _no_ctx
     ), "learn.html renders without a `tracks` variable, omitting the strip"
 
-    # The CSS the strip names actually exists.
+    # The pre-change backend of THIS commit: it has `tracks` but no `groups`, so
+    # the strip is what carries the numbers and every row renders flat.
+    conn = get_conn()
+    try:
+        _live_rows = lessons_svc.list_lessons(conn)
+    finally:
+        conn.close()
+    _pre = _tpl.get_template("learn.html").render(
+        rows=_live_rows, tracks=lessons_svc.track_progress(_live_rows), **_base_ctx)
+    assert (
+        'class="learn-tracks"' in _pre
+        and "1 of 2 studied" in _pre
+        and "lesson-group-head" not in _pre
+        and len(_row_ids(_pre)) == len(_live_rows)
+    ), "with `tracks` but no `groups`, the page is the strip over the flat list"
+
+    # The CSS the strip and the groups name actually exists.
     _css = (ROOT / "app" / "static" / "style.css").read_text(encoding="utf-8")
     assert (
         ".learn-tracks {" in _css and ".learn-track-next {" in _css
-    ), "the track strip has its styles"
+        and ".lesson-group {" in _css and ".lesson-group-bar {" in _css
+    ), "the track strip and the groups have their styles"
+    # The bug this layout was fixed for: the panel's chrome shrank under a
+    # column that no longer scrolls (#132), and the add form — the one child
+    # whose explicit `min-height` replaced its automatic minimum — collapsed to
+    # one row's height and painted its other rows over the filters.
+    assert (
+        ".lesson-panel > .learn-add," in _css
+        and "min-height: 46px" not in _css
+    ), "the panel's chrome is pinned against the flex shrink that overlapped it"
 
     suite_state["track_progress"] = sorted(tracks)
