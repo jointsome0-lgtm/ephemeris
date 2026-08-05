@@ -1531,8 +1531,8 @@ if (recordPanel && recordCountsUrl && recordKey) {
     if (badge.textContent !== text) badge.textContent = text;
   };
 
-  const acknowledge = (): void => {
-    writeSeen(latestCursor || RECORD_ZERO_CURSOR);
+  const acknowledge = (cursor: string): void => {
+    writeSeen(cursor || RECORD_ZERO_CURSOR);
     showUnread(0);
   };
 
@@ -1541,11 +1541,16 @@ if (recordPanel && recordCountsUrl && recordKey) {
    * verdict would spend the only signal the learner had and show them the old
    * reading. Same-origin HTML this app rendered and escaped, parsed inert (a
    * DOMParser document runs no script) and adopted by insertion; on any
-   * failure the badge stays up and the click can be repeated. */
-  const refreshBody = async (): Promise<boolean> => {
+   * failure the badge stays up and the click can be repeated.
+   *
+   * Returns the cursor the SWAPPED-IN rows read to, which is what may then be
+   * acknowledged: a poll completing during the fetch can move `latestCursor`
+   * past a verdict this snapshot does not contain, and acknowledging that
+   * would clear the badge for a row the learner was never shown. */
+  const refreshBody = async (): Promise<string | null> => {
     try {
       const response = await fetch(window.location.href, { cache: "no-store" });
-      if (!response.ok) return false;
+      if (!response.ok) return null;
       const parsed = new DOMParser().parseFromString(await response.text(), "text/html");
       const panel = parsed.querySelector("#lesson-record");
       /* `/learn` resolves its own selection: a filter, an archive, or a status
@@ -1553,14 +1558,16 @@ if (recordPanel && recordCountsUrl && recordKey) {
        * lesson. Swapping that body in would show the wrong record and then
        * acknowledge THIS lesson's cursor over it, so the key is checked first
        * and a mismatch simply leaves the badge up. */
-      if (!panel || panel.getAttribute("data-record-key") !== recordKey) return false;
+      if (!panel || panel.getAttribute("data-record-key") !== recordKey) return null;
       const fresh = panel.querySelector(".lesson-record-body");
       const current = recordPanel.querySelector(".lesson-record-body");
-      if (!fresh || !current) return false;
+      if (!fresh || !current) return null;
       current.replaceWith(fresh);
-      return true;
+      /* Absent only on a backend that renders no cursor — which is also a
+       * backend with no poll route — so the empty (zero) cursor is right. */
+      return panel.getAttribute("data-record-cursor") ?? "";
     } catch {
-      return false;
+      return null;
     }
   };
 
@@ -1585,7 +1592,7 @@ if (recordPanel && recordCountsUrl && recordKey) {
       if (!readSeen()) {
         /* First sight of this lesson in this browser: adopt the current cursor
          * as the baseline instead of announcing the whole history as new. */
-        acknowledge();
+        acknowledge(latestCursor);
         return;
       }
       showUnread(
@@ -1608,7 +1615,8 @@ if (recordPanel && recordCountsUrl && recordKey) {
     ev.stopPropagation();
     recordPanel.open = true;
     void (async () => {
-      if (await refreshBody()) acknowledge();
+      const shown = await refreshBody();
+      if (shown !== null) acknowledge(shown);
     })();
   });
 

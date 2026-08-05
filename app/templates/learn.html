@@ -239,7 +239,8 @@
       {% if selected.record_counts_url is defined %}
                data-record-counts-url="{{ selected.record_counts_url }}"
                data-record-key="{{ selected.id }}"
-      {% endif %}>
+      {% endif %}
+      {% if rec.cursor is defined %}data-record-cursor="{{ rec.cursor }}"{% endif %}>
         <summary class="lesson-record-head">
           <span class="lesson-record-title">Record</span>
           <span class="lesson-record-counts">

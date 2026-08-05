@@ -378,6 +378,19 @@ def test_the_record_panel_carries_the_poll_target_and_the_unread_badge(client):
     assert f'data-record-counts-url="/learn/lessons/{lesson["id"]}/record-counts"' in body
     assert f'data-record-key="{lesson["id"]}"' in body
     assert 'data-record-count="verdicts"' in body
+    # The rendered panel carries the cursor its own rows read to, so the badge
+    # acknowledges the snapshot the learner was shown and not whatever the
+    # poll last reported.
+    conn = get_conn()
+    try:
+        seq = conn.execute(
+            "SELECT MAX(id) FROM lesson_assessments WHERE lesson_id = ? "
+            "AND kind = 'review'", (lesson["id"],)).fetchone()[0]
+    finally:
+        conn.close()
+    assert f'data-record-cursor="{learn._record_cursor(seq)}"' in body
+    assert client.get(f"/learn/lessons/{lesson['id']}/record-counts").json()[
+        "cursor"] == learn._record_cursor(seq)
     # The badge ships hidden and empty: unread is this browser's state, and the
     # server has no opinion about what the learner has already seen.
     assert '<button type="button" class="rec-unread" id="rec-unread" hidden' in body
@@ -396,7 +409,8 @@ def test_the_record_panel_carries_the_poll_target_and_the_unread_badge(client):
     # fetched page still answers for THIS lesson before swapping its body in,
     # and a browser with storage blocked keeps the acknowledged cursor in
     # memory rather than reading first sight on every poll.
-    for token in ('data-record-key") !== recordKey', "sessionSeen"):
+    for token in ('data-record-key") !== recordKey', "sessionSeen",
+                  'data-record-cursor'):
         assert token in source and token in emitted
     # Tier 1 adds no bridge operation: reading the record INTO the lesson page
     # is tier 2, and the ABI is frozen additive-only by design.
@@ -427,6 +441,7 @@ def test_learn_html_renders_under_a_pre_133_router_context(client, monkeypatch):
     selected.pop("record_counts_url")
     record = dict(selected["record"])
     record.pop("verdict_count")
+    record.pop("cursor")
     record["questions"] = [
         {k: v for k, v in q.items() if k != "successor"} for q in record["questions"]
     ]
@@ -443,6 +458,7 @@ def test_learn_html_renders_under_a_pre_133_router_context(client, monkeypatch):
     # (the route does not exist on that process), no verdicts count, no link.
     assert "data-record-counts-url" not in old
     assert 'data-record-count="verdicts"' not in old
+    assert "data-record-cursor" not in old
     assert 'href="#rec-q-' not in old
     # What the old context DOES carry still renders, including the full note.
     assert LONG_NOTE in old

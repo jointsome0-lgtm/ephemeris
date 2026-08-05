@@ -428,8 +428,16 @@ def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> d
         "declared_known": declared_known,
         # Kept beside `counts` rather than inside it: the count line is the
         # panel's own shape, and the record-counts poll below is the second
-        # reader of this number.
+        # reader of these two.
         "verdict_count": len(state["reviews_by_attempt"]),
+        # How far THIS rendering of the panel reads. What the learner
+        # acknowledges is the snapshot in front of them, so the cursor travels
+        # with the rendered rows rather than being taken from whichever poll
+        # happened to answer last.
+        "cursor": _record_cursor(max(
+            (review["seq"] for review in state["reviews_by_attempt"].values()),
+            default=0,
+        )) if state["reviews_by_attempt"] else "",
         "counts": {
             "attempts": attempt_state["total"],
             "assessments": state["active_count"],
