@@ -231,7 +231,8 @@ a stored selection absent from `pages[]` falls back to `entry` with an
 
 ### 4.3 `questions[]`
 
-`{"id": "q_…", "page": "pg_…", "kind": "prediction"?, "label": "…"?}`
+`{"id": "q_…", "page": "pg_…", "kind": "prediction"?, "label": "…"?,
+"replaces": "q_…"?}`
 
 - `id`: required, unique; the durable key attempts reference;
 - `page`: required, must reference an existing `pages[].id`;
@@ -241,6 +242,18 @@ a stored selection absent from `pages[]` falls back to `entry` with an
   recommended values: `prediction`, `free_text`, `self_check`;
 - `label`: optional adapter-facing summary ≤ 200. The full prompt lives in
   the page HTML; the manifest only declares existence and identity.
+- `replaces`: optional; the `q_…` id of a **retired** predecessor this
+  question supersedes. Ids are durable and never reused (§3), so a rewritten
+  question gets a new id and the answers and verdicts written about the old
+  one would otherwise be orphaned; this names the successor so the Record
+  panel can link the retired history to where the question lives now. It is a
+  presentation binding only — it moves no attempt and rewrites no history, and
+  the attempt backend still refuses writes for the retired id.
+
+  A predecessor is by definition no longer declared. A `replaces` that is not
+  a grammar-valid id, names its own question, names a question the same
+  manifest still declares, or is claimed by two successors at once is dropped
+  with `invalid-value`; the question itself stays declared.
 
 A question that is not declared here does not exist: the attempt backend
 rejects writes for undeclared `question_id`s (D4/D5).
@@ -758,7 +771,7 @@ across lines by `indent=2`; no compact one-line forms. Key order is
 recursive: each object serializes its known keys first, in the order its
 defining table/section lists them (top level: the §4 table; `pages[]`
 items: `id`, `path`, `title`; `questions[]` items: `id`, `page`, `kind`,
-`label`; `blocks[]` items: `id`, `page`, `kind`, `language`, `file`,
+`label`, `replaces`; `blocks[]` items: `id`, `page`, `kind`, `language`, `file`,
 `runner_id`; `runtime`: `profile`), then unknown keys in their original
 relative order. Absent optional fields are omitted, not written as `null`
 (`source_url: null` is accepted on read as absent, v1 heritage).

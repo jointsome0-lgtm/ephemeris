@@ -112,6 +112,10 @@ def get_learn(
         # capability instead of advertising a route it does not have.
         selected["artifacts_url"] = f"/learn/lessons/{selected['id']}/blocks"
         selected["runs_url"] = f"/learn/lessons/{selected['id']}/blocks"
+        # #133 endpoint discovery, guarded in the template for the same
+        # reason: a live pre-#133 backend rendering this template must render
+        # no poll target rather than one that 404s every few seconds.
+        selected["record_counts_url"] = f"/learn/lessons/{selected['id']}/record-counts"
         # D2: the iframe sandbox attribute follows the effective profile
         # (same owner as the header-level directive); the profile is folded
         # into the version token, so a flip reloads the frame and the parent
@@ -293,7 +297,31 @@ def _record_entry(state: dict, attempt: dict | None, *, label: str,
         "review_date": _record_date(review["created_at"]) if review else "",
         "review_exam": bool(review and review["mode"] == "exam"),
         "earlier_reviews": earlier,
+        # Filled by `_attach_successors` once every row exists (#133 tier 1).
+        "successor": None,
     }
+
+
+def _attach_successors(rows: list[dict], declared: list[dict]) -> None:
+    """Point a row at the declared question that says it `replaces` it (§4.3).
+
+    Durable ids are never reused, so a rewritten question arrives under a new
+    id and everything recorded about the old one keeps standing alone at the
+    foot of the panel. The manifest is the only place that can say the two are
+    the same question, and the reader has already refused every ambiguous or
+    self-referential claim, so this is a plain lookup — a link between two rows
+    the panel is showing anyway, never a move of history between them.
+    """
+    successors = {
+        question["replaces"]: {
+            "question_id": question["id"],
+            "label": question["label"] or question["id"],
+        }
+        for question in declared
+        if question.get("replaces")
+    }
+    for row in rows:
+        row["successor"] = successors.get(row["question_id"])
 
 
 _record_panel_db_state = lessons.record_panel_db_state
@@ -361,6 +389,7 @@ def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> d
         # Not retired — just unlabelled, because the manifest could not be read.
         questions = [dict(row, retired=False) for row in retired]
         retired = []
+    _attach_successors(questions + retired, declared)
 
     evidence = sorted(
         (
@@ -389,6 +418,10 @@ def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> d
         "questions": questions,
         "retired": retired,
         "declared_known": declared_known,
+        # Kept beside `counts` rather than inside it: the count line is the
+        # panel's own shape, and the record-counts poll below is the second
+        # reader of this number.
+        "verdict_count": len(state["reviews_by_attempt"]),
         "counts": {
             "attempts": attempt_state["total"],
             "assessments": state["active_count"],
@@ -619,6 +652,55 @@ def get_lesson_preview_meta(lesson_id: int, entry: str | None = None,
         "preview_url": _lesson_preview_url(lesson_id, info["entry"], exists=info["exists"]),
         "file_url": _lesson_preview_url(lesson_id, info["entry"]),
     })
+
+
+# Longest `since` a caller can hand the record poll. The value is only ever
+# compared as a string against ISO stamps this app wrote, but an unbounded
+# query parameter should not reach a comparison loop at all.
+_MAX_SINCE_LEN = 64
+
+
+@router.get("/learn/lessons/{lesson_id}/record-counts")
+def get_lesson_record_counts(lesson_id: int, since: str | None = None,
+                             conn: sqlite3.Connection = Depends(get_db)):
+    """The Record panel's counts, so a verdict written while the page is open
+    reaches the learner (#133 tier 1).
+
+    The panel itself is server-rendered on GET and the live-reload poll only
+    watches the lesson FILE, so before this a verdict landed silently and the
+    learner had to guess that reloading was worth it. This answers with the
+    same numbers the panel folds — no note text, no per-question shape: it is a
+    signal that the record moved, not a second rendering of it.
+
+    Read state is the CLIENT's: `since` is the stamp the learner last
+    acknowledged, and `unread` counts the standing verdicts written after it.
+    Nothing is stored server-side, so this stays a pure read and two browsers
+    on the same lesson keep their own idea of what they have seen. Absent
+    `since` = no baseline yet (a first visit), which is nothing unread rather
+    than everything.
+    """
+    lesson = _lesson_or_404(conn, lesson_id)
+    state, attempt_state, focus_total = _record_panel_db_state(conn, lesson["id"])
+    reviews = list(state["reviews_by_attempt"].values())
+    stamps = sorted(review["created_at"] or "" for review in reviews)
+    baseline = since[:_MAX_SINCE_LEN] if since else None
+    return JSONResponse(
+        {
+            "ok": True,
+            "attempts": attempt_state["total"],
+            "assessments": state["active_count"],
+            "verdicts": len(reviews),
+            # The stamps are ISO-8601 UTC written by this app alone (one
+            # format, fixed width), so ordering them is a string compare.
+            "unread": (
+                sum(1 for stamp in stamps if stamp > baseline)
+                if baseline else 0
+            ),
+            "latest_at": stamps[-1] if stamps else "",
+            "focus_seconds": focus_total["seconds"],
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 # --- lesson artifacts (phase F1 editor backend) ----------------------------

@@ -1441,3 +1441,132 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
   setInterval(() => void tick(), POLL_MS);
   document.addEventListener("visibilitychange", () => void tick());
 }
+
+/* ---- record counts poll (#133 tier 1) ------------------------------------
+ *
+ * The Record panel is server-rendered on GET, so a verdict the tutor writes
+ * while the learner sits on the page changes nothing on screen. This polls the
+ * counts — numbers only, no note text — and puts the difference on the summary
+ * row, so the learner learns that looking is worth it.
+ *
+ * Deliberately NOT part of the bridge above: it neither knows nor asks about
+ * the iframe, adds no operation to the ABI (reading the record INTO the lesson
+ * page is #133 tier 2, a designed ABI addition), and must keep working on a
+ * page whose bridge never arms. It runs slower than the reload poll for the
+ * same reason: a verdict is a human-scale event and each read folds the
+ * lesson's whole assessment state.
+ *
+ * Read state is the browser's. The server holds no per-learner "seen" mark, so
+ * the acknowledged stamp lives in localStorage and the poll asks how many
+ * standing verdicts are newer than it. First sight of a lesson silently takes
+ * the current stamp as the baseline: "new" means new to this reader, and
+ * before a first look nothing can be. */
+const RECORD_POLL_MS = 6000;
+const RECORD_SEEN_PREFIX = "al-record-seen:";
+
+interface RecordCounts {
+  ok?: unknown;
+  attempts?: unknown;
+  assessments?: unknown;
+  verdicts?: unknown;
+  unread?: unknown;
+  latest_at?: unknown;
+}
+
+const recordPanel = document.getElementById("lesson-record") as HTMLDetailsElement | null;
+const recordCountsUrl = recordPanel?.dataset["recordCountsUrl"] || null;
+const recordKey = recordPanel?.dataset["recordKey"] || null;
+
+if (recordPanel && recordCountsUrl && recordKey) {
+  const badge = document.getElementById("rec-unread") as HTMLButtonElement | null;
+  const seenKey = RECORD_SEEN_PREFIX + recordKey;
+  /* Storage can be unavailable or full; the badge is an affordance, not a
+   * record, so it degrades to "nothing acknowledged this session" rather than
+   * throwing inside the poll. */
+  const readSeen = (): string => {
+    try {
+      return window.localStorage.getItem(seenKey) || "";
+    } catch {
+      return "";
+    }
+  };
+  const writeSeen = (stamp: string): void => {
+    try {
+      window.localStorage.setItem(seenKey, stamp);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  /* The stamp the badge is currently counting from, and the newest stamp the
+   * server has reported. Acknowledging is local and instant: the next poll
+   * confirms it. */
+  let latestAt = "";
+
+  const setCount = (name: string, value: number): void => {
+    const cell = recordPanel.querySelector(`[data-record-count="${name}"]`);
+    /* A pre-#133 backend renders no verdicts cell; the others always exist. */
+    if (cell && cell.textContent !== String(value)) cell.textContent = String(value);
+  };
+
+  const showUnread = (count: number): void => {
+    if (!badge) return;
+    badge.hidden = count <= 0;
+    const text = count > 0 ? `${count} new` : "";
+    if (badge.textContent !== text) badge.textContent = text;
+  };
+
+  const acknowledge = (): void => {
+    if (latestAt) writeSeen(latestAt);
+    showUnread(0);
+  };
+
+  let inFlight = false;
+  const pollCounts = async (): Promise<void> => {
+    if (document.hidden || inFlight) return;
+    inFlight = true;
+    try {
+      const response = await fetch(
+        `${recordCountsUrl}?since=${encodeURIComponent(readSeen())}`,
+        { cache: "no-store" },
+      );
+      const data: unknown = await response.json();
+      if (typeof data !== "object" || data === null) return;
+      const counts = data as RecordCounts;
+      if (counts.ok !== true) return;
+      if (typeof counts.latest_at === "string") latestAt = counts.latest_at;
+      for (const name of ["attempts", "assessments", "verdicts"] as const) {
+        const value = counts[name];
+        if (typeof value === "number" && Number.isFinite(value)) setCount(name, value);
+      }
+      if (!readSeen()) {
+        /* First sight of this lesson in this browser: adopt the current stamp
+         * as the baseline instead of announcing the whole history as new. */
+        acknowledge();
+        return;
+      }
+      showUnread(
+        typeof counts.unread === "number" && Number.isFinite(counts.unread)
+          ? counts.unread
+          : 0,
+      );
+    } catch {
+      /* best-effort; the next tick retries */
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  badge?.addEventListener("click", (ev) => {
+    /* The badge sits inside the <summary>: its own click must acknowledge and
+     * OPEN the panel, never toggle a panel the learner just asked to see. */
+    ev.preventDefault();
+    ev.stopPropagation();
+    recordPanel.open = true;
+    acknowledge();
+  });
+
+  setInterval(() => void pollCounts(), RECORD_POLL_MS);
+  document.addEventListener("visibilitychange", () => void pollCounts());
+  void pollCounts();
+}

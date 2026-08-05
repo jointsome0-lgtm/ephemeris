@@ -11,7 +11,7 @@
    escaped text — no markdown: the lesson iframe's protections stop at the
    frame, and this is the parent page. #}
 {% macro record_question(q) -%}
-<li class="rec-q{% if q.retired %} rec-q-retired{% endif %}">
+<li class="rec-q{% if q.retired %} rec-q-retired{% endif %}" id="rec-q-{{ q.question_id }}">
   <div class="rec-q-head">
     <span class="rec-q-label">{{ q.label }}</span>
     {% if q.page_id %}<span class="rec-q-page">{{ q.page_id }}</span>{% endif %}
@@ -19,6 +19,14 @@
     {% if q.retired %}<span class="rec-tag rec-retired" title="No longer declared in the manifest">retired</span>{% endif %}
     {% if q.unvalidated %}<span class="rec-tag rec-unvalidated" title="Still declared, but the manifest entry did not validate">unread</span>{% endif %}
   </div>
+  {# #133: the manifest's `replaces` claim, the only thing that can say a
+     retired id and a declared one are the same question. `is defined` guards
+     a live pre-#133 backend rendering this template. #}
+  {% if q.successor is defined and q.successor %}
+  <p class="rec-succ">Continued as
+    <a href="#rec-q-{{ q.successor.question_id }}">{{ q.successor.label }}</a>
+  </p>
+  {% endif %}
   {% if q.attempt %}
   <p class="rec-answer">{{ q.attempt.answer }}{% if q.attempt.answer_truncated %}…{% endif %}</p>
   <p class="rec-meta">
@@ -223,28 +231,69 @@
          the guard omits the panel instead of half-drawing it. #}
       {% if selected.record is defined %}
       {% set rec = selected.record %}
-      <details class="lesson-record" open>
+      {# #133: the counts poll target and the read-state key live on the
+         element the runtime drives. Both are `is defined`-guarded — a live
+         pre-#133 backend renders no URL, and the runtime then leaves the
+         server-rendered counts alone instead of polling a route that 404s. #}
+      <details class="lesson-record" open id="lesson-record"
+      {% if selected.record_counts_url is defined %}
+               data-record-counts-url="{{ selected.record_counts_url }}"
+               data-record-key="{{ selected.id }}"
+      {% endif %}>
         <summary class="lesson-record-head">
           <span class="lesson-record-title">Record</span>
           <span class="lesson-record-counts">
-            {{ rec.counts.attempts }} attempts
-            · {{ rec.counts.assessments }} active
+            <span data-record-count="attempts">{{ rec.counts.attempts }}</span> attempts
+            · <span data-record-count="assessments">{{ rec.counts.assessments }}</span> active
+            {% if rec.verdict_count is defined %}
+            · <span data-record-count="verdicts">{{ rec.verdict_count }}</span> verdicts
+            {% endif %}
             · {{ rec.counts.focus }} focused
           </span>
+          {# Unread is the LEARNER's state, not the record's: the runtime keeps
+             the acknowledged stamp in this browser and fills this in. It
+             starts hidden and empty so a page without the runtime — or with an
+             older backend — simply never shows it. #}
+          <button type="button" class="rec-unread" id="rec-unread" hidden
+                  aria-label="New verdicts — show and mark seen"></button>
         </summary>
         <div class="lesson-record-body">
           {% if rec.empty %}
           <p class="rec-none">Nothing recorded yet — verdicts the tutor writes for this lesson appear here.</p>
           {% endif %}
 
+          {# Evidence chips (#133): the note is the diagnostic sentence the
+             tutor wrote about the concept, so it renders in full as `.rec-note`
+             behind a fold instead of being cut into a 200-character tooltip no
+             touch device can even open. A chip with no note stays a plain
+             pill — there is nothing to unfold. #}
           {% if rec.evidence %}
           <ul class="rec-chips" aria-label="Concept evidence">
             {% for chip in rec.evidence %}
-            <li class="rec-chip rec-lv-{{ chip.level }}"
-                title="{{ chip.level }} · basis: {{ chip.basis }}{% if chip.date %} · {{ chip.date }}{% endif %} — {{ chip.note|truncate(200) }}">
-              <span class="rec-chip-concept">{{ chip.concept }}</span>
-              <span class="rec-chip-level">{{ chip.level }}</span>
-              {% if chip.exam %}<span class="rec-tag rec-exam" title="Recorded during an exam">exam</span>{% endif %}
+            <li class="rec-chip-item">
+              {% if chip.note %}
+              <details class="rec-chip rec-chip-fold rec-lv-{{ chip.level }}">
+                <summary class="rec-chip-head">
+                  <span class="rec-chip-concept">{{ chip.concept }}</span>
+                  <span class="rec-chip-level">{{ chip.level }}</span>
+                  {% if chip.exam %}<span class="rec-tag rec-exam" title="Recorded during an exam">exam</span>{% endif %}
+                </summary>
+                <div class="rec-chip-body">
+                  <p class="rec-meta">
+                    <span>basis: {{ chip.basis }}</span>
+                    {% if chip.date %}<span>{{ chip.date }}</span>{% endif %}
+                  </p>
+                  <p class="rec-note">{{ chip.note }}</p>
+                </div>
+              </details>
+              {% else %}
+              <span class="rec-chip rec-lv-{{ chip.level }}"
+                    title="{{ chip.level }} · basis: {{ chip.basis }}{% if chip.date %} · {{ chip.date }}{% endif %}">
+                <span class="rec-chip-concept">{{ chip.concept }}</span>
+                <span class="rec-chip-level">{{ chip.level }}</span>
+                {% if chip.exam %}<span class="rec-tag rec-exam" title="Recorded during an exam">exam</span>{% endif %}
+              </span>
+              {% endif %}
             </li>
             {% endfor %}
           </ul>
