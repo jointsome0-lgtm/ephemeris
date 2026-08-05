@@ -244,7 +244,7 @@ def test_evidence_notes_render_in_full_instead_of_a_truncated_tooltip(client):
     # The old shape: the note inside a title="" attribute, cut at 200 chars
     # with Jinja's ellipsis. Neither may survive anywhere on the page.
     assert LONG_NOTE[:190] + "..." not in body
-    assert f'title="weak · basis: attempts' not in body
+    assert 'title="weak · basis: attempts' not in body
     assert body.count(LONG_NOTE) == 2  # the verdict note and the chip note
     assert 'class="rec-chip rec-chip-fold rec-lv-weak"' in body
 
