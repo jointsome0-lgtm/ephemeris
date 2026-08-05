@@ -540,6 +540,13 @@ fixes only what the bundle contains (#135).
   A reader therefore knows every line it sees was written by the app; the
   cost is that recovery is a new file, so a lost seal orphans history into a
   collision file rather than silently continuing it.
+- **The seal is checked when the next reader appears, not only when the next
+  run finishes.** A write-time-only check would leave a file planted between
+  two sessions readable as app-owned history for as long as the learner runs
+  nothing. Opening a lesson terminal verifies the seal and moves an
+  unverifiable file aside before the regenerated brief points the session at
+  it — the same trigger point as §6.5's reconcile, but a verification rather
+  than a rebuild, since the output tails exist nowhere else to rebuild from.
 - **Identity gate**: as in §6.5, the app never publishes into a bundle whose
   manifest carries a `lesson_uid` contradicting the DB lesson. Run admission
   only proved the manifest was eligible when the run STARTED; the agent can

@@ -1856,6 +1856,22 @@ def _reconcile_assessment_projection(lesson: dict) -> None:
         pass
 
 
+def _retire_foreign_run_projection(lesson: dict) -> None:
+    """The run projection has no authority to rebuild from — its output tails
+    live nowhere else — so the terminal-open trigger verifies rather than
+    reconciles: a `runs.jsonl` the app did not publish is moved aside before
+    the brief above tells this session to read it as what the code did.
+
+    Best effort in every direction, like the assessment reconcile beside it,
+    and deferred for the same reason: the run service imports this module.
+    """
+    try:
+        from . import runs
+        runs.retire_foreign_projection(lesson)
+    except (OSError, sqlite3.Error, LessonError):
+        pass
+
+
 def prepare_terminal_workspace(slug: str | None) -> dict | None:
     """Resolve a Learn slug and regenerate its agent-facing terminal briefs.
 
@@ -1886,6 +1902,7 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
     # After the briefs: the workspace is ready either way, and a projection
     # hiccup may not cost the agent its regenerated contract.
     _reconcile_assessment_projection(lesson)
+    _retire_foreign_run_projection(lesson)
     return _workspace_view(slug, lesson, lesson_dir)
 
 

@@ -229,17 +229,15 @@ def _ensure_projection_state_dir() -> None:
         raise OSError("run projection state root is not a directory")
 
 
-def _lesson_uid(job: runner.RunnerJob) -> str:
-    uid = job.request.lesson_uid
+def _safe_uid(uid: object) -> str:
     if not isinstance(uid, str) or bundle_schema.UUID_RE.match(uid) is None:
         raise OSError("run has no safe lesson identity")
     return uid
 
 
 @contextmanager
-def _projection_file_lock(job: runner.RunnerJob):
+def _projection_file_lock(uid: str):
     """Serialize one bundle's projection outside the agent-writable bundle."""
-    uid = _lesson_uid(job)
     try:
         import fcntl
     except ImportError as exc:
@@ -331,6 +329,19 @@ def _write_state(uid: str, st: os.stat_result) -> None:
         finally:
             os.close(fd)
         os.replace(tmp_name, PROJECTION_STATE_DIR / f"{uid}.json")
+        # The line itself is already fsynced, so a seal lost to a crash here
+        # would outlive the data it describes: the next run would read the
+        # app's own history as foreign and move it aside. Durable seal or no
+        # published line — never the other order.
+        parent_fd = os.open(
+            PROJECTION_STATE_DIR,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
     except BaseException:
         try:
             os.unlink(tmp_name)
@@ -377,6 +388,20 @@ def _append_to_sealed(dir_fd: int, uid: str, line: bytes, state: dict) -> bool:
         os.close(fd)
 
 
+def _move_aside(dir_fd: int) -> bool:
+    """Retire whatever holds the projection name. True when something moved."""
+    try:
+        os.stat(PROJECTION_NAME, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    os.rename(
+        PROJECTION_NAME, f"{PROJECTION_NAME}.collision-{uuid4().hex[:12]}",
+        src_dir_fd=dir_fd, dst_dir_fd=dir_fd,
+    )
+    os.fsync(dir_fd)
+    return True
+
+
 def _restart_projection(dir_fd: int, uid: str, line: bytes) -> None:
     """Publish a fresh single-line file, preserving whatever held the name.
 
@@ -386,15 +411,7 @@ def _restart_projection(dir_fd: int, uid: str, line: bytes) -> None:
     app-recorded history, so it is moved aside the way §6.5 moves a foreign
     node — never adopted, never written through, never deleted.
     """
-    try:
-        os.stat(PROJECTION_NAME, dir_fd=dir_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        pass
-    else:
-        os.rename(
-            PROJECTION_NAME, f"{PROJECTION_NAME}.collision-{uuid4().hex[:12]}",
-            src_dir_fd=dir_fd, dst_dir_fd=dir_fd,
-        )
+    _move_aside(dir_fd)
     tmp_name = f".runs-{uuid4().hex}.tmp"
     tmp_fd = os.open(
         tmp_name,
@@ -428,9 +445,17 @@ def _restart_projection(dir_fd: int, uid: str, line: bytes) -> None:
         dir_fd=dir_fd,
     )
     try:
-        _write_state(uid, os.fstat(published))
+        published_st = os.fstat(published)
     finally:
         os.close(published)
+    # Seal the inode whose bytes were just fsynced, not merely whatever holds
+    # the name now: the bundle is writable, so the name can be swapped in the
+    # window between the rename and this stat. Blessing that file would make
+    # the seal certify content the app never wrote — the one thing it exists
+    # to prevent. Refusing leaves no seal, so the next run starts over.
+    if (published_st.st_dev, published_st.st_ino) != (staged.st_dev, staged.st_ino):
+        raise OSError("run projection was replaced under the publisher")
+    _write_state(uid, published_st)
 
 
 def _publish_projection_line(job: runner.RunnerJob, line: bytes) -> None:
@@ -446,7 +471,7 @@ def _publish_projection_line(job: runner.RunnerJob, line: bytes) -> None:
     if bundle_dir == bundle_root or not _inside(bundle_dir, bundle_root):
         raise OSError("run bundle is outside its configured root")
 
-    uid = _lesson_uid(job)
+    uid = _safe_uid(job.request.lesson_uid)
     dir_fd = os.open(
         bundle_dir,
         os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
@@ -459,6 +484,47 @@ def _publish_projection_line(job: runner.RunnerJob, line: bytes) -> None:
         _restart_projection(dir_fd, uid, line)
     finally:
         os.close(dir_fd)
+
+
+def retire_foreign_projection(lesson: dict) -> bool:
+    """Reader-side half of the seal: check it when the next reader appears.
+
+    §6.6 promises a study session that every line it reads was written by the
+    app. The write path alone cannot keep that promise — it only looks at the
+    file when a run finishes, so a `runs.jsonl` planted between two sessions
+    would be read as app-owned history for as long as the learner does not
+    run anything. Checking the seal at terminal open, where assessments
+    reconcile, closes that window: a file the app did not publish is moved
+    aside before the brief tells anyone to read it.
+
+    Nothing here can refuse a workspace — a projection the app cannot verify
+    must not keep a lesson from opening — so every failure means "left alone".
+    Returns True when the name is now free of unverifiable content.
+    """
+    try:
+        uid = _safe_uid(lesson.get("uid"))
+        bundle_dir = lessons._lesson_dir(lesson["slug"])
+        with _projection_file_lock(uid):
+            dir_fd = os.open(
+                bundle_dir,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            )
+            try:
+                try:
+                    st = os.stat(
+                        PROJECTION_NAME, dir_fd=dir_fd, follow_symlinks=False
+                    )
+                except FileNotFoundError:
+                    return True
+                state = _read_state(uid)
+                if state is not None and _seal_matches(st, state["file"]):
+                    return True
+                return _move_aside(dir_fd)
+            finally:
+                os.close(dir_fd)
+    except (OSError, KeyError, lessons.LessonError):
+        return False
 
 
 def _identity_contradicts(job: runner.RunnerJob) -> bool:
@@ -490,7 +556,7 @@ def _project_finish(job: runner.RunnerJob, record: dict) -> None:
     line = (
         json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
     ).encode("utf-8")
-    with _projection_file_lock(job):
+    with _projection_file_lock(_safe_uid(job.request.lesson_uid)):
         _publish_projection_line(job, line)
 
 

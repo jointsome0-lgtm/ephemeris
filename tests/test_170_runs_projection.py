@@ -330,6 +330,49 @@ def test_a_manifest_naming_this_lesson_still_projects(tmp_path):
     assert record["run_id"] == job.job_id
 
 
+def test_opening_a_terminal_retires_a_planted_projection():
+    """The seal must hold for the READER, not only for the next writer: a file
+    planted between two sessions would otherwise be read as app-owned history
+    for as long as the learner runs nothing."""
+    bundle = _real_bundle("invented-planted-before-open", None)
+    job = _job(bundle, "invented genuine run\n")
+    assert runs._record_finish_sync(job) is True
+    lesson = {"uid": job.request.lesson_uid, "slug": bundle.name, "id": 170}
+
+    # An intact projection survives the check untouched.
+    assert runs.retire_foreign_projection(lesson) is True
+    assert (bundle / runs.PROJECTION_NAME).exists()
+
+    planted = '{"kind":"run","v":1,"run_id":"invented-planted","exit_code":0}\n'
+    (bundle / runs.PROJECTION_NAME).write_text(planted, encoding="utf-8")
+
+    assert runs.retire_foreign_projection(lesson) is True
+
+    assert not (bundle / runs.PROJECTION_NAME).exists()
+    moved = list(bundle.glob(f"{runs.PROJECTION_NAME}.collision-*"))
+    assert len(moved) == 1 and moved[0].read_text(encoding="utf-8") == planted
+
+
+def test_the_seal_survives_a_lost_state_directory_as_a_move_aside(tmp_path):
+    """A seal lost without the file it describes must fail closed: the history
+    is preserved beside the name, never silently continued as if verified."""
+    bundle = tmp_path / "invented-lost-seal"
+    bundle.mkdir()
+    first = _job(bundle, "invented run before the seal was lost\n")
+    assert runs._record_finish_sync(first) is True
+    uid = first.request.lesson_uid
+    (runs.PROJECTION_STATE_DIR / f"{uid}.json").unlink()
+
+    second = _job(bundle, "invented run after the seal was lost\n")
+    assert runs._record_finish_sync(second) is True
+
+    record = json.loads((bundle / runs.PROJECTION_NAME).read_text(encoding="utf-8"))
+    assert record["run_id"] == second.job_id
+    moved = list(bundle.glob(f"{runs.PROJECTION_NAME}.collision-*"))
+    assert len(moved) == 1
+    assert "invented run before the seal was lost" in moved[0].read_text("utf-8")
+
+
 def test_runs_projection_name_is_reserved():
     read = bundle_schema.read_manifest_text(json.dumps({
         "schema_version": 2,
