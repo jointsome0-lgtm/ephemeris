@@ -410,7 +410,8 @@ def test_the_record_panel_carries_the_poll_target_and_the_unread_badge(client):
     # and a browser with storage blocked keeps the acknowledged cursor in
     # memory rather than reading first sight on every poll.
     for token in ('data-record-key") !== recordKey', "sessionSeen",
-                  'data-record-cursor'):
+                  'data-record-cursor',
+                  'sessionSeen = recordPanel.dataset["recordCursor"]'):
         assert token in source and token in emitted
     # Tier 1 adds no bridge operation: reading the record INTO the lesson page
     # is tier 2, and the ABI is frozen additive-only by design.

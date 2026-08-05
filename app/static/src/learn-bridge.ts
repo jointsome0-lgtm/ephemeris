@@ -1514,6 +1514,15 @@ if (recordPanel && recordCountsUrl && recordKey) {
     }
   };
 
+  /* First sight of this lesson: the page in front of the learner IS the first
+   * look, so the baseline is the cursor ITS rows read to, taken at render
+   * time. Waiting for the first poll to supply one would swallow any verdict
+   * written in between — the poll would report it while the learner had never
+   * seen it, and the first-sight branch would silently adopt it. A learner who
+   * has acknowledged before keeps that mark instead (`readSeen` takes the
+   * later of the two), so the badge still spans visits. */
+  if (!readSeen()) sessionSeen = recordPanel.dataset["recordCursor"] || "";
+
   /* The newest cursor the server has reported. Acknowledging is local and
    * instant: the next poll confirms it. */
   let latestCursor = "";
