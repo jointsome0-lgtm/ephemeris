@@ -93,12 +93,15 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   179 passed, `verify_restore.py` 34 passed 0 failed, public hygiene clean. The
   entry stays Pending for the owner's re-drain; no restart was performed.
 
-- [ ] 2026-08-05 — `d71cff5`..`8cf4558` on `fix/135-runs-projection` —
+- [ ] 2026-08-05 — `d71cff5`..`f8b4646` on `fix/135-runs-projection` —
   `app/services/runs.py`, `app/services/bundle_schema.py`,
   `app/services/lessons.py`, `tests/test_170_runs_projection.py`,
-  `docs/reviews/QUEUE.md` — issue #135, the lesson bundle gains the generated
-  file `runs.jsonl` containing run metadata and a bounded 8 KiB output tail,
-  which sandboxed study sessions read.
+  `tests/test_070_run_api.py`, `docs/learn-bundle-spec.md`,
+  `docs/lesson-artifacts-api.md`, `docs/reviews/QUEUE.md` — issue #135, the
+  lesson bundle gains the generated file `runs.jsonl` containing run metadata
+  and a bounded 8 KiB output tail, which sandboxed study sessions read. The
+  review pass (`f8b4646`) keeps the output tail out of the `lesson_run` ledger
+  event and its export, leaving it in the bundle file only.
 
 ## Done
 
