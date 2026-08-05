@@ -1526,8 +1526,15 @@ if (recordPanel && recordCountsUrl && recordKey) {
     /* An EMPTY rendered record baselines at the zero cursor, never at nothing:
      * "" would read as no baseline again on the first poll, and the lesson's
      * first verdict — written between this render and that poll — would be
-     * acknowledged instead of announced. */
-    sessionSeen = recordPanel.dataset["recordCursor"] || RECORD_ZERO_CURSOR;
+     * acknowledged instead of announced.
+     *
+     * WRITTEN, not just held in memory. Nothing else persists this baseline —
+     * the first poll finds `readSeen()` already answering and acknowledges
+     * nothing — so a visit that ends without a badge click would leave the
+     * lesson unbaselined. The next visit would then seed from ITS render, and
+     * a verdict written in between would be adopted as already-seen: the
+     * silent arrival this whole panel exists to stop. */
+    writeSeen(recordPanel.dataset["recordCursor"] || RECORD_ZERO_CURSOR);
   }
 
   /* The newest cursor the server has reported. Acknowledging is local and

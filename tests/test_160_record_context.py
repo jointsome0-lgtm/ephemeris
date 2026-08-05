@@ -496,7 +496,10 @@ def test_the_record_panel_carries_the_poll_target_and_the_unread_badge(client):
     # memory rather than reading first sight on every poll.
     for token in ('data-record-key") !== recordKey', "sessionSeen",
                   'data-record-cursor',
-                  'sessionSeen = recordPanel.dataset["recordCursor"]',
+                  # Seeded through `writeSeen`, so the baseline OUTLIVES a
+                  # visit that ends without a click: re-seeding from the next
+                  # render would adopt anything written in between as seen.
+                  'writeSeen(recordPanel.dataset["recordCursor"]',
                   "readSeen() !== asked",
                   # A cursor past the baseline with nothing unread is a REMOVAL
                   # (or an evidence/summary write): refresh the rows quietly,
