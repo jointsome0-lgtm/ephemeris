@@ -1407,13 +1407,20 @@ if (recordPanel && recordCountsUrl && recordKey) {
      * the badge would never appear. Persistence across visits is what such a
      * browser loses, not the signal itself. */
     let sessionSeen = "";
+    /* The later of the two, because acknowledging only ever moves forward and a
+     * write can fail against storage a read still answers (a full quota): the
+     * stored cursor would then keep winning and every poll would report the same
+     * verdicts unread again. Both values are server-minted cursors (or the zero
+     * sentinel), so comparing them as strings is comparing recency. */
     const readSeen = () => {
+        let stored = "";
         try {
-            return window.localStorage.getItem(seenKey) || sessionSeen;
+            stored = window.localStorage.getItem(seenKey) || "";
         }
         catch {
-            return sessionSeen;
+            stored = "";
         }
+        return stored > sessionSeen ? stored : sessionSeen;
     };
     const writeSeen = (cursor) => {
         sessionSeen = cursor;
