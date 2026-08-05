@@ -1438,16 +1438,21 @@ if (recordPanel && recordCountsUrl && recordKey) {
      * seen it, and the first-sight branch would silently adopt it. A learner who
      * has acknowledged before keeps that mark instead (`readSeen` takes the
      * later of the two), so the badge still spans visits. */
-    if (!readSeen())
-        sessionSeen = recordPanel.dataset["recordCursor"] || "";
+    if (!readSeen()) {
+        /* An EMPTY rendered record baselines at the zero cursor, never at nothing:
+         * "" would read as no baseline again on the first poll, and the lesson's
+         * first verdict — written between this render and that poll — would be
+         * acknowledged instead of announced. */
+        sessionSeen = recordPanel.dataset["recordCursor"] || RECORD_ZERO_CURSOR;
+    }
     /* The newest cursor the server has reported. Acknowledging is local and
      * instant: the next poll confirms it. */
     let latestCursor = "";
     const setCount = (name, value) => {
         const cell = recordPanel.querySelector(`[data-record-count="${name}"]`);
         /* A pre-#133 backend renders no verdicts cell; the others always exist. */
-        if (cell && cell.textContent !== String(value))
-            cell.textContent = String(value);
+        if (cell && cell.textContent !== value)
+            cell.textContent = value;
     };
     const showUnread = (count) => {
         if (!badge)
@@ -1505,19 +1510,32 @@ if (recordPanel && recordCountsUrl && recordKey) {
             return;
         inFlight = true;
         try {
-            const response = await fetch(`${recordCountsUrl}?since=${encodeURIComponent(readSeen())}`, { cache: "no-store" });
+            const asked = readSeen();
+            const response = await fetch(`${recordCountsUrl}?since=${encodeURIComponent(asked)}`, { cache: "no-store" });
             const data = await response.json();
             if (typeof data !== "object" || data === null)
                 return;
             const counts = data;
             if (counts.ok !== true)
                 return;
+            /* The baseline moved while this was in flight — a badge click refreshed
+             * the body and acknowledged. This answer was computed against the OLD
+             * cursor, so applying it would put the same "N new" back over rows the
+             * learner has just been shown. Drop it whole; the next tick asks again. */
+            if (readSeen() !== asked)
+                return;
             if (typeof counts.cursor === "string")
                 latestCursor = counts.cursor;
             for (const name of ["attempts", "assessments", "verdicts"]) {
                 const value = counts[name];
-                if (typeof value === "number" && Number.isFinite(value))
-                    setCount(name, value);
+                if (typeof value === "number" && Number.isFinite(value)) {
+                    setCount(name, String(value));
+                }
+            }
+            /* Already a magnitude the server spelled ("25m"), not a number to
+             * format here: the label has one owner and it is `_focus_label`. */
+            if (typeof counts.focus === "string" && counts.focus.length <= 16) {
+                setCount("focus", counts.focus);
             }
             if (!readSeen()) {
                 /* First sight of this lesson in this browser: adopt the current cursor

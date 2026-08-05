@@ -203,5 +203,5 @@ def test_record_panel_keeps_the_shared_snapshot_counts_and_rendering(client):
     record = html.split('<details class="lesson-record"', 1)[-1]
     assert 'data-record-count="attempts">1</span> attempts' in record
     assert 'data-record-count="assessments">2</span> active' in record
-    assert "2m focused" in record
+    assert 'data-record-count="focus">2m</span> focused' in record
     assert "Invented provisional summary" in record

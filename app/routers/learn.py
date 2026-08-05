@@ -204,6 +204,13 @@ def _learn_url(
 _EVIDENCE_ORDER = {"weak": 0, "developing": 1, "seen": 2, "passed": 3}
 
 
+def _focus_label(focus_total: dict) -> str:
+    """The focused magnitude for the counts line. `_dur_label` spells nothing
+    as "0s"; the line is a row of magnitudes, so an empty one keeps the minutes
+    unit of the rest. One owner, because the poll refreshes the same cell."""
+    return focus_total["label"] if focus_total["seconds"] else "0m"
+
+
 def _record_date(iso: str | None) -> str:
     """Local calendar date of a UTC authority stamp. The column is written
     only by the app, so an unparseable value is a corrupt-row guard rather
@@ -441,9 +448,7 @@ def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> d
         "counts": {
             "attempts": attempt_state["total"],
             "assessments": state["active_count"],
-            # `_dur_label` spells nothing as "0s"; the counts line is a row of
-            # magnitudes, so an empty one keeps the minutes unit of the rest.
-            "focus": focus_total["label"] if focus_total["seconds"] else "0m",
+            "focus": _focus_label(focus_total),
             "focus_seconds": focus_total["seconds"],
         },
         "empty": not (
@@ -728,7 +733,10 @@ def get_lesson_record_counts(lesson_id: int, since: str | None = None,
                 if baseline else 0
             ),
             "cursor": cursors[-1] if cursors else "",
-            "focus_seconds": focus_total["seconds"],
+            # The whole counts line, not a subset: a focus session finished in
+            # the drawer beside this panel moves it too, and half a line that
+            # refreshes is worse than one that plainly does not.
+            "focus": _focus_label(focus_total),
         },
         headers={"Cache-Control": "no-store"},
     )

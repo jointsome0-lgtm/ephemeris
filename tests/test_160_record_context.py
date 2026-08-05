@@ -259,6 +259,9 @@ def test_record_counts_answers_the_poll_and_counts_unread_against_since(client):
     first = client.get(url).json()
     assert first["ok"] is True
     assert (first["attempts"], first["assessments"], first["verdicts"]) == (1, 2, 1)
+    # The WHOLE counts line, so a focus session finished beside the panel does
+    # not leave one stale cell behind.
+    assert first["focus"] == "0m" and "focus_seconds" not in first
     # No baseline yet is nothing unread — not a whole history announced as new.
     assert first["unread"] == 0
     cursor = first["cursor"]
@@ -411,7 +414,8 @@ def test_the_record_panel_carries_the_poll_target_and_the_unread_badge(client):
     # memory rather than reading first sight on every poll.
     for token in ('data-record-key") !== recordKey', "sessionSeen",
                   'data-record-cursor',
-                  'sessionSeen = recordPanel.dataset["recordCursor"]'):
+                  'sessionSeen = recordPanel.dataset["recordCursor"]',
+                  "readSeen() !== asked"):
         assert token in source and token in emitted
     # Tier 1 adds no bridge operation: reading the record INTO the lesson page
     # is tier 2, and the ABI is frozen additive-only by design.

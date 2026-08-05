@@ -249,7 +249,7 @@
             {% if rec.verdict_count is defined %}
             · <span data-record-count="verdicts">{{ rec.verdict_count }}</span> verdicts
             {% endif %}
-            · {{ rec.counts.focus }} focused
+            · <span data-record-count="focus">{{ rec.counts.focus }}</span> focused
           </span>
           {# Unread is the LEARNER's state, not the record's: the runtime keeps
              the acknowledged stamp in this browser and fills this in. It

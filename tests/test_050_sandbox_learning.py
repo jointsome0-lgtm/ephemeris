@@ -870,7 +870,7 @@ def test_sandbox_learning(client, suite_state):
         and 'data-record-count="attempts">4</span> attempts' in _s4_body
         and 'data-record-count="assessments">6</span> active' in _s4_body
         and 'data-record-count="verdicts">2</span> verdicts' in _s4_body
-        and "25m focused" in _s4_body
+        and 'data-record-count="focus">25m</span> focused' in _s4_body
     ), (
         "S4 panel renders on the selected lesson with its counts line" + "  -- " + (str(_s4_ctx["counts"]))
     )
