@@ -596,12 +596,18 @@ def test_002_ui_and_workspace(client, suite_state):
     # as a bottom drawer — that is how the content lift dies on Learn and only
     # there.
     for src in (terminal_ts, terminal_js):
+        # Read the predicate's own body: "docks right" is only correct paired
+        # with "on Learn, and only wide enough" — a version of inRightStack
+        # that dropped either guard would turn every page into a right dock
+        # and stop mobile drawers from lifting the content.
+        stack_test = src[src.index("function inRightStack"):][:320]
         assert (
-            "function inRightStack" in src
+            "dataset.rail === 'learn'" in stack_test
+            and "'(min-width: 861px)'" in stack_test
             and "config.kind === 'agent' && inRightStack()" in src
             and "learnerOpen && !learnerRight ?" in src
             and "'term-stack-open', agentRight || learnerRight" in src
-        ), "the stack holds both surfaces and neither lifts the content"
+        ), "the stack holds both surfaces on Learn only, and neither lifts the content"
         assert (
             "STACK_W_KEY = 'al-term-w'" in src
             and "LESSON_FLOOR = 680 + 60" in src
@@ -616,11 +622,15 @@ def test_002_ui_and_workspace(client, suite_state):
         # The learner is measured only after the classes that decide its
         # layout are on the body: the offsetHeight read is what forces the
         # layout answering them, so measuring earlier would hand the agent a
-        # `bottom` from the pane's previous state.
+        # `bottom` from the pane's previous state. Both halves are pinned —
+        # that the publication reads the element itself rather than a value
+        # cached further up, and that it happens after the toggles.
         sync = src.index("function syncTerminalInsets")
+        publish = src.index("'--term-learner-h', learner", sync)
         assert (
-            src.index("'term-right-min', agentMin", sync)
-            < src.index("'--term-learner-h'", sync)
+            "offsetHeight" in src[publish:publish + 60]
+            and src.index("'term-right-min', agentMin", sync) < publish
+            and src.index("'learner-term-open', learnerOpen", sync) < publish
         ), "stack state is applied before the learner pane is measured"
     assert (
         "--term-stack-w: clamp(300px," in css.text
