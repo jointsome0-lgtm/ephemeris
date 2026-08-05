@@ -619,6 +619,14 @@ def test_002_ui_and_workspace(client, suite_state):
         and ".lesson-frame-wrap { flex: 1 1 auto; min-height: 0; background: #fff; }" in css.text
         and "min-height: 560px" not in css.text
     ), "the Learn column is viewport-locked and the iframe grows into it"
+    # The page no longer scrolls, so the lesson panel owns the fallback: its
+    # chrome (add form, filters, track strip) must stay reachable when it
+    # outgrows a short column, and the list must not be squeezed to nothing to
+    # make room for it.
+    assert (
+        "grid-column: 1; min-width: 0; min-height: 0; overflow-y: auto;" in css.text
+        and ".lesson-list { min-height: 96px;" in css.text
+    ), "the lesson panel scrolls when its own chrome outgrows the column"
     assert (
         ".lesson-record { position: relative;" in css.text
         and "position: absolute; left: 0; right: 0; bottom: 100%; z-index: 3;" in css.text
