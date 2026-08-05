@@ -440,11 +440,10 @@ def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> d
         # How far THIS rendering of the panel reads. What the learner
         # acknowledges is the snapshot in front of them, so the cursor travels
         # with the rendered rows rather than being taken from whichever poll
-        # happened to answer last.
-        "cursor": _record_cursor(max(
-            (review["seq"] for review in state["reviews_by_attempt"].values()),
-            default=0,
-        )) if state["reviews_by_attempt"] else "",
+        # happened to answer last. The lesson's history watermark, not its
+        # newest standing review: a retraction takes a row AWAY, and a cursor
+        # derived from the fold would move backwards instead of forwards.
+        "cursor": _record_cursor(state["watermark"]) if state["watermark"] else "",
         "counts": {
             "attempts": attempt_state["total"],
             "assessments": state["active_count"],
@@ -716,6 +715,14 @@ def get_lesson_record_counts(lesson_id: int, since: str | None = None,
     `since` = no baseline yet (a first visit), which is nothing unread rather
     than everything; the client acknowledges an empty record with the zero
     cursor, so the FIRST verdict of a lesson still announces itself.
+
+    `cursor` is the lesson's history WATERMARK, which is a strictly wider
+    signal than `unread`: a retraction, or an evidence/summary write, changes
+    the rendered rows without adding a standing verdict to announce. The
+    watermark still moves for those, and the client reads a cursor past its
+    baseline with nothing unread as "the record changed quietly" — refresh the
+    body, no badge. A count that only ever went up would leave a retracted
+    verdict on screen under a header already reading `0 verdicts`.
     """
     lesson = _lesson_or_404(conn, lesson_id)
     state, attempt_state, focus_total = _record_panel_db_state(conn, lesson["id"])
@@ -732,7 +739,9 @@ def get_lesson_record_counts(lesson_id: int, since: str | None = None,
                 sum(1 for cursor in cursors if cursor > baseline)
                 if baseline else 0
             ),
-            "cursor": cursors[-1] if cursors else "",
+            "cursor": (
+                _record_cursor(state["watermark"]) if state["watermark"] else ""
+            ),
             # The whole counts line, not a subset: a focus session finished in
             # the drawer beside this panel moves it too, and half a line that
             # refreshes is worse than one that plainly does not.

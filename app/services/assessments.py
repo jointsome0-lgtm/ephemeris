@@ -862,6 +862,26 @@ def fold_rows(rows: list[dict]) -> dict:
     }
 
 
+def history_watermark(conn: sqlite3.Connection, lesson_id: int) -> int:
+    """The newest rowid of the lesson's WHOLE assessment history, or 0.
+
+    The same authority stamp `_fold_records` publishes on the projection, and
+    for the same reason: rows are insert-only, so `MAX(id)` is an exact
+    version of the active state — but unlike a fold-derived cursor it also
+    moves when a row is REMOVED from view. A retraction of the newest standing
+    review deletes a panel line and adds a higher rowid, so a watermark
+    advances where "newest review still standing" would silently go backwards.
+
+    Read it inside the caller's snapshot when there is one, so the watermark
+    and the fold it stamps can never come from two committed versions.
+    """
+    row = conn.execute(
+        "SELECT MAX(id) FROM lesson_assessments WHERE lesson_id = ?",
+        (lesson_id,),
+    ).fetchone()
+    return int(row[0] or 0)
+
+
 def active_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
     """The current-state fold consumed by the s2 projection and the s4 panel:
     the latest active evidence per concept, the latest active review per
@@ -1002,6 +1022,10 @@ def panel_state(
         state["earlier_review_counts"] = _earlier_review_counts(
             conn, lesson_id, state["reviews_by_attempt"]
         )
+        # Stamped from the same snapshot as the fold above: the version of the
+        # panel this state renders, for readers that must notice a REMOVAL
+        # (#133 tier 1's poll) and not only a new standing record.
+        state["watermark"] = history_watermark(conn, lesson_id)
         return state
     finally:
         if own_snapshot:

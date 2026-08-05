@@ -1587,6 +1587,20 @@ if (recordPanel && recordCountsUrl && recordKey) {
     }
   };
 
+  /* One body swap at a time: the poll's quiet refresh and a badge click can
+   * otherwise both be fetching `/learn`, and the later answer would replace
+   * rows the other had just adopted. */
+  let refreshing = false;
+  const guardedRefresh = async (): Promise<string | null> => {
+    if (refreshing) return null;
+    refreshing = true;
+    try {
+      return await refreshBody();
+    } finally {
+      refreshing = false;
+    }
+  };
+
   let inFlight = false;
   const pollCounts = async (): Promise<void> => {
     if (document.hidden || inFlight) return;
@@ -1624,11 +1638,24 @@ if (recordPanel && recordCountsUrl && recordKey) {
         acknowledge(latestCursor);
         return;
       }
-      showUnread(
+      const unread =
         typeof counts.unread === "number" && Number.isFinite(counts.unread)
           ? counts.unread
-          : 0,
-      );
+          : 0;
+      showUnread(unread);
+      /* Nothing to ANNOUNCE, yet the record has moved past the snapshot the
+       * learner is looking at: a retraction took a verdict away, or evidence
+       * or a summary landed. There is no honest badge for a removal — "1 new"
+       * over a row that just disappeared is worse than silence — but leaving
+       * the old rows under a header this same response already corrected is
+       * worse still. So the body is quietly brought up to date instead, and
+       * only the cursor of the rows actually swapped in is acknowledged. */
+      if (unread === 0 && latestCursor > asked) {
+        const shown = await guardedRefresh();
+        /* A badge click may have acknowledged something newer while this was
+         * fetching; the seen cursor only ever moves forward. */
+        if (shown !== null && readSeen() === asked) acknowledge(shown);
+      }
     } catch {
       /* best-effort; the next tick retries */
     } finally {
@@ -1644,7 +1671,7 @@ if (recordPanel && recordCountsUrl && recordKey) {
     ev.stopPropagation();
     recordPanel.open = true;
     void (async () => {
-      const shown = await refreshBody();
+      const shown = await guardedRefresh();
       if (shown !== null) acknowledge(shown);
     })();
   });

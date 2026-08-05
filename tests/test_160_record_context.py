@@ -333,6 +333,43 @@ def test_the_unread_cursor_is_the_seq_authority_not_the_display_stamp(client,
     assert first["cursor"] == learn._record_cursor(seqs[-1])
 
 
+def test_a_retraction_moves_the_cursor_so_a_removed_verdict_gets_refreshed(client):
+    """A removal changes the panel as much as an arrival does. `unread` cannot
+    carry it — there is no honest "1 new" for a row that just disappeared — so
+    the cursor is the lesson's history watermark and advances anyway. A client
+    holding an acknowledged baseline sees a cursor past it with nothing unread
+    and re-fetches the body, instead of leaving the retracted verdict on screen
+    under a header this same response already corrected to `0 verdicts`."""
+    lesson, _dir, _manifest = _lesson_with_record("Record Retraction Fixture")
+    url = f"/learn/lessons/{lesson['id']}/record-counts"
+    seen = client.get(url).json()
+    assert seen["verdicts"] == 1
+    baseline = seen["cursor"]
+
+    conn = get_conn()
+    try:
+        fresh = lessons.get_lesson(conn, lesson["id"])
+        review_id = conn.execute(
+            "SELECT assessment_id FROM lesson_assessments WHERE lesson_id = ? "
+            "AND kind = 'review' ORDER BY id DESC LIMIT 1", (fresh["id"],)
+        ).fetchone()[0]
+        assessments.record_assessment(conn, fresh, {
+            "kind": "retraction", "supersedes": review_id,
+            "note": "That reading was of the wrong answer.",
+            "idempotency_key": f"{fresh['slug']}-retract",
+        })
+    finally:
+        conn.close()
+
+    after = client.get(url, params={"since": baseline}).json()
+    assert after["verdicts"] == 0        # the header the learner already sees
+    assert after["unread"] == 0          # nothing arrived, so nothing to badge
+    assert after["cursor"] > baseline    # but the record MOVED: refresh signal
+    # And the acknowledged state settles: re-asking with the new cursor is quiet.
+    settled = client.get(url, params={"since": after["cursor"]}).json()
+    assert (settled["unread"], settled["cursor"]) == (0, after["cursor"])
+
+
 def test_an_empty_record_baselines_so_the_first_verdict_still_announces(client):
     """The zero cursor is what "acknowledged an empty record" looks like: the
     client stores it, and the very first verdict of the lesson counts unread."""
@@ -383,12 +420,13 @@ def test_the_record_panel_carries_the_poll_target_and_the_unread_badge(client):
     assert 'data-record-count="verdicts"' in body
     # The rendered panel carries the cursor its own rows read to, so the badge
     # acknowledges the snapshot the learner was shown and not whatever the
-    # poll last reported.
+    # poll last reported. It is the lesson's whole history watermark, not its
+    # newest review: evidence and retractions change these rows too.
     conn = get_conn()
     try:
         seq = conn.execute(
-            "SELECT MAX(id) FROM lesson_assessments WHERE lesson_id = ? "
-            "AND kind = 'review'", (lesson["id"],)).fetchone()[0]
+            "SELECT MAX(id) FROM lesson_assessments WHERE lesson_id = ?",
+            (lesson["id"],)).fetchone()[0]
     finally:
         conn.close()
     assert f'data-record-cursor="{learn._record_cursor(seq)}"' in body
@@ -415,7 +453,12 @@ def test_the_record_panel_carries_the_poll_target_and_the_unread_badge(client):
     for token in ('data-record-key") !== recordKey', "sessionSeen",
                   'data-record-cursor',
                   'sessionSeen = recordPanel.dataset["recordCursor"]',
-                  "readSeen() !== asked"):
+                  "readSeen() !== asked",
+                  # A cursor past the baseline with nothing unread is a REMOVAL
+                  # (or an evidence/summary write): refresh the rows quietly,
+                  # under the one guard that keeps two body swaps apart.
+                  "unread === 0 && latestCursor > asked",
+                  "guardedRefresh"):
         assert token in source and token in emitted
     # Tier 1 adds no bridge operation: reading the record INTO the lesson page
     # is tier 2, and the ABI is frozen additive-only by design.
