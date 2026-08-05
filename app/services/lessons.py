@@ -1268,6 +1268,17 @@ This is what turns you from a page generator into a tutor:
   `live` basis as the softest evidence there is. The file is app-owned and
   read-only for you: you change it by recording a verdict (below), never
   by writing it.
+- Read `runs.jsonl` when the lesson has editor blocks: it is what the
+  learner's code actually DID — which saved revision ran, whether it
+  exited green, and the tail of what it printed. It separates "saved and
+  abandoned" from "ran and hit a compile error" from "ran green", which
+  no other file can tell you. It is a history log with an 8 KiB output
+  tail per line and no compaction, so it is the largest file here: read
+  at most the newest 2 MiB of complete lines, start after the next
+  newline if the file is bigger, and say that older runs went unread.
+  Never load it unboundedly, and skip malformed lines and unknown record
+  versions. The newest runs are the ones that matter — usually the last
+  few for the block in front of you, not the whole log.
 - A wrong answer is a window into a wrong model. Do not restate the
   reveal. Work out what model would produce THAT answer, name it, and
   design a narrower question or experiment that makes the model fail
@@ -1419,7 +1430,8 @@ offline from this bundle before you shipped it.
 - `runs.jsonl` — app-owned history of finished editor runs, one JSON object
   per line: run/block/file-revision metadata, exit result and timestamps, plus
   the newest 8192 UTF-8 bytes of combined stdout/stderr. It may be absent or
-  lag behind. Read-only for you: never write or rewrite it.
+  lag behind, it has no ceiling, and it is read under the 2 MiB bound above.
+  Read-only for you: never write or rewrite it.
 - `AGENTS.md` / `CLAUDE.md` — app-generated briefs (this file); never
   author or repurpose these names.
 

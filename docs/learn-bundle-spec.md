@@ -540,6 +540,12 @@ fixes only what the bundle contains (#135).
   A reader therefore knows every line it sees was written by the app; the
   cost is that recovery is a new file, so a lost seal orphans history into a
   collision file rather than silently continuing it.
+- **Identity gate**: as in §6.5, the app never publishes into a bundle whose
+  manifest carries a `lesson_uid` contradicting the DB lesson. Run admission
+  only proved the manifest was eligible when the run STARTED; the agent can
+  rewrite `lesson.json` while it is in flight. A missing, legacy, or rejected
+  manifest does not block. Unlike §6.5 there is nothing to reconcile later,
+  so a blocked line stays in the ledger only.
 - **Cost**: one append and one small seal write per run, never a copy of the
   accumulated history. This is a requirement, not an optimisation: the finish
   hook gates the runner's `event_attempted`, which terminal status and cancel

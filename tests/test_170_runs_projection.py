@@ -4,13 +4,14 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
 
 from app import runner
 from app.db import get_conn
-from app.services import bundle_schema, runs
+from app.services import bundle_schema, lessons, runs
 from app.services.runner_registry import RUNNER_REGISTRY
 
 
@@ -283,6 +284,50 @@ def test_projection_failure_keeps_the_committed_event(tmp_path, monkeypatch):
     assert observed == {"committed": True}
     assert any(payload.get("run_id") == job.job_id for payload in _event_payloads())
     assert not (bundle / runs.PROJECTION_NAME).exists()
+
+
+def _real_bundle(name: str, manifest_uid: str | None) -> Path:
+    """A bundle under the real lessons root, so the identity gate can read it."""
+    bundle = lessons.LESSONS_DIR / name
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "index.html").write_text("<!doctype html><title>x</title>", "utf-8")
+    if manifest_uid is not None:
+        (bundle / "lesson.json").write_text(json.dumps({
+            "schema_version": 2,
+            "lesson_uid": manifest_uid,
+            "entry": "index.html",
+            "pages": [{"id": "pg_runsgate", "path": "index.html"}],
+        }), encoding="utf-8")
+    return bundle
+
+
+def test_a_manifest_naming_another_lesson_blocks_the_projection(tmp_path):
+    """Admission proved the manifest was eligible when the run started; the
+    agent can rewrite `lesson.json` while it is in flight. Publishing then
+    would file this lesson's history in another lesson's bundle."""
+    bundle = _real_bundle("invented-identity-gate", str(uuid4()))
+    job = _job(bundle, "invented output for a contradicted bundle\n")
+
+    assert runs._record_finish_sync(job) is True
+
+    assert not (bundle / runs.PROJECTION_NAME).exists()
+    assert any(payload.get("run_id") == job.job_id for payload in _event_payloads())
+
+
+def test_a_manifest_naming_this_lesson_still_projects(tmp_path):
+    bundle = _real_bundle("invented-identity-agrees", None)
+    job = _job(bundle, "invented output for an agreeing bundle\n")
+    (bundle / "lesson.json").write_text(json.dumps({
+        "schema_version": 2,
+        "lesson_uid": job.request.lesson_uid,
+        "entry": "index.html",
+        "pages": [{"id": "pg_runsgate", "path": "index.html"}],
+    }), encoding="utf-8")
+
+    assert runs._record_finish_sync(job) is True
+
+    record = json.loads((bundle / runs.PROJECTION_NAME).read_text(encoding="utf-8"))
+    assert record["run_id"] == job.job_id
 
 
 def test_runs_projection_name_is_reserved():

@@ -461,7 +461,32 @@ def _publish_projection_line(job: runner.RunnerJob, line: bytes) -> None:
         os.close(dir_fd)
 
 
+def _identity_contradicts(job: runner.RunnerJob) -> bool:
+    """Never write lesson A's run into a bundle whose manifest says lesson B.
+
+    The same publication identity gate `assessments.py` applies (S-H7), for
+    the same reason and with the same tolerances: admission proved the
+    manifest was eligible when the run STARTED, but the agent can rewrite
+    `lesson.json` while the run is in flight. A readable manifest whose
+    `lesson_uid` contradicts the DB blocks; a missing, legacy, or rejected
+    manifest does not — the slug directory is the DB's own mapping, and a
+    rejected read carries no trusted identity to gate on.
+    """
+    lesson = {
+        "uid": job.request.lesson_uid,
+        "id": job.request.lesson_id,
+        "slug": job.request.slug,
+    }
+    read = lessons.read_bundle_readonly(lesson)
+    if read.rejected:
+        return False
+    uid = read.lesson_uid
+    return isinstance(uid, str) and bool(uid) and uid != lesson["uid"]
+
+
 def _project_finish(job: runner.RunnerJob, record: dict) -> None:
+    if _identity_contradicts(job):
+        raise OSError("bundle manifest identity contradicts the run's lesson")
     line = (
         json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
     ).encode("utf-8")
