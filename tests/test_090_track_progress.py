@@ -201,6 +201,14 @@ def test_track_progress(client, suite_state):
         'data-track="zz-track-one" open>' in _sel.text
         and 'data-track="zz-track-two" open>' not in _sel.text
     ), "only the selected lesson's group renders open"
+    # A <details> parsed with `open` queues a toggle event of its own, so the
+    # state-remembering script must compare against what it already knows
+    # instead of trusting the event. Trusting it recorded "the learner opened
+    # this track" for every track merely visited — and /learn always selects a
+    # lesson, so the folded list unfolded itself again one track per visit.
+    assert (
+        "if (d.open === known) return;" in _sel.text
+    ), "the open-state script ignores a toggle that reports no change"
 
     # Recommendation 1 in the #81 brief: the numbers are the whole active list,
     # so clicking a status pill cannot make "N of M" jump — even though the pill

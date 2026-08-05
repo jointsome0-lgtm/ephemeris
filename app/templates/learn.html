@@ -194,7 +194,15 @@
          it must beat the first paint, or a group the learner folded away
          flashes open on every navigation. With nothing stored the group keeps
          what the server rendered — collapsed, except the one holding the
-         lesson on screen. #}
+         lesson on screen.
+
+         Only a real toggle is a preference. A <details> parsed with `open`
+         queues a toggle event of its own, and so does the assignment below, so
+         a listener that trusts the event would record "the learner opened this
+         track" for every track they merely visited — and, since /learn always
+         selects a lesson, unfold the list again one track per visit. The state
+         we already know is therefore the thing compared against, not the
+         event: an event that reports what we last knew changed nothing. #}
       <script>
         (function () {
           var groups = document.querySelectorAll(".lesson-group-d[data-track]");
@@ -203,8 +211,11 @@
             var stored = null;
             try { stored = localStorage.getItem(key); } catch (e) {}
             if (stored !== null) d.open = stored === "1";
+            var known = d.open;
             d.addEventListener("toggle", function () {
-              try { localStorage.setItem(key, d.open ? "1" : "0"); } catch (e) {}
+              if (d.open === known) return;
+              known = d.open;
+              try { localStorage.setItem(key, known ? "1" : "0"); } catch (e) {}
             });
           });
         })();
