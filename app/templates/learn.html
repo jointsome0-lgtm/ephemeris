@@ -337,6 +337,41 @@
           {% endif %}
         </div>
       </details>
+      {# The sheet's own state (#132), inline and synchronous for two reasons a
+         deferred script cannot serve: it must beat the first paint, so a panel
+         the learner keeps shut never flashes open, and it must beat
+         learn-bridge.js, which reads `open` to decide whether the rendered
+         rows count as this browser's first look at the record.
+         "Open" is a preference about the surface, not about one lesson, so it
+         is one key — and the `toggle` event is the single signal, which also
+         records the runtime opening the panel from the unread badge. With
+         nothing stored the panel keeps whatever the server rendered. #}
+      <script>
+        (function () {
+          var rec = document.getElementById("lesson-record");
+          var stored = null;
+          try { stored = localStorage.getItem("al-record-open"); } catch (e) {}
+          if (stored !== null) rec.open = stored === "1";
+          rec.addEventListener("toggle", function () {
+            try { localStorage.setItem("al-record-open", rec.open ? "1" : "0"); } catch (e) {}
+          });
+          /* The sheet may never be taller than the lesson it covers: the preview
+             card clips it, and a clipped scroll container is worse than a short
+             one — its top rows go out of reach instead of merely needing a
+             scroll. The frame wrap IS the space available to it and moves with
+             the window, the split and the terminal drawer, so measure the wrap
+             rather than guess the chrome around it in CSS. The sheet is out of
+             flow, so capping it can never resize the wrap back. */
+          var wrap = document.querySelector(".lesson-frame-wrap");
+          if (!wrap || !("ResizeObserver" in window)) return;
+          var fit = function () {
+            var h = Math.round(wrap.getBoundingClientRect().height);
+            if (h > 0) rec.style.setProperty("--rec-max", h + "px");
+          };
+          new ResizeObserver(fit).observe(wrap);
+          fit();
+        })();
+      </script>
       {% endif %}
       {% else %}
       <div class="learn-empty">

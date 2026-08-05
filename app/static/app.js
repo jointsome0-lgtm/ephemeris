@@ -168,6 +168,10 @@
     });
   })();
 
+  // (The Learn record sheet's open state and height cap are inline in
+  // learn.html: the deferred Learn runtime reads `open` to decide what the
+  // learner has already seen, so restoring it has to happen during parsing.)
+
   // --- theme: tri-state (system | light | dark); default follows the OS --------
   // The storage key, resolve rule and system media query live in ONE place:
   // window.alTheme, defined by base.html's pre-paint head script (which always
