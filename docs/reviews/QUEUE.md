@@ -93,6 +93,13 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   179 passed, `verify_restore.py` 34 passed 0 failed, public hygiene clean. The
   entry stays Pending for the owner's re-drain; no restart was performed.
 
+- [ ] 2026-08-05 — `d71cff5`..`8cf4558` on `fix/135-runs-projection` —
+  `app/services/runs.py`, `app/services/bundle_schema.py`,
+  `app/services/lessons.py`, `tests/test_170_runs_projection.py`,
+  `docs/reviews/QUEUE.md` — issue #135, the lesson bundle gains the generated
+  file `runs.jsonl` containing run metadata and a bounded 8 KiB output tail,
+  which sandboxed study sessions read.
+
 ## Done
 
 - [x] 2026-08-02 — `06f6df5` and `63e7a1e` on `fix/terminal-job-control`,
