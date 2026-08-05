@@ -136,6 +136,42 @@ def test_state_regenerates_from_current_db_and_never_serializes_token(
     assert "write one early provisional resume brief" in second
 
 
+def test_starter_flag_survives_a_page_that_also_holds_answer_textareas(client):
+    """A real pedagogy page mixes answer/output textareas with the editor one
+    (lesson thank-go-concurrency-1-2: 8 textareas, 1 editor block). Only the
+    `data-block` marker identifies the starter there; pairing by document
+    order would take an answer textarea for it."""
+    lesson, lesson_dir, _manifest = _lesson_with_state_surface("Mixed Page Fixture")
+    artifact = lesson_dir / "attempts" / "blk_statecode" / "main.py"
+
+    unmarked = (
+        '<html><textarea data-q="q_statealpha"></textarea>'
+        '<textarea>print("starter")\n</textarea>'
+        '<textarea readonly>run output</textarea></html>'
+    )
+    (lesson_dir / "index.html").write_text(unmarked, encoding="utf-8")
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    text = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
+    assert '"attempts/blk_statecode/main.py": mtime=' in text
+    assert "equal_to_starter=unknown" in text
+    assert "equal_to_starter=true" not in text
+
+    marked = unmarked.replace(
+        '<textarea>print("starter")', '<textarea data-block="blk_statecode">print("starter")'
+    )
+    (lesson_dir / "index.html").write_text(marked, encoding="utf-8")
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    text = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
+    assert '"attempts/blk_statecode/main.py": mtime=' in text
+    assert "equal_to_starter=true" in text
+
+    artifact.write_text('print("learner changed this")\n', encoding="utf-8")
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    text = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
+    assert "equal_to_starter=false" in text
+    assert 'data-block="blk_<id>"' in text
+
+
 def test_record_panel_keeps_the_shared_snapshot_counts_and_rendering(client):
     lesson, lesson_dir, manifest = _lesson_with_state_surface(
         "Record State Parity Fixture"

@@ -920,14 +920,25 @@ _STATE_FILE_MAX_BYTES = 64 * 1024
 
 
 class _TextareaDefaults(HTMLParser):
+    """Default text of a page's textareas, plus the ones a `data-block`
+    attribute binds to an editor block. A page mixes editor textareas with
+    answer and output textareas, so only the marked ones (or a page whose
+    single textarea is its single block) identify a starter."""
+
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.values: list[str] = []
+        self.by_block: dict[str, str] = {}
         self._parts: list[str] | None = None
+        self._block: str | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "textarea" and self._parts is None:
             self._parts = []
+            self._block = next(
+                (value for name, value in attrs if name == "data-block" and value),
+                None,
+            )
 
     def handle_data(self, data: str) -> None:
         if self._parts is not None:
@@ -935,8 +946,12 @@ class _TextareaDefaults(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "textarea" and self._parts is not None:
-            self.values.append("".join(self._parts))
+            value = "".join(self._parts)
+            self.values.append(value)
+            if self._block is not None:
+                self.by_block.setdefault(self._block, value)
             self._parts = None
+            self._block = None
 
 
 def _state_file_snapshot(path: Path) -> tuple[bytes, os.stat_result] | None:
@@ -1019,20 +1034,28 @@ def _state_artifact_files(
     return sorted(found, key=lambda item: item[0])
 
 
-def _page_starters(lesson: dict, page: str) -> tuple[bytes, ...]:
+def _page_starters(
+    lesson: dict, page: str
+) -> tuple[dict[str, bytes], tuple[bytes, ...]]:
+    """Starter text of one page: keyed by the block id a textarea declares in
+    `data-block`, plus every textarea default in document order."""
     snapshot = _read_page_snapshot(_entry_path(lesson["slug"], page))
     if snapshot is None:
-        return ()
+        return {}, ()
     text = snapshot[0].decode("utf-8", errors="replace")
     parser = _TextareaDefaults()
     parser.feed(text)
-    starters = []
-    for raw in parser.values:
+
+    def starter(raw: str) -> bytes:
         value = raw.replace("\r\n", "\n").replace("\r", "\n")
         if value.startswith("\n"):
             value = value[1:]
-        starters.append(value.encode("utf-8"))
-    return tuple(starters)
+        return value.encode("utf-8")
+
+    return (
+        {block_id: starter(raw) for block_id, raw in parser.by_block.items()},
+        tuple(starter(raw) for raw in parser.values),
+    )
 
 
 def _go_on_agent_path() -> bool:
@@ -1084,12 +1107,18 @@ def _render_lesson_state(
     starter_by_file: dict[str, bytes] = {}
     for page_id, page in pages.items():
         page_blocks = [block for block in read.blocks if block["page"] == page_id]
-        starters = _page_starters(lesson, page)
-        if len(page_blocks) == len(starters):
-            starter_by_file.update(
-                (block["file"], starter)
-                for block, starter in zip(page_blocks, starters)
-            )
+        if not page_blocks:
+            continue
+        by_block, starters = _page_starters(lesson, page)
+        for block in page_blocks:
+            starter = by_block.get(block["id"])
+            # Unmarked pages only resolve when there is nothing to confuse:
+            # one block and one textarea. Pairing by document order would
+            # silently take an answer or output textarea for a starter.
+            if starter is None and len(page_blocks) == len(starters) == 1:
+                starter = starters[0]
+            if starter is not None:
+                starter_by_file[block["file"]] = starter
     artifacts = _state_artifact_files(lesson, read.artifact_roots)
     for rel, path, stat in artifacts:
         equal = "unknown"
@@ -1112,7 +1141,8 @@ def _render_lesson_state(
         f"- Summary exists: {'yes' if state['summary'] else 'no'}",
         "- Assessment env names: `EPHEMERIS_ASSESS_URL`, "
         "`EPHEMERIS_ASSESS_TOKEN` (never print the token value)",
-        f"- Environment: Go on PATH={'yes' if _go_on_agent_path() else 'no'}",
+        "- Environment: Go on PATH (this agent shell)="
+        f"{'yes' if _go_on_agent_path() else 'no'}",
         "",
     ])
     return "\n".join(lines)
@@ -1462,7 +1492,11 @@ are read-only for you, so never create or change that file. Put starter
 text in the page's textarea/default editor state; the artifact appears only
 when the learner saves it.
 
-Author a plain textarea with Load and Save. When the block declares a
+Author a plain textarea with Load and Save, and mark it
+`data-block="blk_<id>"` with that block's id: STATE below reads its default
+text as the starter and tells you whether the saved artifact still matches it
+byte for byte. Without that attribute the flag stays `unknown` unless the page
+holds exactly one block and one textarea. When the block declares a
 registered runner, add Run and Cancel while a run is active. For that
 runner-backed page, the one ready announcement is
 `{"ephemeris":"lesson-bridge","type":"ready","abi":[1],"want":["editor","run"]}`.
