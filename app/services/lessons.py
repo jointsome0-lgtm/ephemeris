@@ -1440,6 +1440,25 @@ library, copy a pinned version into `assets/` and reference it by relative
 path; loading anything from a CDN or any other remote URL (script, style,
 font, image) is forbidden.
 
+Both color schemes, with a toggle — the learner reads in the dark as often
+as in daylight:
+
+- Every page declares `:root { color-scheme: light dark; }` and defines its
+  palette as CSS custom properties via `light-dark()` (e.g.
+  `--bg: light-dark(#f6f7f9, #16181c)`). Every color on the page — text,
+  backgrounds, borders, and the strokes/fills of inline SVG diagrams —
+  comes from those variables or `currentColor`, never a hard-coded value
+  that only reads on one background.
+- Give every page a small fixed theme toggle (auto → light → dark) whose
+  only mechanism is setting `document.documentElement.style.colorScheme`
+  to `""`, `"light"`, or `"dark"` — with `light-dark()` that flips the
+  whole palette. Default is auto (follow the OS). Pages run in a sandboxed
+  frame with no storage, so do not try to persist the choice
+  (`localStorage` throws here); the toggle is per-page-load and that is
+  fine.
+- Before publishing, check the page in both schemes — unreadable dark-mode
+  diagrams are the classic failure.
+
 ## Manifest conventions
 
 - Stage = page: for a new stage write `related/NN-topic.html` (numbered,
