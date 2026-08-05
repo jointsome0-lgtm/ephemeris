@@ -532,6 +532,10 @@
                 tab.webgl = null;
             }
         }
+        function sendInput(tab, data) {
+            if (tab.ws && tab.ws.readyState === 1)
+                tab.ws.send(enc.encode(data));
+        }
         function ensureRuntime(tab) {
             if (tab.term)
                 return;
@@ -550,8 +554,7 @@
             loadRuntimeAddons(tab, term);
             attachTerminalClipboardHandlers(term);
             term.onData(function (d) {
-                if (tab.ws && tab.ws.readyState === 1)
-                    tab.ws.send(enc.encode(d));
+                sendInput(tab, d);
             });
             if (term.onTitleChange) {
                 term.onTitleChange(function (title) {
@@ -986,6 +989,19 @@
             findNextBtn.addEventListener('click', function () { runSearch(true); });
         if (findCloseBtn)
             findCloseBtn.addEventListener('click', function () { closeFind(true); });
+        var pasteBtn = document.getElementById(config.idPrefix + '-paste');
+        if (pasteBtn) {
+            pasteBtn.addEventListener('click', function () {
+                var tab = activeTab();
+                if (!tab)
+                    return;
+                readClipboardText(function (text) {
+                    if (text)
+                        sendInput(tab, text);
+                });
+                focusSoon();
+            });
+        }
         var killBtn = document.getElementById(config.idPrefix + '-close');
         if (killBtn)
             killBtn.addEventListener('click', closeActiveTab);

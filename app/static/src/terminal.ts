@@ -529,6 +529,10 @@ interface SurfaceConfig {
     }
   }
 
+  function sendInput(tab: TerminalTab, data: string) {
+    if (tab.ws && tab.ws.readyState === 1) tab.ws.send(enc.encode(data));
+  }
+
   function ensureRuntime(tab: TerminalTab) {
     if (tab.term) return;
     var screen = document.createElement('div');
@@ -547,7 +551,7 @@ interface SurfaceConfig {
     loadRuntimeAddons(tab, term);
     attachTerminalClipboardHandlers(term);
     term.onData(function (d: string) {
-      if (tab.ws && tab.ws.readyState === 1) tab.ws.send(enc.encode(d));
+      sendInput(tab, d);
     });
     if (term.onTitleChange) {
       term.onTitleChange(function (title: string) {
@@ -943,6 +947,17 @@ interface SurfaceConfig {
   if (findPrevBtn) findPrevBtn.addEventListener('click', function () { runSearch(false); });
   if (findNextBtn) findNextBtn.addEventListener('click', function () { runSearch(true); });
   if (findCloseBtn) findCloseBtn.addEventListener('click', function () { closeFind(true); });
+  var pasteBtn = document.getElementById(config.idPrefix + '-paste');
+  if (pasteBtn) {
+    pasteBtn.addEventListener('click', function () {
+      var tab = activeTab();
+      if (!tab) return;
+      readClipboardText(function (text) {
+        if (text) sendInput(tab!, text);
+      });
+      focusSoon();
+    });
+  }
   var killBtn = document.getElementById(config.idPrefix + '-close');
   if (killBtn) killBtn.addEventListener('click', closeActiveTab);
   var minBtn = document.getElementById(config.idPrefix + '-min');

@@ -1142,9 +1142,20 @@ def test_002_ui_and_workspace(client, suite_state):
         'class="term-drawer learner-drawer"' in learn_tpl
         and 'id="learner-term-tabs"' in learn_tpl
         and 'id="learner-term-screens"' in learn_tpl
+        and 'id="learner-term-paste"' in learn_tpl
+        and 'aria-label="Paste into learner terminal"' in learn_tpl
+        and "ic.icon('paste')" in learn_tpl
         and 'id="learner-term-new"' in learn_tpl
         and 'id="learner-term-min"' in learn_tpl
     ), "learner drawer reuses terminal chrome as the bottom surface"
+    assert (
+        "function sendInput(tab, data)" in terminal_js
+        and "tab.ws.send(enc.encode(data))" in terminal_js
+        and "term.onData(function (d) {\n            sendInput(tab, d);" in terminal_js
+        and "document.getElementById(config.idPrefix + '-paste')" in terminal_js
+        and "readClipboardText(function (text)" in terminal_js
+        and "if (text)\n                    sendInput(tab, text);" in terminal_js
+    ), "learner paste button sends clipboard text through the typed-input path"
 
     # Fail-closed lesson sessions, allowlisted child env, redacted proxy banner.
     import asyncio as _asyncio
