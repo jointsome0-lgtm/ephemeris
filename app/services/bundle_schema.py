@@ -31,7 +31,7 @@ SCHEMA_V2 = 2
 DEFAULT_ENTRY = "index.html"
 DEFAULT_ARTIFACT_ROOT = "attempts"
 RESERVED_NAMES = (
-    "lesson.json", "attempts.jsonl", "assessments.jsonl", "AGENTS.md",
+    "lesson.json", "attempts.jsonl", "assessments.jsonl", "runs.jsonl", "AGENTS.md",
     "CLAUDE.md", ".claude",
 )
 

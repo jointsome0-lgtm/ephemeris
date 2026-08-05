@@ -1138,6 +1138,10 @@ def _render_lesson_state(
     if not artifacts:
         lines.append("  - none found")
     lines.extend([
+        "- Run history: `runs.jsonl` is the app-owned finished-run log; each "
+        "line binds a run and block to its file revision, start/finish timestamps, "
+        "and the newest 8192 UTF-8 bytes of combined stdout/stderr. It may be "
+        "absent or lag behind; never write it.",
         f"- Summary exists: {'yes' if state['summary'] else 'no'}",
         "- Assessment env names: `EPHEMERIS_ASSESS_URL`, "
         "`EPHEMERIS_ASSESS_TOKEN` (never print the token value)",
@@ -1409,6 +1413,10 @@ offline from this bundle before you shipped it.
   JSON object per line (`question_id`, `page_id`, `answer`, `created_at`).
   It may be absent or lag behind. Read-only for you:
   never write or rewrite it.
+- `runs.jsonl` — app-owned history of finished editor runs, one JSON object
+  per line: run/block/file-revision metadata, exit result and timestamps, plus
+  the newest 8192 UTF-8 bytes of combined stdout/stderr. It may be absent or
+  lag behind. Read-only for you: never write or rewrite it.
 - `AGENTS.md` / `CLAUDE.md` — app-generated briefs (this file); never
   author or repurpose these names.
 
