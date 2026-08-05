@@ -92,6 +92,11 @@
         /* Only ever cleared here: the width is an input, set by applyStackWidth. */
         if (!agentRight && !learnerRight)
             document.body.style.removeProperty('--term-w');
+        /* ORDER MATTERS, and this is the whole of it: the classes and
+         * `--term-agent-h` above decide how CSS lays the learner out, and the
+         * offsetHeight below forces the layout that answers them. Measure first
+         * and the agent would get its `bottom` from the pane's previous state —
+         * a full-height learner it is about to stop being. */
         if (learnerOpen) {
             document.body.style.setProperty('--term-learner-h', learner.offsetHeight + 'px');
         }

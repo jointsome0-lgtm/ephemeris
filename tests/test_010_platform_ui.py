@@ -613,6 +613,15 @@ def test_002_ui_and_workspace(client, suite_state):
             and "'--term-agent-h'" in src
             and "'term-right-min', agentMin" in src
         ), "a collapsed agent publishes the height the learner starts below"
+        # The learner is measured only after the classes that decide its
+        # layout are on the body: the offsetHeight read is what forces the
+        # layout answering them, so measuring earlier would hand the agent a
+        # `bottom` from the pane's previous state.
+        sync = src.index("function syncTerminalInsets")
+        assert (
+            src.index("'term-right-min', agentMin", sync)
+            < src.index("'--term-learner-h'", sync)
+        ), "stack state is applied before the learner pane is measured"
     assert (
         "--term-stack-w: clamp(300px," in css.text
         and "var(--term-w, clamp(560px, 812px, 45vw))" in css.text
