@@ -523,13 +523,28 @@ fixes only what the bundle contains (#135).
   Per §8 that event is body-free: run identity and result only, never the
   bytes the program printed.
 - **Projection**: `runs.jsonl` at the bundle root is the HISTORY, not active
-  state — one line per finished run, in finish order, appended under the same
-  app-private per-lesson lock and published by temporary file plus atomic
-  rename. A projection failure never fails the durable event; unlike §6.5
-  there is no reconcile trigger, so a failed line is lost from the file and
-  survives only in the ledger. The file is app-owned: the app never adopts a
-  foreign object on the name, and refuses rather than repairs a file whose
-  last line has no terminating newline.
+  state — one line per finished run, in finish order, appended in place under
+  the same app-private per-lesson lock. A projection failure never fails the
+  durable event; unlike §6.5 there is no reconcile trigger, so a failed line
+  is lost from the file and survives only in the ledger — where, per §8, it
+  has no `output_tail`.
+- **App-owned means seal-checked, not merely declared.** The bundle is
+  writable by the learner and the study agent, so "read-only for you" is a
+  rule they could break. The app keeps a private seal (device, inode, size,
+  mtime, ctime) of the file it last published, outside the bundle, and
+  appends only to a file that still matches it byte for byte. Anything else
+  on the name — a forged or hand-edited log, a stale file restored beside a
+  fresh state directory, a torn append after a crash — is moved aside as
+  `runs.jsonl.collision-<hex>` and a fresh file starts, the same way §6.5
+  moves a foreign node: never adopted, never written through, never deleted.
+  A reader therefore knows every line it sees was written by the app; the
+  cost is that recovery is a new file, so a lost seal orphans history into a
+  collision file rather than silently continuing it.
+- **Cost**: one append and one small seal write per run, never a copy of the
+  accumulated history. This is a requirement, not an optimisation: the finish
+  hook gates the runner's `event_attempted`, which terminal status and cancel
+  wait on, so work proportional to history would put a learner's whole run
+  log on the latency path of their next status poll.
 - **Record format**, one JSON object per line: `kind` (`"run"`), `v` (`1`),
   `run_id`, `lesson_uid`, `block_id`, `runner_id`, `file_rev`, `cause`,
   `exit_code`, `signal`, `duration_ms`, `truncated`, `started_at`,

@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import stat as stat_module
+import tempfile
 import threading
 import time
 from collections import deque
@@ -26,6 +27,8 @@ MAX_KEY_LEN = 128
 PROJECTION_NAME = "runs.jsonl"
 PROJECTION_STATE_DIR = DATA_DIR / "run-projections"
 OUTPUT_TAIL_BYTES = 8 * 1024
+PROJECTION_STATE_VERSION = 1
+PROJECTION_STATE_MAX_BYTES = 4 * 1024
 RECORD_KIND = "run"
 RECORD_VERSION = 1
 # The `lesson_run` ledger event stays body-free — the documented contract
@@ -178,8 +181,25 @@ def _output_tail(job: runner.RunnerJob) -> tuple[str, bool]:
     return data[start:].decode("utf-8"), True
 
 
+def _finished_at(job: runner.RunnerJob) -> datetime:
+    """Wall clock at the runner's terminal event, not at hook execution.
+
+    The finish hook runs on a worker thread and can lag the exit it reports —
+    behind a busy pool, or behind a sibling lesson's projection. `now()` would
+    then date the run to when the app got around to recording it. The runner
+    stamped `finished_monotonic` at the terminal event, so subtract however
+    long ago that was.
+    """
+    now = datetime.now(timezone.utc)
+    if job.finished_monotonic is None:
+        return now
+    return now - timedelta(
+        seconds=max(0.0, _monotonic() - job.finished_monotonic)
+    )
+
+
 def _projection_record(job: runner.RunnerJob, terminal: dict) -> dict:
-    finished_at = datetime.now(timezone.utc)
+    finished_at = _finished_at(job)
     duration_ms = max(0, int(terminal["duration_ms"]))
     started_at = finished_at - timedelta(milliseconds=duration_ms)
     output_tail, output_tail_truncated = _output_tail(job)
@@ -209,12 +229,17 @@ def _ensure_projection_state_dir() -> None:
         raise OSError("run projection state root is not a directory")
 
 
-@contextmanager
-def _projection_file_lock(job: runner.RunnerJob):
-    """Serialize one bundle's projection outside the agent-writable bundle."""
+def _lesson_uid(job: runner.RunnerJob) -> str:
     uid = job.request.lesson_uid
     if not isinstance(uid, str) or bundle_schema.UUID_RE.match(uid) is None:
         raise OSError("run has no safe lesson identity")
+    return uid
+
+
+@contextmanager
+def _projection_file_lock(job: runner.RunnerJob):
+    """Serialize one bundle's projection outside the agent-writable bundle."""
+    uid = _lesson_uid(job)
     try:
         import fcntl
     except ImportError as exc:
@@ -249,75 +274,190 @@ def _write_all(fd: int, data: bytes) -> None:
         view = view[count:]
 
 
-def _publish_projection_line(job: runner.RunnerJob, line: bytes) -> None:
-    """Atomically append one line without trusting an existing bundle node."""
-    bundle_root = Path(job.request.bundle_root).absolute()
-    bundle_dir = Path(job.request.bundle_dir).absolute()
-    if bundle_dir == bundle_root or not _inside(bundle_dir, bundle_root):
-        raise OSError("run bundle is outside its configured root")
+def _file_seal(st: os.stat_result) -> dict:
+    return {
+        "dev": st.st_dev, "ino": st.st_ino, "size": st.st_size,
+        "mtime_ns": st.st_mtime_ns, "ctime_ns": st.st_ctime_ns,
+    }
 
-    dir_fd = os.open(
-        bundle_dir,
-        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+
+def _seal_matches(st: os.stat_result, seal: object) -> bool:
+    """Is this the exact file the app last published, byte for byte?"""
+    if not isinstance(seal, dict):
+        return False
+    return (
+        stat_module.S_ISREG(st.st_mode)
+        and st.st_nlink == 1
+        and all(
+            isinstance(seal.get(name), int) and seal[name] == value
+            for name, value in _file_seal(st).items()
+        )
     )
-    tmp_name = f".runs-{uuid4().hex}.tmp"
-    tmp_fd = -1
-    source_fd = -1
+
+
+def _read_state(uid: str) -> dict | None:
     try:
-        tmp_fd = os.open(
-            tmp_name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        data = (PROJECTION_STATE_DIR / f"{uid}.json").read_bytes()
+    except OSError:
+        return None
+    if len(data) > PROJECTION_STATE_MAX_BYTES:
+        return None
+    try:
+        state = json.loads(data)
+    except ValueError:
+        return None
+    if (
+        not isinstance(state, dict)
+        or state.get("v") != PROJECTION_STATE_VERSION
+        or state.get("lesson_uid") != uid
+        or not isinstance(state.get("file"), dict)
+    ):
+        return None
+    return state
+
+
+def _write_state(uid: str, st: os.stat_result) -> None:
+    _ensure_projection_state_dir()
+    data = (json.dumps({
+        "v": PROJECTION_STATE_VERSION,
+        "lesson_uid": uid,
+        "file": _file_seal(st),
+    }, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
+    fd, tmp_name = tempfile.mkstemp(dir=PROJECTION_STATE_DIR, prefix=".run-state-")
+    try:
+        try:
+            _write_all(fd, data)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp_name, PROJECTION_STATE_DIR / f"{uid}.json")
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _append_to_sealed(dir_fd: int, uid: str, line: bytes, state: dict) -> bool:
+    """Append in place when the file on the name is still exactly ours.
+
+    False means "not ours, or not there" — never "append failed": the caller
+    must not fall back to rewriting a file this refused to recognise. A
+    failure after the first byte is written raises instead, leaving the seal
+    stale so the next run repairs the torn line by starting a fresh file.
+    """
+    try:
+        fd = os.open(
+            PROJECTION_NAME,
+            os.O_RDWR | os.O_APPEND | os.O_NONBLOCK
             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
-            0o600,
             dir_fd=dir_fd,
         )
-        try:
-            source_fd = os.open(
-                PROJECTION_NAME,
-                os.O_RDONLY | os.O_NONBLOCK
-                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
-                dir_fd=dir_fd,
-            )
-        except FileNotFoundError:
-            source_fd = -1
-        if source_fd >= 0:
-            source_st = os.fstat(source_fd)
-            if not stat_module.S_ISREG(source_st.st_mode) or source_st.st_nlink != 1:
-                raise OSError("unsafe existing run projection")
-            copied = 0
-            last = b""
-            while True:
-                chunk = os.read(source_fd, 1 << 20)
-                if not chunk:
-                    break
-                _write_all(tmp_fd, chunk)
-                copied += len(chunk)
-                last = chunk[-1:]
-            if copied != source_st.st_size:
-                raise OSError("run projection changed while copying")
-            if copied and last != b"\n":
-                raise OSError("existing run projection has an incomplete line")
-        _write_all(tmp_fd, line)
-        os.fsync(tmp_fd)
-        staged = os.fstat(tmp_fd)
-        if not stat_module.S_ISREG(staged.st_mode) or staged.st_nlink != 1:
-            raise OSError("unsafe staged run projection")
-        os.replace(
-            tmp_name, PROJECTION_NAME, src_dir_fd=dir_fd, dst_dir_fd=dir_fd
+    except OSError:
+        return False
+    try:
+        before = os.fstat(fd)
+        if not _seal_matches(before, state["file"]):
+            return False
+        _write_all(fd, line)
+        os.fsync(fd)
+        after = os.fstat(fd)
+        if (
+            not stat_module.S_ISREG(after.st_mode)
+            or after.st_nlink != 1
+            or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
+            or after.st_size != before.st_size + len(line)
+            or os.pread(fd, len(line), before.st_size) != line
+        ):
+            raise OSError("run projection changed during append")
+        _write_state(uid, after)
+        return True
+    finally:
+        os.close(fd)
+
+
+def _restart_projection(dir_fd: int, uid: str, line: bytes) -> None:
+    """Publish a fresh single-line file, preserving whatever held the name.
+
+    Anything the seal does not recognise was not written by the app: a forged
+    or hand-edited log, a stale file restored beside a fresh state dir, or our
+    own torn append. Adopting it would let those bytes reach the next tutor as
+    app-recorded history, so it is moved aside the way §6.5 moves a foreign
+    node — never adopted, never written through, never deleted.
+    """
+    try:
+        os.stat(PROJECTION_NAME, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        os.rename(
+            PROJECTION_NAME, f"{PROJECTION_NAME}.collision-{uuid4().hex[:12]}",
+            src_dir_fd=dir_fd, dst_dir_fd=dir_fd,
         )
+    tmp_name = f".runs-{uuid4().hex}.tmp"
+    tmp_fd = os.open(
+        tmp_name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        0o600,
+        dir_fd=dir_fd,
+    )
+    try:
+        try:
+            _write_all(tmp_fd, line)
+            os.fsync(tmp_fd)
+            staged = os.fstat(tmp_fd)
+            if not stat_module.S_ISREG(staged.st_mode) or staged.st_nlink != 1:
+                raise OSError("unsafe staged run projection")
+        finally:
+            os.close(tmp_fd)
+        os.replace(tmp_name, PROJECTION_NAME, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
         tmp_name = ""
         os.fsync(dir_fd)
     finally:
-        if source_fd >= 0:
-            os.close(source_fd)
-        if tmp_fd >= 0:
-            os.close(tmp_fd)
         if tmp_name:
             try:
                 os.unlink(tmp_name, dir_fd=dir_fd)
             except OSError:
                 pass
+    published = os.open(
+        PROJECTION_NAME,
+        os.O_RDONLY | os.O_NONBLOCK
+        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        dir_fd=dir_fd,
+    )
+    try:
+        _write_state(uid, os.fstat(published))
+    finally:
+        os.close(published)
+
+
+def _publish_projection_line(job: runner.RunnerJob, line: bytes) -> None:
+    """Append one line, trusting only what the app itself last published.
+
+    Constant work per run: one append and one small seal write, never a copy
+    of the accumulated history. The finish hook gates `event_attempted`, which
+    terminal status and cancel wait on, so the cost of a run's projection must
+    not grow with how much the learner has already run.
+    """
+    bundle_root = Path(job.request.bundle_root).absolute()
+    bundle_dir = Path(job.request.bundle_dir).absolute()
+    if bundle_dir == bundle_root or not _inside(bundle_dir, bundle_root):
+        raise OSError("run bundle is outside its configured root")
+
+    uid = _lesson_uid(job)
+    dir_fd = os.open(
+        bundle_dir,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        state = _read_state(uid)
+        if state is not None and _append_to_sealed(dir_fd, uid, line, state):
+            return
+        _restart_projection(dir_fd, uid, line)
+    finally:
         os.close(dir_fd)
 
 

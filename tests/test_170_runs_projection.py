@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
-from uuid import uuid4
+import time
+from datetime import datetime, timezone
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
 
@@ -18,7 +19,9 @@ def _started_app(client):
     yield
 
 
-def _job(bundle_dir, output: str, *, exit_code: int = 2) -> runner.RunnerJob:
+def _job(
+    bundle_dir, output: str, *, exit_code: int = 2, finished_ago: float = 0.0,
+) -> runner.RunnerJob:
     request = runner.RunnerRequest(
         lesson_key="invented-runs-projection",
         block_id="blk_runs01",
@@ -30,7 +33,9 @@ def _job(bundle_dir, output: str, *, exit_code: int = 2) -> runner.RunnerJob:
         bundle_dir=str(bundle_dir),
         bundle_root=str(bundle_dir.parent),
         private_root=str(bundle_dir.parent.parent),
-        lesson_uid=str(uuid4()),
+        # One bundle is one lesson: the projection state is keyed by the
+        # lesson uid, so runs into the same directory must share it.
+        lesson_uid=str(uuid5(NAMESPACE_URL, f"invented-lesson/{bundle_dir.name}")),
         lesson_id=170,
         slug=bundle_dir.name,
     )
@@ -39,6 +44,7 @@ def _job(bundle_dir, output: str, *, exit_code: int = 2) -> runner.RunnerJob:
         request=request,
         spec=RUNNER_REGISTRY[request.runner_id],
         state=runner.FINISHED,
+        finished_monotonic=time.monotonic() - finished_ago,
         events=[
             {"seq": 1, "event": "output", "stream": "stdout", "text": output},
             {
@@ -140,20 +146,92 @@ def test_further_runs_append_to_an_existing_projection(tmp_path):
     assert [record["exit_code"] for record in records] == [0, 1, 2]
 
 
-def test_a_projection_without_a_final_newline_is_refused_not_extended(tmp_path):
-    """The bundle is agent-writable; a half-written line is never adopted, and
-    refusing it must not cost the durable event."""
-    bundle = tmp_path / "invented-incomplete"
+def test_further_runs_append_in_place_instead_of_rewriting(tmp_path):
+    """The finish hook gates `event_attempted`, which terminal status waits on,
+    so a run's projection cost must not grow with the history before it. A
+    stable inode is the observable difference between appending and rewriting.
+    """
+    bundle = tmp_path / "invented-in-place"
     bundle.mkdir()
-    poisoned = '{"kind":"run","v":1}\n{"kind":"run"'
-    (bundle / runs.PROJECTION_NAME).write_text(poisoned, encoding="utf-8")
-    job = _job(bundle, "invented output after poisoning\n")
+    projection = bundle / runs.PROJECTION_NAME
+
+    assert runs._record_finish_sync(_job(bundle, "invented first\n")) is True
+    first = projection.stat()
+
+    assert runs._record_finish_sync(_job(bundle, "invented second\n")) is True
+    second = projection.stat()
+
+    assert (second.st_dev, second.st_ino) == (first.st_dev, first.st_ino)
+    assert second.st_size > first.st_size
+    assert len(projection.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_a_lagging_finish_hook_does_not_move_the_run_forward_in_time(tmp_path):
+    """`finished_at` dates the runner's terminal event, not the moment a busy
+    worker thread got around to recording it."""
+    bundle = tmp_path / "invented-lagging-hook"
+    bundle.mkdir()
+    job = _job(bundle, "invented late record\n", finished_ago=90.0)
+
+    before = datetime.now(timezone.utc)
+    assert runs._record_finish_sync(job) is True
+
+    record = json.loads((bundle / runs.PROJECTION_NAME).read_text(encoding="utf-8"))
+    finished = datetime.fromisoformat(record["finished_at"])
+    lag = (before - finished).total_seconds()
+    assert 89.0 < lag < 95.0
+    started = datetime.fromisoformat(record["started_at"])
+    assert int((finished - started).total_seconds() * 1000) == 125
+
+
+@pytest.mark.parametrize("planted", [
+    '{"kind":"run","v":1,"run_id":"invented-forgery","exit_code":0}\n',
+    '{"kind":"run","v":1}\n{"kind":"run"',
+])
+def test_a_file_the_app_did_not_write_is_moved_aside_not_extended(
+    tmp_path, planted,
+):
+    """The bundle is agent-writable and the brief calls this file app-owned.
+    Bytes the seal does not recognise — a forged line, a stale log, a torn
+    append — are preserved elsewhere, never extended into app-recorded
+    history."""
+    bundle = tmp_path / "invented-foreign"
+    bundle.mkdir()
+    (bundle / runs.PROJECTION_NAME).write_text(planted, encoding="utf-8")
+    job = _job(bundle, "invented output after tampering\n")
 
     assert runs._record_finish_sync(job) is True
 
-    assert (bundle / runs.PROJECTION_NAME).read_text(encoding="utf-8") == poisoned
+    lines = (bundle / runs.PROJECTION_NAME).read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["run_id"] == job.job_id
+    moved = list(bundle.glob(f"{runs.PROJECTION_NAME}.collision-*"))
+    assert len(moved) == 1
+    assert moved[0].read_text(encoding="utf-8") == planted
     assert any(payload.get("run_id") == job.job_id for payload in _event_payloads())
     assert not list(bundle.glob(".runs-*.tmp"))
+
+
+def test_an_edit_between_two_runs_does_not_reach_the_next_line(tmp_path):
+    """The seal covers the file the app itself published, not just a foreign
+    one: a line appended after a legitimate run is still not adopted."""
+    bundle = tmp_path / "invented-mid-history-edit"
+    bundle.mkdir()
+    first = _job(bundle, "invented first run\n")
+    assert runs._record_finish_sync(first) is True
+
+    with (bundle / runs.PROJECTION_NAME).open("a", encoding="utf-8") as handle:
+        handle.write('{"kind":"run","v":1,"run_id":"invented-injected"}\n')
+
+    second = _job(bundle, "invented second run\n")
+    assert runs._record_finish_sync(second) is True
+
+    records = [
+        json.loads(line) for line
+        in (bundle / runs.PROJECTION_NAME).read_text(encoding="utf-8").splitlines()
+    ]
+    assert [record["run_id"] for record in records] == [second.job_id]
+    assert len(list(bundle.glob(f"{runs.PROJECTION_NAME}.collision-*"))) == 1
 
 
 def test_output_tail_is_truncated_at_the_utf8_cap(tmp_path):
