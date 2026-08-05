@@ -391,6 +391,13 @@ def test_the_record_panel_carries_the_poll_target_and_the_unread_badge(client):
     emitted = Path("app/static/learn-bridge.js").read_text(encoding="utf-8")
     for token in ("al-record-seen:", "recordCountsUrl", "rec-unread"):
         assert token in source and token in emitted
+    # Two refusals with no runtime harness in this suite, asserted at the
+    # source the emitted module is generated from: the refresh must prove the
+    # fetched page still answers for THIS lesson before swapping its body in,
+    # and a browser with storage blocked keeps the acknowledged cursor in
+    # memory rather than reading first sight on every poll.
+    for token in ('data-record-key") !== recordKey', "sessionSeen"):
+        assert token in source and token in emitted
     # Tier 1 adds no bridge operation: reading the record INTO the lesson page
     # is tier 2, and the ABI is frozen additive-only by design.
     assert "record.get" not in source and "record.read" not in source

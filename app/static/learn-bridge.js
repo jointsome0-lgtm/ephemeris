@@ -1401,23 +1401,27 @@ const recordKey = recordPanel?.dataset["recordKey"] || null;
 if (recordPanel && recordCountsUrl && recordKey) {
     const badge = document.getElementById("rec-unread");
     const seenKey = RECORD_SEEN_PREFIX + recordKey;
-    /* Storage can be unavailable or full; the badge is an affordance, not a
-     * record, so it degrades to "nothing acknowledged this session" rather than
-     * throwing inside the poll. */
+    /* Storage can be unavailable or full (cookies/site data disabled). What is
+     * acknowledged is then remembered for THIS page only, in memory: reading an
+     * empty value on every poll would make each tick look like a first sight and
+     * the badge would never appear. Persistence across visits is what such a
+     * browser loses, not the signal itself. */
+    let sessionSeen = "";
     const readSeen = () => {
         try {
-            return window.localStorage.getItem(seenKey) || "";
+            return window.localStorage.getItem(seenKey) || sessionSeen;
         }
         catch {
-            return "";
+            return sessionSeen;
         }
     };
     const writeSeen = (cursor) => {
+        sessionSeen = cursor;
         try {
             window.localStorage.setItem(seenKey, cursor);
         }
         catch {
-            /* ignore */
+            /* in-memory only for this page */
         }
     };
     /* The newest cursor the server has reported. Acknowledging is local and
@@ -1453,7 +1457,15 @@ if (recordPanel && recordCountsUrl && recordKey) {
             if (!response.ok)
                 return false;
             const parsed = new DOMParser().parseFromString(await response.text(), "text/html");
-            const fresh = parsed.querySelector("#lesson-record .lesson-record-body");
+            const panel = parsed.querySelector("#lesson-record");
+            /* `/learn` resolves its own selection: a filter, an archive, or a status
+             * change in another tab can make this URL answer with a DIFFERENT
+             * lesson. Swapping that body in would show the wrong record and then
+             * acknowledge THIS lesson's cursor over it, so the key is checked first
+             * and a mismatch simply leaves the badge up. */
+            if (!panel || panel.getAttribute("data-record-key") !== recordKey)
+                return false;
+            const fresh = panel.querySelector(".lesson-record-body");
             const current = recordPanel.querySelector(".lesson-record-body");
             if (!fresh || !current)
                 return false;
