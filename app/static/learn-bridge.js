@@ -1571,10 +1571,18 @@ if (recordPanel && recordCountsUrl && recordKey) {
              * only the cursor of the rows actually swapped in is acknowledged. */
             if (unread === 0 && latestCursor > asked) {
                 const shown = await guardedRefresh();
+                /* Never past the cursor this ZERO-UNREAD answer was computed at, even
+                 * though the refreshed body may read further: a verdict written
+                 * between the two requests is on screen but was never counted, and
+                 * acknowledging it here would spend its badge while the panel sits
+                 * closed. Acknowledge the narrower of the two and let the next poll
+                 * announce anything beyond it — a badge over a row already rendered is
+                 * a redundant nudge, a verdict silently marked seen is a lost one. */
+                const upTo = shown !== null && shown < latestCursor ? shown : latestCursor;
                 /* A badge click may have acknowledged something newer while this was
                  * fetching; the seen cursor only ever moves forward. */
                 if (shown !== null && readSeen() === asked)
-                    acknowledge(shown);
+                    acknowledge(upTo);
             }
         }
         catch {

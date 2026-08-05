@@ -840,7 +840,18 @@ def lesson_attempt_summary(conn: sqlite3.Connection, lesson_id: int) -> dict:
     ).fetchall()
     for row in rows:
         latest[row["question_id"]] = _panel_attempt_view(row)
-    return {"total": total, "latest_by_question": latest}
+    # The version of this half of the panel, for readers that must notice the
+    # rows CHANGE and not only that the total went up. Rows here are
+    # insert-only — a re-answer is a new attempt, never an edit — so `MAX(id)`
+    # is an exact stamp, the same argument the assessment watermark rests on.
+    watermark = conn.execute(
+        "SELECT MAX(id) FROM lesson_attempts WHERE lesson_id = ?", (lesson_id,)
+    ).fetchone()[0]
+    return {
+        "total": total,
+        "latest_by_question": latest,
+        "watermark": int(watermark or 0),
+    }
 
 
 def _replay_or_conflict(

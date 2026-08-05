@@ -330,7 +330,9 @@ def test_the_unread_cursor_is_the_seq_authority_not_the_display_stamp(client,
     assert client.get(
         url, params={"since": learn._record_cursor(seqs[-2])}
     ).json()["unread"] == 1
-    assert first["cursor"] == learn._record_cursor(seqs[-1])
+    # The assessment field leads the signal, so it is still exactly the newest
+    # assessment rowid — the attempt watermark rides behind the separator.
+    assert first["cursor"].startswith(learn._record_cursor(seqs[-1]) + "-")
 
 
 def test_a_retraction_moves_the_cursor_so_a_removed_verdict_gets_refreshed(client):
@@ -368,6 +370,44 @@ def test_a_retraction_moves_the_cursor_so_a_removed_verdict_gets_refreshed(clien
     # And the acknowledged state settles: re-asking with the new cursor is quiet.
     settled = client.get(url, params={"since": after["cursor"]}).json()
     assert (settled["unread"], settled["cursor"]) == (0, after["cursor"])
+
+
+def test_a_new_check_moves_the_cursor_so_the_rewritten_row_gets_refreshed(client):
+    """The panel's rows are a join, so an attempt-only change is the same
+    stale-body problem as a retraction: a Check recorded from the editor
+    replaces the answer on screen and bumps the `attempts` count this same
+    response updates, while touching no assessment row. The signal watermarks
+    both tables, so it moves — and, being the trailing field, it moves without
+    making the standing verdict look unread again."""
+    lesson, lesson_dir, manifest = _lesson_with_record("Record Recheck Fixture")
+    url = f"/learn/lessons/{lesson['id']}/record-counts"
+    seen = client.get(url).json()
+    baseline = seen["cursor"]
+    assert seen["attempts"] == 1
+
+    page = lesson_dir / "index.html"
+    conn = get_conn()
+    try:
+        fresh = lessons.get_lesson(conn, lesson["id"])
+        attempts.record_attempt(conn, fresh, {
+            # The successor id: the fixture has already retired the old one,
+            # and only a declared question accepts an attempt (§4.3/§6.4).
+            "question_id": "q_recnew001",
+            "page_id": manifest["pages"][0]["id"],
+            "page_rev": "sha256:" + hashlib.sha256(page.read_bytes()).hexdigest(),
+            "answer": "A second, better answer under the new wording",
+            "idempotency_key": f"{fresh['slug']}-recheck",
+        })
+    finally:
+        conn.close()
+
+    after = client.get(url, params={"since": baseline}).json()
+    assert after["attempts"] == 2         # the count the learner already sees
+    assert after["unread"] == 0           # no verdict arrived: nothing to badge
+    assert after["cursor"] > baseline     # but the rows MOVED: refresh signal
+    # The assessment field is untouched, so the acknowledged verdict stays read
+    # even against the pre-Check baseline.
+    assert after["cursor"][:20] == baseline[:20]
 
 
 def test_an_empty_record_baselines_so_the_first_verdict_still_announces(client):
@@ -420,18 +460,22 @@ def test_the_record_panel_carries_the_poll_target_and_the_unread_badge(client):
     assert 'data-record-count="verdicts"' in body
     # The rendered panel carries the cursor its own rows read to, so the badge
     # acknowledges the snapshot the learner was shown and not whatever the
-    # poll last reported. It is the lesson's whole history watermark, not its
-    # newest review: evidence and retractions change these rows too.
+    # poll last reported. It watermarks BOTH tables the rows are joined from,
+    # not the newest review: evidence, retractions and Checks move these rows
+    # too, and the assessment field leads so `unread` can slice it back out.
     conn = get_conn()
     try:
-        seq = conn.execute(
-            "SELECT MAX(id) FROM lesson_assessments WHERE lesson_id = ?",
+        seq, attempt_seq = (conn.execute(
+            f"SELECT MAX(id) FROM {table} WHERE lesson_id = ?",
             (lesson["id"],)).fetchone()[0]
+            for table in ("lesson_assessments", "lesson_attempts"))
     finally:
         conn.close()
-    assert f'data-record-cursor="{learn._record_cursor(seq)}"' in body
+    signal = f"{learn._record_cursor(seq)}-{learn._record_cursor(attempt_seq)}"
+    assert signal.startswith(learn._record_cursor(seq) + "-")
+    assert f'data-record-cursor="{signal}"' in body
     assert client.get(f"/learn/lessons/{lesson['id']}/record-counts").json()[
-        "cursor"] == learn._record_cursor(seq)
+        "cursor"] == signal
     # The badge ships hidden and empty: unread is this browser's state, and the
     # server has no opinion about what the learner has already seen.
     assert '<button type="button" class="rec-unread" id="rec-unread" hidden' in body
@@ -458,7 +502,12 @@ def test_the_record_panel_carries_the_poll_target_and_the_unread_badge(client):
                   # (or an evidence/summary write): refresh the rows quietly,
                   # under the one guard that keeps two body swaps apart.
                   "unread === 0 && latestCursor > asked",
-                  "guardedRefresh"):
+                  "guardedRefresh",
+                  # …and the quiet refresh acknowledges only as far as the
+                  # zero-unread answer read, never as far as a body that may
+                  # have picked up a verdict written after it: that verdict
+                  # still gets its badge on the next tick.
+                  "shown < latestCursor ? shown : latestCursor"):
         assert token in source and token in emitted
     # Tier 1 adds no bridge operation: reading the record INTO the lesson page
     # is tier 2, and the ABI is frozen additive-only by design.

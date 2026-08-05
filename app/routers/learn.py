@@ -440,10 +440,11 @@ def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> d
         # How far THIS rendering of the panel reads. What the learner
         # acknowledges is the snapshot in front of them, so the cursor travels
         # with the rendered rows rather than being taken from whichever poll
-        # happened to answer last. The lesson's history watermark, not its
-        # newest standing review: a retraction takes a row AWAY, and a cursor
-        # derived from the fold would move backwards instead of forwards.
-        "cursor": _record_cursor(state["watermark"]) if state["watermark"] else "",
+        # happened to answer last. A watermark over both tables, not the newest
+        # standing review: a retraction takes a row AWAY and a Check rewrites
+        # one, and a cursor derived from the fold would hold still (or move
+        # backwards) through either.
+        "cursor": _record_signal(state, attempt_state),
         "counts": {
             "attempts": attempt_state["total"],
             "assessments": state["active_count"],
@@ -696,6 +697,27 @@ def _record_cursor(seq: int) -> str:
     return f"{seq:0{_CURSOR_WIDTH}d}"
 
 
+def _record_signal(state: dict, attempt_state: dict) -> str:
+    """How far a rendering of the panel reads, over BOTH tables behind it.
+
+    The rows are a join: a Check recorded while the page is open replaces an
+    answer (or fills in a "Not attempted" row) without touching
+    `lesson_assessments`, exactly as a retraction removes a verdict without
+    adding a standing one. A signal built on either table alone therefore
+    holds still while the counts line beside it moves, and the panel would sit
+    on a stale body until a full reload.
+
+    Both fields are fixed width with a constant separator, so comparing two
+    signals as plain strings compares recency — and the assessment field keeps
+    its own leading position, which is what lets `unread` be counted against
+    `signal[:_CURSOR_WIDTH]` without parsing anything a client handed back.
+    """
+    if not (state["watermark"] or attempt_state["watermark"]):
+        return ""
+    return (f"{_record_cursor(state['watermark'])}"
+            f"-{_record_cursor(attempt_state['watermark'])}")
+
+
 @router.get("/learn/lessons/{lesson_id}/record-counts")
 def get_lesson_record_counts(lesson_id: int, since: str | None = None,
                              conn: sqlite3.Connection = Depends(get_db)):
@@ -716,13 +738,14 @@ def get_lesson_record_counts(lesson_id: int, since: str | None = None,
     than everything; the client acknowledges an empty record with the zero
     cursor, so the FIRST verdict of a lesson still announces itself.
 
-    `cursor` is the lesson's history WATERMARK, which is a strictly wider
-    signal than `unread`: a retraction, or an evidence/summary write, changes
-    the rendered rows without adding a standing verdict to announce. The
-    watermark still moves for those, and the client reads a cursor past its
-    baseline with nothing unread as "the record changed quietly" — refresh the
-    body, no badge. A count that only ever went up would leave a retracted
-    verdict on screen under a header already reading `0 verdicts`.
+    `cursor` is the panel's WATERMARK over both tables behind it, which is a
+    strictly wider signal than `unread`: a retraction, an evidence/summary
+    write, or a Check recorded from the editor changes the rendered rows
+    without adding a standing verdict to announce. The watermark still moves
+    for all of those, and the client reads a cursor past its baseline with
+    nothing unread as "the record changed quietly" — refresh the body, no
+    badge. A count that only ever went up would leave a retracted verdict on
+    screen under a header already reading `0 verdicts`.
     """
     lesson = _lesson_or_404(conn, lesson_id)
     state, attempt_state, focus_total = _record_panel_db_state(conn, lesson["id"])
@@ -735,13 +758,15 @@ def get_lesson_record_counts(lesson_id: int, since: str | None = None,
             "attempts": attempt_state["total"],
             "assessments": state["active_count"],
             "verdicts": len(reviews),
+            # Against the ASSESSMENT field of the baseline only: what counts as
+            # unread is a standing verdict recorded after it, and the attempt
+            # half of the signal must not make old verdicts look new again.
+            # Fixed-width fields make that a slice, not a parse of client input.
             "unread": (
-                sum(1 for cursor in cursors if cursor > baseline)
+                sum(1 for cursor in cursors if cursor > baseline[:_CURSOR_WIDTH])
                 if baseline else 0
             ),
-            "cursor": (
-                _record_cursor(state["watermark"]) if state["watermark"] else ""
-            ),
+            "cursor": _record_signal(state, attempt_state),
             # The whole counts line, not a subset: a focus session finished in
             # the drawer beside this panel moves it too, and half a line that
             # refreshes is worse than one that plainly does not.
