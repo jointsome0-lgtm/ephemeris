@@ -51,8 +51,11 @@ How to apply:
 - The top two split by shape, not rank: fable-5 is stronger on architecture
   and interconnections; gpt-5.6 on driving a goal to completion and finding
   defects. Pick by task shape, not the raw intelligence number.
-- Bulk/mechanical work (clear-spec implementation, data analysis, migrations):
-  gpt-5.6 — it's effectively free.
+- Implementation pen: opus-5 (owner, 2026-08-06). Codex verifies —
+  `codex exec` checkpoints mid-work, the Codex PR bot on push; the
+  pen-holder drives its own PR rounds, no separate review-babysitter
+  session. gpt-5.6 pen only for taste-irrelevant bulk (data analysis,
+  migrations) — effectively free.
 - Anything user-facing (UI, copy, API design) needs taste ≥ 7.
 - Reviews of plans/implementations: fable-5 or opus-5, optionally gpt-5.6 as
   an extra independent perspective.
