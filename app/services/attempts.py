@@ -967,10 +967,19 @@ def open_questions(
 
 def lesson_attempt_summary(conn: sqlite3.Connection, lesson_id: int) -> dict:
     """How many attempts a lesson has recorded, and the latest attempt per
-    question — the join the record panel hangs verdicts on."""
-    total = conn.execute(
-        "SELECT COUNT(*) FROM lesson_attempts WHERE lesson_id = ?", (lesson_id,)
-    ).fetchone()[0]
+    question — the join the record panel hangs verdicts on.
+
+    `total` is every row (it backs the watermark and the panel's "is there
+    anything here" test); `questions` is how many of them travel the other way,
+    so a counter the learner reads can say "attempts" about attempts only
+    (#136 review round 3). Both come from one statement — two COUNTs over the
+    same scan cost less than a second query and cannot disagree.
+    """
+    total, questions = conn.execute(
+        "SELECT COUNT(*), COUNT(*) FILTER (WHERE kind = ?) "
+        "FROM lesson_attempts WHERE lesson_id = ?",
+        (RECORD_KIND_QUESTION, lesson_id),
+    ).fetchone()
     latest = {}
     rows = conn.execute(
         _LATEST_PER_QUESTION_SQL, (PANEL_ANSWER_BYTES, lesson_id)
@@ -986,6 +995,8 @@ def lesson_attempt_summary(conn: sqlite3.Connection, lesson_id: int) -> dict:
     ).fetchone()[0]
     return {
         "total": total,
+        "questions": questions,
+        "answers": total - questions,
         "latest_by_question": latest,
         "watermark": int(watermark or 0),
     }

@@ -343,6 +343,9 @@
           <span class="lesson-record-title">Record</span>
           <span class="lesson-record-counts">
             <span data-record-count="attempts">{{ rec.counts.attempts }}</span> attempts
+            {% if rec.counts.questions is defined and rec.counts.questions %}
+            · <span data-record-count="questions">{{ rec.counts.questions }}</span> asked
+            {% endif %}
             · <span data-record-count="assessments">{{ rec.counts.assessments }}</span> active
             {% if rec.verdict_count is defined %}
             · <span data-record-count="verdicts">{{ rec.verdict_count }}</span> verdicts

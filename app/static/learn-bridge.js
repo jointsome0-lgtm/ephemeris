@@ -1567,7 +1567,7 @@ if (recordPanel && recordCountsUrl && recordKey) {
                 return;
             if (typeof counts.cursor === "string")
                 latestCursor = counts.cursor;
-            for (const name of ["attempts", "assessments", "verdicts"]) {
+            for (const name of ["attempts", "questions", "assessments", "verdicts"]) {
                 const value = counts[name];
                 if (typeof value === "number" && Number.isFinite(value)) {
                     setCount(name, String(value));

@@ -1706,11 +1706,15 @@ holds exactly one block and one textarea. When the block declares a
 registered runner, add Run and Cancel while a run is active. For that
 runner-backed page, the one ready announcement is
 `{"ephemeris":"lesson-bridge","type":"ready","abi":[1],"want":["editor","run"]}`.
-Add `attempts` to that same array only when the page also records answers to
-declared questions; then its list is `["attempts","editor","run"]`. Use that
-capability list in place of the attempts-only ready example in the general
-bridge recipe below. An editor-only page asks for `editor`, adds `attempts`
-under the same declared-answer condition, and omits `run` and its controls.
+Add `attempts` to that same array whenever the page submits anything through
+the attempt operation — an answer to a declared question OR an ask-the-tutor
+control, which travels the same way; then its list is
+`["attempts","editor","run"]`. A page that carries only an ask control still
+needs it: without the grant every question the learner sends you is refused
+`capability-not-granted`. Use that capability list in place of the
+attempts-only ready example in the general bridge recipe below. An
+editor-only page asks for `editor`, adds `attempts` under the same
+condition, and omits `run` and its controls.
 Gate each affordance independently: only an `editor` grant makes the textarea
 writable and enables Load/Save; only a `run` grant enables Run/Cancel. A
 missing `run` grant never disables a granted editor.
@@ -2279,6 +2283,25 @@ def _reconcile_assessment_projection(lesson: dict) -> None:
         pass
 
 
+def _reconcile_attempt_projection(lesson: dict) -> None:
+    """Rebuild `attempts.jsonl` from the authority if it does not match.
+
+    Best effort in every direction, like the assessment reconcile beside it:
+    the service answers False rather than raising, and nothing here may keep
+    the terminal from opening. Deferred import for the same cycle reason.
+    """
+    try:
+        from .attempts import reconcile_projection
+
+        conn = get_conn()
+        try:
+            reconcile_projection(conn, lesson)
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error, ImportError):
+        pass
+
+
 def _retire_foreign_run_projection(lesson: dict) -> None:
     """The run projection has no authority to rebuild from — its output tails
     live nowhere else — so the terminal-open trigger verifies rather than
@@ -2310,6 +2333,13 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
             return None
         slug, lesson, lesson_dir = resolved
         read = _ensure_bundle_manifest(lesson)
+        # Before the brief, unlike the two reconciles below: STATE quotes the
+        # open questions but sends the tutor to `attempts.jsonl` for the rest
+        # of a long one, and for every answer it names. Healing the file first
+        # is what makes that pointer true after a `projection: pending` write
+        # or a deleted file (review round 3). Best effort, like its siblings —
+        # a projection that cannot be repaired still costs no brief.
+        _reconcile_attempt_projection(lesson)
         conn = get_conn()
         try:
             state = _render_lesson_state(conn, lesson, read)

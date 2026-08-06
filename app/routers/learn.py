@@ -516,7 +516,12 @@ def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> d
         # backwards) through either.
         "cursor": _record_signal(state, attempt_state),
         "counts": {
-            "attempts": attempt_state["total"],
+            # Answers only (#136): a question to the tutor is recorded in the
+            # same table, but calling it an attempt in the line the learner
+            # reads would make asking for help look like a failed try. It is
+            # counted beside it instead, and only when there is one.
+            "attempts": attempt_state.get("answers", attempt_state["total"]),
+            "questions": attempt_state.get("questions", 0),
             "assessments": state["active_count"],
             "focus": _focus_label(focus_total),
             "focus_seconds": focus_total["seconds"],
@@ -825,7 +830,8 @@ def get_lesson_record_counts(lesson_id: int, since: str | None = None,
     return JSONResponse(
         {
             "ok": True,
-            "attempts": attempt_state["total"],
+            "attempts": attempt_state.get("answers", attempt_state["total"]),
+            "questions": attempt_state.get("questions", 0),
             "assessments": state["active_count"],
             "verdicts": len(reviews),
             # Against the ASSESSMENT field of the baseline only: what counts as

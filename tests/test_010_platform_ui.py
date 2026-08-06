@@ -887,13 +887,17 @@ def test_002_ui_and_workspace(client, suite_state):
         "plain textarea with Load and Save" in agents_text
         and "add Run and Cancel" in agents_text
         and "editor-only page asks for `editor`" in agents_text
-        and "same declared-answer condition" in agents_text
+        and "adds `attempts` under the same" in agents_text
         and "Gate each affordance independently" in agents_text
         and "placeholder to replace, never a literal" in agents_text
         and "missing `run` grant never disables" in agents_text
         and '"want":["editor","run"]' in agents_text
         and '["attempts","editor","run"]' in agents_text
-        and "only when the page also records answers" in agents_text
+        # #136: the condition is "submits anything through the attempt op",
+        # which an ask-only page does too — an earlier wording ("only when the
+        # page also records answers") sent such a page to a refused grant.
+        and "OR an ask-the-tutor" in agents_text
+        and "capability-not-granted" in agents_text
         and "attempts-only ready example" in agents_text
         and "`artifact.get`" in agents_text
         and "`artifact.save`" in agents_text
@@ -1388,15 +1392,15 @@ def test_002_ui_and_workspace(client, suite_state):
     _atomic_agents = _atomic_dir / "AGENTS.md"
     _atomic_before = _atomic_agents.read_text(encoding="utf-8")
     _real_fsync = lessons_svc.os.fsync
-    _fsync_calls = [0]
 
-    def _fail_fsync_once(_fd):
-        _fsync_calls[0] += 1
-        if _fsync_calls[0] == 1:
-            raise OSError("invented interrupted brief write")
-        return _real_fsync(_fd)
+    # Every fsync in the window, not the first one: #136 added a best-effort
+    # attempt-projection reconcile BEFORE the briefs, and that one swallows its
+    # own failures — a counted injection would be spent there and never reach
+    # the write under test.
+    def _fail_fsync(_fd):
+        raise OSError("invented interrupted brief write")
 
-    lessons_svc.os.fsync = _fail_fsync_once
+    lessons_svc.os.fsync = _fail_fsync
     try:
         _atomic_res = lessons_svc.prepare_terminal_workspace(_atomic["slug"])
     finally:

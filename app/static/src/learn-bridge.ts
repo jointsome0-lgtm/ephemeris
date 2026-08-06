@@ -1480,6 +1480,10 @@ const RECORD_ZERO_CURSOR = "0";
 interface RecordCounts {
   ok?: unknown;
   attempts?: unknown;
+  /* Questions to the tutor, counted apart from attempts (#136). Absent from a
+   * backend that predates it, which is why every count is type-checked before
+   * it is applied. */
+  questions?: unknown;
   assessments?: unknown;
   verdicts?: unknown;
   unread?: unknown;
@@ -1646,7 +1650,7 @@ if (recordPanel && recordCountsUrl && recordKey) {
        * learner has just been shown. Drop it whole; the next tick asks again. */
       if (readSeen() !== asked) return;
       if (typeof counts.cursor === "string") latestCursor = counts.cursor;
-      for (const name of ["attempts", "assessments", "verdicts"] as const) {
+      for (const name of ["attempts", "questions", "assessments", "verdicts"] as const) {
         const value = counts[name];
         if (typeof value === "number" && Number.isFinite(value)) {
           setCount(name, String(value));

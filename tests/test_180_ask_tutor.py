@@ -586,6 +586,45 @@ def test_the_brief_carries_the_question_text_not_only_a_pointer(client):
         and "cut here" in owed
     ), "every open question is quoted, bounded, and marked where it was cut"
 
+    # And the file the cut points at is back: the reconcile now runs BEFORE the
+    # brief, so what STATE sends the tutor to exists by the time it is read.
+    projected = (lesson_dir / attempts.PROJECTION_NAME).read_text(
+        encoding="utf-8"
+    )
+    assert (
+        short in projected and long in projected
+    ), "the projection is repaired before the brief points at it"
+
+
+def test_a_question_is_not_counted_as_an_attempt(client):
+    """The panel's count line is the one number the learner reads. Asking for
+    help is not a try at anything, so it is counted beside the attempts and
+    never inside them."""
+    lesson, lesson_dir, page_id = _ask_lesson("Ask Tutor Counter Fixture")
+    _submit(
+        client, lesson, lesson_dir, page_id, ANSWER_ID,
+        "Invented answer", "ask-count-answer",
+    )
+    html = client.get(f"/learn?lesson={lesson['id']}").text
+    record = html.split('<details class="lesson-record"', 1)[-1]
+    assert (
+        'data-record-count="attempts">1</span> attempts' in record
+        and 'data-record-count="questions"' not in record
+    ), "with nothing asked the line reads exactly as it did before #136"
+
+    _submit(
+        client, lesson, lesson_dir, page_id, ASK_ID,
+        "Invented question", "ask-count-ask",
+    )
+    html = client.get(f"/learn?lesson={lesson['id']}").text
+    record = html.split('<details class="lesson-record"', 1)[-1]
+    counts = client.get(f"/learn/lessons/{lesson['id']}/record-counts").json()
+    assert (
+        'data-record-count="attempts">1</span> attempts' in record
+        and 'data-record-count="questions">1</span> asked' in record
+        and counts["attempts"] == 1 and counts["questions"] == 1
+    ), "the question shows up as asked, and the attempt count holds still"
+
 
 def test_the_review_button_rides_the_existing_terminal_input_path():
     """Scope guard for the one-click launch: it opens the lesson's agent tab
