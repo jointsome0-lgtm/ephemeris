@@ -54,8 +54,9 @@ How to apply:
 - Implementation pen: opus-5 (owner, 2026-08-06). Codex verifies —
   `codex exec` checkpoints mid-work, the Codex PR bot on push; the
   pen-holder drives its own PR rounds, no separate review-babysitter
-  session. gpt-5.6 pen only for taste-irrelevant bulk (data analysis,
-  migrations) — effectively free.
+  session. gpt-5.6 pen for taste-irrelevant or genuinely light work
+  (data analysis, migrations, small clear-spec fixes) — effectively
+  free, running end-to-end incl. its own PR loop to merge.
 - Anything user-facing (UI, copy, API design) needs taste ≥ 7.
 - Reviews of plans/implementations: fable-5 or opus-5, optionally gpt-5.6 as
   an extra independent perspective.
