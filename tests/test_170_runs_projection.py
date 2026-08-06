@@ -373,6 +373,158 @@ def test_the_seal_survives_a_lost_state_directory_as_a_move_aside(tmp_path):
     assert "invented run before the seal was lost" in moved[0].read_text("utf-8")
 
 
+# --- retention: the file has a ceiling, the newest records win --------------
+#
+# `output_tail` caps a record at 8 KiB of raw output, but JSON escaping expands
+# control bytes, so the FILE grows much faster than the tail suggests and, for
+# a lesson that keeps being run, forever. These drive the bound at a small
+# monkeypatched ceiling — the rule is byte accounting, not the constant.
+
+
+def _lines(bundle: Path) -> list[dict]:
+    """Every record on the name, parsed — a torn file fails right here."""
+    text = (bundle / runs.PROJECTION_NAME).read_text(encoding="utf-8")
+    assert text.endswith("\n"), "the projection always ends on a record boundary"
+    return [json.loads(line) for line in text.splitlines()]
+
+
+def test_a_maximally_escaped_output_tail_is_counted_in_published_bytes(tmp_path):
+    """The 8 KiB tail cap is not the file-growth bound: a legal NUL-heavy tail
+    serializes to roughly six bytes per input byte. Retention therefore counts
+    published bytes, never records."""
+    bundle = tmp_path / "invented-escaped"
+    bundle.mkdir()
+
+    assert runs._record_finish_sync(_job(bundle, "\x00" * runs.OUTPUT_TAIL_BYTES)) is True
+
+    published = (bundle / runs.PROJECTION_NAME).stat().st_size
+    assert published > 45_000, "one legal record can weigh ~50 KiB on disk"
+    assert _lines(bundle)[0]["output_tail"] == "\x00" * runs.OUTPUT_TAIL_BYTES
+
+
+def test_runs_below_the_ceiling_still_append_in_place(tmp_path, monkeypatch):
+    """The bound must not cost the append fast path anything below it: the
+    finish hook is on the latency path of the learner's next status poll."""
+    bundle = tmp_path / "invented-under-ceiling"
+    bundle.mkdir()
+    projection = bundle / runs.PROJECTION_NAME
+    assert runs._record_finish_sync(_job(bundle, "invented run\n")) is True
+    first = projection.stat()
+    # Exactly enough room for one more line of the same shape, and no more.
+    monkeypatch.setattr(runs, "PROJECTION_MAX_BYTES", first.st_size * 2)
+
+    assert runs._record_finish_sync(_job(bundle, "invented run\n")) is True
+    second = projection.stat()
+
+    assert (second.st_dev, second.st_ino) == (first.st_dev, first.st_ino)
+    assert second.st_size <= runs.PROJECTION_MAX_BYTES
+    assert len(_lines(bundle)) == 2
+
+
+def test_crossing_the_ceiling_drops_the_oldest_records_not_the_newest(
+    tmp_path, monkeypatch,
+):
+    bundle = tmp_path / "invented-over-ceiling"
+    bundle.mkdir()
+    projection = bundle / runs.PROJECTION_NAME
+    assert runs._record_finish_sync(_job(bundle, "invented run 0\n")) is True
+    one_line = projection.stat().st_size
+    # Room for three records; the fourth run has to make space for itself.
+    monkeypatch.setattr(runs, "PROJECTION_MAX_BYTES", one_line * 3 + 8)
+
+    jobs = [_job(bundle, f"invented run {index}\n") for index in range(1, 6)]
+    for job in jobs:
+        assert runs._record_finish_sync(job) is True
+
+    records = _lines(bundle)
+    assert projection.stat().st_size <= runs.PROJECTION_MAX_BYTES
+    # Whole records only, newest kept, and nothing was preserved as a
+    # collision: compaction replaces the app's OWN verified file.
+    assert [record["run_id"] for record in records] == [
+        job.job_id for job in jobs[-len(records):]
+    ]
+    assert 1 <= len(records) <= 3
+    assert not list(bundle.glob(f"{runs.PROJECTION_NAME}.collision-*"))
+    assert not list(bundle.glob(".runs-*.tmp"))
+    # And the compacted file is still the app's own, so the next run appends
+    # to it rather than retiring it as foreign.
+    last = _job(bundle, "invented run after compaction\n")
+    assert runs._record_finish_sync(last) is True
+    assert _lines(bundle)[-1]["run_id"] == last.job_id
+    assert not list(bundle.glob(f"{runs.PROJECTION_NAME}.collision-*"))
+
+
+def test_a_single_record_larger_than_the_ceiling_is_still_published(
+    tmp_path, monkeypatch,
+):
+    """A run that cannot be recorded at all is worse than a bound overshot by
+    one line, and half a record is worse than both."""
+    bundle = tmp_path / "invented-huge-record"
+    bundle.mkdir()
+    assert runs._record_finish_sync(_job(bundle, "invented first\n")) is True
+    monkeypatch.setattr(runs, "PROJECTION_MAX_BYTES", 64)
+
+    job = _job(bundle, "\x00" * runs.OUTPUT_TAIL_BYTES)
+    assert runs._record_finish_sync(job) is True
+
+    records = _lines(bundle)
+    assert [record["run_id"] for record in records] == [job.job_id]
+
+
+def test_a_compaction_interrupted_while_staging_leaves_the_old_file(
+    tmp_path, monkeypatch,
+):
+    bundle = tmp_path / "invented-torn-staging"
+    bundle.mkdir()
+    assert runs._record_finish_sync(_job(bundle, "invented run 0\n")) is True
+    first = _lines(bundle)
+    monkeypatch.setattr(runs, "PROJECTION_MAX_BYTES", (bundle / runs.PROJECTION_NAME).stat().st_size)
+
+    real_write_all = runs._write_all
+
+    def half_write(fd, data):
+        real_write_all(fd, data[: len(data) // 2])
+        raise OSError("invented crash while staging the compacted projection")
+
+    monkeypatch.setattr(runs, "_write_all", half_write)
+    # The ledger event is authoritative and still lands; only the projection
+    # is lost, exactly as any other projection failure.
+    assert runs._record_finish_sync(_job(bundle, "invented run 1\n")) is True
+
+    assert _lines(bundle) == first
+    assert not list(bundle.glob(".runs-*.tmp"))
+
+
+def test_a_compaction_interrupted_after_the_swap_leaves_the_new_file(
+    tmp_path, monkeypatch,
+):
+    """The rename is atomic, so the name carries either the whole old file or
+    the whole new one. A seal lost after it fails closed the usual way: the
+    next run preserves the unverifiable file instead of extending it."""
+    bundle = tmp_path / "invented-torn-seal"
+    bundle.mkdir()
+    assert runs._record_finish_sync(_job(bundle, "invented run 0\n")) is True
+    monkeypatch.setattr(runs, "PROJECTION_MAX_BYTES", (bundle / runs.PROJECTION_NAME).stat().st_size)
+
+    def no_seal(uid, st):
+        raise OSError("invented crash between the swap and the seal")
+
+    monkeypatch.setattr(runs, "_write_state", no_seal)
+    compacted = _job(bundle, "invented run 1\n")
+    assert runs._record_finish_sync(compacted) is True
+
+    records = _lines(bundle)
+    assert [record["run_id"] for record in records] == [compacted.job_id]
+
+    monkeypatch.undo()
+    later = _job(bundle, "invented run 2\n")
+    assert runs._record_finish_sync(later) is True
+    assert [record["run_id"] for record in _lines(bundle)] == [later.job_id]
+    moved = list(bundle.glob(f"{runs.PROJECTION_NAME}.collision-*"))
+    assert len(moved) == 1
+    assert json.loads(moved[0].read_text("utf-8"))["run_id"] == compacted.job_id
+
+
 def test_runs_projection_name_is_reserved():
     read = bundle_schema.read_manifest_text(json.dumps({
         "schema_version": 2,

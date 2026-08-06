@@ -434,10 +434,20 @@ globalThis.document = {
   getElementById(id) { return id === "lesson-preview-frame" ? frame : null; },
   addEventListener() {},
 };
+/* The owner's consent dialog. `config.consent === "unavailable"` leaves
+ * `window.confirm` undefined, which is what a parent that cannot ask looks
+ * like; the runtime must read that as a refusal, never as a grant. */
+export const confirms = [];
 globalThis.window = {
   location: { href: "http://testserver/learn?lesson=1" },
   addEventListener(type, cb) { if (type === "message") messageListeners.push(cb); },
 };
+if (config.consent !== "unavailable") {
+  globalThis.window.confirm = (question) => {
+    confirms.push(question);
+    return config.consent === true;
+  };
+}
 
 /* The declared-id list the NEXT metadata read returns: a manifest-only edit
  * lands between arming and the handshake without moving the page version. */
@@ -490,7 +500,7 @@ export { config };
 
 _HARNESS_RUN = """\
 /* Static imports, in order: the fake DOM exists before the runtime evaluates. */
-import { posted, fetchCalls, announce, config } from "./setup.mjs";
+import { posted, fetchCalls, confirms, announce, config } from "./setup.mjs";
 import "./learn-bridge.mjs";
 
 await announce();
@@ -505,6 +515,7 @@ const result = {
   message: welcome ? welcome.message : null,
   attempt: null,
   attemptBodies: [],
+  confirms: confirms.slice(),
 };
 
 /* The old-page path: a document that reads only abi/lesson/capabilities off the
@@ -531,7 +542,7 @@ process.exit(0);
 
 def _drive_bridge(
     tmp_path: Path, *, want, record, attempt=None, questions=("q_harness01",),
-    questions_after=None,
+    questions_after=None, consent=True,
 ) -> dict:
     """Run the committed `learn-bridge.js` through one handshake under node."""
     if shutil.which("node") is None:  # pragma: no cover - CI always has node
@@ -548,6 +559,7 @@ def _drive_bridge(
         cwd=tmp_path, capture_output=True, text=True, timeout=60,
         env={**os.environ, "EPHEMERIS_BRIDGE_HARNESS": json.dumps({
             "want": want, "record": record, "attempt": attempt,
+            "consent": consent,
             "questions": list(questions) if isinstance(questions, tuple)
             else questions,
             "questionsAfter": questions_after,
@@ -643,6 +655,77 @@ def test_a_backend_without_the_snapshot_sends_the_pre_133_welcome(tmp_path):
     result = _drive_bridge(tmp_path, want=["attempts"], record=None)
     assert "record" not in result["message"]
     assert result["keys"] == ["abi", "capabilities", "ephemeris", "lesson", "type"]
+
+
+# --- the consent gate (drain M1) --------------------------------------------
+#
+# The lesson page is untrusted and keeps the same-frame navigation residual:
+# permitted script can assign `location.href` and carry whatever it was handed
+# to a destination the response CSP does not cover. Answers and tutor notes are
+# private runtime state, so — like the artifact READ path — the parent asks the
+# owner first, once per loaded document.
+
+
+def test_a_refused_read_back_hands_the_page_no_answer_or_note_bytes(tmp_path):
+    result = _drive_bridge(
+        tmp_path, want=["attempts"], record=SNAPSHOT, consent=False)
+
+    # Absent, not empty: a page cannot tell a refusal from an older app, and
+    # there is no field for it to read a fragment out of either way.
+    assert "record" not in result["message"]
+    assert result["keys"] == ["abi", "capabilities", "ephemeris", "lesson", "type"]
+    # Not one byte of the answer or the verdict is anywhere in what crossed.
+    serialized = json.dumps(result["message"])
+    assert "the recorded answer" not in serialized
+    assert "the standing verdict" not in serialized
+    assert "q_harness01" not in serialized
+    # The rest of the grant is untouched: refusing to read back does not
+    # revoke the capability that writes the next answer.
+    assert result["message"]["capabilities"] == ["attempts"]
+    # Asked exactly once, and the question names the egress it is about.
+    assert len(result["confirms"]) == 1
+    assert "navigate" in result["confirms"][0]
+    assert "another site" in result["confirms"][0]
+
+
+def test_an_allowed_read_back_is_asked_once_and_then_handed_over(tmp_path):
+    result = _drive_bridge(tmp_path, want=["attempts"], record=SNAPSHOT)
+
+    assert result["message"]["record"] == {"questions": SNAPSHOT_QUESTIONS}
+    assert len(result["confirms"]) == 1
+
+
+def test_a_parent_that_cannot_ask_refuses_the_read_back(tmp_path):
+    """No dialog is a refusal, never a grant: the gate fails closed the same
+    way every other decision on this boundary does."""
+    result = _drive_bridge(
+        tmp_path, want=["attempts"], record=SNAPSHOT, consent="unavailable")
+
+    assert "record" not in result["message"]
+    assert result["confirms"] == []
+
+
+def test_a_page_with_nothing_recorded_for_it_is_handed_an_empty_list_unasked(
+    tmp_path,
+):
+    """Consent is about disclosure, and an empty scope discloses nothing. A
+    lesson nobody has answered yet is the common case; opening a modal to hand
+    over zero answers would train the owner to click through the one that
+    matters."""
+    result = _drive_bridge(
+        tmp_path, want=["attempts"], record=SNAPSHOT,
+        questions=("q_declared1",),  # the snapshot's id is not declared here
+    )
+
+    assert result["message"]["record"] == {"questions": []}
+    assert result["confirms"] == []
+
+
+def test_a_page_that_did_not_ask_for_attempts_is_never_asked_about_it(tmp_path):
+    """The capability check comes first, so a display page cannot make the
+    owner answer a question about data it was never going to receive."""
+    result = _drive_bridge(tmp_path, want=[], record=SNAPSHOT)
+    assert result["confirms"] == []
 
 
 def test_a_page_that_did_not_ask_for_attempts_is_told_nothing(tmp_path):

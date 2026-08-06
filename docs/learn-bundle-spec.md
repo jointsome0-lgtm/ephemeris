@@ -581,7 +581,9 @@ fixes only what the bundle contains (#135).
   accumulated history. This is a requirement, not an optimisation: the finish
   hook gates the runner's `event_attempted`, which terminal status and cancel
   wait on, so work proportional to history would put a learner's whole run
-  log on the latency path of their next status poll.
+  log on the latency path of their next status poll. Compaction at the
+  retention bound below is the one exception, and it stays amortised: it
+  copies at most the ceiling once per ceiling's worth of appended records.
 - **Record format**, one JSON object per line: `kind` (`"run"`), `v` (`1`),
   `run_id`, `lesson_uid`, `block_id`, `runner_id`, `file_rev`, `cause`,
   `exit_code`, `signal`, `duration_ms`, `truncated`, `started_at`,
@@ -589,10 +591,20 @@ fixes only what the bundle contains (#135).
 - **Size**: `output_tail` is the newest 8192 UTF-8 bytes of the combined
   stdout/stderr stream, cut on a character boundary, with
   `output_tail_truncated` telling the reader whether anything was dropped.
-  The file itself has no ceiling and no compaction — it grows with lifetime
-  runs, not with current state — so a reader treats it like §6.5: read it
-  whole while it fits, otherwise read the newest complete lines and declare
-  the omission.
+  A record is therefore not bounded by that 8192: JSON escaping expands
+  control bytes, so a legal tail can serialize to roughly 50 KiB on disk.
+- **Retention**: the file is capped at **20 MiB per lesson**. It grows with
+  lifetime runs rather than with current state, so without a bound a page that
+  keeps running would grow the private bundle without end. On the append that
+  would cross the cap the app republishes the newest whole records that fit,
+  plus the new one, and the dropped records are gone for good — the ledger,
+  not this projection, is the durable history. The cut always lands on a
+  record boundary, the newest record always survives (published alone if it
+  alone exceeds the cap), and compaction replaces the app's OWN seal-verified
+  file, so nothing is preserved as a collision. A reader still treats the file
+  like §6.5: read it whole while it fits, otherwise read the newest complete
+  lines and declare the omission — and never read a missing old run as
+  evidence that it never happened.
 - The manifest does NOT list runs, and a lesson with no finished run has no
   file. Read-only for the study agent and the learner alike.
 
@@ -625,9 +637,17 @@ what the tutor said about them without leaving the question.
   has since navigated to another one; its entries are re-projected onto the
   ids the loaded document's own metadata declares, so a question retired by a
   manifest-only edit takes its answer out of the read-back with it.
-- **Compatibility**: the field is absent when there is no snapshot or the
-  `attempts` capability was not granted, and pages that ignore it are
-  unaffected — read-back adds nothing a bundle must implement.
+- **Consent**: answers and notes are private runtime state and the receiving
+  document keeps the §5 same-frame navigation residual, so the parent asks the
+  owner once per loaded document before attaching anything — the same sticky
+  gate the artifact READ path uses, warning about the same egress. A refusal
+  omits the field; an empty scope is attached unasked, since there is nothing
+  to decide about. Wire detail in
+  [lesson-bridge-abi.md](lesson-bridge-abi.md) §2.1.
+- **Compatibility**: the field is absent when there is no snapshot, the
+  `attempts` capability was not granted, or consent was refused, and pages
+  that ignore it are unaffected — read-back adds nothing a bundle must
+  implement.
 
 ## 7. Artifact roots and deterministic discovery
 
