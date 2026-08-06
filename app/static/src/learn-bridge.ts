@@ -1453,7 +1453,14 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     const needsBlockRefresh = artifactsUrl !== null && (
       want.includes("editor") || (runsUrl !== null && want.includes("run"))
     );
-    if (needsBlockRefresh) {
+    /* A read-back grant reads the declared-id list, and a manifest-only edit
+     * can retire a question while the page bytes, profile and identity stay
+     * put — so the arm-time list can be older than the grant. Refresh for it
+     * too, or an attempts-only child announcing late would be handed an
+     * answer for an id the manifest no longer declares. */
+    const needsQuestionRefresh = attemptsUrl !== null
+      && recordSnapshot !== null && want.includes("attempts");
+    if (needsBlockRefresh || needsQuestionRefresh) {
       const gen = generation;
       const token = {};
       grantToken = token;

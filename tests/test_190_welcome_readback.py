@@ -439,6 +439,10 @@ globalThis.window = {
   addEventListener(type, cb) { if (type === "message") messageListeners.push(cb); },
 };
 
+/* The declared-id list the NEXT metadata read returns: a manifest-only edit
+ * lands between arming and the handshake without moving the page version. */
+let metaGets = 0;
+
 const meta = {
   version: "v1",
   exists: true,
@@ -457,6 +461,11 @@ const meta = {
 globalThis.fetch = async (url, init) => {
   const method = (init && init.method) || "GET";
   fetchCalls.push({ url: String(url), method, body: init && init.body });
+  if (method === "GET") {
+    metaGets += 1;
+    meta.bridge_page.questions =
+      metaGets === 1 ? config.questions : (config.questionsAfter ?? config.questions);
+  }
   if (method === "POST") {
     return { ok: true, json: async () => ({
       ok: true, result: "recorded", attempt_id: "at_harness",
@@ -522,6 +531,7 @@ process.exit(0);
 
 def _drive_bridge(
     tmp_path: Path, *, want, record, attempt=None, questions=("q_harness01",),
+    questions_after=None,
 ) -> dict:
     """Run the committed `learn-bridge.js` through one handshake under node."""
     if shutil.which("node") is None:  # pragma: no cover - CI always has node
@@ -540,6 +550,7 @@ def _drive_bridge(
             "want": want, "record": record, "attempt": attempt,
             "questions": list(questions) if isinstance(questions, tuple)
             else questions,
+            "questionsAfter": questions_after,
         })},
     )
     assert completed.returncode == 0, (
@@ -680,6 +691,22 @@ def test_an_id_the_loaded_page_no_longer_declares_is_dropped(tmp_path):
         questions=["q_harness02"])
     # The field still arrives — "nothing known here" — but carries no entry.
     assert gone["message"]["record"] == {"questions": []}
+
+
+def test_a_question_retired_between_arming_and_the_handshake_is_dropped(tmp_path):
+    """The filter reads the GRANT-time declaration, not the arm-time copy.
+
+    A manifest-only edit retires a question without touching the page bytes,
+    the profile or the identity, so nothing reloads the frame — and a child
+    that announces late would otherwise be handed an answer for an id the
+    manifest no longer declares. The parent re-reads the metadata before every
+    read-back grant, the same refresh the editor and run grants already do.
+    """
+    result = _drive_bridge(
+        tmp_path, want=["attempts"], record=SNAPSHOT,
+        questions=["q_harness01"], questions_after=[])
+    assert result["message"]["capabilities"] == ["attempts"]
+    assert result["message"]["record"] == {"questions": []}
 
 
 def test_an_unreadable_question_list_withholds_the_read_back(tmp_path):
