@@ -33,12 +33,12 @@ generous limits), not list price. Intelligence is how hard a problem you can
 hand the model unsupervised. Taste covers UI/UX, code quality, API design, and
 copy.
 
-| model    | cost | intelligence | taste |
-|----------|------|--------------|-------|
-| gpt-5.6  | 9    | 8.9          | 7     |
-| sonnet-5 | 5    | 5            | 7     |
-| opus-5   | 3    | 8.5          | 8.5   |
-| fable-5  | 2    | 9            | 9     |
+| model       | cost | intelligence | taste |
+|-------------|------|--------------|-------|
+| gpt-5.6     | 9    | 8.9          | 7     |
+| sol-pro-web | 9    | 9            | 7     |
+| opus-5      | 6    | 8.5          | 8.5   |
+| fable-5     | 2    | 9            | 9     |
 
 How to apply:
 
@@ -80,18 +80,8 @@ How to apply:
 - Parallel codex execs are fragile (atlas 2026-07-16: an exec hung
   ~35 min behind parallel sessions) — prefer one lighter run over a
   fan-out; whole-diff consistency doesn't decompose per-finding.
-- Claude models (sonnet-5, opus-5, fable-5) run via the Agent/Workflow model
+- Claude models (opus-5, fable-5) run via the Agent/Workflow model
   parameter.
-
-Using gpt-5.6 inside workflows and subagents (the model parameter only takes
-Claude models, so use a wrapper):
-
-- Spawn a thin Claude wrapper agent with `model: 'sonnet', effort: 'low'` whose
-  only job is to run `codex exec` via Bash and return the raw output verbatim.
-- Write the full self-contained codex prompt yourself and pass it to the
-  wrapper word-for-word. Wrappers never formulate or rewrite codex prompts —
-  sonnet/opus don't write them well, and intermediary layers are banned — and
-  you digest the result yourself.
 - Treat codex claims (file:line, "tests are green", "done") as unverified until
   checked against artifacts. Codex is goal-driven and loves finding defects —
   excellent as a critic, so on long solo work call it at checkpoints
