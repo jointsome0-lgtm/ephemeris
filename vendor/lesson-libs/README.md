@@ -112,7 +112,7 @@ Manual and rare. When bumping or adding a library:
    npm init -y >/dev/null
 
    # liveness check, then resolve — chained, so a dead gate resolves nothing
-   npm config list | grep -q '^before = ' \
+   npm config list | grep -q "^before = \"$(date -u -d '30 days ago' +%F)T" \
      && npm install --package-lock-only <name> \
      && npm ls --package-lock-only <name>
    ```
@@ -124,12 +124,19 @@ Manual and rare. When bumping or adding a library:
    the gate's own liveness check — npm below 11.6 does not know the key, warns
    `Unknown project config "min-release-age"` and carries on unquarantined. npm
    implements the setting by translating it into a cutoff date, so a live gate
-   is exactly a `before = "<date>"` line in `npm config list`; no line, no
-   quarantine, and the answer is a newer npm rather than a version picked by
-   eye. The `&&` chain is what makes that check a gate rather than a remark: on
-   an npm that ignores the setting the `grep` fails and nothing is resolved,
-   where three separate lines would have sailed on into an unquarantined
-   install.
+   is exactly a `before = "<today − 30 days>"` line in `npm config list`; no
+   such line, no quarantine, and the answer is a newer npm rather than a
+   version picked by eye.
+
+   The check matches the *date*, not merely the key, because `before` has an
+   independent life: a cutoff inherited from `~/.npmrc` or the environment
+   would print the same line while admitting anything published before some
+   unrelated date. (An npm that does understand `min-release-age` refuses the
+   combination outright — `--min-release-age cannot be provided when using
+   --before` — so this is aimed at the old-npm case, where the inherited value
+   silently wins.) And the `&&` chain is what makes the check a gate rather
+   than a remark: when it fails nothing is resolved, where three separate lines
+   would have sailed on into an unquarantined install.
 
    `npm ls` needs `--package-lock-only` too: `--package-lock-only` on the
    install writes the lockfile without populating `node_modules`, and a plain
