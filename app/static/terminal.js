@@ -986,6 +986,22 @@
             findNextBtn.addEventListener('click', function () { runSearch(true); });
         if (findCloseBtn)
             findCloseBtn.addEventListener('click', function () { closeFind(true); });
+        var pasteBtn = document.getElementById(config.idPrefix + '-paste');
+        if (pasteBtn) {
+            pasteBtn.addEventListener('click', function () {
+                var tab = activeTab();
+                if (!tab || !tab.term)
+                    return;
+                // Same path as Ctrl+Shift+V: xterm's paste honours the app's bracketed
+                // paste mode, so a clipboard string carrying a newline stays inert text
+                // instead of executing as soon as it reaches the shell.
+                readClipboardText(function (text) {
+                    if (text && tab.term.paste)
+                        tab.term.paste(text);
+                });
+                focusSoon();
+            });
+        }
         var killBtn = document.getElementById(config.idPrefix + '-close');
         if (killBtn)
             killBtn.addEventListener('click', closeActiveTab);
