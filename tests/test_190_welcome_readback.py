@@ -449,7 +449,7 @@ const meta = {
     lesson_uid: "les_harness",
     page_id: "pg_harness01",
     page_rev: "sha256:" + "a".repeat(64),
-    questions: ["q_harness01"],
+    questions: config.questions,
     blocks: [],
   },
 };
@@ -520,7 +520,9 @@ process.exit(0);
 """
 
 
-def _drive_bridge(tmp_path: Path, *, want, record, attempt=None) -> dict:
+def _drive_bridge(
+    tmp_path: Path, *, want, record, attempt=None, questions=("q_harness01",),
+) -> dict:
     """Run the committed `learn-bridge.js` through one handshake under node."""
     if shutil.which("node") is None:  # pragma: no cover - CI always has node
         pytest.skip("node is required to drive the emitted bridge runtime")
@@ -534,8 +536,11 @@ def _drive_bridge(tmp_path: Path, *, want, record, attempt=None) -> dict:
     completed = subprocess.run(
         ["node", str(tmp_path / "run.mjs")],
         cwd=tmp_path, capture_output=True, text=True, timeout=60,
-        env={**os.environ, "EPHEMERIS_BRIDGE_HARNESS": json.dumps(
-            {"want": want, "record": record, "attempt": attempt})},
+        env={**os.environ, "EPHEMERIS_BRIDGE_HARNESS": json.dumps({
+            "want": want, "record": record, "attempt": attempt,
+            "questions": list(questions) if isinstance(questions, tuple)
+            else questions,
+        })},
     )
     assert completed.returncode == 0, (
         "bridge harness exits clean  -- " + completed.stdout + completed.stderr
@@ -656,6 +661,37 @@ def test_a_snapshot_taken_for_another_page_never_reaches_this_one(tmp_path):
     assert result["keys"] == ["abi", "capabilities", "ephemeris", "lesson", "type"]
 
 
+def test_an_id_the_loaded_page_no_longer_declares_is_dropped(tmp_path):
+    """A manifest-only edit retires a question without moving the page version.
+
+    The document then reloads and arms under the SAME identity with a shorter
+    question list, so the identity match alone would still hand it the retired
+    id's answer and verdict. Every entry is re-checked against what this
+    document's own metadata declares now.
+    """
+    kept = _drive_bridge(
+        tmp_path / "kept", want=["attempts"], record=SNAPSHOT,
+        questions=["q_harness01", "q_harness02"])
+    assert [e["question_id"] for e in kept["message"]["record"]["questions"]] \
+        == ["q_harness01"]
+
+    gone = _drive_bridge(
+        tmp_path / "gone", want=["attempts"], record=SNAPSHOT,
+        questions=["q_harness02"])
+    # The field still arrives — "nothing known here" — but carries no entry.
+    assert gone["message"]["record"] == {"questions": []}
+
+
+def test_an_unreadable_question_list_withholds_the_read_back(tmp_path):
+    """Fail closed, exactly as the attempt path does with the same metadata:
+    a list this runtime cannot check ids against is not a list it may hand
+    learner text over on the strength of."""
+    result = _drive_bridge(
+        tmp_path, want=["attempts"], record=SNAPSHOT, questions="not-a-list")
+    assert result["message"]["capabilities"] == ["attempts"]
+    assert "record" not in result["message"]
+
+
 @pytest.mark.parametrize("case,broken", [
     ("garbage", "not json at all"),
     ("no-identity", '{"questions":[]}'),
@@ -681,7 +717,8 @@ def test_the_source_and_the_committed_emit_carry_the_same_rules():
     for token in ('frame.dataset["record"]',
                   'capabilities.includes("attempts")',
                   "recordSnapshot.page_id === armed.page_id",
-                  "welcome.record = { questions: recordSnapshot.questions }"):
+                  "declared.includes(entry.question_id)",
+                  "armedQuestions !== null"):
         assert token in source and token in emitted, token
     # Still no read OPERATION: the port stays write-only by design (ABI §2.1).
     for absent in ("record.get", "record.read", '"record.'):

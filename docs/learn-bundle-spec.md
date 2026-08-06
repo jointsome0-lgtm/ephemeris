@@ -622,7 +622,9 @@ what the tutor said about them without leaving the question.
   loaded document. A verdict written while the page is open arrives on the
   next load; nothing pushes or refreshes it mid-session by design. The
   snapshot names the page it was taken for, and is withheld whole if the frame
-  has since navigated to another one.
+  has since navigated to another one; its entries are re-projected onto the
+  ids the loaded document's own metadata declares, so a question retired by a
+  manifest-only edit takes its answer out of the read-back with it.
 - **Compatibility**: the field is absent when there is no snapshot or the
   `attempts` capability was not granted, and pages that ignore it are
   unaffected — read-back adds nothing a bundle must implement.

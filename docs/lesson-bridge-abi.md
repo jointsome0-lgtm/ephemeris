@@ -142,6 +142,13 @@ Semantics:
   against the armed identity and omits `record` entirely on a mismatch, so a
   successor page is never handed the predecessor's answers. Those two fields do
   not cross the boundary — the child receives `questions` only.
+- **Re-projected onto what the loaded page declares now.** A manifest-only edit
+  retires or moves a question without changing the page's version token, so the
+  reloaded document can arm under the same identity with a shorter question
+  list. Every entry is therefore filtered against the declared ids in the
+  metadata that document armed from, and `record` is omitted whole when that
+  list is missing or malformed (the same fail-closed rule the attempt path
+  uses). An entry never survives for an id the page no longer declares.
 - **Entries only for what exists.** A declared question with no recorded
   attempt has no entry. An absent id means *nothing known*, never *not
   attempted* (spec §6.1: the record can lag).

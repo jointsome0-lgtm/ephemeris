@@ -338,6 +338,11 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
   let ownedRuns = new Map<string, OwnedRun>();
   let activeRelay: ActiveRelay | null = null;
   let armedBlocks: BridgeBlock[] = [];
+  /* The ids the armed page declares according to the metadata this document
+   * armed from — which is read after the reload that produced it, so it sees
+   * manifest-only edits the /learn render behind the snapshot could not.
+   * `null` (absent or malformed) fails closed, as everywhere else. */
+  let armedQuestions: string[] | null = null;
   /* Serialises a handshake-time metadata refresh. An object token prevents a
    * stale document's finally block from clearing a successor's refresh. */
   let grantToken: object | null = null;
@@ -361,6 +366,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     ownedRuns = new Map();
     activeRelay = null;
     armedBlocks = [];
+    armedQuestions = null;
     grantToken = null;
   };
 
@@ -458,6 +464,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         page_rev: meta.bridge_page.page_rev,
       };
       armedBlocks = metaBlocks(meta) ?? [];
+      armedQuestions = metaQuestions(meta);
       /* Deliberately NO buffered-announcement flush here (PR-55 round 4):
        * an announcement held across this async bind could be answered into
        * a successor document after a same-frame navigation. Announcements
@@ -1397,17 +1404,27 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
      * so none crosses to it. Omitted whole rather than sent empty when there
      * is no snapshot, so the pre-#133 welcome shape is reproduced exactly.
      *
-     * The identity match is the boundary: the reload poll can navigate the
-     * frame to a different page (entry removed, renamed, fallback) and that
-     * document arms its own `bridge_page` while this snapshot still belongs to
-     * the /learn render that built the parent. Handing it over would leak the
-     * predecessor's answers to a page that never declared those ids. */
+     * The snapshot is bound to the document it was taken for, twice over,
+     * because the frame can reload without a new /learn render behind it:
+     * the identity must still be this page (the poll can follow a removed or
+     * renamed entry to a DIFFERENT one), and every id is re-checked against
+     * what this document's own metadata declares NOW — a manifest-only edit
+     * retires a question without moving the page version. Either way the
+     * answers and verdicts of an id the loaded page does not declare stay on
+     * the parent's side of the boundary. */
     if (
       recordSnapshot !== null && capabilities.includes("attempts")
       && recordSnapshot.lesson_uid === armed.lesson_uid
       && recordSnapshot.page_id === armed.page_id
+      && armedQuestions !== null
     ) {
-      welcome.record = { questions: recordSnapshot.questions };
+      const declared = armedQuestions;
+      welcome.record = {
+        questions: recordSnapshot.questions.filter(
+          (entry) => typeof entry?.question_id === "string"
+            && declared.includes(entry.question_id),
+        ),
+      };
     }
     child.postMessage(welcome, "*", [channel.port2]);
   };
@@ -1454,6 +1471,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
           || meta.bridge !== true || !identityMatches(meta)
         ) return;
         armedBlocks = metaBlocks(meta) ?? [];
+        armedQuestions = metaQuestions(meta);
         finishReady(data, child);
       } finally {
         if (grantToken === token) grantToken = null;
