@@ -619,7 +619,13 @@ def test_bundle_attempts(client, suite_state):
             "GENERATED-SOURCE NOTICE" in _d2_text
             and "ev.source !== child" in _d2_text
             and "new MessageChannel()" in _d2_text
-            and "ABI_VERSION = 1" in _d2_text
+            and "ABI_VERSION = 2" in _d2_text
+            # v2's central invariant: every handshake result leaves on the
+            # port the announcing document transferred, and the parent never
+            # posts into the navigation-stable WindowProxy at all.
+            and "ev.ports.length === 1" in _d2_text
+            and "reply.postMessage(welcome, [channel.port2])" in _d2_text
+            and "child.postMessage" not in _d2_text
             and 'msg["ephemeris"] !== "lesson-bridge"' in _d2_text
             and 'want.includes("attempts")' in _d2_text
             and "MAX_PORT_BYTES = 512 * 1024" in _d2_text

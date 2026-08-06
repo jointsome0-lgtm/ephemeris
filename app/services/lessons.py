@@ -1712,7 +1712,8 @@ byte for byte. Without that attribute the flag stays `unknown` unless the page
 holds exactly one block and one textarea. When the block declares a
 registered runner, add Run and Cancel while a run is active. For that
 runner-backed page, the one ready announcement is
-`{"ephemeris":"lesson-bridge","type":"ready","abi":[1],"want":["editor","run"]}`.
+`{"ephemeris":"lesson-bridge","type":"ready","abi":[2],"want":["editor","run"]}`,
+transferred exactly as the handshake recipe below requires.
 Add `attempts` to that same array whenever the page submits anything through
 the attempt operation — an answer to a declared question OR an ask-the-tutor
 control, which travels the same way; then its list is
@@ -1771,27 +1772,34 @@ transferred MessagePort. Pages that record answers follow these rules:
   has no network and no forms — a Check button that fetches, posts a
   form, or writes a file cannot work. Wire every Check /
   "record my answer" action to the bridge port only.
-- Handshake: on load, post
-  `{"ephemeris": "lesson-bridge", "type": "ready", "abi": [1],
+- Handshake (ABI v2): on load, mint `const ch = new MessageChannel()`, set
+  `ch.port1.onmessage` to your result handler, and post
+  `{"ephemeris": "lesson-bridge", "type": "ready", "abi": [2],
   "want": ["attempts"]}` to `window.parent` with targetOrigin
-  `new URL(location.href).origin`; re-announce every 250–500 ms until a
-  `welcome` or `reject` arrives, and give up after ~2 s of silence. The
-  `welcome` transfers the port everything else flows over. Skip the
-  handshake entirely when `new URL(location.href).origin` is the string
-  `"null"` (the page was opened from disk, not served by the app) —
-  there is no app origin to talk to; stay read-only.
-- Authenticate what you receive. Accept a `welcome` or `reject` only
-  when `event.source === window.parent` AND `event.origin` equals
-  `new URL(location.href).origin` (the exact app origin the page was
-  served from), and the message carries `"ephemeris": "lesson-bridge"`
-  with the expected `type`. A `welcome` must additionally select an
-  `abi` you announced and transfer exactly one MessagePort; a `reject`
-  carries only `reason` and `supported` — it has no selected `abi` and
-  no port, so do not demand them of it. Accept at most one handshake
-  result per page load and ignore every later or non-matching message:
-  a message from any other window or origin, or a "welcome" claiming
-  capabilities without a port from the parent, is noise, never an
-  upgrade to write access.
+  `new URL(location.href).origin` AND `[ch.port2]` as the transfer list.
+  The answer comes back on `ch.port1` — never on a `window` message
+  listener. Re-announce every 250–500 ms until a `welcome` or `reject`
+  arrives, and give up after ~2 s of silence; a transferred port is
+  spent, so EVERY retry mints a fresh channel and keeps its own
+  `port1` listening until one of them answers, then closes the rest.
+  The `welcome` transfers a second port — the bridge — that everything
+  else flows over. Skip the handshake entirely when
+  `new URL(location.href).origin` is the string `"null"` (the page was
+  opened from disk, not served by the app) — there is no app origin to
+  talk to; stay read-only. Announcing without the transferred port is
+  the retired v1 contract: the app answers it with silence, so the page
+  degrades to read-only and the learner loses the bridge.
+- Authenticate what you receive. The channel already authenticates the
+  sender — only the parent runtime was ever given `port2`, and nothing
+  else can post on it — so check the shape, not the source: the message
+  carries `"ephemeris": "lesson-bridge"` with the expected `type`, a
+  `welcome` selects an `abi` you announced and transfers exactly one
+  MessagePort, and a `reject` carries only `reason` and `supported` —
+  it has no selected `abi` and no port, so do not demand them of it.
+  Accept at most one handshake result per page load and ignore every
+  later or non-matching message. A lesson-bridge-shaped message that
+  arrives on the `window` instead is by definition not from the app:
+  ignore it, and never treat it as an upgrade to write access.
 - Identity is the parent's. The `welcome` carries the lesson identity
   (`lesson_uid`, `page_id`, `page_rev`) and the granted capability set;
   the page never sends its own lesson/page identity — it has no say.

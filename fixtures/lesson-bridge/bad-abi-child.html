@@ -14,14 +14,20 @@
   if (window.parent === window) { set("bridge", "absent"); return; }
   const appOrigin = new URL(location.href).origin;
   let answered = false;
-  const announce = () => window.parent.postMessage(
-    { ephemeris: "lesson-bridge", type: "ready", abi: [99] }, appOrigin);
+  // ABI v2: the reject comes back on the port announced with, like a welcome.
+  const announce = () => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = onResult;
+    window.parent.postMessage(
+      { ephemeris: "lesson-bridge", type: "ready", abi: [99] },
+      appOrigin, [channel.port2]);
+  };
   const retry = setInterval(() => { if (!answered) announce(); }, 250);
   const silent = setTimeout(() => {
     clearInterval(retry);
     if (!answered) set("bridge", "silent");
   }, 2000);
-  window.addEventListener("message", (ev) => {
+  function onResult(ev) {
     const d = ev.data;
     if (!d || d.ephemeris !== "lesson-bridge") return;
     answered = true;
@@ -33,7 +39,7 @@
     } else {
       set("bridge", "unexpected:" + d.type);
     }
-  });
+  }
   announce();
 })();
 </script>

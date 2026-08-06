@@ -1,7 +1,7 @@
 /* GENERATED-SOURCE NOTICE: app/static/learn-bridge.js is emitted from this
  * file by `npm run build` (tsc, issue #42) and committed so deploy stays
  * zero-build. Edit THIS file and re-emit; never edit the .js by hand. */
-/* Learn preview runtime + lesson bridge parent (D2, ABI v1 — see
+/* Learn preview runtime + lesson bridge parent (D2, ABI v2 — see
  * docs/lesson-bridge-abi.md).
  *
  * Owns the whole preview-frame lifecycle on /learn, because the bridge grant
@@ -13,12 +13,22 @@
  * Trust model: the iframe document is untrusted lesson content in an
  * opaque-origin sandbox. The parent owns lesson_uid/page_id/page_rev and the
  * capability set; the child supplies none of them (it only announces itself
- * and asks). Messages TO the child go with targetOrigin "*" — an opaque
- * origin is not addressable — which is safe here because we post only to the
- * specific contentWindow we navigated, the payload holds page identity (no
- * secrets), and the capability channel is the transferred MessagePort, held
- * by whoever received it, not by whoever can read a broadcast. Messages FROM
- * the child are accepted only when `event.source === frame.contentWindow`.
+ * and asks). Messages FROM the child are accepted only when
+ * `event.source === frame.contentWindow`.
+ *
+ * ABI v2 changes ONE thing, and it is this file's central invariant: the
+ * parent never posts into the frame's `WindowProxy` at all. A `WindowProxy`
+ * survives navigation, so a welcome addressed to it can be delivered to a
+ * document that replaced the announcer — and no browser signal distinguishes
+ * the two while the successor still delays its own `load` event. So the
+ * announcing document now mints a `MessageChannel` and transfers one end with
+ * its `ready`; the whole handshake result — the bridge port, and with it any
+ * `record` the owner approved — goes out on that transferred port and nowhere
+ * else. A port cannot cross a navigation (it dies with the document that
+ * holds it, and a sandboxed opaque origin gives the successor no channel to
+ * receive one), so document scoping is enforced by the object graph rather
+ * than by a timing heuristic. An announcement without exactly one transferred
+ * port is the pre-v2 contract and is answered with silence.
  *
  * D5 adds the `attempts` capability and phase F adds the editor/run membranes.
  * All are child-requested routing facts, never authority: every operation
@@ -26,7 +36,7 @@
  * operation's question/block membership, and lets the server independently
  * enforce the record-time manifest. */
 export {};
-const ABI_VERSION = 1;
+const ABI_VERSION = 2;
 /** Hard cap on a child "ready" announcement (serialized UTF-8 bytes). */
 const MAX_READY_BYTES = 4096;
 /** Hard cap on any port message in serialized UTF-8 bytes. 512 KiB is
@@ -245,6 +255,10 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     let armed = null;
     let granted = false;
     let port = null;
+    /* The port the granted document transferred with its own `ready` (ABI v2):
+     * the one channel the welcome went out on. Held only so teardown can close
+     * it deterministically — nothing is ever sent on it after the welcome. */
+    let replyPort = null;
     let protocolErrors = 0;
     let rejects = 0;
     /* D5 per-document write state: the capability set the welcome granted and
@@ -285,6 +299,9 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         if (port)
             port.close();
         port = null;
+        if (replyPort)
+            replyPort.close();
+        replyPort = null;
         armed = null;
         granted = false;
         protocolErrors = 0;
@@ -1287,9 +1304,11 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         }
         return protocolError("unknown-op", requestId);
     };
-    const finishReady = async (data, child) => {
-        if (armed === null || granted || frame.contentWindow !== child)
+    const finishReady = async (data, child, reply) => {
+        if (armed === null || granted || frame.contentWindow !== child) {
+            reply.close();
             return;
+        }
         const gen = generation;
         const channel = new MessageChannel();
         port = channel.port1;
@@ -1351,37 +1370,53 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             if (questions.length > 0) {
                 attach = allowRecordRead();
                 /* The prompt is a blocking modal and a document can commit a
-                 * navigation while it stands open — which `contentWindow` would NOT
-                 * reveal, an iframe's WindowProxy being the same object across
-                 * navigations (PR-152 round 1). What does reveal it is the `load`
-                 * task queued behind this one, so yield the same settle interval the
-                 * editor save uses for the same reason and then re-check the
-                 * generation that handler bumps. Consent authorises the document it
-                 * was asked about, or nothing: a successor gets its own handshake,
-                 * its own question, on its own load. */
+                 * navigation while it stands open. Under ABI v2 that no longer
+                 * decides who receives the answer — `reply` belongs to the document
+                 * that announced, and a successor cannot hold it — but a document
+                 * that HAS gone away should not have a welcome built for it either,
+                 * so keep the same settle-and-recheck the editor save uses and drop
+                 * the grant instead of posting into a dead channel. Defence in depth
+                 * now, not the boundary itself (PR-152 round 1 made it load-bearing;
+                 * the transferred port replaces it in that role). */
                 await new Promise((resolve) => setTimeout(resolve, EDITOR_SETTLE_MS));
                 if (gen !== generation || armed === null || !granted
-                    || navPending || quarantined || frame.contentWindow !== child)
+                    || navPending || quarantined || frame.contentWindow !== child) {
+                    reply.close();
                     return;
+                }
             }
             if (attach)
                 welcome.record = { questions };
         }
-        child.postMessage(welcome, "*", [channel.port2]);
+        /* The whole handshake result leaves through the announcing document's own
+         * port — never a post to the frame's `WindowProxy`, whose survival across
+         * navigation would let a successor collect the bridge port and the
+         * `record` the owner approved for its predecessor. */
+        replyPort = reply;
+        reply.postMessage(welcome, [channel.port2]);
     };
-    const handleReady = async (data) => {
+    const handleReady = async (data, reply) => {
         const child = frame.contentWindow;
-        if (armed === null || granted || grantToken !== null || !child)
+        if (armed === null || granted || grantToken !== null || !child) {
+            reply.close();
             return;
+        }
         if (!data.abi.includes(ABI_VERSION)) {
+            /* The reject rides the same transferred port as a welcome would: it
+             * carries no port and no private bytes, but keeping ONE delivery
+             * vehicle is what makes "the parent never posts to the WindowProxy" a
+             * checkable invariant rather than a convention. */
             if (rejects < MAX_REJECTS) {
                 rejects += 1;
-                child.postMessage({
+                reply.postMessage({
                     ephemeris: "lesson-bridge",
                     type: "reject",
                     reason: "abi-unsupported",
                     supported: [ABI_VERSION],
-                }, "*");
+                });
+            }
+            else {
+                reply.close();
             }
             return;
         }
@@ -1401,18 +1436,25 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             try {
                 const meta = await fetchMeta();
                 if (grantToken !== token || gen !== generation || frame.contentWindow !== child
-                    || armed === null || granted || navPending || quarantined)
+                    || armed === null || granted || navPending || quarantined) {
+                    reply.close();
                     return;
+                }
                 /* A transient metadata failure gets silence, not a permanently reduced
-                 * welcome: the child's documented ready retry can recover. */
-                if (meta === null)
+                 * welcome: the child's documented ready retry can recover — with a
+                 * fresh channel, since a transferred port is spent. */
+                if (meta === null) {
+                    reply.close();
                     return;
+                }
                 if (String(meta.version ?? "0") !== expectedVersion
-                    || meta.bridge !== true || !identityMatches(meta))
+                    || meta.bridge !== true || !identityMatches(meta)) {
+                    reply.close();
                     return;
+                }
                 armedBlocks = metaBlocks(meta) ?? [];
                 armedQuestions = metaQuestions(meta);
-                await finishReady(data, child);
+                await finishReady(data, child, reply);
             }
             finally {
                 if (grantToken === token)
@@ -1420,7 +1462,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             }
             return;
         }
-        await finishReady(data, child);
+        await finishReady(data, child, reply);
     };
     /* In-flight latch for the late-initialisation rescue bind below (PR-55
      * round 6): child `ready` retries (or a hostile fast poster) must not fan
@@ -1439,11 +1481,22 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             return;
         if (!isReady(ev.data))
             return;
+        /* ABI v2: an announcement must carry exactly one transferred port, the
+         * only channel this runtime will ever answer on. A pre-v2 announcement
+         * arrives without one; it is treated exactly like any other malformed
+         * announcement — dropped in silence, which the child's documented ~2 s
+         * budget already reads as "no persistence available". There is no
+         * WindowProxy fallback: that is the whole point of v2. */
+        const reply = ev.ports.length === 1 ? ev.ports[0] : null;
+        if (reply === null)
+            return;
         if (armed === null) {
             /* Not armed yet: drop the announcement (never buffered — see
              * armFromMeta) and, for a settled document that will never get a
              * load-driven bind because the module initialised after the initial
-             * load, start one. The child's retry lands once armed. */
+             * load, start one. The child's retry lands once armed — on a fresh
+             * channel, this one having been spent by the transfer. */
+            reply.close();
             if (generation === 0 && !navPending && !rescueBinding) {
                 rescueBinding = true;
                 void bind(generation).finally(() => {
@@ -1452,7 +1505,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             }
             return;
         }
-        void handleReady(ev.data);
+        void handleReady(ev.data, reply);
     });
     /* ---- live-reload poll (the pre-D2 app.js block, now owning binding) ---- */
     let inFlight = false;

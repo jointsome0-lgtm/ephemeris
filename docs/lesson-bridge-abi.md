@@ -1,21 +1,25 @@
-# Lesson bridge ABI (v1)
+# Lesson bridge ABI (v2)
 
-Status: frozen with D2; extended additively by D5 (§3.1, `attempts`),
+Status: v1 froze with D2 and was extended additively by D5 (§3.1, `attempts`),
 phase F (§3.2, `editor`; §3.3, `run`) and #133 tier 2 (§2.1, the `record`
-snapshot on the welcome — a field, not an operation).
+snapshot on the welcome — a field, not an operation). **v2 changes the
+handshake transport and nothing else** (§2, §5): the child transfers its own
+`MessagePort` with `ready`, and every handshake result is delivered on that
+port instead of to the frame's `WindowProxy`. Port protocol, capabilities,
+operations, and every payload shape are byte-identical to v1.
 This is the contract between the Learn page's parent runtime
 (`app/static/src/learn-bridge.ts`, emitted `learn-bridge.js`) and a lesson
 page running inside the sandboxed preview iframe. The bundle contract that
 decides *whether* a page may be bridged lives in
 [learn-bundle-spec.md](learn-bundle-spec.md) (§5 profiles, §6.3 identity);
-this document owns the wire shapes. The handshake is unchanged since D2.
+this document owns the wire shapes.
 
 ABI v1 shipped with **no write capability** — the membrane itself
 (versioning, identity ownership, teardown rules) landed before any
 state-changing operation existed. D5 added the one write capability,
 `attempts` (§3.1), and phase F adds the independent editor and run operations
-(§3.2–§3.3), within v1: a child that never asks for them sees exactly the
-original protocol.
+(§3.2–§3.3): a child that never asks for them sees exactly the original
+protocol.
 
 ## 1. Trust model
 
@@ -31,12 +35,16 @@ original protocol.
   only while the metadata's version token equals the token of the navigation
   it performed itself (D1 folds the effective profile into that token). A
   metadata read that disagrees triggers reload, never a grant.
-- Messages **to** the child use `targetOrigin: "*"` — an opaque origin is
-  not addressable by value. This is acceptable because (a) the parent posts
-  only to the specific `contentWindow` it navigated, (b) the welcome payload
-  contains page identity, no secrets, and (c) the actual channel is the
-  transferred `MessagePort`: capability follows possession of the port, not
-  the ability to observe a broadcast.
+- The parent **never posts into the frame's `WindowProxy`** (v2). That object
+  survives navigation and is not addressable by origin (an opaque origin has
+  no value to name), so a message addressed to it can land in a document that
+  replaced the intended recipient. Every handshake result — `welcome` and
+  `reject` alike — is instead posted on the `MessagePort` the announcing
+  document transferred with its own `ready` (§2). A port dies with the
+  document holding it and cannot be carried across a same-frame navigation:
+  a sandboxed opaque-origin successor gets a fresh origin and has no channel
+  to receive one. Delivery is therefore scoped to one document by the object
+  graph, not by timing.
 - Messages **from** the child are accepted only when
   `event.source === frame.contentWindow`, the parent is armed for the
   current document, and no grant has been consumed yet.
@@ -47,48 +55,61 @@ The child initiates (the parent cannot know when the child's listener is
 installed; a child that never asks is simply a display page):
 
 ```text
-child → parent (window.parent.postMessage)
-  { "ephemeris": "lesson-bridge", "type": "ready",
-    "abi": [1],                  // supported ABI versions, 1–8 integers
-    "want": ["attempts", "editor", "run"] } // optional wishes, ≤16 × ≤64 chars
+child → parent (window.parent.postMessage, transferring one MessagePort)
+  const reply = new MessageChannel();
+  reply.port1.onmessage = …            // where the result will arrive
+  window.parent.postMessage(
+    { "ephemeris": "lesson-bridge", "type": "ready",
+      "abi": [2],                  // supported ABI versions, 1–8 integers
+      "want": ["attempts", "editor", "run"] }, // optional wishes, ≤16 × ≤64 chars
+    appOrigin, [reply.port2]);
 ```
 
 Constraints: serialized JSON ≤ 4096 UTF-8 bytes; `abi` entries are integers
-1–999.
-Malformed or oversized announcements are ignored (no reply — nothing to
-negotiate with). The child SHOULD post to `window.parent` with targetOrigin
-`new URL(location.href).origin` (its own document URL is the app origin even
-though `window.origin` is `"null"` in the sandbox).
+1–999; **exactly one transferred `MessagePort`**. Malformed, oversized, and
+port-less announcements are ignored (no reply — nothing to negotiate with, and
+under v2 nowhere to send it). A pre-v2 child transfers no port, so it hears
+nothing at all and degrades through the documented silence budget below; there
+is no `WindowProxy` fallback and no reject for it, because a reject would
+itself have to travel the channel v2 exists to abolish. The child SHOULD post
+to `window.parent` with targetOrigin `new URL(location.href).origin` (its own
+document URL is the app origin even though `window.origin` is `"null"` in the
+sandbox).
 
-The child accepts a terminal handshake result only from `window.parent` when
-`event.origin` exactly equals that non-opaque URL origin and the message has
-the lesson-bridge marker plus the expected envelope. A `welcome` must select an
-announced ABI and transfer exactly one `MessagePort`; a `reject` has its own
-`reason`/`supported` shape and no port. The first valid result is final for the
-loaded document; later messages cannot replace its port or upgrade its
-capabilities. A direct/embedded document whose URL origin is `"null"` skips the
-handshake and remains read-only.
+The child accepts a terminal handshake result only on a port **it** created and
+transferred, and only when the message has the lesson-bridge marker plus the
+expected envelope. A `welcome` must select an announced ABI and transfer
+exactly one `MessagePort` — the bridge port, a second and separate channel;
+a `reject` has its own `reason`/`supported` shape and no port. Nothing arrives
+on `window.addEventListener("message", …)` any more: a lesson-bridge-shaped
+message on the window is by definition not from the parent runtime.
+The first valid result is final for the loaded document; later messages cannot
+replace its port or upgrade its capabilities. A direct/embedded document whose
+URL origin is `"null"` skips the handshake and remains read-only.
 
 A child usually announces the moment its script runs — before the parent
 has finished binding identity for the freshly loaded document (and, across
 a parent-initiated reload, possibly before the parent processed the load).
 Children MUST therefore re-announce `ready` periodically (every 250–500 ms
 is fine) until they receive a `welcome` or `reject`, giving up after the
-~2 s silence budget below. The parent answers announcements only on live
-receipt while it is armed; earlier ones are deliberately dropped, never
-buffered — an announcement held across the parent's async identity binding
-could otherwise be answered into a successor document after a same-frame
-navigation. In the common case a retry within the first half-second
-completes the handshake. Duplicate announcements after a `welcome` are
-ignored (one grant per document).
+~2 s silence budget below. **Each retry needs a fresh `MessageChannel`**: a
+transferred port is spent, and it cannot be transferred a second time. Keep
+every unanswered `port1` listening until one of them answers — the parent
+replies on whichever announcement it decided to answer — then close the rest.
+The parent answers announcements only on live receipt while it is armed;
+earlier ones are deliberately dropped and their ports closed, never buffered.
+In the common case a retry within the first half-second completes the
+handshake. Duplicate announcements after a `welcome` are ignored (one grant
+per document).
 
 On a valid announcement whose `abi` contains a version the parent speaks
-(v1: the literal `1`), the parent replies **once per loaded document**:
+(v2: the literal `2`), the parent replies **once per loaded document**, on the
+port that announcement transferred:
 
 ```text
-parent → child (postMessage with one transferred MessagePort)
+parent → child (reply.port2.postMessage, transferring the bridge MessagePort)
   { "ephemeris": "lesson-bridge", "type": "welcome",
-    "abi": 1,                    // the selected version
+    "abi": 2,                    // the selected version
     "lesson": { "lesson_uid": "…", "page_id": "pg_…",
                 "page_rev": "sha256:…" },
     "capabilities": ["attempts", "editor", "run"],
@@ -96,9 +117,11 @@ parent → child (postMessage with one transferred MessagePort)
     "record": { "questions": [ … ] } } // optional read-back snapshot, §2.1
 ```
 
-The transferred port is the bridge. Everything after the welcome flows over
-it; the parent's global `message` listener never answers the same document
-twice (a second `ready` is ignored until the next navigation).
+The port transferred **with** the welcome is the bridge. Everything after the
+welcome flows over it; the port the child announced on carries the one
+handshake result and nothing else. The parent's global `message` listener
+never answers the same document twice (a second `ready` is ignored, and its
+port closed, until the next navigation).
 
 ### 2.1 `record` — the read-back snapshot (#133 tier 2)
 
@@ -189,26 +212,27 @@ Semantics:
   not a decision: when the filtered list is empty the field is attached
   unasked, so opening a lesson nobody has answered yet never opens a modal.
   The prompt blocks, and a document can commit a navigation while it stands
-  open without `contentWindow` ever changing, so the parent waits out the
-  navigation-settle interval and re-checks the document generation before the
-  welcome goes out — the answer authorises the document it was asked about,
-  and a successor that appears mid-prompt is left to its own handshake.
-- **Known residual, unchanged by the gate.** The welcome is delivered to the
-  frame's `WindowProxy`, and a document that navigates itself after announcing
-  and then delays its `load` event (a slow blocking subresource on the
-  successor) is not distinguishable from the announcer at delivery time. Such
-  a successor receives the welcome — the port, and with it whatever `record`
-  the owner just approved. This is the §4 same-frame-navigation residual the
-  whole bridge carries (D5 L1), not something read-back introduces: the port
-  it delivers already grants the write direction. Consent narrows it from
-  automatic on every load to requiring an explicit yes, and no signal
-  available to the parent closes it. Closing it needs a channel the announcing
-  document alone can hold — a port it transfers with its own `ready` — or a
-  non-navigable isolation profile. Both change the ABI and are owner
-  decisions, carried on the review queue rather than taken in the runtime.
-  The cost is honest and known: a learner who declines sees the blank controls
-  this feature exists to end, which is why the ask is once per document rather
-  than once per read.
+  open without `contentWindow` ever changing, so the parent still waits out
+  the navigation-settle interval and re-checks the document generation before
+  the welcome goes out. Under v2 that check is defence in depth rather than
+  the boundary: it decides whether to build a welcome at all, while *who can
+  receive one* is settled by the transferred port.
+- **Delivery is scoped to the announcing document (closed in v2).** The answer
+  authorises the document it was asked about, and only that document can
+  collect it: the welcome — the bridge port, and with it whatever `record` the
+  owner approved — is posted on the `MessagePort` the announcer transferred
+  with its own `ready` (§1, §2). A successor produced by a same-frame
+  navigation, including one that delays its own `load` event behind a slow
+  blocking subresource, never holds that port and cannot be handed one; it
+  gets its own handshake, its own question, on its own load. This retires the
+  read-back half of the §4 `WindowProxy` delivery residual (D5 L1) at its
+  root — the earlier gate could only narrow it from automatic on every load to
+  requiring an explicit yes. The alternative, a non-navigable isolation
+  profile, was considered and not taken: it would change what lesson pages may
+  do, where the port change costs one `MessageChannel` in the child.
+  The remaining cost is honest and known: a learner who declines sees the
+  blank controls this feature exists to end, which is why the ask is once per
+  document rather than once per read.
 - **Children:** insert every value as text; `answer` is learner-authored and
   `note` is agent-authored. Never resubmit a truncated `answer` as a new
   attempt — it would replace the full body with a fragment.
@@ -216,13 +240,15 @@ Semantics:
 If no supported version overlaps:
 
 ```text
-parent → child
+parent → child (on the transferred port, no port of its own)
   { "ephemeris": "lesson-bridge", "type": "reject",
-    "reason": "abi-unsupported", "supported": [1] }
+    "reason": "abi-unsupported", "supported": [2] }
 ```
 
 At most 3 rejects are answered per document; further announcements are
-dropped silently.
+dropped silently. A reject answers only an announcement that transferred a
+port — a v1 child announcing `abi: [1]` over the old transport is not rejected,
+it is unheard (§2).
 
 If the page is not bridge-eligible (legacy profile, rejected manifest,
 undeclared page, direct open outside /learn — §5), the child hears
@@ -257,7 +283,7 @@ v1 operations:
 
 ```text
 child → parent   { "op": "ping", "request_id": "r1" }
-parent → child   { "op": "pong", "request_id": "r1", "abi": 1 }
+parent → child   { "op": "pong", "request_id": "r1", "abi": 2 }
 ```
 
 Anything else: `{ "op": "error", "code": "unknown-op", "request_id": … }`.
@@ -320,19 +346,21 @@ parent → child   { "op": "attempt", "request_id": "a1",
 - Concurrency: one outcome per in-flight `request_id` (a duplicate op while
   the original is pending is dropped — the pending call answers), at most 4
   in flight per document; beyond that, `busy`.
-- Known residual (§4's L1 windows, restated for writes): the browser has no
-  document-generation token, so a successor document that runs before its
-  own `load` event — reachable only by the granted lesson document
-  navigating itself — can hold the port inside that window. The parent's
-  settle delay (~250 ms between validation and the HTTP call) closes every
-  case where the successor's load completes in time: the load tears down
-  port and generation first and the write is refused. What remains is a
-  successor that deliberately stalls its own load — content chosen by the
-  very document that owned the grant, which could have submitted the same
-  attempt without navigating at all; it still records only questions the
-  manifest declares, against the on-disk revision the server re-hashes at
-  record time. Port possession buys nothing the armed page did not already
-  have.
+- Residual, narrowed by v2 (§4's L1 windows, restated for writes): the bridge
+  port now reaches only the document that announced with its own channel, and
+  under the deployed `allow-scripts`-only profile that document has no way to
+  pass it on — every navigation gets a fresh opaque origin, so
+  `BroadcastChannel`, shared workers, and same-origin window handles are all
+  closed to it. A successor document therefore cannot hold the port at all.
+  What the announcer can still do is keep the port itself, stall behind an
+  unfinished navigation, and write; the parent's settle delay (~250 ms between
+  validation and the HTTP call) refuses that as soon as the successor's load
+  completes and tears down port and generation. Beyond it, the writer is the
+  very document that owned the grant and could have submitted the same attempt
+  without navigating at all; it still records only questions the manifest
+  declares, against the on-disk revision the server re-hashes at record time.
+  Port possession buys nothing the armed page did not already have — which is
+  why every operation re-validates rather than trusting it.
 - `kind` is the server-derived record direction (`attempt`, or `question`
   when the manifest declares that question `ask_tutor` — lesson-attempts-api.md).
   The child never sends it; a backend that predates it sends none, and the
@@ -524,25 +552,30 @@ parent → child   { "op": "run.cancel", "request_id": "cancel-1",
   armed: a self-navigation's successor runs scripts before its own `load`
   event fires, and until that load the parent's armed identity is still
   standing while `event.source` still matches the navigation-stable
-  `WindowProxy`. A live `ready` posted in that window is therefore answered
-  with the expected page's identity and a fresh port. The port dies at the
-  successor's `load` (teardown + re-assert); a successor that stalls its
-  own load keeps the port — and the visible frame — until the parent next
+  `WindowProxy`. A live `ready` posted in that window is therefore still
+  answered with the expected page's identity — but only into the port that
+  same announcement transferred, so the successor is answered *as itself*
+  and can never collect an answer meant for its predecessor. The port dies
+  at the successor's `load` (teardown + re-assert); a successor that stalls
+  its own load keeps its port — and the visible frame — until the parent next
   navigates (version/identity change). The trust argument above applies
   unchanged: the successor was chosen by the armed lesson document itself,
   which could equally have kept the identical grant and rendered the same
-  content. Like the two residuals flanking this one, it is why the
-  state-changing operations (§3.1–§3.3) re-validate identity per operation —
-  parent-side against fresh metadata and server-side against the
-  record-time manifest — instead of trusting port possession.
+  content. Like the residual above, it is why the state-changing operations
+  (§3.1–§3.3) re-validate identity per operation — parent-side against fresh
+  metadata and server-side against the record-time manifest — instead of
+  trusting port possession.
 
-  Related delivery residual: the iframe's `WindowProxy` survives
-  navigation, so a `welcome` (or port message) already in flight when the
-  frame self-navigates can be delivered to the successor document — the
-  browser gives the sender no way to scope delivery to one document. The
-  successor is the same trust domain (lesson content), and the write
-  capabilities (§3.1–§3.3) never trust delivery: every operation is
-  re-validated per use, parent- and server-side.
+  The delivery half of this residual is **closed in v2**. A `welcome` was
+  previously addressed to the navigation-stable `WindowProxy`, so one already
+  in flight when the frame self-navigated could be delivered to the successor
+  document — carrying the bridge port and any approved §2.1 `record` to a
+  document the owner was never shown. The parent now posts every handshake
+  result on the channel the announcing document transferred (§1, §2), and the
+  browser gives a navigated-away document no way to hand that port on, so
+  delivery is scoped to one document by construction. Messages *on* an
+  established bridge port are unaffected: the port belongs to the document
+  that received it and dies with it.
 - **Profile flip:** the effective profile is folded into the version token,
   so a manifest-only flip reloads the document under the new CSP and sandbox
   tokens; the metadata never advertises a policy the displayed document was
@@ -551,7 +584,18 @@ parent → child   { "op": "run.cancel", "request_id": "cancel-1",
 ## 5. Versioning
 
 - `abi` is a single integer lockstep version. Additive, ignorable fields may
-  ship within v1 (receivers ignore unknown fields); anything a v1 child
-  could misinterpret bumps to 2.
+  ship within a version (receivers ignore unknown fields); anything a child of
+  the current version could misinterpret bumps it.
 - The parent speaks exactly one version per app build; the child announces
   the list it supports. There is no post-handshake renegotiation.
+- **v1 → v2** bumped for the handshake transport (§2): the child transfers a
+  `MessagePort` with `ready` and the result comes back on it. Nothing else
+  moved — a v1 child's message bodies are all still valid v2 bodies. The bump
+  is honest rather than strictly required by the "could misinterpret" rule: a
+  v1 child cannot misread a v2 welcome, it simply never receives one, and
+  announcing `abi: [2]` is how a page states it speaks the transport that
+  carries the answer. Because the transport itself changed, negotiation cannot
+  rescue a v1 announcement: with no port there is no reply channel, so it gets
+  silence and the ~2 s budget, not `abi-unsupported`. A page that announces
+  `abi: [1, 2]` over the new transport is welcomed at v2; one that announces
+  `abi: [1]` over it is rejected with `supported: [2]`.
