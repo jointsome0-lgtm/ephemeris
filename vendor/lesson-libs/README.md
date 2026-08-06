@@ -108,7 +108,11 @@ Manual and rare. When bumping or adding a library:
    outside the window and errors on a pin inside it:
 
    ```
-   scratch=$(mktemp -d) && cp .npmrc "$scratch"/ && cd "$scratch"
+   scratch=$(mktemp -d) && cp .npmrc "$scratch"/ && cd "$scratch" && : > empty.npmrc
+
+   # let only this project's .npmrc speak: no ~/.npmrc, no global file, no env
+   unset ${!npm_config_@} ${!NPM_CONFIG_@}
+   export npm_config_userconfig="$PWD/empty.npmrc" npm_config_globalconfig=/dev/null
    npm init -y >/dev/null
 
    # liveness check, then resolve — chained, so a dead gate resolves nothing
@@ -133,10 +137,21 @@ Manual and rare. When bumping or adding a library:
    would print the same line while admitting anything published before some
    unrelated date. (An npm that does understand `min-release-age` refuses the
    combination outright — `--min-release-age cannot be provided when using
-   --before` — so this is aimed at the old-npm case, where the inherited value
-   silently wins.) And the `&&` chain is what makes the check a gate rather
-   than a remark: when it fails nothing is resolved, where three separate lines
-   would have sailed on into an unquarantined install.
+   --before` — so that reading is aimed at the old-npm case, where the
+   inherited value silently wins.) And the `&&` chain is what makes the check a
+   gate rather than a remark: when it fails nothing is resolved, where three
+   separate lines would have sailed on into an unquarantined install.
+
+   The isolation lines exist because a personal npm config can weaken the gate
+   in more ways than one date check can spot — `min-release-age-exclude` exempts
+   named packages from the age rule outright, and every setting also travels as
+   an `npm_config_*` environment variable. Rather than enumerate the ways,
+   point `userconfig` at an empty file and clear the variables, so the only
+   configuration in play is the `.npmrc` just copied in. Verified against a
+   hostile personal config (`min-release-age-exclude=katex`, `before=2099-01-01`,
+   plus `npm_config_before` in the environment): inside the isolated shell
+   `npm config list` shows nothing but the generated cutoff, and `katex`
+   resolves to 0.17.0 rather than the still-quarantined 0.18.1.
 
    `npm ls` needs `--package-lock-only` too: `--package-lock-only` on the
    install writes the lockfile without populating `node_modules`, and a plain
