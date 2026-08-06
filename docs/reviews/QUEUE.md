@@ -24,6 +24,28 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
+- [ ] 2026-08-06 — `2e636c2` (squash of `fix/drain-l1-successor`, PR #153) —
+  `app/static/src/learn-bridge.ts`, `app/static/learn-bridge.js`,
+  `app/services/lessons.py`, `docs/lesson-bridge-abi.md`,
+  `fixtures/lesson-bridge/*.html`, `tests/test_010_platform_ui.py`,
+  `tests/test_020_bundle_attempts.py`,
+  `tests/test_030_assessment_artifact_migration.py`,
+  `tests/test_190_welcome_readback.py`, `tests/test_210_bridge_browser.py` —
+  bridge handshake ABI raised to v2: the child creates a `MessageChannel` and
+  transfers one port with its `ready`; the parent posts the `welcome` (with the
+  bridge port and any `record` field) and the `abi-unsupported` `reject` on
+  that transferred port, and no longer posts to the frame's `contentWindow`.
+  A `ready` carrying other than exactly one transferred port gets no reply and
+  its port is closed; ports of announcements the runtime does not answer are
+  closed, and the answered one is closed on teardown. The consent prompt, the
+  250 ms settle and the generation re-check before attaching `record` are
+  unchanged. The generated lesson `AGENTS.md` bridge recipe, the ABI document
+  and the four bridge fixtures were updated to the transferred-port handshake.
+  Three headless-Chrome tests added: a delayed-`load` successor after an
+  approval, the transferred-port welcome plus a port `ping`/`pong`, and a
+  `ready` without a transferred port. pytest 280 → 283, verify_restore 34/34,
+  `npm run build` reproduces the committed JavaScript.
+
 - [ ] 2026-08-06 — `67fd594` and later commits on `fix/133-welcome-readback`,
   merged to `main` as `d6e15bc` —
   `app/static/src/learn-bridge.ts`, `app/static/learn-bridge.js`,
