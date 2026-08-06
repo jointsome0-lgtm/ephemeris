@@ -110,9 +110,11 @@ Manual and rare. When bumping or adding a library:
    ```
    scratch=$(mktemp -d) && cp .npmrc "$scratch"/ && cd "$scratch"
    npm init -y >/dev/null
-   npm config list | grep '^before = '              # gate is live — see below
-   npm install --package-lock-only <name>           # newest outside quarantine
-   npm ls --package-lock-only <name>                # the version to pin
+
+   # liveness check, then resolve — chained, so a dead gate resolves nothing
+   npm config list | grep -q '^before = ' \
+     && npm install --package-lock-only <name> \
+     && npm ls --package-lock-only <name>
    ```
 
    Two details that quietly turn this into a no-op if you skip them. The `cp`
@@ -124,7 +126,10 @@ Manual and rare. When bumping or adding a library:
    implements the setting by translating it into a cutoff date, so a live gate
    is exactly a `before = "<date>"` line in `npm config list`; no line, no
    quarantine, and the answer is a newer npm rather than a version picked by
-   eye. Both commands run before anything is resolved.
+   eye. The `&&` chain is what makes that check a gate rather than a remark: on
+   an npm that ignores the setting the `grep` fails and nothing is resolved,
+   where three separate lines would have sailed on into an unquarantined
+   install.
 
    `npm ls` needs `--package-lock-only` too: `--package-lock-only` on the
    install writes the lockfile without populating `node_modules`, and a plain
