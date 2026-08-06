@@ -103,15 +103,32 @@ Manual and rare. When bumping or adding a library:
 1. **Quarantine**: only take a release that is **at least 30 days old** — a
    cheap filter against a freshly compromised publish, not the control. Do not
    compare dates by hand; let the package manager refuse. The repository's
-   `.npmrc` sets `min-release-age=30`, so resolving the version in a scratch
-   directory both picks the newest release outside the window and errors on a
-   pin inside it:
+   `.npmrc` sets `min-release-age=30`; resolve the version in a scratch
+   directory that carries that file, and npm both picks the newest release
+   outside the window and errors on a pin inside it:
 
    ```
-   cd "$(mktemp -d)" && npm init -y >/dev/null
+   scratch=$(mktemp -d) && cp .npmrc "$scratch"/ && cd "$scratch"
+   npm init -y >/dev/null
+   npm config list | grep '^before = '              # gate is live — see below
    npm install --package-lock-only <name>           # newest outside quarantine
-   npm ls <name>                                     # the version to pin
+   npm ls --package-lock-only <name>                # the version to pin
    ```
+
+   Two details that quietly turn this into a no-op if you skip them. The `cp`
+   is load-bearing: npm reads a project `.npmrc` from the directory it runs
+   in, so a bare `mktemp -d` leaves the gate behind in the repository and the
+   resolver happily hands back a release published yesterday. And the `grep` is
+   the gate's own liveness check — npm below 11.6 does not know the key, warns
+   `Unknown project config "min-release-age"` and carries on unquarantined. npm
+   implements the setting by translating it into a cutoff date, so a live gate
+   is exactly a `before = "<date>"` line in `npm config list`; no line, no
+   quarantine, and the answer is a newer npm rather than a version picked by
+   eye. Both commands run before anything is resolved.
+
+   `npm ls` needs `--package-lock-only` too: `--package-lock-only` on the
+   install writes the lockfile without populating `node_modules`, and a plain
+   `npm ls` reports what is installed — an empty tree and a nonzero exit.
 
    ```
    npm error notarget No matching version found for mermaid@11.16.1
