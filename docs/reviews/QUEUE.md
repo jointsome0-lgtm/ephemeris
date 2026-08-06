@@ -24,7 +24,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-08-06 — `67fd594` and later commits on `fix/133-welcome-readback` —
+- [ ] 2026-08-06 — `67fd594` and later commits on `fix/133-welcome-readback`,
+  merged to `main` as `d6e15bc` —
   `app/static/src/learn-bridge.ts`, `app/static/learn-bridge.js`,
   `app/routers/learn.py`, `app/templates/learn.html`,
   `app/services/lessons.py`, `docs/lesson-bridge-abi.md`,
