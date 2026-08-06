@@ -8,17 +8,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import mimetypes
 import os
 import re
 import sqlite3
 import stat as stat_module
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from html import escape
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from threading import Lock
+from typing import BinaryIO, Iterator
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -36,6 +39,8 @@ STATUS_LABELS = {
 LESSONS_DIR = DATA_DIR / "lessons"
 DEFAULT_ENTRY = bundle_schema.DEFAULT_ENTRY
 MANIFEST_NAME = "lesson.json"
+
+_log = logging.getLogger("activity_ledger")
 
 
 class LessonError(ValueError):
@@ -1440,6 +1445,28 @@ library, copy a pinned version into `assets/` and reference it by relative
 path; loading anything from a CDN or any other remote URL (script, style,
 font, image) is forbidden.
 
+The common libraries are already here, kept current by the app under
+`assets/libs/`. A stage page lives in `related/`, so from there the
+reference is one level up — `../assets/libs/…`:
+
+- `../assets/libs/d3/d3.min.js` (v7, global `d3`) for data
+  visualization; `../assets/libs/katex/katex.min.js` with
+  `../assets/libs/katex/katex.min.css` for math (the fonts are inlined in
+  that stylesheet — there is nothing else to link); and
+  `../assets/libs/mermaid/mermaid.min.js` (global `mermaid`) for diagrams.
+- Inline SVG/CSS/JS built for the exact point stays the default — it
+  teaches better than a generic chart. Reach for the shelf when the
+  visualization the point deserves outgrows what you would hand-roll,
+  not to save yourself the thinking.
+- The page may not evaluate strings as code, so the few APIs that compile
+  a string are unavailable: `d3.csvParse` and friends throw here. Use
+  `d3.csvParseRows`, or write the data as a JS literal — the page has no
+  network to fetch it from anyway.
+- Anything not on the shelf still goes through the rule above: vendor a
+  pinned copy into `assets/` yourself.
+- The shelf is app-managed: never edit, move or delete anything under
+  `assets/libs/` — it is restored on the next terminal open anyway.
+
 Both color schemes, with a toggle — the learner reads in the dark as often
 as in daylight:
 
@@ -1699,26 +1726,28 @@ def _bundle_dir_is_safe(lesson_dir: Path) -> bool:
         return False
 
 
-def _write_brief(path: Path, text: str) -> None:
-    """Atomically replace a generated agent-facing file (AGENTS.md, CLAUDE.md,
-    `.claude/settings.json`).
+def _replace_file(path: Path, data: bytes, prefix: str = ".brief-", mode: int = 0o600) -> None:
+    """Atomically replace an app-generated file inside a bundle.
 
-    Write and fsync a mode-0600 temporary file in the verified destination
-    directory,
-    then replace the destination entry without ever opening it. Pre-planted links
-    and special files are replaced rather than followed or opened.
+    Write and fsync a temporary file in the verified destination directory,
+    then replace the destination entry without ever opening it. Pre-planted
+    links and special files are replaced rather than followed or opened. One
+    owner for every generated bundle file: the briefs, and the seeded
+    lesson-libs copies, which are world-readable (`mode`) because the page
+    that references them is served to the learner.
     """
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".brief-")
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=prefix)
     try:
         try:
-            fh = os.fdopen(fd, "w", encoding="utf-8")
+            fh = os.fdopen(fd, "wb")
         except BaseException:
             os.close(fd)
             raise
         with fh:
-            fh.write(text)
+            fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
+            os.fchmod(fh.fileno(), mode)  # on the descriptor we just wrote, never the name
         os.replace(tmp_name, path)
     except BaseException:
         try:
@@ -1726,6 +1755,12 @@ def _write_brief(path: Path, text: str) -> None:
         except OSError:
             pass
         raise
+
+
+def _write_brief(path: Path, text: str) -> None:
+    """Atomically replace a generated agent-facing file (AGENTS.md, CLAUDE.md,
+    `.claude/settings.json`) at mode 0600."""
+    _replace_file(path, text.encode("utf-8"))
 
 
 def _preserve_foreign(path: Path, expected: bytes | None = None) -> None:
@@ -1790,6 +1825,235 @@ def _ensure_settings_dir(lesson_dir: Path) -> Path:
         if path.is_symlink() or not path.is_dir():
             raise NotADirectoryError(f"{CLAUDE_DIR_NAME} is not a directory")
     return path
+
+
+# --- lesson-libs shelf (#146) ------------------------------------------------
+#
+# Lesson pages must work offline (the `interactive-local-v1` CSP allows 'self'
+# only), so a page that needs a library needs a copy of it inside the bundle.
+# The repository keeps that copy once, pinned and checksummed, under
+# `vendor/lesson-libs/<name>/<version>/…`; this seeds it into every bundle the
+# terminal opens, so the study agent finds the libraries already there instead
+# of vendoring them by hand — or reaching for a CDN.
+#
+# Seeding rather than reading the shelf in place: bundles live outside the
+# repository (DATA_DIR), and a lesson session's sandbox binds only the bundle
+# directory, so nothing inside it can see `vendor/`. Copies rather than
+# hardlinks: a shared inode would let one lesson's agent rewrite the shelf for
+# every other lesson.
+
+LESSON_LIBS_DIR = Path(__file__).resolve().parents[2] / "vendor" / "lesson-libs"
+LESSON_LIBS_CHECKSUM_FILE = "SHASUMS256"
+LESSON_LIBS_BUNDLE_DIR = "assets/libs"
+# First bytes of the stamp a seeded bundle carries — the app's claim on these
+# names, and the only thing that distinguishes it from a checksum file some
+# earlier agent may have written at the same path.
+_LESSON_LIBS_STAMP_MARKER = b"# ephemeris lesson-libs"
+# sha256sum's own output format: digest, two spaces, path relative to the shelf.
+_SHASUMS_LINE = re.compile(r"^([0-9a-f]{64}) {2}(\S.*)$")
+
+
+def lesson_libs_manifest() -> list[tuple[str, str, str]]:
+    """The shelf inventory as `(shelf path, bundle path, sha256)` triples.
+
+    `SHASUMS256` is both the checksum file and the list of what the shelf
+    delivers — a file the inventory does not name is not seeded. The version
+    directory is flattened away on the bundle side (`d3/7.9.0/d3.min.js` →
+    `assets/libs/d3/d3.min.js`), so a page's relative reference survives a
+    version bump and every bundle spells the path the same way.
+
+    Raises LessonError on a malformed inventory line rather than seeding a
+    path nobody vetted; OSError when the shelf is missing entirely.
+    """
+    text = (LESSON_LIBS_DIR / LESSON_LIBS_CHECKSUM_FILE).read_text(encoding="utf-8")
+    entries: list[tuple[str, str, str]] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        matched = _SHASUMS_LINE.match(line)
+        if not matched:
+            raise LessonError(f"malformed lesson-libs checksum line: {line[:80]!r}")
+        digest, shelf_rel = matched.group(1), matched.group(2)
+        segments = shelf_rel.split("/")
+        if (
+            len(segments) < 3
+            or any(seg in ("", ".", "..") for seg in segments)
+            or "\\" in shelf_rel
+        ):
+            raise LessonError(f"unsafe lesson-libs path: {shelf_rel!r}")
+        # <name>/<version>/<rest…> → <name>/<rest…>
+        bundle_rel = "/".join([segments[0], *segments[2:]])
+        entries.append((shelf_rel, f"{LESSON_LIBS_BUNDLE_DIR}/{bundle_rel}", digest))
+    return entries
+
+
+@contextmanager
+def _own_file(path: Path) -> Iterator[BinaryIO | None]:
+    """Open `path` for reading only if it can be a file this seeder wrote:
+    an ordinary, single-link file reached without following a symlink.
+
+    Same three conditions :func:`_preserve_foreign` uses to recognize its own
+    output, and for the same reason. A hardlink is not our copy even when its
+    bytes match: the inode is shared with a name we do not own, so a later
+    write through it would change that other name too. `None` inside the
+    context means "not ours", which every caller turns into a re-copy.
+    """
+    fd = -1
+    try:
+        # O_NONBLOCK like the other no-follow readers here: a FIFO planted on
+        # the name would otherwise park the open on a writer that never comes,
+        # and this runs on the terminal-open path.
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1
+            st = os.fstat(fh.fileno())
+            yield fh if stat_module.S_ISREG(st.st_mode) and st.st_nlink == 1 else None
+    except OSError:
+        yield None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _seeded_digest(path: Path) -> str | None:
+    """sha256 hex of an already-seeded copy, or None when the name holds
+    anything but one of ours.
+
+    Deliberately not :func:`_hash_regular_no_follow`: that one answers "what is
+    this page's identity", caps at PAGE_IDENTITY_MAX_BYTES and populates the
+    page-digest cache. Here None simply means "not our bytes", which the caller
+    turns into a re-copy — the self-healing half of an idempotent seed.
+    """
+    try:
+        with _own_file(path) as fh:
+            if fh is None:
+                return None
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: fh.read(1 << 16), b""):
+                digest.update(chunk)
+            return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def _stamp_is_ours(path: Path) -> bool:
+    """Whether `path` is this seeder's ownership stamp, by its generated marker.
+
+    Readable-and-regular is not enough: a bundle authored before the shelf
+    existed could have vendored libraries under `assets/libs/` AND recorded
+    their checksums in a file of its own at this very name. Mistaking that for
+    the stamp would skip the one pass that preserves those libraries.
+    """
+    try:
+        with _own_file(path) as fh:
+            return fh is not None and fh.read(len(_LESSON_LIBS_STAMP_MARKER)) == (
+                _LESSON_LIBS_STAMP_MARKER
+            )
+    except OSError:
+        return False
+
+
+def _ensure_seed_dir(lesson_dir: Path, relative: str) -> Path:
+    """Create `<bundle>/<relative>` segment by segment, never through a link.
+
+    Same posture as :func:`_ensure_settings_dir`: a symlink or non-directory on
+    a segment's name is moved aside rather than followed, so a planted link at
+    `assets/` cannot redirect a seeded library outside the bundle.
+    """
+    path = lesson_dir
+    for segment in relative.split("/"):
+        path = path / segment
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            _preserve_foreign(path)  # incl. a dangling link: exists() follows, says False
+        try:
+            os.mkdir(path)
+        except FileExistsError:
+            if path.is_symlink() or not path.is_dir():
+                raise NotADirectoryError(f"{segment} is not a directory")
+    return path
+
+
+def _bundle_shelf_stamp(entries: list[tuple[str, str, str]]) -> bytes:
+    """The inventory as the bundle's own copy of it, checkable in place with
+    `cd assets/libs && sha256sum -c SHASUMS256` (`#` lines are comments there).
+
+    Its presence is also the ownership record: `assets/libs/` is a name the
+    study agent was free to use before this existed, so the first seed into a
+    bundle moves foreign files aside instead of overwriting them, and every
+    later seed knows the area is the app's to republish.
+    """
+    versions = sorted({tuple(shelf_rel.split("/")[:2]) for shelf_rel, _b, _d in entries})
+    header = _LESSON_LIBS_STAMP_MARKER.decode("ascii")
+    header += " — app-managed, regenerated on terminal open\n"
+    header += "".join(f"# {name} {version}\n" for name, version in versions)
+    prefix = LESSON_LIBS_BUNDLE_DIR + "/"
+    body = "".join(
+        f"{digest}  {bundle_rel[len(prefix):]}\n" for _shelf, bundle_rel, digest in entries
+    )
+    return (header + body).encode("utf-8")
+
+
+def seed_lesson_libs(lesson_dir: Path) -> int:
+    """Mirror the pinned lesson-libs shelf into `<bundle>/assets/libs/`.
+
+    Idempotent and self-healing, and it costs a copy only when one is due: a
+    seeded file whose sha256 already matches the inventory is left untouched
+    (mtime included — the agent's own tooling may watch these), a missing or
+    modified one is rewritten from the shelf. Shelf bytes are verified against
+    the inventory before they are copied, so a corrupted checkout cannot spread
+    into bundles. The path to each file is re-established before its digest is
+    trusted: a bundle that arrived with `assets/` or `assets/libs` as a symlink
+    would otherwise pass the check against content the preview route then
+    refuses to serve (it declines symlinked paths, §2).
+
+    Nothing authored is destroyed to take these names: until the bundle carries
+    the app's stamp, whatever already sits at a shelf path is moved aside the
+    way every other reserved name in a bundle is.
+
+    Total by design, like the projection reconcilers beside it: this runs on
+    the terminal-open path, and a library the page may never need must not cost
+    the lesson its terminal. Every failure is logged and skipped. Returns the
+    number of files (re)written, which is what the tests assert on.
+    """
+    try:
+        entries = lesson_libs_manifest()
+    except (OSError, ValueError) as exc:  # incl. LessonError, undecodable inventory
+        _log.warning("lesson-libs shelf unreadable, bundles keep what they have: %s", exc)
+        return 0
+    stamp_path = lesson_dir / PurePosixPath(LESSON_LIBS_BUNDLE_DIR) / LESSON_LIBS_CHECKSUM_FILE
+    stamp = _bundle_shelf_stamp(entries)
+    app_managed = _stamp_is_ours(stamp_path)
+    written = 0
+    complete = True
+    for shelf_rel, bundle_rel, digest in entries:
+        try:
+            target = lesson_dir / PurePosixPath(bundle_rel)
+            _ensure_seed_dir(lesson_dir, str(PurePosixPath(bundle_rel).parent))
+            if _seeded_digest(target) == digest:
+                continue
+            data = (LESSON_LIBS_DIR / PurePosixPath(shelf_rel)).read_bytes()
+            if hashlib.sha256(data).hexdigest() != digest:
+                _log.warning(
+                    "lesson-libs shelf file %s does not match %s; not seeded",
+                    shelf_rel, LESSON_LIBS_CHECKSUM_FILE,
+                )
+                complete = False
+                continue
+            if not app_managed:
+                _preserve_foreign(target)  # expected=None: anything here predates us
+            _replace_file(target, data, prefix=".lib-", mode=0o644)
+            written += 1
+        except OSError as exc:
+            complete = False
+            _log.warning("lesson-libs seeding skipped %s: %s", bundle_rel, exc)
+    if complete:
+        try:
+            _preserve_foreign(stamp_path, expected=stamp)
+            if not stamp_path.exists():  # only when it is not already ours
+                _replace_file(stamp_path, stamp, prefix=".lib-", mode=0o644)
+        except OSError as exc:
+            _log.warning("lesson-libs stamp not written: %s", exc)
+    return written
 
 
 def _resolve_terminal_lesson(
@@ -1919,7 +2183,9 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
     except (OSError, sqlite3.Error, LessonError):
         return None
     # After the briefs: the workspace is ready either way, and a projection
-    # hiccup may not cost the agent its regenerated contract.
+    # hiccup — or a library the lesson may never open — may not cost the agent
+    # its regenerated contract.
+    seed_lesson_libs(lesson_dir)
     _reconcile_assessment_projection(lesson)
     _retire_foreign_run_projection(lesson)
     return _workspace_view(slug, lesson, lesson_dir)
