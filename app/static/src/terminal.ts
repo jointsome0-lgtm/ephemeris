@@ -529,10 +529,6 @@ interface SurfaceConfig {
     }
   }
 
-  function sendInput(tab: TerminalTab, data: string) {
-    if (tab.ws && tab.ws.readyState === 1) tab.ws.send(enc.encode(data));
-  }
-
   function ensureRuntime(tab: TerminalTab) {
     if (tab.term) return;
     var screen = document.createElement('div');
@@ -551,7 +547,7 @@ interface SurfaceConfig {
     loadRuntimeAddons(tab, term);
     attachTerminalClipboardHandlers(term);
     term.onData(function (d: string) {
-      sendInput(tab, d);
+      if (tab.ws && tab.ws.readyState === 1) tab.ws.send(enc.encode(d));
     });
     if (term.onTitleChange) {
       term.onTitleChange(function (title: string) {
@@ -951,9 +947,12 @@ interface SurfaceConfig {
   if (pasteBtn) {
     pasteBtn.addEventListener('click', function () {
       var tab = activeTab();
-      if (!tab) return;
+      if (!tab || !tab.term) return;
+      // Same path as Ctrl+Shift+V: xterm's paste honours the app's bracketed
+      // paste mode, so a clipboard string carrying a newline stays inert text
+      // instead of executing as soon as it reaches the shell.
       readClipboardText(function (text) {
-        if (text) sendInput(tab!, text);
+        if (text && tab!.term.paste) tab!.term.paste(text);
       });
       focusSoon();
     });
