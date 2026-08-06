@@ -343,8 +343,12 @@
           <span class="lesson-record-title">Record</span>
           <span class="lesson-record-counts">
             <span data-record-count="attempts">{{ rec.counts.attempts }}</span> attempts
-            {% if rec.counts.questions is defined and rec.counts.questions %}
-            · <span data-record-count="questions">{{ rec.counts.questions }}</span> asked
+            {# The chip is rendered even at zero, hidden, so the FIRST question
+               sent while the page is open has a cell to land in — the counts
+               poll can fill a target, not create one. `is defined` still
+               guards a live pre-#136 backend, which renders no chip at all. #}
+            {% if rec.counts.questions is defined %}
+            <span class="rec-asked"{% if not rec.counts.questions %} hidden{% endif %}>· <span data-record-count="questions">{{ rec.counts.questions }}</span> asked</span>
             {% endif %}
             · <span data-record-count="assessments">{{ rec.counts.assessments }}</span> active
             {% if rec.verdict_count is defined %}

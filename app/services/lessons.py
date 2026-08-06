@@ -2286,16 +2286,22 @@ def _reconcile_assessment_projection(lesson: dict) -> None:
 def _reconcile_attempt_projection(lesson: dict) -> None:
     """Rebuild `attempts.jsonl` from the authority if it does not match.
 
-    Best effort in every direction, like the assessment reconcile beside it:
-    the service answers False rather than raising, and nothing here may keep
-    the terminal from opening. Deferred import for the same cycle reason.
+    Verify-first (review round 5): a terminal open is not a reason to rewrite
+    a file that is already the projection of its own authority, and a lesson's
+    attempt history has no ceiling. The seal check is what an intact file
+    costs; only a missing, mutated or behind file pays for the rebuild — the
+    same rule the assessment reconcile beside it follows.
+
+    Best effort in every direction: the service answers False rather than
+    raising, and nothing here may keep the terminal from opening. Deferred
+    import for the same cycle reason.
     """
     try:
-        from .attempts import reconcile_projection
+        from .attempts import reconcile_projection_if_stale
 
         conn = get_conn()
         try:
-            reconcile_projection(conn, lesson)
+            reconcile_projection_if_stale(conn, lesson)
         finally:
             conn.close()
     except (OSError, sqlite3.Error, ImportError):

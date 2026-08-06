@@ -699,6 +699,51 @@ def reconcile_projection(conn: sqlite3.Connection, lesson: dict) -> bool:
     return True
 
 
+def _projection_is_current(conn: sqlite3.Connection, lesson: dict) -> bool:
+    """Whether the published file already IS the authority's projection.
+
+    The same three tests the write fast path makes before it appends — a
+    readable sidecar, a matching descriptor seal, cursor anchors that still
+    exist in SQLite — plus "nothing recorded after the cursor". Callers hold
+    the projection lock, so a True here means the file needs no work at all.
+    """
+    state = _read_state(lesson)
+    if (
+        state is None
+        or not _projection_matches_state(lesson, state)
+        or not _cursor_matches_authority(conn, lesson, state)
+    ):
+        return False
+    return conn.execute(
+        "SELECT 1 FROM lesson_attempts WHERE lesson_id = ? AND id > ? LIMIT 1",
+        (lesson["id"], state["cursor_id"]),
+    ).fetchone() is None
+
+
+def reconcile_projection_if_stale(
+    conn: sqlite3.Connection, lesson: dict
+) -> bool:
+    """Reconcile, but pay for a rewrite only when there is one to make.
+
+    The terminal-open trigger (#136) runs on a lesson whose projection is
+    almost always already current, and `reconcile_projection` above rebuilds
+    unconditionally — O(history) reads, serialization, fsync and a full-file
+    hash on every open. This verifies first, under the same lock, and rebuilds
+    exactly when the verification fails: a missing, mutated, truncated or
+    behind file. Same return contract as `reconcile_projection`.
+    """
+    if conn.in_transaction:
+        return False
+    with _bundle_lock(lesson["slug"]):
+        try:
+            with _projection_file_lock(lesson):
+                if not _projection_is_current(conn, lesson):
+                    _rebuild_projection(conn, lesson)
+        except (OSError, sqlite3.Error):
+            return False
+    return True
+
+
 def _project_attempt(conn: sqlite3.Connection, lesson: dict, row: dict) -> bool:
     """Synchronous projection append, called under the bundle lock after the
     transaction committed. The fast path consults a private durable cursor,

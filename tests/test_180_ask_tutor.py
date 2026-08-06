@@ -609,8 +609,9 @@ def test_a_question_is_not_counted_as_an_attempt(client):
     record = html.split('<details class="lesson-record"', 1)[-1]
     assert (
         'data-record-count="attempts">1</span> attempts' in record
-        and 'data-record-count="questions"' not in record
-    ), "with nothing asked the line reads exactly as it did before #136"
+        and '<span class="rec-asked" hidden>' in record
+        and 'data-record-count="questions">0</span> asked' in record
+    ), "the chip is on the line but hidden until there is a question to show"
 
     _submit(
         client, lesson, lesson_dir, page_id, ASK_ID,
@@ -622,8 +623,48 @@ def test_a_question_is_not_counted_as_an_attempt(client):
     assert (
         'data-record-count="attempts">1</span> attempts' in record
         and 'data-record-count="questions">1</span> asked' in record
+        and '<span class="rec-asked" hidden>' not in record
         and counts["attempts"] == 1 and counts["questions"] == 1
     ), "the question shows up as asked, and the attempt count holds still"
+
+    # And the runtime reveals that chip itself, so the first question of a
+    # session lands on the open page instead of waiting for a reload.
+    root = Path(__file__).resolve().parent.parent
+    source = (root / "app" / "static" / "src" / "learn-bridge.ts").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        'if (cell && name === "questions") {' in source
+        and 'chip.hidden = value === "0"' in source
+        and '"attempts", "questions", "assessments", "verdicts"' in source
+    ), "the counts poll fills the asked cell and unhides it"
+
+
+def test_opening_a_terminal_does_not_rewrite_an_intact_projection(client):
+    """A lesson's attempt history has no ceiling, and a terminal open is not a
+    reason to rewrite the projection of an authority that has not moved."""
+    lesson, lesson_dir, page_id = _ask_lesson("Ask Tutor Reconcile Fixture")
+    _submit(
+        client, lesson, lesson_dir, page_id, ASK_ID,
+        "Invented question before the terminal", "ask-reconcile-1",
+    )
+    projection = lesson_dir / attempts.PROJECTION_NAME
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    before = projection.stat()
+    for _ in range(3):
+        assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    after = projection.stat()
+    assert (
+        (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+    ), "an intact projection is verified, never republished"
+
+    # A file that IS stale still gets repaired on the next open.
+    projection.write_text("invented corruption\n", encoding="utf-8")
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    assert (
+        "Invented question before the terminal"
+        in projection.read_text(encoding="utf-8")
+    ), "a mutated projection is rebuilt from the authority"
 
 
 def test_the_review_button_rides_the_existing_terminal_input_path():

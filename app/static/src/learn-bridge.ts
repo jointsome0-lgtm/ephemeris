@@ -1567,6 +1567,13 @@ if (recordPanel && recordCountsUrl && recordKey) {
     const cell = recordPanel.querySelector(`[data-record-count="${name}"]`);
     /* A pre-#133 backend renders no verdicts cell; the others always exist. */
     if (cell && cell.textContent !== value) cell.textContent = value;
+    /* The asked chip (#136) is on the line at zero but hidden, because a
+     * lesson nobody asked about should not carry a "0 asked". The first
+     * question of the session is therefore also the one that reveals it. */
+    if (cell && name === "questions") {
+      const chip = cell.parentElement;
+      if (chip instanceof HTMLElement) chip.hidden = value === "0";
+    }
   };
 
   const showUnread = (count: number): void => {
