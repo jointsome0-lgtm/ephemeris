@@ -24,7 +24,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-08-06 — `2e636c2` (squash of `fix/drain-l1-successor`, PR #153) —
+## Done
+
+- [x] 2026-08-06 — `2e636c2` (squash of `fix/drain-l1-successor`, PR #153) —
   `app/static/src/learn-bridge.ts`, `app/static/learn-bridge.js`,
   `app/services/lessons.py`, `docs/lesson-bridge-abi.md`,
   `fixtures/lesson-bridge/*.html`, `tests/test_010_platform_ui.py`,
@@ -51,8 +53,13 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   document, and the exact delayed-successor browser regression passes. The
   entry stays Pending for owner closure; no application fix or restart was
   performed.
+  Owner closure 2026-08-06: the ABI v2 batch re-drain
+  (`docs/reviews/2026-08-06-chain-u-abi-v2-review.md`, `main` at `1c3c896`)
+  reports zero findings across the whole batch — SAFE TO MAKE LIVE for the
+  documented direct-loopback, single-worker, single-user deployment. The
+  restart gate for this entry is open.
 
-- [ ] 2026-08-06 — `67fd594` and later commits on `fix/133-welcome-readback`,
+- [x] 2026-08-06 — `67fd594` and later commits on `fix/133-welcome-readback`,
   merged to `main` as `d6e15bc` —
   `app/static/src/learn-bridge.ts`, `app/static/learn-bridge.js`,
   `app/routers/learn.py`, `app/templates/learn.html`,
@@ -100,8 +107,13 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   is resolved. The welcome and approved snapshot now travel only on the
   announcing document's transferred reply channel; no new finding was found.
   The entry stays Pending for owner closure; no restart was performed.
+  Owner closure 2026-08-06: the ABI v2 batch re-drain
+  (`docs/reviews/2026-08-06-chain-u-abi-v2-review.md`, `main` at `1c3c896`)
+  reports zero findings across the whole batch — SAFE TO MAKE LIVE for the
+  documented direct-loopback, single-worker, single-user deployment. The
+  restart gate for this entry is open.
 
-- [ ] 2026-08-03 — `0b25126`..`113b1dd` on `fix/23-limits-retention`, merged to
+- [x] 2026-08-03 — `0b25126`..`113b1dd` on `fix/23-limits-retention`, merged to
   `main` as `898bbed` — `app/security.py`, `app/limits.py`,
   `tests/test_130_limits.py` (rest of the change: `app/db.py`,
   `app/settings.py`, eight modules under `app/services/`,
@@ -184,8 +196,13 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `docs/reviews/2026-08-06-chain-u-abi-v2-review.md`: both issue #23 findings
   remain resolved and no new issue #23 finding was found. The entry stays
   Pending for owner closure; no restart was performed.
+  Owner closure 2026-08-06: the ABI v2 batch re-drain
+  (`docs/reviews/2026-08-06-chain-u-abi-v2-review.md`, `main` at `1c3c896`)
+  reports zero findings across the whole batch — SAFE TO MAKE LIVE for the
+  documented direct-loopback, single-worker, single-user deployment. The
+  restart gate for this entry is open.
 
-- [ ] 2026-08-05 — `d71cff5`..`0627649` on `fix/135-runs-projection` —
+- [x] 2026-08-05 — `d71cff5`..`0627649` on `fix/135-runs-projection` —
   `app/services/runs.py`, `app/services/bundle_schema.py`,
   `app/services/lessons.py`, `tests/test_170_runs_projection.py`,
   `tests/test_070_run_api.py`, `docs/learn-bundle-spec.md`,
@@ -220,8 +237,13 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `docs/reviews/2026-08-06-chain-u-abi-v2-review.md`: the projection finding
   remains resolved and no new run-projection finding was found. The entry
   stays Pending for owner closure; no restart was performed.
+  Owner closure 2026-08-06: the ABI v2 batch re-drain
+  (`docs/reviews/2026-08-06-chain-u-abi-v2-review.md`, `main` at `1c3c896`)
+  reports zero findings across the whole batch — SAFE TO MAKE LIVE for the
+  documented direct-loopback, single-worker, single-user deployment. The
+  restart gate for this entry is open.
 
-- [ ] 2026-08-06 — squash-merged to `main` as `6b99ab2` (PR #152, branch
+- [x] 2026-08-06 — squash-merged to `main` as `6b99ab2` (PR #152, branch
   `fix/drain-m1-l1`) — `app/static/src/learn-bridge.ts`,
   `app/static/learn-bridge.js`, `app/services/runs.py`,
   `app/services/lessons.py`, `docs/lesson-bridge-abi.md`,
@@ -250,8 +272,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   is resolved by the ABI v2 reply channel and its exact delayed-successor
   browser regression. No new finding was found. The entry stays Pending for
   owner closure; no restart was performed.
-
-## Done
+  Owner closure 2026-08-06: the ABI v2 batch re-drain
+  (`docs/reviews/2026-08-06-chain-u-abi-v2-review.md`, `main` at `1c3c896`)
+  reports zero findings across the whole batch — SAFE TO MAKE LIVE for the
+  documented direct-loopback, single-worker, single-user deployment. The
+  restart gate for this entry is open.
 
 - [x] 2026-08-02 — `06f6df5` and `63e7a1e` on `fix/terminal-job-control`,
   merged to `main` as `ddbdddb` — `app/terminal.py`, `tests/test_040_core_surfaces.py`,
