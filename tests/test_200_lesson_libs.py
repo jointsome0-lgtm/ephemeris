@@ -54,6 +54,22 @@ def test_shelf_matches_its_checksums():
         assert bundle_rel.startswith("assets/libs/") and ".." not in bundle_rel.split("/")
 
 
+def test_the_quarantine_is_a_setting_not_a_promise():
+    """The shelf's refresh policy leans on npm refusing a young release rather
+    than on somebody comparing publish dates, so the setting that does the
+    refusing has to be in the repository, not in a shell history."""
+    npmrc = lessons.LESSON_LIBS_DIR.parent.parent / ".npmrc"
+    assert npmrc.is_file(), "the repository carries no .npmrc"
+    setting = [
+        line.split("=", 1)[1].strip()
+        for line in npmrc.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("min-release-age")
+    ]
+    assert setting == ["30"], f"expected a 30-day npm quarantine, found {setting}"
+    readme = (lessons.LESSON_LIBS_DIR / "README.md").read_text(encoding="utf-8")
+    assert "min-release-age=30" in readme, "the refresh policy does not cite the gate"
+
+
 def test_katex_css_carries_its_fonts_inline():
     """A lesson page runs on an opaque origin (`sandbox allow-scripts`), where a
     `url(fonts/…)` face is a CORS request the app answers without an

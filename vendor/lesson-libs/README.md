@@ -93,15 +93,34 @@ Notes from the eyeball pass at retrieval time:
   a minified upstream artifact for an API that pages, having no network, have
   little reason to call.
 - Newer releases existed at retrieval time (KaTeX 0.18.1, mermaid 11.16.1) and
-  were skipped by the quarantine rule below.
+  were skipped by the quarantine rule below — which npm's own resolver, under
+  the `.npmrc` gate, would have skipped identically.
 
 ## Refresh policy
 
 Manual and rare. When bumping or adding a library:
 
-1. **Quarantine**: only take a release that is **at least 30 days old**. That
-   is a cheap filter against a freshly compromised publish; it is not the
-   control.
+1. **Quarantine**: only take a release that is **at least 30 days old** — a
+   cheap filter against a freshly compromised publish, not the control. Do not
+   compare dates by hand; let the package manager refuse. The repository's
+   `.npmrc` sets `min-release-age=30`, so resolving the version in a scratch
+   directory both picks the newest release outside the window and errors on a
+   pin inside it:
+
+   ```
+   cd "$(mktemp -d)" && npm init -y >/dev/null
+   npm install --package-lock-only <name>           # newest outside quarantine
+   npm ls <name>                                     # the version to pin
+   ```
+
+   ```
+   npm error notarget No matching version found for mermaid@11.16.1
+     with a date before 7/7/2026
+   ```
+
+   is what a too-fresh pin looks like. (`bun` has the same gate as
+   `--minimum-release-age=<seconds>`.) Note that `npm ci` deliberately ignores
+   this and replays the lockfile as committed.
 2. **Pin** the exact version — never a range, never `latest`.
 3. **Fetch** the official npm tarball and check its `sha512` against
    `dist.integrity` from `https://registry.npmjs.org/<name>/<version>` before
