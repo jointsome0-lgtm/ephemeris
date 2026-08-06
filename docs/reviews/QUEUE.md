@@ -164,6 +164,24 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   complete records and the seal/durability contract. The entry stays Pending;
   no application fix or restart was performed.
 
+- [ ] 2026-08-06 — squash-merged to `main` as `6b99ab2` (PR #152, branch
+  `fix/drain-m1-l1`) — `app/static/src/learn-bridge.ts`,
+  `app/static/learn-bridge.js`, `app/services/runs.py`,
+  `app/services/lessons.py`, `docs/lesson-bridge-abi.md`,
+  `docs/learn-bundle-spec.md`, `tests/test_030_assessment_artifact_migration.py`,
+  `tests/test_170_runs_projection.py`, `tests/test_190_welcome_readback.py`,
+  `tests/test_210_bridge_browser.py` (new) — the bridge `welcome.record` field
+  is now attached only after a per-document `window.confirm` in the parent,
+  through the shared `allowPrivateRead` gate that already served artifact reads
+  (one `readConsent` store, reset in `teardown()`); a refusal omits the field
+  entirely, an empty question scope attaches unasked, `finishReady` is async and
+  re-checks `generation` after the prompt. `runs.jsonl` gains the byte ceiling
+  `PROJECTION_MAX_BYTES` (20 MiB): an append that would cross it triggers
+  compaction to a three-quarter watermark via a bounded `os.pread` tail read cut
+  at a record boundary, republished through the existing staged-write path with
+  the swap made conditional on the app's own seal. Tests 263 → 280;
+  `verify_restore.py` 34 passed 0 failed; `npm run build` no tracked diff.
+
 ## Done
 
 - [x] 2026-08-02 — `06f6df5` and `63e7a1e` on `fix/terminal-job-control`,
