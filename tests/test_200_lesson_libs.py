@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -47,13 +48,27 @@ def test_shelf_matches_its_checksums():
         "assets/libs/mermaid/mermaid.min.js",
     ):
         assert expected in bundle_paths, f"{expected} is not on the shelf"
-    assert any(
-        path.startswith("assets/libs/katex/fonts/") for path in bundle_paths
-    ), "KaTeX ships without its fonts; katex.min.css references them relatively"
 
     # Every listed file lands inside the app-owned area, never above it.
     for _shelf, bundle_rel, _digest in entries:
         assert bundle_rel.startswith("assets/libs/") and ".." not in bundle_rel.split("/")
+
+
+def test_katex_css_carries_its_fonts_inline():
+    """A lesson page runs on an opaque origin (`sandbox allow-scripts`), where a
+    `url(fonts/…)` face is a CORS request the app answers without an
+    Access-Control header — i.e. blocked, and KaTeX falls back to system
+    glyphs. `font-src 'self' data:` is the way through."""
+    css = (lessons.LESSON_LIBS_DIR / "katex/0.17.0/katex.min.css").read_text(
+        encoding="utf-8"
+    )
+    assert "url(fonts/" not in css, "KaTeX CSS still fetches its fonts as files"
+    assert css.count("url(data:font/woff2;base64,") == css.count("@font-face"), (
+        "every KaTeX face must carry its woff2 inline"
+    )
+    # d3's string-compiling APIs stay unavailable under that CSP; the brief
+    # says so rather than the shelf pretending otherwise.
+    assert "d3.csvParseRows" in lessons._AGENTS_TEMPLATE
 
 
 def test_terminal_open_seeds_the_shelf_into_the_bundle(client):
@@ -115,6 +130,82 @@ def test_seeding_is_idempotent_and_self_healing():
         hashlib.sha256(mermaid.read_bytes()).hexdigest()
         == digests["assets/libs/mermaid/mermaid.min.js"]
     )
+
+
+def test_first_seed_preserves_a_library_the_agent_vendored_itself():
+    """`assets/libs/` was the agent's to use before the shelf existed, so the
+    first seed into an older bundle moves what it finds aside instead of
+    destroying it. Once the bundle carries the stamp, the app republishes."""
+    _lesson, lesson_dir = _new_lesson("Lesson Libs Preserve")
+    older = lesson_dir / "assets/libs/d3/d3.min.js"
+    older.parent.mkdir(parents=True)
+    older.write_bytes(b"// d3 v6, vendored by hand before the shelf existed\n")
+
+    lessons.seed_lesson_libs(lesson_dir)
+    aside = list(older.parent.glob("d3.min.js.collision-*"))
+    assert len(aside) == 1, "the hand-vendored copy was not preserved"
+    assert aside[0].read_bytes().startswith(b"// d3 v6")
+    stamp = lesson_dir / "assets/libs" / lessons.LESSON_LIBS_CHECKSUM_FILE
+    assert stamp.is_file(), "the seeded area carries no ownership stamp"
+    assert older.read_bytes()[:20] == b"// https://d3js.org "
+
+    # Stamped: this is the app's area now, and an edit under it is replaced,
+    # exactly as the brief promises — with no second aside copy.
+    older.write_bytes(b"tampered")
+    lessons.seed_lesson_libs(lesson_dir)
+    assert len(list(older.parent.glob("d3.min.js.collision-*"))) == 1
+    assert older.read_bytes()[:20] == b"// https://d3js.org "
+
+
+def test_a_symlinked_parent_is_replaced_even_when_its_content_matches():
+    """The digest of a file reached THROUGH a symlinked parent says nothing:
+    the preview route refuses symlinked paths (§2), so a bundle that passed the
+    check would still fail to load the library."""
+    _lesson, lesson_dir = _new_lesson("Lesson Libs Linked Parent")
+    decoy = Path(lessons.LESSONS_DIR) / "libs-decoy-matching"
+    (decoy / "d3").mkdir(parents=True, exist_ok=True)
+    shelf_d3 = lessons.LESSON_LIBS_DIR / "d3/7.9.0/d3.min.js"
+    (decoy / "d3/d3.min.js").write_bytes(shelf_d3.read_bytes())
+    (lesson_dir / "assets").mkdir(exist_ok=True)
+    (lesson_dir / "assets/libs").symlink_to(decoy, target_is_directory=True)
+
+    lessons.seed_lesson_libs(lesson_dir)
+    assert not (lesson_dir / "assets/libs").is_symlink()
+    seeded = lesson_dir / "assets/libs/d3/d3.min.js"
+    assert seeded.is_file() and seeded.read_bytes() == shelf_d3.read_bytes()
+
+
+def test_a_fifo_on_a_seeded_name_does_not_park_the_terminal_open():
+    """`_seeded_digest` opens non-blocking: a FIFO left on a seeded name would
+    otherwise wait for a writer that never comes, on the terminal-open path."""
+    lesson, lesson_dir = _new_lesson("Lesson Libs Fifo")
+    target = lesson_dir / "assets/libs/d3/d3.min.js"
+    target.parent.mkdir(parents=True)
+    os.mkfifo(target)
+
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    assert target.is_file() and not stat.S_ISFIFO(target.stat().st_mode)
+
+
+def test_an_undecodable_inventory_costs_a_warning_not_the_terminal(tmp_path):
+    """A damaged checkout must not escape the seeder as UnicodeDecodeError —
+    `prepare_terminal_workspace()` calls it outside its own guard."""
+    lesson, _lesson_dir = _new_lesson("Lesson Libs Damaged Shelf")
+    broken = tmp_path / "shelf"
+    broken.mkdir()
+    (broken / lessons.LESSON_LIBS_CHECKSUM_FILE).write_bytes(b"\xff\xfe not utf-8\n")
+    saved = lessons.LESSON_LIBS_DIR
+    lessons.LESSON_LIBS_DIR = broken
+    try:
+        assert lessons.seed_lesson_libs(Path(lessons.LESSONS_DIR) / lesson["slug"]) == 0
+        assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+        # A line that is not a checksum is a refusal, not a guessed path.
+        (broken / lessons.LESSON_LIBS_CHECKSUM_FILE).write_text("nonsense\n")
+        with pytest.raises(lessons.LessonError):
+            lessons.lesson_libs_manifest()
+        assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    finally:
+        lessons.LESSON_LIBS_DIR = saved
 
 
 def test_seeding_never_follows_a_planted_link_and_never_refuses_a_terminal():

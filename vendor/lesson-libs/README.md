@@ -46,7 +46,15 @@ Real copies, never hardlinks: a shared inode would let one lesson's agent
 rewrite the shelf for every other lesson. Seeding is idempotent and
 self-healing — a file whose sha256 already matches is left alone, a missing or
 modified one is rewritten on the next terminal open. A bumped version reaches a
-bundle the same way: the flattened path stays, the bytes change.
+bundle the same way: the flattened path stays, the bytes change; dropping a
+library from the shelf, on the other hand, leaves the copies already in bundles
+where they are, so remove those by hand if a page must stop working.
+
+The seeded area carries its own `assets/libs/SHASUMS256`, which is both a
+checkable inventory (`cd assets/libs && sha256sum -c SHASUMS256`) and the mark
+that the app owns these names: a bundle without it predates the shelf, so
+whatever already sits at a shelf path is moved aside (`.collision-<hex>`)
+rather than overwritten.
 
 ## Inventory
 
@@ -57,7 +65,7 @@ extraction; per-file sha256 is in `SHASUMS256`.
 | library | version | published | retrieved | files | tarball |
 |---------|---------|-----------|-----------|-------|---------|
 | [d3](https://d3js.org) | 7.9.0 | 2024-03-12 | 2026-08-06 | `d3.min.js` (UMD) | `https://registry.npmjs.org/d3/-/d3-7.9.0.tgz` |
-| [KaTeX](https://katex.org) | 0.17.0 | 2026-05-22 | 2026-08-06 | `katex.min.js` (UMD), `katex.min.css`, `fonts/*.woff2` | `https://registry.npmjs.org/katex/-/katex-0.17.0.tgz` |
+| [KaTeX](https://katex.org) | 0.17.0 | 2026-05-22 | 2026-08-06 | `katex.min.js` (UMD), `katex.min.css` (derived, see below) | `https://registry.npmjs.org/katex/-/katex-0.17.0.tgz` |
 | [mermaid](https://mermaid.js.org) | 11.16.0 | 2026-06-25 | 2026-08-06 | `mermaid.min.js` (IIFE, global `mermaid`) | `https://registry.npmjs.org/mermaid/-/mermaid-11.16.0.tgz` |
 
 Notes from the eyeball pass at retrieval time:
@@ -65,10 +73,25 @@ Notes from the eyeball pass at retrieval time:
 - All three bundles are self-contained: no `sourceMappingURL`, no dynamic
   `import()` of sibling chunks, no runtime remote URLs (the `http://…` strings
   are XML namespaces and documentation links in error messages).
-- KaTeX ships only `.woff2` here. Its `@font-face` rules list woff2 first, so a
-  current browser never asks for the `.woff`/`.ttf` fallbacks; skipping them
-  saves ~1.4 MB. `katex.min.css` refers to `fonts/…` relatively, which is why
-  the font directory is kept next to the CSS.
+- **KaTeX's CSS is the one derived artifact here.** A lesson page is served
+  with `sandbox allow-scripts`, so its document sits on an opaque origin, and
+  a font fetch is a CORS request: upstream's `url(fonts/KaTeX_…)` is blocked
+  from a null origin (verified in a browser against the real serving route —
+  KaTeX rendered in fallback glyphs). `font-src 'self' data:` allows data URLs
+  and those are not CORS-gated, so `scripts/build_lesson_libs_katex_css.py`
+  inlines the 20 woff2 faces into the stylesheet and drops the `.woff`/`.ttf`
+  fallbacks no lesson browser reads. Upstream `dist/katex.min.css` for 0.17.0
+  is sha256
+  `a34ad8fc188e8f5a3af7ceaa2a58d7210c6c9171335a15bff2b48ebcd6a6f5b0`; re-run
+  the script on the tarball above to reproduce the file byte-for-byte. Nothing
+  else on the shelf is modified.
+- d3 is shipped whole, but the page CSP has no `'unsafe-eval'`, so the d3 APIs
+  that compile a string — `d3.csvParse`, `d3.tsvParse`, `dsvFormat().parse` —
+  throw `EvalError` on a lesson page. `d3.csvParseRows` and the rest of d3
+  (selections, scales, axes, shapes, layouts) work; the study-agent brief says
+  so. Patching the bundle to remove `new Function` was rejected: it would fork
+  a minified upstream artifact for an API that pages, having no network, have
+  little reason to call.
 - Newer releases existed at retrieval time (KaTeX 0.18.1, mermaid 11.16.1) and
   were skipped by the quarantine rule below.
 
@@ -85,7 +108,8 @@ Manual and rare. When bumping or adding a library:
    extracting anything.
 4. **Eyeball** once: the bundle is the published minified artifact, has no
    source-map or chunk references to files we do not ship, and makes no
-   runtime network calls.
+   runtime network calls. A library that ships web fonts needs them inlined —
+   see the KaTeX note above and `scripts/build_lesson_libs_katex_css.py`.
 5. **Record**: add the version directory, update the inventory table above with
    source URL, publish date and retrieval date, and regenerate the checksums —
    the pin plus the hash is the actual control:

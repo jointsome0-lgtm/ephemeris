@@ -1444,15 +1444,22 @@ path; loading anything from a CDN or any other remote URL (script, style,
 font, image) is forbidden.
 
 The common libraries are already here, kept current by the app under
-`assets/libs/` — pinned, offline copies you reference by relative path:
+`assets/libs/`. A stage page lives in `related/`, so from there the
+reference is one level up — `../assets/libs/…`:
 
-- `assets/libs/d3/d3.min.js` (v7, global `d3`) for data visualization,
-  `assets/libs/katex/katex.min.js` with `katex.min.css` for math, and
-  `assets/libs/mermaid/mermaid.min.js` (global `mermaid`) for diagrams.
+- `../assets/libs/d3/d3.min.js` (v7, global `d3`) for data
+  visualization; `../assets/libs/katex/katex.min.js` with
+  `../assets/libs/katex/katex.min.css` for math (the fonts are inlined in
+  that stylesheet — there is nothing else to link); and
+  `../assets/libs/mermaid/mermaid.min.js` (global `mermaid`) for diagrams.
 - Inline SVG/CSS/JS built for the exact point stays the default — it
   teaches better than a generic chart. Reach for the shelf when the
   visualization the point deserves outgrows what you would hand-roll,
   not to save yourself the thinking.
+- The page may not evaluate strings as code, so the few APIs that compile
+  a string are unavailable: `d3.csvParse` and friends throw here. Use
+  `d3.csvParseRows`, or write the data as a JS literal — the page has no
+  network to fetch it from anyway.
 - Anything not on the shelf still goes through the rule above: vendor a
   pinned copy into `assets/` yourself.
 - The shelf is app-managed: never edit, move or delete anything under
@@ -1884,7 +1891,10 @@ def _seeded_digest(path: Path) -> str | None:
     turns into a re-copy — the self-healing half of an idempotent seed.
     """
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        # O_NONBLOCK like the other no-follow readers here: a FIFO planted on
+        # the name would otherwise park the open on a writer that never comes,
+        # and this runs on the terminal-open path.
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
     except OSError:
         return None
     try:
@@ -1919,6 +1929,25 @@ def _ensure_seed_dir(lesson_dir: Path, relative: str) -> Path:
     return path
 
 
+def _bundle_shelf_stamp(entries: list[tuple[str, str, str]]) -> bytes:
+    """The inventory as the bundle's own copy of it, checkable in place with
+    `cd assets/libs && sha256sum -c SHASUMS256` (`#` lines are comments there).
+
+    Its presence is also the ownership record: `assets/libs/` is a name the
+    study agent was free to use before this existed, so the first seed into a
+    bundle moves foreign files aside instead of overwriting them, and every
+    later seed knows the area is the app's to republish.
+    """
+    versions = sorted({tuple(shelf_rel.split("/")[:2]) for shelf_rel, _b, _d in entries})
+    header = "# ephemeris lesson-libs — app-managed, regenerated on terminal open\n"
+    header += "".join(f"# {name} {version}\n" for name, version in versions)
+    prefix = LESSON_LIBS_BUNDLE_DIR + "/"
+    body = "".join(
+        f"{digest}  {bundle_rel[len(prefix):]}\n" for _shelf, bundle_rel, digest in entries
+    )
+    return (header + body).encode("utf-8")
+
+
 def seed_lesson_libs(lesson_dir: Path) -> int:
     """Mirror the pinned lesson-libs shelf into `<bundle>/assets/libs/`.
 
@@ -1927,7 +1956,14 @@ def seed_lesson_libs(lesson_dir: Path) -> int:
     (mtime included — the agent's own tooling may watch these), a missing or
     modified one is rewritten from the shelf. Shelf bytes are verified against
     the inventory before they are copied, so a corrupted checkout cannot spread
-    into bundles.
+    into bundles. The path to each file is re-established before its digest is
+    trusted: a bundle that arrived with `assets/` or `assets/libs` as a symlink
+    would otherwise pass the check against content the preview route then
+    refuses to serve (it declines symlinked paths, §2).
+
+    Nothing authored is destroyed to take these names: until the bundle carries
+    the app's stamp, whatever already sits at a shelf path is moved aside the
+    way every other reserved name in a bundle is.
 
     Total by design, like the projection reconcilers beside it: this runs on
     the terminal-open path, and a library the page may never need must not cost
@@ -1936,13 +1972,18 @@ def seed_lesson_libs(lesson_dir: Path) -> int:
     """
     try:
         entries = lesson_libs_manifest()
-    except (OSError, LessonError) as exc:
+    except (OSError, ValueError) as exc:  # incl. LessonError, undecodable inventory
         _log.warning("lesson-libs shelf unreadable, bundles keep what they have: %s", exc)
         return 0
+    stamp_path = lesson_dir / PurePosixPath(LESSON_LIBS_BUNDLE_DIR) / LESSON_LIBS_CHECKSUM_FILE
+    stamp = _bundle_shelf_stamp(entries)
+    app_managed = _seeded_digest(stamp_path) is not None
     written = 0
+    complete = True
     for shelf_rel, bundle_rel, digest in entries:
         try:
             target = lesson_dir / PurePosixPath(bundle_rel)
+            _ensure_seed_dir(lesson_dir, str(PurePosixPath(bundle_rel).parent))
             if _seeded_digest(target) == digest:
                 continue
             data = (LESSON_LIBS_DIR / PurePosixPath(shelf_rel)).read_bytes()
@@ -1951,12 +1992,22 @@ def seed_lesson_libs(lesson_dir: Path) -> int:
                     "lesson-libs shelf file %s does not match %s; not seeded",
                     shelf_rel, LESSON_LIBS_CHECKSUM_FILE,
                 )
+                complete = False
                 continue
-            _ensure_seed_dir(lesson_dir, str(PurePosixPath(bundle_rel).parent))
+            if not app_managed:
+                _preserve_foreign(target)  # expected=None: anything here predates us
             _replace_file(target, data, prefix=".lib-", mode=0o644)
             written += 1
         except OSError as exc:
+            complete = False
             _log.warning("lesson-libs seeding skipped %s: %s", bundle_rel, exc)
+    if complete:
+        try:
+            _preserve_foreign(stamp_path, expected=stamp)
+            if not stamp_path.exists():  # only when it is not already ours
+                _replace_file(stamp_path, stamp, prefix=".lib-", mode=0o644)
+        except OSError as exc:
+            _log.warning("lesson-libs stamp not written: %s", exc)
     return written
 
 
