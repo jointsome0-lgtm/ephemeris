@@ -958,8 +958,12 @@ def test_002_ui_and_workspace(client, suite_state):
         and "fully usable read-only" in agents_text
         and "the app derives" in agents_text
         and "Authenticate what you receive" in agents_text
-        and "event.source === window.parent" in agents_text
-        and "`event.origin` equals" in agents_text
+        # ABI v2: the answer comes back on a channel the page itself minted
+        # and transferred, so possession of that port IS the authentication.
+        and "new MessageChannel()" in agents_text
+        and "`[ch.port2]` as the transfer list" in agents_text
+        and "EVERY retry mints a fresh channel" in agents_text
+        and "never on a `window` message" in agents_text
         and "it has no selected `abi`" in agents_text
         and "upgrade to write access" in agents_text
         and "stay read-only" in agents_text

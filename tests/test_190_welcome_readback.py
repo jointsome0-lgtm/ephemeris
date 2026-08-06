@@ -404,9 +404,16 @@ export const posted = [];
 export const fetchCalls = [];
 const messageListeners = [];
 
+/* ABI v2 delivers the handshake result on the port the child transferred with
+ * its `ready`, never into the frame's WindowProxy. So `child` records any post
+ * that would go the old way — and every assertion below expects that list to
+ * stay EMPTY — while `posted` collects what actually arrived on the child's
+ * own ports. */
+export const windowPosts = [];
+export const replyPorts = [];
 export const child = {
   postMessage(message, targetOrigin, transfer) {
-    posted.push({ message, targetOrigin, ports: transfer || [] });
+    windowPosts.push({ message, targetOrigin, ports: transfer || [] });
   },
 };
 
@@ -498,12 +505,29 @@ globalThis.fetch = async (url, init) => {
 };
 
 /* The child's documented `ready`, posted the documented way: once to wake the
- * late-initialised runtime into binding, once as the retry it then answers. */
+ * late-initialised runtime into binding, once as the retry it then answers.
+ * v2: each announcement mints its own channel (a transferred port is spent)
+ * and the result arrives on the child's end of it. */
 export const announce = async () => {
   const ready = {
-    ephemeris: "lesson-bridge", type: "ready", abi: [1], want: config.want,
+    ephemeris: "lesson-bridge", type: "ready", abi: [2], want: config.want,
   };
-  for (const cb of messageListeners) cb({ source: child, data: ready });
+  /* A stand-in for the child's `port1`, in the same spirit as the fake
+   * `document` and `window` above: node's MessagePort has no `event.ports`,
+   * so a real channel could not carry the transferred BRIDGE port here. The
+   * real transfer is proven in a real browser (test_210). What this fake must
+   * be faithful about is which object the runtime hands the result to. */
+  const replyPort = {
+    closed: false,
+    postMessage(message, transfer) {
+      posted.push({ message, ports: transfer || [], port: this });
+    },
+    close() { this.closed = true; },
+  };
+  replyPorts.push(replyPort);
+  for (const cb of messageListeners) {
+    cb({ source: child, data: ready, ports: [replyPort] });
+  }
   await new Promise((resolve) => setTimeout(resolve, 30));
 };
 
@@ -512,7 +536,9 @@ export { config };
 
 _HARNESS_RUN = """\
 /* Static imports, in order: the fake DOM exists before the runtime evaluates. */
-import { posted, fetchCalls, confirms, announce, config } from "./setup.mjs";
+import {
+  posted, windowPosts, replyPorts, fetchCalls, confirms, announce, config,
+} from "./setup.mjs";
 import "./learn-bridge.mjs";
 
 await announce();
@@ -529,13 +555,21 @@ while (!posted.some((entry) => entry.message?.type === "welcome")
 const welcome = posted.find((entry) => entry.message?.type === "welcome");
 const result = {
   postedCount: posted.length,
-  targetOrigin: welcome ? welcome.targetOrigin : null,
   ports: welcome ? welcome.ports.length : 0,
   keys: welcome ? Object.keys(welcome.message).sort() : null,
   message: welcome ? welcome.message : null,
+  abi: welcome ? welcome.message.abi : null,
   attempt: null,
   attemptBodies: [],
   confirms: confirms.slice(),
+  /* v2 invariants: nothing was ever addressed to the frame's WindowProxy,
+   * and every announcement the runtime declined to answer had its port
+   * closed rather than left dangling. */
+  windowPosts: windowPosts.length,
+  openUnanswered: replyPorts.filter(
+    (entry) => !entry.closed
+      && !posted.some((sent) => sent.port === entry),
+  ).length,
 };
 
 /* The old-page path: a document that reads only abi/lesson/capabilities off the
@@ -622,10 +656,15 @@ def test_the_welcome_hands_the_snapshot_to_a_page_that_records_answers(tmp_path)
     assert result["message"]["capabilities"] == ["attempts"]
     # Only the questions cross: the identity is the parent's own bookkeeping.
     assert result["message"]["record"] == {"questions": SNAPSHOT_QUESTIONS}
-    # The membrane itself is untouched: one welcome, one port, and the payload
-    # still goes to the specific contentWindow rather than a named origin.
+    # The membrane itself is untouched: one welcome, transferring one bridge
+    # port. ABI v2 changes only where it is delivered — on the channel the
+    # announcing document transferred, and never to the frame's WindowProxy,
+    # which is the object a same-frame navigation would have let a successor
+    # keep. Announcements the runtime declines to answer leave no port open.
     assert result["postedCount"] == 1 and result["ports"] == 1
-    assert result["targetOrigin"] == "*"
+    assert result["windowPosts"] == 0
+    assert result["openUnanswered"] == 0
+    assert result["abi"] == 2
 
 
 def test_a_page_that_ignores_record_completes_the_handshake_unchanged(tmp_path):
@@ -644,7 +683,7 @@ def test_a_page_that_ignores_record_completes_the_handshake_unchanged(tmp_path):
         attempt="q_harness01")
 
     for result in (with_record, without):
-        assert result["message"]["abi"] == 1
+        assert result["message"]["abi"] == 2
         assert result["message"]["lesson"] == {
             "lesson_uid": "les_harness", "page_id": "pg_harness01",
             "page_rev": "sha256:" + "a" * 64,

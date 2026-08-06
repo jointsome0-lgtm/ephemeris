@@ -75,41 +75,60 @@
   }
   // New actions are unique across reloads/tabs; retry keeps runRequestId.
   const requestId = (kind) => `fixture-${kind}-${requestNonce}-${++sequence}`;
-  const announce = () => window.parent.postMessage({
-    ephemeris: "lesson-bridge",
-    type: "ready",
-    abi: [1],
-    want: ["editor", "run"],
-  }, appOrigin);
+  // ABI v2: the result comes back on a channel THIS document owns, so a
+  // successor of a navigation can never collect it. A transferred port is
+  // spent, so every retry mints a fresh channel and listens on its own end.
+  const pending = [];
+  const announce = () => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = (event) => onResult(event);
+    pending.push(channel.port1);
+    window.parent.postMessage({
+      ephemeris: "lesson-bridge",
+      type: "ready",
+      abi: [2],
+      want: ["editor", "run"],
+    }, appOrigin, [channel.port2]);
+  };
+  const settle = () => {
+    answered = true;
+    clearInterval(retry);
+    clearTimeout(silence);
+    for (const spent of pending) spent.close();
+    pending.length = 0;
+  };
   const retry = setInterval(() => { if (!answered) announce(); }, 250);
   const silence = setTimeout(() => {
     clearInterval(retry);
-    if (!answered) readOnly("bridge unavailable");
+    if (!answered) {
+      for (const spent of pending) spent.close();
+      pending.length = 0;
+      readOnly("bridge unavailable");
+    }
   }, 2000);
 
-  window.addEventListener("message", (event) => {
-    if (answered || event.source !== window.parent || event.origin !== appOrigin) return;
+  const onResult = (event) => {
+    if (answered) return;
     const message = event.data;
     if (!message || message.ephemeris !== "lesson-bridge") return;
     if (message.type === "reject") {
       if (event.ports.length !== 0 || message.reason !== "abi-unsupported"
           || !Array.isArray(message.supported)
           || !message.supported.every(Number.isInteger)) return;
-      answered = true;
-      clearInterval(retry);
-      clearTimeout(silence);
+      settle();
       readOnly("unsupported bridge");
       return;
     }
-    if (message.type !== "welcome" || message.abi !== 1
+    if (message.type !== "welcome" || message.abi !== 2
         || event.ports.length !== 1
         || !Array.isArray(message.capabilities)
         || !message.capabilities.every((value) => typeof value === "string")) {
       return;
     }
-    answered = true;
-    clearInterval(retry);
-    clearTimeout(silence);
+    // The bridge port arrives WITH the welcome; keep it before closing the
+    // announcement channels this settle sweeps up.
+    const bridge = event.ports[0];
+    settle();
     const granted = Array.isArray(message.capabilities)
       && message.capabilities.includes("editor");
     if (!granted) {
@@ -117,7 +136,7 @@
       return;
     }
     runGranted = message.capabilities.includes("run");
-    port = event.ports[0];
+    port = bridge;
     port.onmessage = (portEvent) => {
       const reply = portEvent.data;
       if (!reply || typeof reply !== "object") return;
@@ -186,7 +205,7 @@
     save.disabled = false;
     run.disabled = !runGranted;
     say(runGranted ? "Editor and Run ready." : "Editor ready; Run unavailable.");
-  });
+  };
 
   load.addEventListener("click", () => send({
     op: "artifact.get",

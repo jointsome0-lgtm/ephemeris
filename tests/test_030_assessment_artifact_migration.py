@@ -2391,9 +2391,14 @@ def test_assessment_artifact_migration(client, suite_state):
         and "innerHTML" not in _fe_fixture
     ), "editor conventions fixture exercises get/save as text-only data"
     assert (
-        "answered || event.source !== window.parent" in _fe_fixture
-        and "event.origin !== appOrigin" in _fe_fixture
-        and 'message.abi !== 1' in _fe_fixture
+        # ABI v2: the announcement carries the channel the answer comes back
+        # on, so possession of that port IS the authentication — there is no
+        # window listener left to check a source or an origin against.
+        "appOrigin, [channel.port2]" in _fe_fixture
+        and "channel.port1.onmessage" in _fe_fixture
+        and 'window.addEventListener("message"' not in _fe_fixture
+        and "if (answered) return;" in _fe_fixture
+        and 'message.abi !== 2' in _fe_fixture
         and "event.ports.length !== 1" in _fe_fixture
         and "event.ports.length !== 0" in _fe_fixture
         and "answered = true" in _fe_fixture
@@ -2549,7 +2554,10 @@ def test_assessment_artifact_migration(client, suite_state):
         and "64 KiB raw UTF-8 bytes" in _d5_abi
     ), "ABI §3.2 freezes editor ops and derived byte accounting"
     assert (
-        "event.origin" in _d5_abi
+        # v2: the announcement's own transferred port replaces source/origin
+        # checks as what authenticates a handshake result.
+        "only on a port **it** created and" in _d5_abi
+        and "exactly one transferred `MessagePort`" in _d5_abi
         and "exactly one `MessagePort`" in _d5_abi
         and "first valid result is final" in _d5_abi
         and "fresh opaque `request_id`" in _d5_abi

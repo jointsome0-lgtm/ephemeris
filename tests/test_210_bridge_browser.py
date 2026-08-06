@@ -64,7 +64,7 @@ BRIDGE_PAGE = {
 PARENT_HTML = """<!doctype html>
 <html><head><meta charset="utf-8"><title>invented learn page</title></head>
 <body>
-<iframe id="lesson-preview-frame" src="/child.html?doc=1&amp;egress=EGRESS"
+<iframe id="lesson-preview-frame" src="CHILDSRC"
         sandbox="allow-scripts"
         data-meta-url="/preview-meta"
         data-attempts-url="/attempts"
@@ -76,16 +76,18 @@ PARENT_HTML = """<!doctype html>
   /* The same load counter learn.html keeps, and a mailbox for what the child
    * says it received. The probe never reads the welcome itself — it only
    * repeats what crossed the boundary. */
-  window.__probe = { welcomes: [], loads: 0 };
+  window.__probe = { welcomes: [], successors: [], pongs: [], loads: 0 };
   var frame = document.getElementById("lesson-preview-frame");
   frame.addEventListener("load", function () {
     window.__probe.loads += 1;
     frame.dataset.loaded = String(window.__probe.loads);
   });
   window.addEventListener("message", function (event) {
-    if (event.data && event.data.probe === "welcome") {
-      window.__probe.welcomes.push(event.data);
-    }
+    var data = event.data;
+    if (!data) return;
+    if (data.probe === "welcome") window.__probe.welcomes.push(data);
+    if (data.probe === "successor") window.__probe.successors.push(data);
+    if (data.probe === "pong") window.__probe.pongs.push(data);
   });
 </script>
 <script type="module" src="/learn-bridge.js"></script>
@@ -98,41 +100,106 @@ CHILD_HTML = """<!doctype html>
 <script>
   var params = new URLSearchParams(location.search);
   var announced = 0;
-  function announce() {
-    parent.postMessage(
-      { ephemeris: "lesson-bridge", type: "ready", abi: [1], want: ["attempts"] },
-      "*",
-    );
-  }
-  window.addEventListener("message", function (event) {
-    var data = event.data;
+  /* `legacy=1` announces the retired v1 way — no transferred port, listening
+   * on the window. `navigate=<url>` commits a same-frame navigation and then
+   * announces, so the successor is already in flight while the parent's
+   * consent prompt stands open. */
+  var legacy = params.get("legacy") === "1";
+  var navigateTo = params.get("navigate");
+
+  function handle(data, ports, via) {
     if (!data || data.ephemeris !== "lesson-bridge" || data.type !== "welcome") return;
+    var answer = data.record && data.record.questions.length
+      ? data.record.questions[0].answer : null;
     /* Report the WHOLE welcome, so the test can assert on bytes rather than
      * on this page's reading of them. */
     parent.postMessage({
-      probe: "welcome",
-      doc: params.get("doc"),
-      raw: JSON.stringify(data),
-      answer: data.record && data.record.questions.length
-        ? data.record.questions[0].answer : null,
+      probe: "welcome", doc: params.get("doc"), via: via, ports: ports.length,
+      raw: JSON.stringify(data), answer: answer,
     }, "*");
+    if (ports.length === 1) {
+      ports[0].onmessage = function (portEvent) {
+        parent.postMessage({
+          probe: "pong", doc: params.get("doc"),
+          raw: JSON.stringify(portEvent.data),
+        }, "*");
+      };
+      ports[0].postMessage({ op: "ping", request_id: "r-probe" });
+    }
     /* The residual the gate is about: permitted script navigates the frame
      * and the private text rides along in the URL. */
-    if (params.get("egress") === "1" && data.record
-        && data.record.questions.length) {
-      location.href = "/captured?value="
-        + encodeURIComponent(data.record.questions[0].answer)
-        + "&note=" + encodeURIComponent(
-          data.record.questions[0].verdict.note);
+    if (params.get("egress") === "1" && answer) {
+      location.href = "/captured?value=" + encodeURIComponent(answer)
+        + "&note=" + encodeURIComponent(data.record.questions[0].verdict.note);
     }
+  }
+
+  /* Nothing may arrive here under ABI v2 — that is the point of the legacy
+   * case, and a silent guard for every other one. */
+  window.addEventListener("message", function (event) {
+    handle(event.data, event.ports || [], "window");
   });
-  announce();
-  /* The documented retry: the parent module can initialise after this load. */
-  var retry = setInterval(function () {
-    announced += 1;
-    if (announced > 8) return clearInterval(retry);
+
+  function announce() {
+    var ready = {
+      ephemeris: "lesson-bridge", type: "ready", abi: [2], want: ["attempts"],
+    };
+    if (legacy) return parent.postMessage(ready, "*");
+    /* A transferred port is spent, so every retry mints its own channel. */
+    var channel = new MessageChannel();
+    channel.port1.onmessage = function (event) {
+      handle(event.data, event.ports || [], "port");
+    };
+    parent.postMessage(ready, "*", [channel.port2]);
+  }
+
+  if (navigateTo) {
+    /* Announce only once the parent has had time to arm; otherwise the
+     * announcement is dropped and the run proves nothing. The test asserts a
+     * dialog really opened, so a mis-timed run fails loudly. */
+    setTimeout(function () {
+      location.href = navigateTo;
+      announce();
+    }, 900);
+  } else {
     announce();
-  }, 150);
+    /* The documented retry: the parent module can initialise after this load. */
+    var retry = setInterval(function () {
+      announced += 1;
+      if (announced > 8) return clearInterval(retry);
+      announce();
+    }, 150);
+  }
+</script>
+</body></html>
+"""
+
+SUCCESSOR_HTML = """<!doctype html>
+<html><head><meta charset="utf-8"><title>invented successor page</title></head>
+<body>
+<!-- The slow blocking subresource: this document runs script immediately but
+     its `load` event — the parent's only signal that the document changed —
+     stays pending for four seconds. -->
+<img src="/slow?ms=4000" alt="">
+<script>
+  /* Everything the retired delivery path could have posted into, watched at
+   * once: the window listener, and any port that came with it. */
+  function grab(data, ports, via) {
+    if (!data || data.ephemeris !== "lesson-bridge") return;
+    var questions = (data.record && data.record.questions) || [];
+    var answer = questions.length ? questions[0].answer : null;
+    parent.postMessage({
+      probe: "successor", via: via, type: data.type, ports: ports.length,
+      raw: JSON.stringify(data), answer: answer,
+    }, "*");
+    if (answer) {
+      location.href = "/captured?value=" + encodeURIComponent(answer)
+        + "&note=" + encodeURIComponent(questions[0].verdict.note);
+    }
+  }
+  window.addEventListener("message", function (event) {
+    grab(event.data, event.ports || [], "window");
+  });
 </script>
 </body></html>
 """
@@ -155,10 +222,11 @@ pytestmark = pytest.mark.skipif(
 class _Site:
     """The invented lesson site, plus the log of what tried to leave it."""
 
-    def __init__(self, egress: bool) -> None:
+    def __init__(self, egress: bool, child_query: str = "doc=1") -> None:
         self.captured: list[dict] = []
         self.meta_reads = 0
         self.version = "v1"
+        self.child_query = child_query
         site = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -168,25 +236,44 @@ class _Site:
                 pass
 
             def _send(self, body: bytes, content_type: str) -> None:
-                self.send_response(200)
-                self.send_header("Content-Type", content_type)
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    # A page that navigates away mid-response cancels its
+                    # pending subresources; that is the behaviour under test,
+                    # not a server fault worth a traceback.
+                    pass
 
             def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
                 path = urlparse(self.path).path
                 if path == "/parent.html":
+                    src = (
+                        "/child.html?" + site.child_query
+                        + "&amp;egress=" + ("1" if egress else "0")
+                    )
                     body = (
                         PARENT_HTML
                         .replace("RECORD", json.dumps(SNAPSHOT).replace('"', "&quot;"))
-                        .replace("EGRESS", "1" if egress else "0")
+                        .replace("CHILDSRC", src)
                     )
                     return self._send(body.encode("utf-8"), "text/html; charset=utf-8")
                 if path == "/child.html":
                     return self._send(
                         CHILD_HTML.encode("utf-8"), "text/html; charset=utf-8")
+                if path == "/successor.html":
+                    return self._send(
+                        SUCCESSOR_HTML.encode("utf-8"), "text/html; charset=utf-8")
+                if path == "/slow":
+                    # The blocking subresource that holds the successor's
+                    # `load` open. A threading server keeps the rest alive.
+                    delay = parse_qs(urlparse(self.path).query).get("ms", ["1000"])
+                    time.sleep(min(int(delay[0]), 10000) / 1000)
+                    return self._send(b"", "image/png")
                 if path == "/learn-bridge.js":
                     return self._send(
                         (ROOT / "app" / "static" / "learn-bridge.js").read_bytes(),
@@ -347,9 +434,10 @@ class _Browser:
             shutil.rmtree(self.profile, ignore_errors=True)
 
 
-def _run(answers: list[bool], *, egress: bool = False, settle: float = 3.0):
+def _run(answers: list[bool], *, egress: bool = False, settle: float = 3.0,
+         child_query: str = "doc=1"):
     """Load the invented lesson page once and return (browser, site)."""
-    site = _Site(egress)
+    site = _Site(egress, child_query)
     browser = _Browser(answers)
     try:
         browser.call("Page.navigate", url=f"{site.base}/parent.html")
@@ -366,6 +454,10 @@ def _run(answers: list[bool], *, egress: bool = False, settle: float = 3.0):
 
 def _welcomes(browser: _Browser) -> list[dict]:
     return browser.evaluate("window.__probe.welcomes") or []
+
+
+def _successors(browser: _Browser) -> list[dict]:
+    return browser.evaluate("window.__probe.successors") or []
 
 
 def test_a_refused_read_back_sends_no_answer_bytes_into_the_page():
@@ -440,6 +532,100 @@ def test_consent_is_scoped_to_the_document_that_asked():
         second = welcomes[-1]
         assert second["answer"] is None
         assert ANSWER not in second["raw"] and NOTE not in second["raw"]
+    finally:
+        browser.close()
+        site.close()
+
+
+# --- ABI v2: the welcome travels on the announcer's own port -----------------
+
+
+def test_a_delayed_load_successor_receives_neither_record_nor_port():
+    """The document the owner was asked about is the only one that can collect
+    the answer.
+
+    The formula this repair exists for. Page A commits a same-frame navigation
+    and announces in the same turn; its successor B runs script at once but
+    holds its own `load` event open behind a four-second image, so every signal
+    the parent has — `contentWindow`, the armed identity, the document
+    generation — still says "A". Under the retired `WindowProxy` delivery, the
+    welcome the owner approved for A landed in B. It cannot now: the result
+    goes out on the `MessagePort` A transferred, and a port does not survive
+    the navigation that destroyed A.
+    """
+    browser, site = _run(
+        [True], egress=True, settle=6.0,
+        child_query="doc=1&navigate=/successor.html",
+    )
+    try:
+        # The run is only meaningful if A's announcement really was answered
+        # far enough to ask the owner. A mis-timed run fails here, not silently.
+        assert len(browser.dialogs) >= 1
+        assert "navigate" in browser.dialogs[0]
+
+        # Give the parent well past its 250 ms settle, and B well short of its
+        # own load, for anything to arrive.
+        browser.pump(2.5)
+
+        successors = _successors(browser)
+        for message in successors:
+            assert message["answer"] is None
+            assert ANSWER not in message["raw"]
+            assert NOTE not in message["raw"]
+            assert QUESTION_ID not in message["raw"]
+            assert message["ports"] == 0
+        # Not one byte, and not one port: B never became a recipient at all.
+        assert successors == []
+        assert site.captured == []
+    finally:
+        browser.close()
+        site.close()
+
+
+def test_the_transferred_port_is_where_the_whole_welcome_arrives():
+    """The other half: the ordinary path still works, end to end.
+
+    A page that announces with its own channel receives the complete welcome
+    on it — capabilities, the approved `record`, and the transferred bridge
+    port — and that bridge port really carries the port protocol.
+    """
+    browser, site = _run([True], egress=False)
+    try:
+        welcomes = _welcomes(browser)
+        assert len(welcomes) == 1
+        welcome = welcomes[0]
+        # Delivered on the announcer's channel, never on the window.
+        assert welcome["via"] == "port"
+        assert welcome["ports"] == 1
+        assert welcome["answer"] == ANSWER
+        assert '"attempts"' in welcome["raw"] and '"abi":2' in welcome["raw"]
+
+        deadline = time.monotonic() + 10
+        pongs = browser.evaluate("window.__probe.pongs") or []
+        while not pongs and time.monotonic() < deadline:
+            browser.pump(0.5)
+            pongs = browser.evaluate("window.__probe.pongs") or []
+        assert pongs, "the transferred bridge port answers the port protocol"
+        assert '"op":"pong"' in pongs[0]["raw"]
+        assert '"abi":2' in pongs[0]["raw"]
+    finally:
+        browser.close()
+        site.close()
+
+
+def test_an_announcement_without_a_port_gets_neither_port_nor_record():
+    """The retired v1 contract is answered with silence, not a fallback.
+
+    A page that announces the old way — no transferred port, listening on the
+    window — is indistinguishable from an ineligible page: no welcome, no
+    reject, and above all no consent prompt, because the runtime drops the
+    announcement before it ever reaches the snapshot.
+    """
+    browser, site = _run([True], egress=True, child_query="doc=1&legacy=1")
+    try:
+        assert _welcomes(browser) == []
+        assert browser.dialogs == [], "silence is decided before the owner is asked"
+        assert site.captured == []
     finally:
         browser.close()
         site.close()
