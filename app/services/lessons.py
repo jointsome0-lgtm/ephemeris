@@ -1161,13 +1161,16 @@ def _render_lesson_state(
             f"{'' if open_total == 1 else 's'} nobody has answered. Answer "
             "each one before teaching anything new, then record a `review` "
             "naming that attempt — the review IS the answer, and it is what "
-            'marks the question closed. Their text is in `attempts.jsonl`'
-            ' (the records with `"kind": "question"`):'
+            "marks the question closed:"
         )
         for row in open_questions:
+            asked = json.dumps(row["asked"])
+            if row["asked_truncated"]:
+                asked += " (cut here; the whole text is the record with this "
+                asked += 'attempt id in `attempts.jsonl`)'
             lines.append(
                 f"  - `{row['question_id']}`, attempt `{row['attempt_id']}` "
-                f"({row['created_at']})"
+                f"({row['created_at']}): {asked}"
             )
         if open_total > len(open_questions):
             lines.append(

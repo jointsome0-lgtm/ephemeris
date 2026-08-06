@@ -792,15 +792,20 @@ interface SurfaceConfig {
     else switchTab(tab.id);
   }
 
-  function openLessonTab(slug: string | undefined, title: string | undefined) {
+  /* Returns whether this call CREATED the session, which is the only state a
+   * caller can safely write into: a reused tab may have an editor or an agent
+   * in the foreground (#136 review round 2). */
+  function openLessonTab(slug: string | undefined, title: string | undefined): boolean {
     slug = String(slug || '').slice(0, 80);
-    if (!slug) return;
+    if (!slug) return false;
+    var created = false;
     var tab = tabs.find(function (t) { return t.lesson === slug; });
     if (!tab) {
       if (tabs.length >= MAX_TABS) {
         fail('[terminal: maximum 8 sessions]');
-        return;
+        return false;
       }
+      created = true;
       tab = {
         id: newId(), sid: null, lesson: slug, title: cleanTitle(title, slug),
         role: null,
@@ -816,6 +821,7 @@ interface SurfaceConfig {
     if (drawer.hidden) open();
     else switchTab(tab.id);
     if (drawer.classList.contains('minimized')) setMinimized(false);
+    return created;
   }
 
   /* Type a command into a tab and STOP at the prompt (#136).
@@ -980,12 +986,18 @@ interface SurfaceConfig {
       var slug = String(reviewBtn!.dataset.lesson || '').slice(0, 80);
       var text = String(reviewBtn!.dataset.termCommand || '')
         .replace(/[\r\n]+/g, ' ').slice(0, 400);
-      openLessonTab(slug, reviewBtn!.dataset.lessonTitle);
+      var created = openLessonTab(slug, reviewBtn!.dataset.lessonTitle);
       var tab = tabs.find(function (t) { return t.lesson === slug; }) || null;
-      /* Only the tab openLessonTab actually selected: at the tab ceiling it
-       * refuses, and typing a command into whatever else was on screen is the
-       * one outcome worse than doing nothing. */
-      if (tab && tab.id === activeId) typeCommand(tab, text);
+      /* Only into a shell this click just started, and only if it is the tab
+       * on screen: at the tab ceiling openLessonTab refuses, and a session
+       * already open may have an editor or an agent in the foreground, which
+       * would swallow the text as content. So a reused session is brought
+       * forward and left alone — the learner types in it, or closes it and
+       * clicks again for a fresh one. */
+      if (created && tab && tab.id === activeId) typeCommand(tab, text);
+      else if (tab && tab.id === activeId) {
+        fail('[terminal: session already open — command not typed]');
+      }
     });
   }
   if (findPrevBtn) findPrevBtn.addEventListener('click', function () { runSearch(false); });

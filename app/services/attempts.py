@@ -894,6 +894,34 @@ def row_is_question(attempt: dict | None, declared_kind: str | None) -> bool:
 # in front of them either way, and the brief stays readable.
 OPEN_QUESTIONS_SHOWN = 12
 
+# How much of each question travels INTO the brief. The tutor is told to answer
+# these before anything else, so the brief carries the text itself rather than
+# only pointing at `attempts.jsonl` (review round 2): the projection is a
+# repairable copy — a write can land `pending`, and the reconcile pass runs
+# after the brief is written — while the authority column is always there. The
+# full text stays one file away for a question longer than this.
+STATE_QUESTION_CHARS = 400
+STATE_QUESTION_BYTES = STATE_QUESTION_CHARS * 4 + 3
+
+
+def _open_question_view(row: sqlite3.Row) -> dict:
+    head = row["answer_head"]
+    # Same cut as the panel view: 'ignore' drops the partial character the byte
+    # bound may have split, and the newlines are collapsed because this lands
+    # inside one Markdown bullet.
+    text = head.decode("utf-8", "ignore") if isinstance(head, bytes) else str(head)
+    excerpt = " ".join(text[:STATE_QUESTION_CHARS].split())
+    return {
+        "attempt_id": row["attempt_id"],
+        "question_id": row["question_id"],
+        "created_at": row["created_at"],
+        "asked": excerpt,
+        "asked_truncated": (
+            len(text) > STATE_QUESTION_CHARS
+            or row["answer_bytes"] > len(head or b"")
+        ),
+    }
+
 
 def open_questions(
     conn: sqlite3.Connection,
@@ -909,18 +937,21 @@ def open_questions(
     the same grain a `review` names — so nothing the learner asked can be
     abandoned by being asked twice.
 
-    Bounded without bounding the truth: the cursor is streamed over three
-    narrow columns and at most `limit` rows are ever retained, while the rest
-    are counted rather than listed — so a lesson with a long question history
-    costs the walk, never the memory, and STATE still reports the true size of
-    the debt. Returns (rows, total_open).
+    Bounded without bounding the truth: the cursor is streamed over narrow
+    columns — the question text itself is cut to `STATE_QUESTION_BYTES` by
+    SQLite, not read whole — and at most `limit` rows are ever retained, while
+    the rest are counted rather than listed. So a lesson with a long question
+    history costs the walk, never the memory, and STATE still reports the true
+    size of the debt. Returns (rows, total_open).
     """
     open_rows: list[dict] = []
     total = 0
     rows = conn.execute(
-        "SELECT attempt_id, question_id, created_at FROM lesson_attempts "
-        "WHERE lesson_id = ? AND kind = ? ORDER BY id",
-        (lesson_id, RECORD_KIND_QUESTION),
+        "SELECT attempt_id, question_id, created_at, "
+        "       substr(CAST(answer AS BLOB), 1, ?) AS answer_head, "
+        "       length(CAST(answer AS BLOB)) AS answer_bytes "
+        "FROM lesson_attempts WHERE lesson_id = ? AND kind = ? ORDER BY id",
+        (STATE_QUESTION_BYTES, lesson_id, RECORD_KIND_QUESTION),
     )
     try:
         for row in rows:
@@ -928,7 +959,7 @@ def open_questions(
                 continue
             total += 1
             if len(open_rows) < limit:
-                open_rows.append(dict(row))
+                open_rows.append(_open_question_view(row))
     finally:
         rows.close()
     return open_rows, total
@@ -980,6 +1011,10 @@ def _replay_or_conflict(
             "result": "duplicate",
             "attempt_id": existing["attempt_id"],
             "stale": bool(existing["stale"]),
+            # What the record IS, so the confirmation the learner reads can
+            # say "question" for a question — on the replay too, which is the
+            # response a retried submission actually sees (#136).
+            "kind": existing["kind"] or RECORD_KIND,
         }
     raise AttemptError(
         "idempotency-conflict", 409,
@@ -991,8 +1026,8 @@ def record_attempt(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dic
     """Record one attempt for `lesson` (a lessons service view dict).
 
     Returns the response body fields for the D4 endpoint:
-      recorded  -> {result, attempt_id, stale, attempt_number, projection}
-      duplicate -> {result, attempt_id, stale}
+      recorded  -> {result, attempt_id, stale, kind, attempt_number, projection}
+      duplicate -> {result, attempt_id, stale, kind}
     Refusals raise AttemptError with a distinct code per
     docs/lesson-attempts-api.md."""
     submission = _clean_submission(payload)
@@ -1163,6 +1198,7 @@ def _record_locked(
                 "result": "recorded",
                 "attempt_id": attempt_id,
                 "stale": stale,
+                "kind": kind,
                 "attempt_number": attempt_number,
                 "projection": "projected" if projected else "pending",
             }

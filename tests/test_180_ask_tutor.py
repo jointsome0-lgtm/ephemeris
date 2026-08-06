@@ -65,6 +65,15 @@ def _retire(lesson_dir: Path, question_id: str) -> None:
     bundle_schema.write_manifest(manifest_path, manifest)
 
 
+def _rekind(lesson_dir: Path, question_id: str, kind: str) -> None:
+    manifest_path = lesson_dir / lessons.MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for question in manifest["questions"]:
+        if question["id"] == question_id:
+            question["kind"] = kind
+    bundle_schema.write_manifest(manifest_path, manifest)
+
+
 def _rows(lesson_id: int) -> dict[str, dict]:
     conn = get_conn()
     try:
@@ -125,7 +134,21 @@ def test_ask_tutor_records_a_question_and_leaves_every_other_kind_alone(client):
         and asked.json()["projection"] == "projected"
         and asked.json()["stale"] is False
         and asked.json()["attempt_number"] == 1
+        and asked.json()["kind"] == attempts.RECORD_KIND_QUESTION
+        and answered.json()["kind"] == attempts.RECORD_KIND
     ), "a question to the tutor records through the unchanged attempt endpoint"
+
+    # The replay a retried submission actually sees carries the direction too:
+    # the learner who retries a question must not be told they answered one.
+    replay = _submit(
+        client, lesson, lesson_dir, page_id, ASK_ID,
+        "Invented question: what does 'buffered' mean here?", "ask-fixture-ask",
+    )
+    assert (
+        replay.json()["result"] == "duplicate"
+        and replay.json()["kind"] == attempts.RECORD_KIND_QUESTION
+        and "attempt_number" not in replay.json()
+    ), "a duplicate names the direction of the record it replays"
 
     rows = _rows(lesson["id"])
     assert (
@@ -377,10 +400,7 @@ def test_re_kinding_a_control_leaves_what_was_already_recorded_alone(client):
         "Invented answer given while it was a prediction", "ask-rekind-answer",
     )
 
-    manifest_path = lesson_dir / lessons.MANIFEST_NAME
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["questions"][0]["kind"] = bundle_schema.ASK_TUTOR_KIND
-    bundle_schema.write_manifest(manifest_path, manifest)
+    _rekind(lesson_dir, ANSWER_ID, bundle_schema.ASK_TUTOR_KIND)
 
     html = client.get(f"/learn?lesson={lesson['id']}").text
     row = html.split(f'id="rec-q-{ANSWER_ID}"', 1)[-1].split("</li>", 1)[0]
@@ -542,6 +562,31 @@ def test_the_kind_column_lands_on_a_populated_pre_v17_database(tmp_path):
         conn.close()
 
 
+def test_the_brief_carries_the_question_text_not_only_a_pointer(client):
+    """`attempts.jsonl` is a repairable copy: a write can land `pending`, and
+    the reconcile pass runs AFTER the brief is written. So the tutor is handed
+    the question itself, out of the authority, and can answer with the file
+    missing entirely."""
+    lesson, lesson_dir, page_id = _ask_lesson("Ask Tutor Text Fixture")
+    short = "Invented question: which line blocks?"
+    long = "Invented long question. " + "Invented padding sentence. " * 40
+    _submit(client, lesson, lesson_dir, page_id, ASK_ID, short, "ask-text-1")
+    _rekind(lesson_dir, ANSWER_ID, bundle_schema.ASK_TUTOR_KIND)
+    _submit(client, lesson, lesson_dir, page_id, ANSWER_ID, long, "ask-text-2")
+
+    (lesson_dir / attempts.PROJECTION_NAME).unlink()
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    owed = (lesson_dir / lessons.AGENTS_FILENAME).read_text(
+        encoding="utf-8"
+    ).split("- FIRST:", 1)[-1].split("- Questions:", 1)[0]
+    assert (
+        short in owed
+        and long[:300] in owed
+        and long not in owed
+        and "cut here" in owed
+    ), "every open question is quoted, bounded, and marked where it was cut"
+
+
 def test_the_review_button_rides_the_existing_terminal_input_path():
     """Scope guard for the one-click launch: it opens the lesson's agent tab
     and types into it. No endpoint, no second way to execute anything."""
@@ -568,6 +613,38 @@ def test_the_review_button_rides_the_existing_terminal_input_path():
         and "new WebSocket" not in source.split("function typeCommand", 1)[-1]
             .split("function closeActiveTab", 1)[0]
     ), "typing a command adds no transport of its own"
+    # And only into a shell this click started: a session already open may
+    # have an editor or an agent in the foreground, which would take the text
+    # as content (review round 2).
+    handler = source.split("if (reviewBtn) {", 1)[-1].split("\n  }", 1)[0]
+    assert (
+        "var created = openLessonTab(slug" in handler
+        and "if (created && tab && tab.id === activeId) typeCommand" in handler
+        and "): boolean {" in source.split("function openLessonTab", 1)[-1]
+            .split("\n", 1)[0]
+    ), "a reused lesson session is brought forward, never typed into"
     assert "lesson-review-btn" in emitted, (
+        "the committed .js is re-emitted from the .ts (npm run build)"
+    )
+
+
+def test_the_learner_is_told_a_question_was_sent_not_an_answer_recorded():
+    """The confirmation is parent-owned (bridge ABI §3.1) and now reads the
+    direction the server derived, so the app stops calling the learner's
+    question an attempt in the one place they actually look."""
+    root = Path(__file__).resolve().parent.parent
+    source = (root / "app" / "static" / "src" / "learn-bridge.ts").read_text(
+        encoding="utf-8"
+    )
+    emitted = (root / "app" / "static" / "learn-bridge.js").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        'const asked = rec["kind"] === "question";' in source
+        and 'toast("question sent to the tutor")' in source
+        and 'toast(asked ? "question already sent"' in source
+        and 'if (typeof rec["kind"] === "string") reply["kind"]' in source
+    ), "the toast and the reply both carry the server-derived direction"
+    assert "question sent to the tutor" in emitted, (
         "the committed .js is re-emitted from the .ts (npm run build)"
     )

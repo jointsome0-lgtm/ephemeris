@@ -63,13 +63,18 @@ is refused with 403 before the handler runs. Requests must be
 
 ```json
 {"ok": true, "result": "recorded", "attempt_id": "…uuid…",
- "stale": false, "attempt_number": 3, "projection": "projected"}
+ "stale": false, "kind": "attempt", "attempt_number": 3,
+ "projection": "projected"}
 ```
 
 - `result`: `recorded` (row + `lesson_attempt` ledger event committed in one
   transaction) or `duplicate` (idempotent replay; nothing written —
-  `attempt_id`/`stale` are the original's, `attempt_number`/`projection`
+  `attempt_id`/`stale`/`kind` are the original's, `attempt_number`/`projection`
   absent).
+- `kind`: the direction the server derived for this record (see below) — sent
+  for both results, so the confirmation the learner reads can name what was
+  actually written instead of assuming an answer. A client that predates it
+  ignores it, the same forward-compatibility room every other addition uses.
 - `stale`: the §6.4 record-time flag — `true` when the question is now bound
   to a different page than submitted, the current page bytes hash differently
   from `page_rev`, or the current revision is unknowable (file missing,
