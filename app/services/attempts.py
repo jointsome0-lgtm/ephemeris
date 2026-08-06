@@ -17,6 +17,12 @@ comparing the submitted load-time identity against the current binding and
 the current page bytes on disk. The client supplies only: question_id,
 page_id, page_rev (what it saw at load time), answer, idempotency_key.
 
+Two directions, one record (#136): a row is either the learner's answer to a
+question the lesson asked (`kind` = `attempt`) or the learner asking the tutor
+something (`kind` = `question`). Which one is derived here from the declared
+question's manifest kind, never from the submission — the page has no channel
+to classify its own write, and none is added.
+
 No auto-agents: recording an attempt writes the row, the event, and the
 projection line — it never wakes or notifies an agent (Check v1 is
 save-only; a future agent subscribes to `lesson_attempt` events instead).
@@ -46,6 +52,12 @@ PROJECTION_STATE_DIR = DATA_DIR / "attempt-projections"
 PROJECTION_STATE_VERSION = 1
 PROJECTION_STATE_MAX_BYTES = 4096
 RECORD_KIND = "attempt"
+# The other direction of the same channel (#136): the learner asking the tutor
+# something, submitted through the SAME bridge op and endpoint. It is a value
+# of the `kind` field §6.2 already defines, not a new field — a reader that
+# predates it sees a record version it knows with a kind it does not, which is
+# the one place the record shape left for exactly this.
+RECORD_KIND_QUESTION = "question"
 RECORD_VERSION = 1
 
 MAX_ANSWER_BYTES = 32 * 1024   # §6.2: answer ≤ 32 KiB UTF-8
@@ -244,10 +256,29 @@ def _derive_stale(
     return f"sha256:{digest}" != page_rev
 
 
+def _record_kind(question: dict) -> str:
+    """Which direction this record travels, from the RECORD-TIME manifest.
+
+    The page has no channel to say what it is submitting and no say if it had
+    one (the D2 trust model): the declared question's kind is the only input,
+    and it is read once, here, then frozen in the row. A later re-kinding or
+    retirement of the question therefore cannot reclassify records already
+    written — the same reason `page_rev` is compared rather than adopted.
+    """
+    return (
+        RECORD_KIND_QUESTION
+        if question.get("kind") == bundle_schema.ASK_TUTOR_KIND
+        else RECORD_KIND
+    )
+
+
 def _projection_record(row: dict) -> dict:
     """§6.2 record shape, exact field order."""
     return {
-        "kind": RECORD_KIND,
+        # Pre-#136 rows carry no `kind`; the column defaults them to `attempt`,
+        # and a row dict reaching here without the key at all (a caller's own
+        # mapping) is an answer for the same reason.
+        "kind": row.get("kind") or RECORD_KIND,
         "v": RECORD_VERSION,
         "attempt_id": row["attempt_id"],
         "event_uuid": row["event_uuid"],
@@ -799,7 +830,7 @@ PANEL_ANSWER_CHARS = 400
 PANEL_ANSWER_BYTES = PANEL_ANSWER_CHARS * 4 + 3
 
 _LATEST_PER_QUESTION_SQL = (
-    "SELECT attempt_id, question_id, page_id, page_rev, stale, created_at, "
+    "SELECT attempt_id, question_id, page_id, page_rev, stale, kind, created_at, "
     "       substr(CAST(answer AS BLOB), 1, ?) AS answer_head, "
     "       length(CAST(answer AS BLOB)) AS answer_bytes "
     "FROM lesson_attempts WHERE id IN "
@@ -824,8 +855,22 @@ def _panel_attempt_view(row: sqlite3.Row) -> dict:
             len(excerpt) < len(text) or row["answer_bytes"] > len(head or b"")
         ),
         "stale": bool(row["stale"]),
+        # What the record IS, straight from the authority column — the panel
+        # and the generated STATE both need a question to the tutor to read as
+        # one even after the manifest stopped declaring it.
+        "kind": row["kind"] or RECORD_KIND,
         "created_at": row["created_at"],
     }
+
+
+def latest_is_question(attempt: dict | None) -> bool:
+    """Whether a panel attempt view is a question the learner asked the tutor.
+
+    One owner for the test, because three readers ask it (the Record panel, the
+    generated STATE, and the tests) and a pre-#136 view — from a live process
+    that has not restarted — simply carries no `kind` at all.
+    """
+    return bool(attempt) and attempt.get("kind") == RECORD_KIND_QUESTION
 
 
 def lesson_attempt_summary(conn: sqlite3.Connection, lesson_id: int) -> dict:
@@ -943,10 +988,13 @@ def record_attempt(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dic
     stale = _derive_stale(
         lesson, read, question, submission["page_id"], submission["page_rev"]
     )
+    kind = _record_kind(question)
 
     try:
         with _bundle_lock(lesson["slug"]):
-            return _record_locked(conn, lesson, submission, stale, rate_stamp)
+            return _record_locked(
+                conn, lesson, submission, stale, kind, rate_stamp
+            )
     except AttemptError as exc:
         if exc.code == "idempotency-conflict":  # not a new write (round 12)
             _refund_rate(lesson["id"], rate_stamp)
@@ -958,6 +1006,7 @@ def _record_locked(
     lesson: dict,
     submission: dict,
     stale: bool,
+    kind: str,
     rate_stamp: float | None,
 ) -> dict:
     """The bundle-locked write section of `record_attempt`. Every replay
@@ -977,6 +1026,7 @@ def _record_locked(
             "answer": submission["answer"],
             "created_at": created_at,
             "stale": stale,
+            "kind": kind,
         }
         # §6.2 whole-line bound is a writer duty: an answer that fits the
         # 32 KiB budget can still escape past 64 KiB (newlines, quotes).
@@ -1005,19 +1055,23 @@ def _record_locked(
                     "page_rev": submission["page_rev"],
                     "answer": submission["answer"],
                     "stale": stale,
+                    # The record's own direction, and therefore inside the §8
+                    # echo policy: identity and the record itself, never
+                    # title/path/step/concepts/pages.
+                    "kind": kind,
                 })
                 insert_cursor = conn.execute(
                     "INSERT INTO lesson_attempts "
                     "(attempt_id, event_uuid, lesson_id, lesson_uid, "
                     " idempotency_key, page_id, question_id, page_rev, "
-                    " answer, stale, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " answer, stale, kind, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         attempt_id, event_uuid, lesson["id"], lesson["uid"],
                         submission["idempotency_key"],
                         submission["page_id"], submission["question_id"],
                         submission["page_rev"], submission["answer"],
-                        int(stale), created_at,
+                        int(stale), kind, created_at,
                     ),
                 )
                 # attempt_number is the 1-based number of THIS attempt:

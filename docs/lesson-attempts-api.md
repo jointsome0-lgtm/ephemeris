@@ -75,7 +75,9 @@ is refused with 403 before the handler runs. Requests must be
   from `page_rev`, or the current revision is unknowable (file missing,
   unreadable, or symlinked). Stale attempts are recorded, never dropped.
 - `attempt_number`: 1-based count of recorded attempts for this
-  (lesson, question) — the D5 toast's "attempt #N recorded".
+  (lesson, question) — the D5 toast's "attempt #N recorded". It counts the
+  (lesson, question) pair whatever the record kind is, so an ask-the-tutor
+  control numbers the learner's questions the same way.
 - `projection`: `projected` when `attempts.jsonl` now reflects the write
   (fast append or full reconcile rebuild), `pending` when the filesystem
   refused — the authoritative row is durable regardless, and the next
@@ -101,11 +103,39 @@ is refused with 403 before the handler runs. Requests must be
 The D5 bridge attempt operation reuses these `error` codes verbatim as its
 port-level result codes (the slot reserved in lesson-bridge-abi.md §3).
 
+## Record kind — answer, or question to the tutor (#136)
+
+The same endpoint carries both directions of the lesson's conversation, and
+the record says which one it is in the `kind` field the §6.2 projection shape
+already defines:
+
+| `kind` | what it is | how the server decides |
+|--------|-----------|------------------------|
+| `attempt` | the learner's answer to a question the lesson asked | every question kind other than `ask_tutor`, and every row written before schema v17 |
+| `question` | the learner asking the tutor something (an "I don't understand this question" control) | the **record-time** manifest declares that `question_id` with `"kind": "ask_tutor"` (learn-bundle-spec.md §4.3) |
+
+- **The client has no say.** The request body is unchanged — no `kind` field
+  is read from it, and one sent is ignored like every other unknown field.
+  The value is derived server-side from the declared question, exactly like
+  `stale`, and the bridge `attempt` operation is unchanged (no new op, no
+  new field).
+- **It is frozen at record time.** The derived value is stored in the
+  `lesson_attempts.kind` column, so re-kinding or retiring the question later
+  never reclassifies records the learner already sent.
+- **Additive for readers.** The field, its position and the record version
+  are unchanged; only the set of values it can take grew. A reader that
+  predates this treats a `question` record as a record of a kind it does not
+  know — the §6.2 skip-unknown rule — and a bundle whose manifest predates
+  `ask_tutor` produces nothing but `attempt` records. Nothing about the
+  refusal table above changes: an `ask_tutor` question is refused, rate
+  limited, deduplicated and staleness-flagged identically.
+
 ## Storage effects of one recorded attempt
 
-1. `lesson_attempts` row + `lesson_attempt` event (payload per spec §8:
-   `lesson_uid`, `lesson_id`, `slug`, `attempt_id`, `page_id`,
-   `question_id`, `page_rev`, `answer`, `stale`) — one transaction, event
+1. `lesson_attempts` row (including the derived `kind`) + `lesson_attempt`
+   event (payload per spec §8: `lesson_uid`, `lesson_id`, `slug`,
+   `attempt_id`, `page_id`, `question_id`, `page_rev`, `answer`, `stale`,
+   `kind`) — one transaction, event
    identity via `events.uuid` (B4). `created_at` is UTC ISO-8601 and is the
    same string the projection echoes.
 2. One §6.2 line appended to the bundle's `attempts.jsonl` under a

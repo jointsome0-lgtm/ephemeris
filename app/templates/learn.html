@@ -55,9 +55,15 @@
 {%- endmacro %}
 
 {% macro record_question(q) -%}
-<li class="rec-q{% if q.retired %} rec-q-retired{% endif %}" id="rec-q-{{ q.question_id }}">
+{# #136: a row the LEARNER wrote into is not an answer to be judged — it is a
+   question waiting for a reply, and the panel has to be readable as that at a
+   glance. `is defined` guards a live pre-#136 backend rendering this template:
+   without the flag every row simply reads as before. #}
+{% set asked = q.ask_tutor is defined and q.ask_tutor %}
+<li class="rec-q{% if q.retired %} rec-q-retired{% endif %}{% if asked %} rec-q-ask{% endif %}" id="rec-q-{{ q.question_id }}">
   <div class="rec-q-head">
     <span class="rec-q-label">{{ q.label }}</span>
+    {% if asked %}<span class="rec-tag rec-ask" title="The learner asked the tutor this, instead of answering">asked the tutor</span>{% endif %}
     {% if q.page_id %}<span class="rec-q-page">{{ q.page_id }}</span>{% endif %}
     {% if q.moved_to %}<span class="rec-tag rec-moved" title="Answered here; now declared on {{ q.moved_to }}">moved</span>{% endif %}
     {% if q.retired %}<span class="rec-tag rec-retired" title="No longer declared in the manifest">retired</span>{% endif %}
@@ -80,7 +86,11 @@
     {% if q.review %}
   <div class="rec-verdict rec-lv-{{ q.review.level }}">
     <p class="rec-meta">
-      <span class="rec-level">{{ q.review.level }}</span>
+      {# On an asked row the verdict IS the tutor's reply, so that is the
+         headline; the level still judged something (the understanding the
+         question revealed) and stays readable beside it, not instead of it. #}
+      <span class="rec-level">{{ 'answered' if asked else q.review.level }}</span>
+      {% if asked %}<span class="rec-tag rec-lvl-tag">{{ q.review.level }}</span>{% endif %}
       {% if q.review_exam %}<span class="rec-tag rec-exam" title="Recorded during an exam">exam</span>{% endif %}
       {% if q.review_date %}<span>{{ q.review_date }}</span>{% endif %}
       {% if q.earlier_reviews %}<span class="rec-earlier">({{ q.earlier_reviews }} earlier)</span>{% endif %}
@@ -88,10 +98,10 @@
     <p class="rec-note">{{ q.review.note }}</p>
   </div>
     {% else %}
-  <p class="rec-none">No verdict yet.</p>
+  <p class="rec-none">{{ 'Waiting for the tutor to answer.' if asked else 'No verdict yet.' }}</p>
     {% endif %}
   {% else %}
-  <p class="rec-none">Not attempted.</p>
+  <p class="rec-none">{{ 'Nothing asked.' if asked else 'Not attempted.' }}</p>
   {% endif %}
 </li>
 {%- endmacro %}
@@ -265,6 +275,17 @@
                   data-lesson="{{ selected.slug }}" data-lesson-title="{{ selected.title }}"
                   title="Learner terminal in this lesson's folder — local only"
                   aria-label="Open learner terminal in this lesson's folder">Learner terminal</button>
+          {# #136: the bare shell button above taught nobody that a verdict
+             comes from launching the tutor in it. This one opens that same
+             agent terminal for this lesson and types the command in — it
+             stops at the prompt, so the learner reads and edits it before
+             pressing Enter. `data-term-command` is the whole of what it
+             sends; nothing here executes anything. #}
+          <button type="button" class="btn-text" id="lesson-review-btn"
+                  data-lesson="{{ selected.slug }}" data-lesson-title="{{ selected.title }}"
+                  data-term-command="claude &quot;Read my record and review my answers.&quot;"
+                  title="Open the agent terminal for this lesson with the tutor command ready — local only"
+                  aria-label="Open the agent terminal with the tutor command ready">Review my answers</button>
           {% endif %}
           <span class="lesson-file-state">{{ selected.file.label }} · {{ 'HTML' if selected.file.exists else 'No file' }}</span>
         </div>

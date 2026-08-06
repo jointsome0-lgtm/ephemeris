@@ -239,7 +239,13 @@ a stored selection absent from `pages[]` falls back to `entry` with an
 - `kind`: optional, `^[a-z0-9_-]{1,40}$`; readers treat unknown but
   grammar-valid kinds as `free_text`; a kind violating the grammar is
   dropped (`invalid-value`, the question stays with the default kind);
-  recommended values: `prediction`, `free_text`, `self_check`;
+  recommended values: `prediction`, `free_text`, `self_check`, `ask_tutor`.
+  `ask_tutor` (#136) declares the reverse channel — an "I don't understand
+  this question" / free-question control the LEARNER writes into — and is
+  the only kind the app itself reads: an attempt recorded against such a
+  question is filed as a question to the tutor (§6.2 `kind`), never as an
+  answer. It is a declaration like any other, submitted over the same
+  bridge operation and the same endpoint;
 - `label`: optional adapter-facing summary ≤ 200. The full prompt lives in
   the page HTML; the manifest only declares existence and identity.
 - `replaces`: optional; the `q_…` id of a **retired** predecessor this
@@ -409,6 +415,11 @@ default writes), `entry` `index.html`,
  "created_at": "2026-07-16T12:00:00+00:00", "stale": false}
 ```
 
+- `kind` is `attempt` for an answer to a question the lesson asked, and
+  `question` when the learner asked the tutor instead — derived server-side
+  at record time from the declared question's `ask_tutor` kind (§4.3), never
+  supplied by the page, and frozen with the record. Readers that do not know
+  a kind skip that record, the same way they skip an unknown `v`;
 - `v` versions the record shape; unknown record versions and malformed
   lines are skipped by readers, never a crash. These are out-of-band
   conditions (reconcile reporting, adapter-side findings), NOT §9.2

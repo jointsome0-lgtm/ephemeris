@@ -320,7 +320,7 @@ def _document_question_ids(read) -> set[str] | None:
 
 def _record_entry(state: dict, attempt: dict | None, *, label: str,
                   question_id: str, page_id: str | None, retired: bool,
-                  unvalidated: bool = False) -> dict:
+                  unvalidated: bool = False, ask_tutor: bool = False) -> dict:
     """One question row: its latest attempt and the verdict on THAT attempt.
 
     A review names the attempt it judged, so a verdict on a superseded answer
@@ -335,6 +335,12 @@ def _record_entry(state: dict, attempt: dict | None, *, label: str,
     `stale` flag was decided at record time, so a move after the answer leaves
     no mark on it — the row therefore shows the page the answer was written on
     and names the current binding beside it rather than silently adopting it.
+
+    `ask_tutor` (#136) is the row's DIRECTION: the learner asked this instead
+    of answering it. The caller passes what the manifest declares now, and the
+    recorded kind is OR-ed in here — a control the page has since stopped
+    declaring must not turn the question the learner asked back into an answer
+    they got wrong, which is the exact misreading this issue exists to end.
     """
     review = None
     earlier = 0
@@ -353,6 +359,7 @@ def _record_entry(state: dict, attempt: dict | None, *, label: str,
                                 and page_id != recorded_page) else None,
         "retired": retired,
         "unvalidated": unvalidated,
+        "ask_tutor": ask_tutor or attempts.latest_is_question(attempt),
         "attempt": attempt,
         "attempt_date": _record_date(attempt["created_at"]) if attempt else "",
         "review": review,
@@ -426,6 +433,7 @@ def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> d
             state, latest.get(q["id"]),
             label=q["label"] or q["id"], question_id=q["id"],
             page_id=q["page"], retired=False,
+            ask_tutor=q["kind"] == bundle_schema.ASK_TUTOR_KIND,
         )
         for q in declared
     ]

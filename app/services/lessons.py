@@ -1080,8 +1080,27 @@ def _render_lesson_state(
     read: bundle_schema.ManifestRead,
 ) -> str:
     """Serialize the current lesson record for the regenerated agent brief."""
+    from . import attempts as attempts_service
+
     state, attempt_state, _focus_total = record_panel_db_state(conn, lesson["id"])
     latest = attempt_state["latest_by_question"]
+
+    def reviewed(attempt: dict | None) -> dict | None:
+        return (
+            state["reviews_by_attempt"].get(attempt["attempt_id"])
+            if attempt else None
+        )
+
+    # What the learner asked and nobody has answered yet (#136). Read from the
+    # RECORDED kind rather than from the manifest, so a question the page
+    # stopped declaring is still owed an answer — retiring the control cannot
+    # retire the debt. A question the tutor has already reviewed is answered:
+    # the review IS the reply, and it is the only per-attempt record there is.
+    pending_questions = [
+        question_id
+        for question_id, attempt in latest.items()
+        if attempts_service.latest_is_question(attempt) and not reviewed(attempt)
+    ]
     try:
         current = None if read.rejected else _resolve_entry(lesson, read, None)
     except LessonError:
@@ -1091,15 +1110,31 @@ def _render_lesson_state(
         f"- Lesson title (data): {json.dumps(lesson['title'])}",
         f"- Lesson slug: `{lesson['slug']}`",
         f"- Current page (data): {json.dumps(current or 'unavailable')}",
-        "- Questions:",
     ]
+    if pending_questions:
+        lines.append(
+            "- FIRST: answer the tutor questions the learner asked — "
+            + ", ".join(f"`{question_id}`" for question_id in pending_questions)
+            + ". Their text is in `attempts.jsonl` (records with "
+            '`"kind": "question"`). Answer each one before teaching anything '
+            "new, then record a `review` on that attempt so the answer is "
+            "part of the record."
+        )
+    lines.append("- Questions:")
     for question in read.questions:
         attempt = latest.get(question["id"])
-        review = (
-            state["reviews_by_attempt"].get(attempt["attempt_id"])
-            if attempt else None
-        )
+        review = reviewed(attempt)
         verdict = review["level"] if review else "none"
+        if question["kind"] == bundle_schema.ASK_TUTOR_KIND:
+            # This control asks nothing — the learner writes into it. So the
+            # two facts worth serializing are reversed: whether they used it,
+            # and whether YOU have replied.
+            lines.append(
+                f"  - `{question['id']}` (the learner asks YOU): "
+                f"{'asked' if attempt else 'nothing asked'}; "
+                f"answered_by_you={'yes' if review else 'no'}"
+            )
+            continue
         lines.append(
             f"  - `{question['id']}`: "
             f"{'answered' if attempt else 'unanswered'}; verdict={verdict}"
@@ -1239,6 +1274,34 @@ the bundle before publishing the section. If it needs the network or a
 tool you could not verify, redesign the experiment — do not ship it with
 a caveat.
 
+## Let the learner ask you back
+
+A learner who does not understand the QUESTION has nowhere to put that in a
+page that only has answer fields — so the confusion goes into the answer box,
+is recorded as a wrong answer, and you read a broken mental model where there
+was only an unclear prompt. Give them the other direction:
+
+- Beside every declared question, put a second small control — "I don't
+  understand this question" / "Ask about this" — that opens a short free-text
+  field and a send button. Keep it quiet: a text link or a small button, never
+  competing with Check.
+- It records like everything else: declare it in `questions[]` as its own
+  `q_…` id with `"kind": "ask_tutor"` (and a `label` naming what it belongs
+  to, e.g. "Ask about the buffered-channel prediction"), then wire its send
+  button through the SAME bridge `attempt` operation as Check — same
+  envelope, its own `question_id`, a fresh `request_id`. There is no separate
+  operation and nothing else to call; the app reads the manifest kind and
+  files the record as a question to you rather than as an answer.
+- One page-level "Ask about this page" control is the minimum. A per-question
+  one wherever a prediction is subtle is better — the learner should never
+  have to leave the question to ask about it.
+- Confirm it the same quiet way as Check ("sent — the tutor will answer next
+  session"), and degrade the same way: without the bridge the control shows
+  the read-only state instead of erroring.
+
+Answering those is the first thing you do in the next session — see the
+record and verdict sections below.
+
 ## The learner's record — read it first, teach from it
 
 `attempts.jsonl`, `assessments.jsonl`, and the files under the artifact
@@ -1284,6 +1347,13 @@ This is what turns you from a page generator into a tutor:
   Never load it unboundedly, and skip malformed lines and unknown record
   versions. The newest runs are the ones that matter — usually the last
   few for the block in front of you, not the whole log.
+- A record whose `kind` is `"question"` is not an answer at all: it is the
+  learner asking YOU (the control above). Those come first, before any new
+  teaching — STATE lists the unanswered ones. Answer in the chat, fix
+  whatever made the question unclear (usually the prompt itself, and often
+  a missing visualization), and record a `review` on that attempt so the
+  answer survives the session. A `"kind"` you do not recognize is a record
+  written by a newer app: skip it, do not guess.
 - A wrong answer is a window into a wrong model. Do not restate the
   reveal. Work out what model would produce THAT answer, name it, and
   design a narrower question or experiment that makes the model fail
@@ -1325,6 +1395,11 @@ The call is ordinary HTTP: POST a JSON object to that URL with
   from `attempts.jsonl`, a `level` of `correct`, `partial`, `incorrect`, or
   `unclear`, and a `note` that names the wrong model which would produce
   THAT answer. Do not restate the reveal.
+  On a record whose `kind` is `"question"` the same call is your REPLY, and
+  writing it is what marks the question answered: the `note` is the answer
+  you gave the learner, in a form that still teaches when read alone, and
+  the `level` judges the understanding the question revealed — `unclear`
+  when it shows you cannot yet tell.
 - `evidence` — a durable mastery statement: 1–8 `concepts` (reuse the
   manifest's own tags before minting near-synonyms), a `level` of `seen`,
   `weak`, `developing`, or `passed`, and an honest `basis` — `attempts`,
@@ -1428,10 +1503,12 @@ offline from this bundle before you shipped it.
   bundle consumer shares: depth ≤ 4, at most 512 entries per root,
   regular files only (skip symlinks, FIFOs, sockets), files over 2 MiB
   listed but not read.
-- `attempts.jsonl` — app-owned log of the learner's recorded attempts, one
-  JSON object per line (`question_id`, `page_id`, `answer`, `created_at`).
-  It may be absent or lag behind. Read-only for you:
-  never write or rewrite it.
+- `attempts.jsonl` — app-owned log of what the learner recorded, one JSON
+  object per line (`kind`, `question_id`, `page_id`, `answer`,
+  `created_at`). `kind` is `"attempt"` for an answer and `"question"` for
+  the learner asking you something; treat any other value as a record from
+  a newer app and skip it. It may be absent or lag behind. Read-only for
+  you: never write or rewrite it.
 - `runs.jsonl` — app-owned history of finished editor runs, one JSON object
   per line: run/block/file-revision metadata, exit result and timestamps, plus
   the newest 8192 UTF-8 bytes of combined stdout/stderr. It may be absent or
@@ -1509,9 +1586,12 @@ as in daylight:
   included, in reading order: `{"id": "pg_…", "path": …, "title": …}`.
   Declare every prediction/self-check question a page poses in
   `questions[]`: `{"id": "q_…", "page": "pg_…", "kind": …, "label": "short
-  summary"}` (kinds: `prediction`, `free_text`, `self_check`) — the full
-  prompt lives in the page HTML, and a question not declared in the
-  manifest does not exist to the app.
+  summary"}` (kinds: `prediction`, `free_text`, `self_check`, `ask_tutor`)
+  — the full prompt lives in the page HTML, and a question not declared in
+  the manifest does not exist to the app. `ask_tutor` is the one that
+  reverses the direction: it declares an ask-the-tutor control (above), not
+  something the page asks, and what the learner sends through it is filed as
+  a question to you.
 - Stable ids (v2): mint `pg_`/`q_` ids of 4–32 chars `[a-z0-9]`; the
   suffix carries no meaning — never derive it from a title, never
   re-derive it on rename. Content edits, file renames, and reordering keep
@@ -1652,6 +1732,9 @@ transferred MessagePort. Pages that record answers follow these rules:
   at runtime, never one derived from the question text. If the question
   is not declared in the manifest, declare it first: to the app an
   undeclared question does not exist, so its attempts cannot land.
+  An ask-the-tutor control is the same rule with its own declared id: it
+  sends this same operation, and the manifest's `ask_tutor` kind — not
+  anything the page sends — is what makes the record a question to you.
 - Port requests carry a page-chosen `request_id` (1–128 chars). Mint a
   fresh opaque id, unique across the whole lesson, for every new logical
   submission; reuse the same `request_id` only when retrying that exact

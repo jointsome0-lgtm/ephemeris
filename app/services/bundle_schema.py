@@ -74,7 +74,17 @@ LANGUAGE_RE = re.compile(r"^[a-z0-9+.-]{1,40}\Z")
 RUNNER_ID_RE = re.compile(r"^[a-z0-9-]{1,64}\Z")
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
-QUESTION_KINDS = ("prediction", "free_text", "self_check")
+# `ask_tutor` (#136) reverses the direction of the channel: the page asks
+# nothing and the learner writes what they do not understand, so the record it
+# produces is a question TO the tutor rather than an answer. It is a question
+# kind and not a new op because the declaration model already carries exactly
+# what the reverse channel needs — a durable id the answer can be recorded
+# against, and a page binding — and because the server must never take the
+# classification from the page: it reads it from the manifest at record time.
+# Additive by construction: a reader that predates this value treats it as an
+# unknown-but-grammar-valid kind and falls back to `free_text` (§4.3).
+ASK_TUTOR_KIND = "ask_tutor"
+QUESTION_KINDS = ("prediction", "free_text", "self_check", ASK_TUTOR_KIND)
 DEFAULT_QUESTION_KIND = "free_text"
 
 # --- findings (§9.2) ---------------------------------------------------------

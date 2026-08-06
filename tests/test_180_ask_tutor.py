@@ -1,0 +1,459 @@
+"""The ask-the-tutor channel (#136).
+
+A learner who does not understand the QUESTION had only the answer box to put
+that in, so the confusion was recorded as a wrong answer, read as a broken
+mental model, and never replied to. The reverse direction now travels the same
+bridge operation, the same endpoint and the same authority row — and says so in
+the one field the record shape already had.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+from app.db import get_conn
+from app.routers import learn
+from app.services import assessments, attempts, bundle_schema, lessons
+from app.templating import templates
+
+ANSWER_ID = "q_askpredict"
+ASK_ID = "q_askhelp001"
+
+
+def _ask_lesson(title: str) -> tuple[dict, Path, str]:
+    """A bundle with one ordinary question and one ask-the-tutor control."""
+    conn = get_conn()
+    try:
+        lesson_id = lessons.create_lesson(conn, title)
+        lesson = lessons.get_lesson(conn, lesson_id)
+    finally:
+        conn.close()
+    lesson_dir = Path(lessons.LESSONS_DIR) / lesson["slug"]
+    manifest_path = lesson_dir / lessons.MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    page_id = manifest["pages"][0]["id"]
+    manifest["questions"] = [
+        {
+            "id": ANSWER_ID, "page": page_id, "kind": "prediction",
+            "label": "Invented prediction",
+        },
+        {
+            "id": ASK_ID, "page": page_id, "kind": bundle_schema.ASK_TUTOR_KIND,
+            "label": "Ask about the prediction",
+        },
+    ]
+    bundle_schema.write_manifest(manifest_path, manifest)
+    (lesson_dir / "index.html").write_text(
+        "<html>Invented ask-tutor fixture</html>", encoding="utf-8"
+    )
+    return lesson, lesson_dir, page_id
+
+
+def _rev(lesson_dir: Path) -> str:
+    return "sha256:" + hashlib.sha256(
+        (lesson_dir / "index.html").read_bytes()
+    ).hexdigest()
+
+
+def _retire(lesson_dir: Path, question_id: str) -> None:
+    manifest_path = lesson_dir / lessons.MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["questions"] = [
+        q for q in manifest["questions"] if q["id"] != question_id
+    ]
+    bundle_schema.write_manifest(manifest_path, manifest)
+
+
+def _rows(lesson_id: int) -> dict[str, dict]:
+    conn = get_conn()
+    try:
+        return {
+            row["question_id"]: dict(row)
+            for row in conn.execute(
+                "SELECT * FROM lesson_attempts WHERE lesson_id = ? ORDER BY id",
+                (lesson_id,),
+            )
+        }
+    finally:
+        conn.close()
+
+
+def _events(lesson_uid: str) -> list[dict]:
+    conn = get_conn()
+    try:
+        payloads = [
+            json.loads(row["payload_json"])
+            for row in conn.execute(
+                "SELECT payload_json FROM events "
+                "WHERE type = 'lesson_attempt' ORDER BY id"
+            )
+        ]
+    finally:
+        conn.close()
+    return [p for p in payloads if p.get("lesson_uid") == lesson_uid]
+
+
+def _submit(client, lesson: dict, lesson_dir: Path, page_id: str,
+            question_id: str, answer: str, key: str) -> dict:
+    attempts._reset_rate_limit()
+    return client.post(
+        f"/learn/lessons/{lesson['id']}/attempts",
+        json={
+            "question_id": question_id, "page_id": page_id,
+            "page_rev": _rev(lesson_dir), "answer": answer,
+            "idempotency_key": key,
+        },
+    )
+
+
+def test_ask_tutor_records_a_question_and_leaves_every_other_kind_alone(client):
+    lesson, lesson_dir, page_id = _ask_lesson("Ask Tutor Endpoint Fixture")
+
+    answered = _submit(
+        client, lesson, lesson_dir, page_id, ANSWER_ID,
+        "Invented prediction: it prints hello.", "ask-fixture-answer",
+    )
+    asked = _submit(
+        client, lesson, lesson_dir, page_id, ASK_ID,
+        "Invented question: what does 'buffered' mean here?", "ask-fixture-ask",
+    )
+    assert (
+        answered.status_code == 200 and asked.status_code == 200
+        and answered.json()["result"] == "recorded"
+        and asked.json()["result"] == "recorded"
+        and asked.json()["projection"] == "projected"
+        and asked.json()["stale"] is False
+        and asked.json()["attempt_number"] == 1
+    ), "a question to the tutor records through the unchanged attempt endpoint"
+
+    rows = _rows(lesson["id"])
+    assert (
+        rows[ANSWER_ID]["kind"] == attempts.RECORD_KIND
+        and rows[ASK_ID]["kind"] == attempts.RECORD_KIND_QUESTION
+    ), "the authority row stores the direction, derived from the manifest kind"
+
+    lines = [
+        json.loads(line) for line in
+        (lesson_dir / attempts.PROJECTION_NAME)
+        .read_text(encoding="utf-8").splitlines()
+    ]
+    by_question = {line["question_id"]: line for line in lines}
+    assert (
+        list(by_question[ASK_ID].keys()) == [
+            "kind", "v", "attempt_id", "event_uuid", "lesson_uid", "page_id",
+            "question_id", "page_rev", "answer", "created_at", "stale",
+        ]
+        and by_question[ASK_ID]["v"] == attempts.RECORD_VERSION
+        and by_question[ASK_ID]["kind"] == "question"
+        and by_question[ANSWER_ID]["kind"] == "attempt"
+    ), "§6.2 gains no field: the existing `kind` carries the new value"
+
+    payloads = {p["question_id"]: p for p in _events(lesson["uid"])}
+    assert (
+        payloads[ASK_ID]["kind"] == "question"
+        and payloads[ANSWER_ID]["kind"] == "attempt"
+        and "title" not in payloads[ASK_ID] and "pages" not in payloads[ASK_ID]
+    ), "the ledger event echoes the direction and nothing more (§8)"
+
+    # The client cannot classify its own write: a submission that ASKS for the
+    # question kind on an ordinary question is ignored like any unknown field.
+    forged = client.post(
+        f"/learn/lessons/{lesson['id']}/attempts",
+        json={
+            "question_id": ANSWER_ID, "page_id": page_id,
+            "page_rev": _rev(lesson_dir), "answer": "Invented second answer",
+            "idempotency_key": "ask-fixture-forged", "kind": "question",
+        },
+    )
+    assert (
+        forged.status_code == 200
+        and _rows(lesson["id"])[ANSWER_ID]["kind"] == attempts.RECORD_KIND
+    ), "a page-supplied kind has no channel; the manifest decides"
+
+
+def test_the_refusal_set_and_the_default_kind_are_unchanged(client):
+    lesson, lesson_dir, page_id = _ask_lesson("Ask Tutor Refusal Fixture")
+    manifest_path = lesson_dir / lessons.MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    # Grammar-valid but unknown: §4.3 still degrades it to `free_text`, and a
+    # free_text answer is an answer — only `ask_tutor` reverses the direction.
+    manifest["questions"][0]["kind"] = "invented_kind"
+    bundle_schema.write_manifest(manifest_path, manifest)
+
+    degraded = _submit(
+        client, lesson, lesson_dir, page_id, ANSWER_ID,
+        "Invented answer under an unknown kind", "ask-refusal-degraded",
+    )
+    assert (
+        degraded.status_code == 200
+        and _rows(lesson["id"])[ANSWER_ID]["kind"] == attempts.RECORD_KIND
+    ), "an unknown question kind still reads as free_text and records an answer"
+
+    undeclared = _submit(
+        client, lesson, lesson_dir, page_id, "q_neverdeclared",
+        "Invented answer to nothing", "ask-refusal-undeclared",
+    )
+    malformed = _submit(
+        client, lesson, lesson_dir, page_id, "not-a-question-id",
+        "Invented answer", "ask-refusal-malformed",
+    )
+    assert (
+        undeclared.status_code == 422
+        and undeclared.json()["error"] == "unknown-question"
+        and malformed.status_code == 400
+        and malformed.json()["error"] == "invalid-question-id"
+    ), "the refusal codes are exactly what they were before the new kind"
+
+
+def test_the_record_panel_reads_a_question_as_a_question(client):
+    lesson, lesson_dir, page_id = _ask_lesson("Ask Tutor Panel Fixture")
+    _submit(
+        client, lesson, lesson_dir, page_id, ANSWER_ID,
+        "Invented prediction answer", "ask-panel-answer",
+    )
+    asked = _submit(
+        client, lesson, lesson_dir, page_id, ASK_ID,
+        "Invented question: why is this one different?", "ask-panel-ask",
+    )
+
+    html = client.get(f"/learn?lesson={lesson['id']}").text
+    record = html.split('<details class="lesson-record"', 1)[-1]
+    ask_row = record.split(f'id="rec-q-{ASK_ID}"', 1)[-1].split("</li>", 1)[0]
+    answer_row = record.split(f'id="rec-q-{ANSWER_ID}"', 1)[-1].split("</li>", 1)[0]
+    assert (
+        "asked the tutor" in ask_row
+        and "Waiting for the tutor to answer." in ask_row
+        and "No verdict yet." not in ask_row
+        and "asked the tutor" not in answer_row
+        and "No verdict yet." in answer_row
+    ), "the panel tells a question to the tutor from an answer awaiting a verdict"
+
+    # The reply. It is an ordinary review — the panel leads with the fact that
+    # the question was answered and keeps the level beside it.
+    conn = get_conn()
+    try:
+        assessments.record_assessment(conn, lesson, {
+            "kind": "review", "level": "unclear",
+            "attempt_id": asked.json()["attempt_id"],
+            "note": "Invented reply for the learner question",
+            "idempotency_key": "ask-panel-reply",
+        })
+    finally:
+        conn.close()
+    replied = client.get(f"/learn?lesson={lesson['id']}").text
+    replied_row = replied.split(
+        f'id="rec-q-{ASK_ID}"', 1)[-1].split("</li>", 1)[0]
+    assert (
+        ">answered</span>" in replied_row
+        and "Invented reply for the learner question" in replied_row
+        and "Waiting for the tutor to answer." not in replied_row
+    ), "a review on that attempt IS the reply, and reads as one"
+
+    # Retiring the control cannot turn what the learner asked back into an
+    # answer they got wrong: the row's direction comes from the RECORD.
+    _retire(lesson_dir, ASK_ID)
+    after = client.get(f"/learn?lesson={lesson['id']}").text
+    retired_row = after.split(f'id="rec-q-{ASK_ID}"', 1)[-1].split("</li>", 1)[0]
+    assert (
+        "asked the tutor" in retired_row and "retired" in retired_row
+    ), "a retired ask control keeps its recorded direction"
+
+
+def test_state_asks_for_the_unanswered_questions_first(client):
+    lesson, lesson_dir, page_id = _ask_lesson("Ask Tutor State Fixture")
+
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    quiet = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
+    assert (
+        "- FIRST: answer the tutor questions" not in quiet
+        and f"`{ASK_ID}` (the learner asks YOU): nothing asked; "
+            "answered_by_you=no" in quiet
+        and f"`{ANSWER_ID}`: unanswered; verdict=none" in quiet
+    ), "an unused ask control owes nothing: the line stays away"
+
+    asked = _submit(
+        client, lesson, lesson_dir, page_id, ASK_ID,
+        "Invented question: what am I supposed to predict?", "ask-state-ask",
+    )
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    pending = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
+    assert (
+        "- FIRST: answer the tutor questions" in pending
+        and f"`{ASK_ID}`" in pending.split("- FIRST:", 1)[-1].split("\n", 1)[0]
+        and ANSWER_ID not in pending.split("- FIRST:", 1)[-1].split("\n", 1)[0]
+        and f"`{ASK_ID}` (the learner asks YOU): asked; answered_by_you=no"
+            in pending
+    ), "an unanswered question to the tutor is the first thing STATE says"
+
+    conn = get_conn()
+    try:
+        assessments.record_assessment(conn, lesson, {
+            "kind": "review", "level": "unclear",
+            "attempt_id": asked.json()["attempt_id"],
+            "note": "Invented reply",
+            "idempotency_key": "ask-state-reply",
+        })
+    finally:
+        conn.close()
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    answered = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
+    assert (
+        "- FIRST: answer the tutor questions" not in answered
+        and f"`{ASK_ID}` (the learner asks YOU): asked; answered_by_you=yes"
+            in answered
+    ), "the review is what clears the debt"
+
+    # The debt survives retirement for the same reason the panel row does.
+    _retire(lesson_dir, ASK_ID)
+    _submit(
+        client, lesson, lesson_dir, page_id, ANSWER_ID,
+        "Invented answer", "ask-state-answer",
+    )
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    retired = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
+    assert (
+        "- FIRST: answer the tutor questions" not in retired
+        and f"`{ANSWER_ID}`: answered; verdict=none" in retired
+    ), "an answered question stays answered once its control is retired"
+
+    # And the contract the brief teaches is the one the app implements: the
+    # kind literal a page must declare, the literal the projection then
+    # carries, and the reply that clears the debt above.
+    assert (
+        '"kind": "ask_tutor"' in retired
+        and "## Let the learner ask you back" in retired
+        and f'`kind` is `"{attempts.RECORD_KIND}"` for an answer' in retired
+        and f'`"{attempts.RECORD_KIND_QUESTION}"` for' in retired
+        and "the same call is your REPLY" in retired
+    ), "the pedagogy contract carries the control it now asks pages to build"
+
+
+def test_learn_html_renders_under_a_pre_136_router_context(client, monkeypatch):
+    """The live process renders this working-tree template against its OWN
+    (older) context until the restart, so the flag #136 adds is `is defined`-
+    guarded — proven here by rendering the same page without it."""
+    lesson, lesson_dir, page_id = _ask_lesson("Ask Tutor Template Guard")
+    _submit(
+        client, lesson, lesson_dir, page_id, ASK_ID,
+        "Invented question under the old context", "ask-guard-ask",
+    )
+
+    captured: dict = {}
+    original = learn.templates.TemplateResponse
+
+    def capture(request, name, context, *args, **kwargs):
+        captured.update(context)
+        return original(request, name, context, *args, **kwargs)
+
+    monkeypatch.setattr(learn.templates, "TemplateResponse", capture)
+    assert client.get(f"/learn?lesson={lesson['id']}").status_code == 200
+    assert captured["selected"]["record"]["questions"], "the panel rendered"
+
+    selected = dict(captured["selected"])
+    record = dict(selected["record"])
+    record["questions"] = [
+        {k: v for k, v in q.items() if k != "ask_tutor"}
+        for q in record["questions"]
+    ]
+    record["retired"] = [
+        {k: v for k, v in q.items() if k != "ask_tutor"}
+        for q in record["retired"]
+    ]
+    selected["record"] = record
+    old = templates.env.get_template("learn.html").render(
+        {**captured, "selected": selected}
+    )
+    assert (
+        f'id="rec-q-{ASK_ID}"' in old
+        and "asked the tutor" not in old
+        and "Waiting for the tutor to answer." not in old
+        and "No verdict yet." in old
+    ), "without the flag every row simply renders the way it did before"
+
+
+def test_the_kind_column_lands_on_a_populated_pre_v17_database(tmp_path):
+    """The live database is not empty when this migration reaches it — it holds
+    the attempts that motivated the issue. Those rows are answers by definition
+    (nothing else could record before the column existed), so the default is
+    the migration's whole answer for them, and it must run without a rewrite.
+    """
+    import sqlite3
+
+    from app import db
+
+    path = tmp_path / "pre-v17.sqlite"
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.executescript(
+            "CREATE TABLE lessons (id INTEGER PRIMARY KEY);"
+            + db._SCHEMA_V12
+            + "INSERT INTO lessons(id) VALUES (1);"
+            "INSERT INTO lesson_attempts (attempt_id, event_uuid, lesson_id,"
+            " lesson_uid, idempotency_key, page_id, question_id, page_rev,"
+            " answer, stale, created_at) VALUES"
+            " ('invented-attempt', 'invented-event', 1, 'invented-uid',"
+            "  'invented-key', 'pg_invented1', 'q_invented1', 'sha256:0',"
+            "  'Invented pre-migration answer', 0, '2026-01-01T00:00:00+00:00');"
+            "PRAGMA user_version = 16;"
+        )
+        db._migrate_to_17(conn)
+        conn.commit()
+        assert [dict(row) for row in conn.execute(
+            "SELECT id, kind FROM lesson_attempts"
+        )] == [{"id": 1, "kind": attempts.RECORD_KIND}], (
+            "every row written before the column existed is an answer"
+        )
+
+        # A hand-repaired database that already has the column converges.
+        db._migrate_to_17(conn)
+
+        # And the authority stays structurally valid under any second writer:
+        # the two kinds the app knows are the two the schema permits.
+        insert = (
+            "INSERT INTO lesson_attempts (attempt_id, event_uuid, lesson_id,"
+            " lesson_uid, idempotency_key, page_id, question_id, page_rev,"
+            " answer, stale, created_at, kind) VALUES"
+            " (?, 'invented-event', 1, 'invented-uid', ?, 'pg_invented1',"
+            "  'q_invented2', 'sha256:0', 'Invented', 0, 't', ?)"
+        )
+        conn.execute(insert, ("invented-b", "key-b", attempts.RECORD_KIND_QUESTION))
+        try:
+            conn.execute(insert, ("invented-c", "key-c", "invented_kind"))
+            raise AssertionError("the kind column accepted a value nothing writes")
+        except sqlite3.IntegrityError:
+            pass
+    finally:
+        conn.close()
+
+
+def test_the_review_button_rides_the_existing_terminal_input_path():
+    """Scope guard for the one-click launch: it opens the lesson's agent tab
+    and types into it. No endpoint, no second way to execute anything."""
+    root = Path(__file__).resolve().parent.parent
+    source = (root / "app" / "static" / "src" / "terminal.ts").read_text(
+        encoding="utf-8"
+    )
+    emitted = (root / "app" / "static" / "terminal.js").read_text(encoding="utf-8")
+    template = (root / "app" / "templates" / "learn.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "lesson-review-btn" in template
+        and 'data-term-command="claude ' in template
+        and "lesson-review-btn" in source
+        and "openLessonTab(slug" in source
+    ), "the button is wired to the lesson's own agent tab"
+    # The text reaches the shell through xterm's paste path — the same one the
+    # paste button uses — and reaches it as ONE line, so it stops at the prompt.
+    assert (
+        "tab.term.paste(text)" in source
+        and "replace(/[\\r\\n]+/g, ' ')" in source
+        and "new WebSocket" not in source.split("function typeCommand", 1)[-1]
+            .split("function closeActiveTab", 1)[0]
+    ), "typing a command adds no transport of its own"
+    assert "lesson-review-btn" in emitted, (
+        "the committed .js is re-emitted from the .ts (npm run build)"
+    )
