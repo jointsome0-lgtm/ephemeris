@@ -610,13 +610,19 @@ what the tutor said about them without leaving the question.
   attempt. Retired ids never travel; an id with no entry means nothing known,
   never "not attempted" (§6.1).
 - **Content**: the latest attempt's answer (the Record panel's excerpt, with a
-  truncation flag), its timestamp, its stored `stale` flag (§6.4), and the
-  standing review of THAT attempt (level, note, timestamp) or `null`. Nothing
-  that is not already rendered in the panel on the same page.
+  truncation flag), its timestamp, its recorded direction (`asked`), its stored
+  `stale` flag (§6.4), and the standing review of THAT attempt (level, note,
+  timestamp) or `null`. Nothing that is not already rendered in the panel on
+  the same page. `asked` and `stale` are both record-time facts and both
+  outrank what the page declares now: re-kinding an id does not turn a grade
+  into a reply, and `stale: false` is not a claim that the page has not
+  changed since.
 - **Freshness**: one snapshot per `/learn` render, projected from the same
   read of the record that drew the panel, delivered in the one welcome per
   loaded document. A verdict written while the page is open arrives on the
-  next load; nothing pushes or refreshes it mid-session by design.
+  next load; nothing pushes or refreshes it mid-session by design. The
+  snapshot names the page it was taken for, and is withheld whole if the frame
+  has since navigated to another one.
 - **Compatibility**: the field is absent when there is no snapshot or the
   `attempts` capability was not granted, and pages that ignore it are
   unaffected — read-back adds nothing a bundle must implement.

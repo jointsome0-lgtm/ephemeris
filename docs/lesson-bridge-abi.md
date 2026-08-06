@@ -110,10 +110,11 @@ own record is decided once, by the parent, at grant time.
 "record": {
   "questions": [
     { "question_id": "q_…",        // a question declared on THIS page
+      "asked": false,              // true = recorded as a question to the tutor
       "answer": "…",               // the recorded answer, panel excerpt
       "answer_truncated": false,   // true = `answer` is a cut of a longer body
       "answered_at": "…",          // ISO-8601 UTC, when it was recorded
-      "stale": false,              // the page changed after it was recorded
+      "stale": false,              // page/manifest had already changed AT record time
       "verdict": {                 // the standing review OF THAT answer, or null
         "level": "correct" | "partial" | "incorrect" | "unclear",
         "note": "…",
@@ -134,9 +135,27 @@ Semantics:
 - **Scope: this page's declared questions**, the same list the metadata's
   `bridge_page.questions` carries (spec §6.3) — never the whole lesson,
   never a retired id.
+- **Bound to the document it was taken for.** The parent may navigate the frame
+  to another page without a new `/learn` render (an entry removed or renamed,
+  or a fallback), and the snapshot belongs to the render that built the parent.
+  It carries that render's `lesson_uid`/`page_id`; the parent compares them
+  against the armed identity and omits `record` entirely on a mismatch, so a
+  successor page is never handed the predecessor's answers. Those two fields do
+  not cross the boundary — the child receives `questions` only.
 - **Entries only for what exists.** A declared question with no recorded
   attempt has no entry. An absent id means *nothing known*, never *not
   attempted* (spec §6.1: the record can lag).
+- **`asked` is the recorded direction, and it wins.** It says the learner sent
+  this to the tutor instead of answering it, as recorded — not as the control
+  is kinded now. Re-kinding a durable id between `prediction` and `ask_tutor`
+  therefore cannot make a page read a grading verdict as the tutor's reply, or
+  the reverse. Present the entry by `asked`, never by the control's current
+  kind (§6.1 record-time rule, same as `stale`).
+- **`stale` is a record-time fact.** It says the page or manifest had ALREADY
+  changed when the attempt was written. It is decided once, at record time, and
+  never recomputed: `stale: false` does not promise the page has not changed
+  since. Say "was written against an older version of this page", not "is
+  current".
 - **A snapshot, not a feed.** It is projected from the same read of the record
   that rendered the `/learn` page's Record panel, and it is frozen at module
   init. A verdict recorded while the page is open reaches the document only on

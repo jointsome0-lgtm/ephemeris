@@ -1826,7 +1826,7 @@ transferred MessagePort. Pages that record answers follow these rules:
 - Restoring what is already recorded. The `welcome` may carry a `record`
   field — one entry per question declared on THIS page that has something
   recorded:
-  `{"questions": [{"question_id": "q_…", "answer": "…",
+  `{"questions": [{"question_id": "q_…", "asked": false, "answer": "…",
   "answer_truncated": false, "answered_at": "…", "stale": false,
   "verdict": {"level": "…", "note": "…", "recorded_at": "…"}}]}`
   (`verdict` is `null` when nothing has judged that answer yet). Every page
@@ -1847,9 +1847,16 @@ transferred MessagePort. Pages that record answers follow these rules:
     would replace the learner's full answer with a fragment. Restore text into
     the answer control only when nothing was cut; otherwise put the excerpt
     beside the control and leave the control for a genuinely new answer.
-  - `stale` means the page changed after that answer was recorded. Say so next
-    to it instead of presenting it as an answer to what is on screen now.
-  - On an `ask_tutor` control's id, the `verdict` is the REPLY you wrote:
+  - `stale` means the page or manifest had ALREADY changed when that answer
+    was recorded. It is decided once, at record time, and never recomputed —
+    so `false` does NOT promise the page has stayed the same since. Word it
+    as "written against an older version of this page", and never word a
+    restored answer as "current".
+  - `asked` is the recorded DIRECTION and it outranks how the control is
+    kinded now: `true` means the learner sent this to the tutor instead of
+    answering it. Read the entry by `asked`, not by the control you happen to
+    render today, or re-kinding an id turns a grade into a reply.
+  - On an entry with `asked: true`, the `verdict` is the REPLY you wrote:
     render it as the answer to what the learner asked, not as a mark against
     them. No verdict there means the question is still waiting on you.
   - No `record` field at all (an older app), an unknown `question_id`, or a

@@ -190,6 +190,10 @@ def test_the_snapshot_carries_the_answer_its_time_and_its_verdict(client):
     asked = rows["q_rbask0001"]
     assert asked["answer"] == "What does 'ready' mean for the receiver here?"
     assert asked["verdict"]["note"] == REPLY_NOTE
+    # The direction travels with the entry: without it the page could only ask
+    # its own control, and would read the reply above as a mark against them.
+    assert asked["asked"] is True
+    assert answered["asked"] is False
 
     # §6.4 staleness is the flag stored at record time, carried through.
     assert rows["q_rbstale01"]["stale"] is True
@@ -217,6 +221,53 @@ def test_only_the_questions_this_page_declares_travel_into_it(client):
     body = client.get(f"/learn?lesson={lesson['id']}").text
     for question_id in ("q_rbanswer1", "q_rbother01", "q_rbgone001"):
         assert f'id="rec-q-{question_id}"' in body
+
+
+def test_re_kinding_a_control_cannot_relabel_what_was_recorded(client):
+    """`asked` is what the RECORD says, not what the control says today.
+
+    Flip a used `ask_tutor` id to `prediction` (and the reverse) in the
+    manifest, and the entries must not follow: a page reading direction off its
+    own control would render the tutor's reply as a grade against the learner,
+    which is precisely the misreading #136 exists to end.
+    """
+    lesson = _lesson_for_readback("Readback Rekind Fixture")
+    lesson_dir = Path(lessons.LESSONS_DIR) / lesson["slug"]
+    path = lesson_dir / lessons.MANIFEST_NAME
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    flipped = {"q_rbask0001": "prediction", "q_rbanswer1": "ask_tutor"}
+    for question in manifest["questions"]:
+        if question["id"] in flipped:
+            question["kind"] = flipped[question["id"]]
+    bundle_schema.write_manifest(path, manifest)
+
+    rows = _by_id(_snapshot(client, lesson))
+    assert rows["q_rbask0001"]["asked"] is True
+    assert rows["q_rbanswer1"]["asked"] is False
+
+
+def test_the_snapshot_names_the_page_it_was_taken_for(client):
+    """The runtime can only refuse a mismatch if the snapshot carries identity.
+
+    The frame navigates on its own (the reload poll follows a removed or
+    renamed entry) without a new /learn render, so the parent has to be able to
+    tell the successor page that this snapshot is not its.
+    """
+    lesson = _lesson_for_readback("Readback Identity Fixture")
+    # The identity the runtime arms comes from the preview metadata; the
+    # snapshot has to name the same page or the comparison is meaningless.
+    identity = client.get(
+        f"/learn/lessons/{lesson['id']}/preview-meta"
+    ).json()["bridge_page"]
+
+    first = _snapshot(client, lesson)
+    assert first["lesson_uid"] == identity["lesson_uid"]
+    assert first["page_id"] == identity["page_id"]
+
+    # A different page of the same lesson names itself, never its sibling.
+    other = _snapshot(client, lesson, entry="related/01-next.html")
+    assert other["lesson_uid"] == first["lesson_uid"]
+    assert other["page_id"] != first["page_id"]
 
 
 def test_the_snapshot_is_the_panel_reading_never_a_second_one(client, monkeypatch):
@@ -248,14 +299,14 @@ def test_the_snapshot_is_the_panel_reading_never_a_second_one(client, monkeypatc
         panel = learn._record_panel(conn, fresh, manifest_read=read)
     finally:
         conn.close()
-    declared_here = set(fresh["file"]["bridge_page"]["questions"])
-    projected = learn._record_snapshot(panel, declared_here)
+    projected = learn._record_snapshot(panel, fresh["file"]["bridge_page"])
     rows = {row["question_id"]: row for row in panel["questions"]}
     for entry in projected["questions"]:
         row = rows[entry["question_id"]]
         assert entry["answer"] == row["attempt"]["answer"]
         assert entry["answered_at"] == row["attempt"]["created_at"]
         assert entry["stale"] == row["attempt"]["stale"]
+        assert entry["asked"] == row["ask_tutor"]
         assert (entry["verdict"] is None) == (row["review"] is None)
         if row["review"] is not None:
             assert entry["verdict"]["note"] == row["review"]["note"]
@@ -297,13 +348,19 @@ def test_a_lesson_with_nothing_recorded_still_gets_an_empty_snapshot(client):
     restore. No attribute at all says the backend predates read-back. A page
     cannot tell "nothing recorded" from "no support" if the two look alike.
     """
+    lesson = _lesson_for_readback("Readback Empty Fixture")
     conn = get_conn()
     try:
-        lesson_id = lessons.create_lesson(conn, "Readback Empty Fixture")
-        lesson = lessons.get_lesson(conn, lesson_id)
+        conn.execute("DELETE FROM lesson_attempts WHERE lesson_id = ?",
+                     (lesson["id"],))
+        conn.commit()
     finally:
         conn.close()
-    assert _snapshot(client, lesson) == {"questions": []}
+    snapshot = _snapshot(client, lesson)
+    assert snapshot["questions"] == []
+    # …and it still names its page, so the runtime can place it and hand the
+    # document a `record` that honestly says "nothing recorded here".
+    assert snapshot["lesson_uid"] and snapshot["page_id"]
 
 
 def test_the_snapshot_survives_the_attribute_intact(client):
@@ -486,22 +543,37 @@ def _drive_bridge(tmp_path: Path, *, want, record, attempt=None) -> dict:
     return json.loads(completed.stdout)
 
 
-SNAPSHOT = json.dumps({"questions": [{
+SNAPSHOT_QUESTIONS = [{
     "question_id": "q_harness01",
+    "asked": False,
     "answer": "the recorded answer",
     "answer_truncated": False,
     "answered_at": "2026-08-05T09:00:00Z",
     "stale": False,
     "verdict": {"level": "partial", "note": "the standing verdict",
                 "recorded_at": "2026-08-05T10:00:00Z"},
-}]}, separators=(",", ":"))
+}]
+
+# The identity the harness metadata arms (`meta.bridge_page`), so this snapshot
+# belongs to the document that will complete the handshake.
+SNAPSHOT = json.dumps({
+    "lesson_uid": "les_harness", "page_id": "pg_harness01",
+    "questions": SNAPSHOT_QUESTIONS,
+}, separators=(",", ":"))
+
+# The same snapshot, taken for a page the frame has since navigated away from.
+STRANGER = json.dumps({
+    "lesson_uid": "les_harness", "page_id": "pg_previous1",
+    "questions": SNAPSHOT_QUESTIONS,
+}, separators=(",", ":"))
 
 
 def test_the_welcome_hands_the_snapshot_to_a_page_that_records_answers(tmp_path):
     result = _drive_bridge(tmp_path, want=["attempts"], record=SNAPSHOT)
     assert result["keys"] == ["abi", "capabilities", "ephemeris", "lesson", "record", "type"]
     assert result["message"]["capabilities"] == ["attempts"]
-    assert result["message"]["record"] == json.loads(SNAPSHOT)
+    # Only the questions cross: the identity is the parent's own bookkeeping.
+    assert result["message"]["record"] == {"questions": SNAPSHOT_QUESTIONS}
     # The membrane itself is untouched: one welcome, one port, and the payload
     # still goes to the specific contentWindow rather than a named origin.
     assert result["postedCount"] == 1 and result["ports"] == 1
@@ -569,8 +641,24 @@ def test_a_page_that_did_not_ask_for_attempts_is_told_nothing(tmp_path):
     assert "record" not in result["message"]
 
 
+def test_a_snapshot_taken_for_another_page_never_reaches_this_one(tmp_path):
+    """The frame can navigate without a new /learn render.
+
+    The reload poll follows a removed or renamed entry to whatever the server
+    then serves, and the successor document arms its own identity and completes
+    its own handshake — while the snapshot still belongs to the render that
+    built the parent. Handing it over would show one page's learner answers and
+    verdict notes to a page that never declared those ids.
+    """
+    result = _drive_bridge(tmp_path, want=["attempts"], record=STRANGER)
+    assert result["message"]["capabilities"] == ["attempts"]
+    assert "record" not in result["message"]
+    assert result["keys"] == ["abi", "capabilities", "ephemeris", "lesson", "type"]
+
+
 @pytest.mark.parametrize("case,broken", [
     ("garbage", "not json at all"),
+    ("no-identity", '{"questions":[]}'),
     ("array", "[1,2,3]"),
     ("wrong-questions", '{"questions":7}'),
     ("empty-string", ""),
@@ -592,7 +680,8 @@ def test_the_source_and_the_committed_emit_carry_the_same_rules():
         encoding="utf-8")
     for token in ('frame.dataset["record"]',
                   'capabilities.includes("attempts")',
-                  "welcome.record = recordSnapshot"):
+                  "recordSnapshot.page_id === armed.page_id",
+                  "welcome.record = { questions: recordSnapshot.questions }"):
         assert token in source and token in emitted, token
     # Still no read OPERATION: the port stays write-only by design (ABI §2.1).
     for absent in ("record.get", "record.read", '"record.'):

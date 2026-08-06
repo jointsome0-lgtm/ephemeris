@@ -132,11 +132,9 @@ def get_learn(
         # is the same reading as the panel this render draws — see
         # `_record_snapshot`. Scoped to the questions this page declares,
         # which the bridge identity already resolved (spec §6.3).
-        bridge_page = selected["file"]["bridge_page"]
         selected["record_snapshot"] = json.dumps(
             _record_snapshot(
-                selected["record"],
-                set(bridge_page["questions"]) if bridge_page else set(),
+                selected["record"], selected["file"]["bridge_page"]
             ),
             separators=(",", ":"),
         )
@@ -422,9 +420,9 @@ def _attach_successors(rows: list[dict], declared: list[dict]) -> None:
         )
 
 
-def _record_snapshot(record: dict, question_ids: set[str]) -> dict:
+def _record_snapshot(record: dict, bridge_page: dict | None) -> dict:
     """What crosses INTO the lesson page: the record for the questions THIS
-    page declares (#133 tier 2, ABI §2 `welcome.record`).
+    page declares (#133 tier 2, ABI §2.1 `welcome.record`).
 
     Projected from the panel rows the same render draws — never a second read
     of the record. That is the whole point of taking it here: a snapshot read
@@ -439,11 +437,18 @@ def _record_snapshot(record: dict, question_ids: set[str]) -> dict:
     (`answer_truncated` says so), not a re-read of the full 32 KiB body — the
     boundary carries what the page already shows and no more.
 
+    It carries the identity it was taken FOR. The parent may reload the frame
+    onto another page without a /learn render — a removed or renamed entry
+    falls back through `_resolve_entry` — and that successor document must not
+    be handed the predecessor's answers just because it completed the next
+    handshake (review round 1, P1). The runtime compares before it attaches.
+
     Only questions with something recorded get an entry. A declared question
     the learner has not answered has nothing to restore, and the page already
     knows its own ids; an entry saying "nothing" would only invite a page to
     read absence as proof it was never attempted, which §6.1 forbids.
     """
+    question_ids = set(bridge_page["questions"]) if bridge_page else set()
     questions = []
     for row in record["questions"]:
         if row["question_id"] not in question_ids:
@@ -454,6 +459,11 @@ def _record_snapshot(record: dict, question_ids: set[str]) -> dict:
         review = row["review"]
         questions.append({
             "question_id": row["question_id"],
+            # The direction the RECORD travels, decided by the panel's own
+            # reader (review round 1, P2): re-kinding a durable id must not
+            # let a page read a grading verdict as the tutor's reply, which is
+            # exactly what its current control kind would say.
+            "asked": row["ask_tutor"],
             "answer": attempt["answer"],
             "answer_truncated": attempt["answer_truncated"],
             "answered_at": attempt["created_at"],
@@ -464,7 +474,11 @@ def _record_snapshot(record: dict, question_ids: set[str]) -> dict:
                 "recorded_at": review["created_at"],
             } if review else None,
         })
-    return {"questions": questions}
+    return {
+        "lesson_uid": bridge_page["lesson_uid"] if bridge_page else None,
+        "page_id": bridge_page["page_id"] if bridge_page else None,
+        "questions": questions,
+    }
 
 
 _record_panel_db_state = lessons.record_panel_db_state

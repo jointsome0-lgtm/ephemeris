@@ -188,10 +188,17 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             const parsed = JSON.parse(raw);
             if (typeof parsed !== "object" || parsed === null)
                 return null;
-            const questions = parsed.questions;
-            if (!Array.isArray(questions))
+            const fields = parsed;
+            if (!Array.isArray(fields.questions))
                 return null;
-            return { questions: questions };
+            /* An identity-less snapshot can never match an armed page, so it can
+             * never be handed over — which is the safe reading of a shape this
+             * runtime does not recognise. */
+            return {
+                lesson_uid: typeof fields.lesson_uid === "string" ? fields.lesson_uid : null,
+                page_id: typeof fields.page_id === "string" ? fields.page_id : null,
+                questions: fields.questions,
+            };
         }
         catch {
             return null;
@@ -1290,9 +1297,17 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         /* Read-back travels with the grant that would write the next answer and
          * with nothing else: a page that did not ask for `attempts` records none,
          * so none crosses to it. Omitted whole rather than sent empty when there
-         * is no snapshot, so the pre-#133 welcome shape is reproduced exactly. */
-        if (recordSnapshot !== null && capabilities.includes("attempts")) {
-            welcome.record = recordSnapshot;
+         * is no snapshot, so the pre-#133 welcome shape is reproduced exactly.
+         *
+         * The identity match is the boundary: the reload poll can navigate the
+         * frame to a different page (entry removed, renamed, fallback) and that
+         * document arms its own `bridge_page` while this snapshot still belongs to
+         * the /learn render that built the parent. Handing it over would leak the
+         * predecessor's answers to a page that never declared those ids. */
+        if (recordSnapshot !== null && capabilities.includes("attempts")
+            && recordSnapshot.lesson_uid === armed.lesson_uid
+            && recordSnapshot.page_id === armed.page_id) {
+            welcome.record = { questions: recordSnapshot.questions };
         }
         child.postMessage(welcome, "*", [channel.port2]);
     };
