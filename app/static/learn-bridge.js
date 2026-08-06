@@ -175,6 +175,28 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     /* Phase-F run-start endpoint prefix. It is a separate feature-detection
      * attribute because statics can temporarily run against the old backend. */
     const runsUrl = frame.dataset["runsUrl"] || null;
+    /* Read ONCE: it is a snapshot of the /learn render, not a live feed, and
+     * freezing it at module init is what makes that honest. `null` on an absent
+     * attribute (a backend predating read-back) and on anything unparseable —
+     * the welcome then carries no `record` field and existing pages behave
+     * exactly as before. Degrading beats throwing here: this block owns the
+     * reload poll and the handshake too. */
+    const recordSnapshot = ((raw) => {
+        if (!raw)
+            return null;
+        try {
+            const parsed = JSON.parse(raw);
+            if (typeof parsed !== "object" || parsed === null)
+                return null;
+            const questions = parsed.questions;
+            if (!Array.isArray(questions))
+                return null;
+            return { questions: questions };
+        }
+        catch {
+            return null;
+        }
+    })(frame.dataset["record"]);
     /* The version token the displayed document was served under (server-
      * rendered for the initial navigation, then meta-derived); the binding
      * rule is: identity is armed only while the fresh meta token equals it. */
@@ -1258,13 +1280,21 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             && armedBlocks.some((block) => block.run) && want.includes("run")) {
             capabilities.push("run");
         }
-        child.postMessage({
+        const welcome = {
             ephemeris: "lesson-bridge",
             type: "welcome",
             abi: ABI_VERSION,
             lesson: armed,
             capabilities,
-        }, "*", [channel.port2]);
+        };
+        /* Read-back travels with the grant that would write the next answer and
+         * with nothing else: a page that did not ask for `attempts` records none,
+         * so none crosses to it. Omitted whole rather than sent empty when there
+         * is no snapshot, so the pre-#133 welcome shape is reproduced exactly. */
+        if (recordSnapshot !== null && capabilities.includes("attempts")) {
+            welcome.record = recordSnapshot;
+        }
+        child.postMessage(welcome, "*", [channel.port2]);
     };
     const handleReady = async (data) => {
         const child = frame.contentWindow;

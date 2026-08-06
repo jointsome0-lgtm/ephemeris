@@ -596,6 +596,31 @@ fixes only what the bundle contains (#135).
 - The manifest does NOT list runs, and a lesson with no finished run has no
   file. Read-only for the study agent and the learner alike.
 
+### 6.7 Read-back into the lesson page (#133 tier 2)
+
+Attempts and verdicts also travel back INTO the sandboxed page, so a learner
+returning to a half-finished lesson sees which questions they answered and
+what the tutor said about them without leaving the question.
+
+- **Channel**: a `record` field on the bridge `welcome`, never an operation —
+  the port stays write-only. Wire shape in
+  [lesson-bridge-abi.md](lesson-bridge-abi.md) §2.1.
+- **Scope**: the questions declared on the page being bridged — the same list
+  the `bridge_page` identity carries (§6.3) — and only those with a recorded
+  attempt. Retired ids never travel; an id with no entry means nothing known,
+  never "not attempted" (§6.1).
+- **Content**: the latest attempt's answer (the Record panel's excerpt, with a
+  truncation flag), its timestamp, its stored `stale` flag (§6.4), and the
+  standing review of THAT attempt (level, note, timestamp) or `null`. Nothing
+  that is not already rendered in the panel on the same page.
+- **Freshness**: one snapshot per `/learn` render, projected from the same
+  read of the record that drew the panel, delivered in the one welcome per
+  loaded document. A verdict written while the page is open arrives on the
+  next load; nothing pushes or refreshes it mid-session by design.
+- **Compatibility**: the field is absent when there is no snapshot or the
+  `attempts` capability was not granted, and pages that ignore it are
+  unaffected — read-back adds nothing a bundle must implement.
+
 ## 7. Artifact roots and deterministic discovery
 
 `artifact_roots` (default `["attempts"]`) bounds where learner-authored work

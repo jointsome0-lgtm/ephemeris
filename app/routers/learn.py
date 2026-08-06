@@ -127,6 +127,19 @@ def get_learn(
         # into the version token, so a flip reloads the frame and the parent
         # runtime re-applies the tokens the metadata then carries.
         selected["sandbox"] = _preview_sandbox(selected["file"]["profile"])
+        # #133 tier 2: the read-back snapshot the bridge hands the loaded
+        # document in its `welcome`. An attribute rather than a route, so it
+        # is the same reading as the panel this render draws — see
+        # `_record_snapshot`. Scoped to the questions this page declares,
+        # which the bridge identity already resolved (spec §6.3).
+        bridge_page = selected["file"]["bridge_page"]
+        selected["record_snapshot"] = json.dumps(
+            _record_snapshot(
+                selected["record"],
+                set(bridge_page["questions"]) if bridge_page else set(),
+            ),
+            separators=(",", ":"),
+        )
         for page in selected["pages"]:
             page["href"] = _learn_url(
                 status=status,
@@ -407,6 +420,51 @@ def _attach_successors(rows: list[dict], declared: list[dict]) -> None:
         row["successor"] = (
             successors.get(row["question_id"]) if row["retired"] else None
         )
+
+
+def _record_snapshot(record: dict, question_ids: set[str]) -> dict:
+    """What crosses INTO the lesson page: the record for the questions THIS
+    page declares (#133 tier 2, ABI §2 `welcome.record`).
+
+    Projected from the panel rows the same render draws — never a second read
+    of the record. That is the whole point of taking it here: a snapshot read
+    fresher than the panel would restore an answer or a verdict that the panel
+    under the iframe does not show, and tier 1's unread cursor watermarks
+    exactly the rows that WERE rendered. One reading feeds both surfaces, by
+    construction, so the page can never be shown a verdict the badge below it
+    still calls unread — nor the reverse.
+
+    Nothing here is new information: every field is already on the page, in the
+    Record panel, for the same learner. The answer is the panel's own excerpt
+    (`answer_truncated` says so), not a re-read of the full 32 KiB body — the
+    boundary carries what the page already shows and no more.
+
+    Only questions with something recorded get an entry. A declared question
+    the learner has not answered has nothing to restore, and the page already
+    knows its own ids; an entry saying "nothing" would only invite a page to
+    read absence as proof it was never attempted, which §6.1 forbids.
+    """
+    questions = []
+    for row in record["questions"]:
+        if row["question_id"] not in question_ids:
+            continue
+        attempt = row["attempt"]
+        if attempt is None:
+            continue
+        review = row["review"]
+        questions.append({
+            "question_id": row["question_id"],
+            "answer": attempt["answer"],
+            "answer_truncated": attempt["answer_truncated"],
+            "answered_at": attempt["created_at"],
+            "stale": attempt["stale"],
+            "verdict": {
+                "level": review["level"],
+                "note": review["note"],
+                "recorded_at": review["created_at"],
+            } if review else None,
+        })
+    return {"questions": questions}
 
 
 _record_panel_db_state = lessons.record_panel_db_state
