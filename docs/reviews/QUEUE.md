@@ -61,6 +61,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   navigation request. A separate owner-decided repair must establish the
   consent/trust boundary and exact-browser denial/approval regressions. The
   entry stays Pending; no application fix or restart was performed.
+  Resolution re-drain 2026-08-06 →
+  `docs/reviews/2026-08-06-chain-u-repair-review.md`: the owner prompt closes
+  automatic disclosure but not the document handoff. A delayed-load successor
+  received the approved snapshot in a focused browser probe, leaving 1 Low
+  finding open on this entry. It stays Pending; no application fix or restart
+  was performed.
 
 - [ ] 2026-08-03 — `0b25126`..`113b1dd` on `fix/23-limits-retention`, merged to
   `main` as `898bbed` — `app/security.py`, `app/limits.py`,
@@ -137,6 +143,10 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   offset-less timestamps use the configured ledger zone. The entry remains
   Pending for owner closure under the batch protocol; no restart was
   performed.
+  Chain-U repair re-drain 2026-08-06 →
+  `docs/reviews/2026-08-06-chain-u-repair-review.md`: both issue #23 findings
+  remain resolved and no new issue #23 finding was found. The entry stays
+  Pending with the batch; no application fix or restart was performed.
 
 - [ ] 2026-08-05 — `d71cff5`..`0627649` on `fix/135-runs-projection` —
   `app/services/runs.py`, `app/services/bundle_schema.py`,
@@ -163,6 +173,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   repair must define bounded durable retention while preserving newest
   complete records and the seal/durability contract. The entry stays Pending;
   no application fix or restart was performed.
+  Resolution re-drain 2026-08-06 →
+  `docs/reviews/2026-08-06-chain-u-repair-review.md`: the 20 MiB ceiling,
+  newest-whole-record compaction, bounded legacy read, and conditional
+  publication resolve the original Low finding, and no new run-projection
+  finding was found. The entry stays Pending with the batch; no application
+  fix or restart was performed.
 
 - [ ] 2026-08-06 — squash-merged to `main` as `6b99ab2` (PR #152, branch
   `fix/drain-m1-l1`) — `app/static/src/learn-bridge.ts`,
@@ -181,6 +197,13 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   at a record boundary, republished through the existing staged-write path with
   the swap made conditional on the app's own seal. Tests 263 → 280;
   `verify_restore.py` 34 passed 0 failed; `npm run build` no tracked diff.
+  Diagnosis-only re-drain 2026-08-06 →
+  `docs/reviews/2026-08-06-chain-u-repair-review.md`: 1 Low finding remains.
+  Consent is no longer automatic, but a successor that becomes active and
+  delays its `load` event can receive the old document's approved snapshot.
+  A separate owner-decided ABI or isolation repair needs the exact delayed-
+  successor browser regression. The entry stays Pending; no application fix
+  or restart was performed.
 
 ## Done
 
