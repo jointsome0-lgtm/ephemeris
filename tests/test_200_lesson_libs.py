@@ -157,6 +157,44 @@ def test_first_seed_preserves_a_library_the_agent_vendored_itself():
     assert older.read_bytes()[:20] == b"// https://d3js.org "
 
 
+def test_a_foreign_checksum_file_is_not_mistaken_for_the_stamp():
+    """An older bundle could have vendored libraries under `assets/libs/` and
+    recorded their hashes in a file at this very name. Only the app's own
+    marker may switch off the pass that preserves them."""
+    _lesson, lesson_dir = _new_lesson("Lesson Libs Foreign Stamp")
+    libs = lesson_dir / "assets/libs"
+    (libs / "d3").mkdir(parents=True)
+    (libs / "d3/d3.min.js").write_bytes(b"// d3 v6, hand-vendored\n")
+    foreign = libs / lessons.LESSON_LIBS_CHECKSUM_FILE
+    foreign.write_text("0" * 64 + "  d3/d3.min.js\n", encoding="utf-8")
+
+    lessons.seed_lesson_libs(lesson_dir)
+    assert len(list((libs / "d3").glob("d3.min.js.collision-*"))) == 1, (
+        "a foreign checksum file passed as the app's stamp and cost the library"
+    )
+    assert len(list(libs.glob(f"{lessons.LESSON_LIBS_CHECKSUM_FILE}.collision-*"))) == 1
+    assert foreign.read_bytes().startswith(b"# ephemeris lesson-libs")
+
+
+def test_a_hardlink_is_never_accepted_as_a_seeded_copy():
+    """Matching bytes are not enough when the inode is shared: a later write
+    through the bundle path would change the other name too. The seeder
+    promises an independent copy, so it makes one."""
+    _lesson, lesson_dir = _new_lesson("Lesson Libs Hardlink")
+    shelf_d3 = lessons.LESSON_LIBS_DIR / "d3/7.9.0/d3.min.js"
+    elsewhere = Path(lessons.LESSONS_DIR) / "shared-d3.min.js"
+    elsewhere.write_bytes(shelf_d3.read_bytes())
+    target = lesson_dir / "assets/libs/d3/d3.min.js"
+    target.parent.mkdir(parents=True)
+    os.link(elsewhere, target)
+    assert target.stat().st_nlink == 2
+
+    lessons.seed_lesson_libs(lesson_dir)
+    assert target.stat().st_nlink == 1
+    assert target.stat().st_ino != elsewhere.stat().st_ino
+    assert target.read_bytes() == shelf_d3.read_bytes()
+
+
 def test_a_symlinked_parent_is_replaced_even_when_its_content_matches():
     """The digest of a file reached THROUGH a symlinked parent says nothing:
     the preview route refuses symlinked paths (§2), so a bundle that passed the

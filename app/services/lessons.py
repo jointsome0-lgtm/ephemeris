@@ -15,11 +15,13 @@ import re
 import sqlite3
 import stat as stat_module
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from html import escape
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from threading import Lock
+from typing import BinaryIO, Iterator
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -1843,6 +1845,10 @@ def _ensure_settings_dir(lesson_dir: Path) -> Path:
 LESSON_LIBS_DIR = Path(__file__).resolve().parents[2] / "vendor" / "lesson-libs"
 LESSON_LIBS_CHECKSUM_FILE = "SHASUMS256"
 LESSON_LIBS_BUNDLE_DIR = "assets/libs"
+# First bytes of the stamp a seeded bundle carries — the app's claim on these
+# names, and the only thing that distinguishes it from a checksum file some
+# earlier agent may have written at the same path.
+_LESSON_LIBS_STAMP_MARKER = b"# ephemeris lesson-libs"
 # sha256sum's own output format: digest, two spaces, path relative to the shelf.
 _SHASUMS_LINE = re.compile(r"^([0-9a-f]{64}) {2}(\S.*)$")
 
@@ -1881,9 +1887,37 @@ def lesson_libs_manifest() -> list[tuple[str, str, str]]:
     return entries
 
 
+@contextmanager
+def _own_file(path: Path) -> Iterator[BinaryIO | None]:
+    """Open `path` for reading only if it can be a file this seeder wrote:
+    an ordinary, single-link file reached without following a symlink.
+
+    Same three conditions :func:`_preserve_foreign` uses to recognize its own
+    output, and for the same reason. A hardlink is not our copy even when its
+    bytes match: the inode is shared with a name we do not own, so a later
+    write through it would change that other name too. `None` inside the
+    context means "not ours", which every caller turns into a re-copy.
+    """
+    fd = -1
+    try:
+        # O_NONBLOCK like the other no-follow readers here: a FIFO planted on
+        # the name would otherwise park the open on a writer that never comes,
+        # and this runs on the terminal-open path.
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1
+            st = os.fstat(fh.fileno())
+            yield fh if stat_module.S_ISREG(st.st_mode) and st.st_nlink == 1 else None
+    except OSError:
+        yield None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
 def _seeded_digest(path: Path) -> str | None:
-    """sha256 hex of an already-seeded copy, or None when the name is missing
-    or is anything but an ordinary file we can read without following a link.
+    """sha256 hex of an already-seeded copy, or None when the name holds
+    anything but one of ours.
 
     Deliberately not :func:`_hash_regular_no_follow`: that one answers "what is
     this page's identity", caps at PAGE_IDENTITY_MAX_BYTES and populates the
@@ -1891,22 +1925,32 @@ def _seeded_digest(path: Path) -> str | None:
     turns into a re-copy — the self-healing half of an idempotent seed.
     """
     try:
-        # O_NONBLOCK like the other no-follow readers here: a FIFO planted on
-        # the name would otherwise park the open on a writer that never comes,
-        # and this runs on the terminal-open path.
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
-    except OSError:
-        return None
-    try:
-        with os.fdopen(fd, "rb") as fh:
-            if not stat_module.S_ISREG(os.fstat(fh.fileno()).st_mode):
+        with _own_file(path) as fh:
+            if fh is None:
                 return None
             digest = hashlib.sha256()
             for chunk in iter(lambda: fh.read(1 << 16), b""):
                 digest.update(chunk)
-        return digest.hexdigest()
+            return digest.hexdigest()
     except OSError:
         return None
+
+
+def _stamp_is_ours(path: Path) -> bool:
+    """Whether `path` is this seeder's ownership stamp, by its generated marker.
+
+    Readable-and-regular is not enough: a bundle authored before the shelf
+    existed could have vendored libraries under `assets/libs/` AND recorded
+    their checksums in a file of its own at this very name. Mistaking that for
+    the stamp would skip the one pass that preserves those libraries.
+    """
+    try:
+        with _own_file(path) as fh:
+            return fh is not None and fh.read(len(_LESSON_LIBS_STAMP_MARKER)) == (
+                _LESSON_LIBS_STAMP_MARKER
+            )
+    except OSError:
+        return False
 
 
 def _ensure_seed_dir(lesson_dir: Path, relative: str) -> Path:
@@ -1939,7 +1983,8 @@ def _bundle_shelf_stamp(entries: list[tuple[str, str, str]]) -> bytes:
     later seed knows the area is the app's to republish.
     """
     versions = sorted({tuple(shelf_rel.split("/")[:2]) for shelf_rel, _b, _d in entries})
-    header = "# ephemeris lesson-libs — app-managed, regenerated on terminal open\n"
+    header = _LESSON_LIBS_STAMP_MARKER.decode("ascii")
+    header += " — app-managed, regenerated on terminal open\n"
     header += "".join(f"# {name} {version}\n" for name, version in versions)
     prefix = LESSON_LIBS_BUNDLE_DIR + "/"
     body = "".join(
@@ -1977,7 +2022,7 @@ def seed_lesson_libs(lesson_dir: Path) -> int:
         return 0
     stamp_path = lesson_dir / PurePosixPath(LESSON_LIBS_BUNDLE_DIR) / LESSON_LIBS_CHECKSUM_FILE
     stamp = _bundle_shelf_stamp(entries)
-    app_managed = _seeded_digest(stamp_path) is not None
+    app_managed = _stamp_is_ours(stamp_path)
     written = 0
     complete = True
     for shelf_rel, bundle_rel, digest in entries:
