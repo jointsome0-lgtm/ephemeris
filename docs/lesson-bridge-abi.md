@@ -1,7 +1,9 @@
 # Lesson bridge ABI (v1)
 
-Status: frozen with D2; extended additively by D5 (§3.1, `attempts`) and
-phase F (§3.2, `editor`; §3.3, `run`). This is the contract between the Learn page's parent runtime
+Status: frozen with D2; extended additively by D5 (§3.1, `attempts`),
+phase F (§3.2, `editor`; §3.3, `run`) and #133 tier 2 (§2.1, the `record`
+snapshot on the welcome — a field, not an operation).
+This is the contract between the Learn page's parent runtime
 (`app/static/src/learn-bridge.ts`, emitted `learn-bridge.js`) and a lesson
 page running inside the sandboxed preview iframe. The bundle contract that
 decides *whether* a page may be bridged lives in
@@ -89,13 +91,103 @@ parent → child (postMessage with one transferred MessagePort)
     "abi": 1,                    // the selected version
     "lesson": { "lesson_uid": "…", "page_id": "pg_…",
                 "page_rev": "sha256:…" },
-    "capabilities": ["attempts", "editor", "run"] }
+    "capabilities": ["attempts", "editor", "run"],
                                       // granted = want ∩ available routes/metadata
+    "record": { "questions": [ … ] } } // optional read-back snapshot, §2.1
 ```
 
 The transferred port is the bridge. Everything after the welcome flows over
 it; the parent's global `message` listener never answers the same document
 twice (a second `ready` is ignored until the next navigation).
+
+### 2.1 `record` — the read-back snapshot (#133 tier 2)
+
+Read-back is a **field on the welcome, not an operation**. There is no
+`record.get`: the port stays write-only, and what the page may know about its
+own record is decided once, by the parent, at grant time.
+
+```text
+"record": {
+  "questions": [
+    { "question_id": "q_…",        // a question declared on THIS page
+      "asked": false,              // true = recorded as a question to the tutor
+      "answer": "…",               // the recorded answer, panel excerpt
+      "answer_truncated": false,   // true = `answer` is a cut of a longer body
+      "answered_at": "…",          // ISO-8601 UTC, when it was recorded
+      "stale": false,              // page/manifest had already changed AT record time
+      "verdict": {                 // the standing review OF THAT answer, or null
+        "level": "correct" | "partial" | "incorrect" | "unclear",
+        "note": "…",
+        "recorded_at": "…" } }
+  ] }
+```
+
+Semantics:
+
+- **Additive.** The field is present only when the parent has a snapshot to
+  give AND `attempts` was granted; otherwise it is omitted entirely and the
+  welcome is byte-for-byte the pre-#133 shape. A child that ignores `record`
+  is unaffected in every case — it is not a capability, nothing is negotiated
+  for it, and no operation depends on it.
+- **Gated by `attempts`.** A page that did not ask to record answers has none
+  to restore, so nothing crosses the frame boundary for it. One negotiation
+  governs both directions.
+- **Scope: this page's declared questions**, the same list the metadata's
+  `bridge_page.questions` carries (spec §6.3) — never the whole lesson,
+  never a retired id.
+- **Bound to the document it was taken for.** The parent may navigate the frame
+  to another page without a new `/learn` render (an entry removed or renamed,
+  or a fallback), and the snapshot belongs to the render that built the parent.
+  It carries that render's `lesson_uid`/`page_id`; the parent compares them
+  against the armed identity and omits `record` entirely on a mismatch, so a
+  successor page is never handed the predecessor's answers. Those two fields do
+  not cross the boundary — the child receives `questions` only.
+- **Re-projected onto what the loaded page declares now.** A manifest-only edit
+  retires or moves a question without changing the page's version token, so the
+  reloaded document can arm under the same identity with a shorter question
+  list. Every entry is therefore filtered against the declared ids in the
+  metadata that document armed from, and `record` is omitted whole when that
+  list is missing or malformed (the same fail-closed rule the attempt path
+  uses). An entry never survives for an id the page no longer declares.
+- **Entries only for what exists.** A declared question with no recorded
+  attempt has no entry. An absent id means *nothing known*, never *not
+  attempted* (spec §6.1: the record can lag).
+- **`asked` is the recorded direction, and it wins.** It says the learner sent
+  this to the tutor instead of answering it, as recorded — not as the control
+  is kinded now. Re-kinding a durable id between `prediction` and `ask_tutor`
+  therefore cannot make a page read a grading verdict as the tutor's reply, or
+  the reverse. Present the entry by `asked`, never by the control's current
+  kind (§6.1 record-time rule, same as `stale`).
+- **`stale` is a record-time fact.** It says the page or manifest had ALREADY
+  changed when the attempt was written. It is decided once, at record time, and
+  never recomputed: `stale: false` does not promise the page has not changed
+  since. Say "was written against an older version of this page", not "is
+  current".
+- **A snapshot, not a feed.** It is projected from the same read of the record
+  that rendered the `/learn` page's Record panel, and it is frozen at module
+  init. A verdict recorded while the page is open reaches the document only on
+  the next `/learn` load; the tier-1 unread badge is what signals it live.
+  Binding it to the panel's own reading is deliberate: a fresher snapshot
+  would show the lesson page a verdict the badge beneath it still counts
+  unread.
+- **Nothing new crosses the boundary.** Every field is already rendered in the
+  Record panel of the same document — including `answer`, which is the
+  panel's excerpt (`answer_truncated` marks the cut), not a re-read of the
+  full 32 KiB body. The snapshot is bounded by the panel it mirrors, which is
+  why it carries no separate size limit.
+- **Ungated by design, and where that is decided.** No prompt stands between
+  the record and the page: read-back happens on every load, so a prompt would
+  mean a modal per lesson opening, and declining it would restore exactly the
+  blank controls this feature exists to end. That is unlike the artifact READ
+  path, which asks (`allowArtifactRead`) because a page requests it explicitly
+  and rarely. What crosses is the learner's own answers and the tutor's notes
+  for this page's questions — the same rows the Record panel renders under the
+  frame — into a document whose profile leaves same-frame navigation open
+  (spec §5 residual). Whether that pairing stays ungated is an owner decision,
+  taken through the review queue, not inside the runtime.
+- **Children:** insert every value as text; `answer` is learner-authored and
+  `note` is agent-authored. Never resubmit a truncated `answer` as a new
+  attempt — it would replace the full body with a fragment.
 
 If no supported version overlaps:
 

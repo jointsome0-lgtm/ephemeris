@@ -311,6 +311,12 @@
           data-attempts-url="/learn/lessons/{{ selected.id }}/attempts"
     {% if selected.artifacts_url is defined %}data-artifacts-url="{{ selected.artifacts_url }}"{% endif %}
     {% if selected.runs_url is defined %}data-runs-url="{{ selected.runs_url }}"{% endif %}
+          {# #133 tier 2: what is already recorded for the questions this page
+             declares, for the bridge to hand over in its `welcome`. Ordinary
+             escaped text — the runtime JSON-parses the value back — so it
+             stays inert markup either way. `is defined` guards a live pre-#133
+             backend: no attribute, no `record` field, pages unchanged. #}
+    {% if selected.record_snapshot is defined %}data-record="{{ selected.record_snapshot }}"{% endif %}
           data-version="{{ selected.file.version }}"
           sandbox="{{ selected.sandbox if selected.sandbox is defined else 'allow-scripts allow-forms allow-popups allow-downloads' }}"></iframe>
         {# Early load observer: parses (and runs) synchronously right after

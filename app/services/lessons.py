@@ -1512,7 +1512,10 @@ carries its own visualization; reveals are collapsed; every link and fact
 is one you verified; on a v2 bundle, every prediction a learner should
 commit to is declared in `questions[]` and wired to Check (a v1 manifest
 never gains v2-only fields — keep its predictions inline); every experiment ran
-offline from this bundle before you shipped it.
+offline from this bundle before you shipped it. Then reload the page as a
+learner who already answered: every question the record knows about must come
+back marked, with its verdict beside it — a page that greets a returning
+learner with blank controls has thrown their work away on screen.
 
 ## Lesson metadata and data boundary
 
@@ -1820,6 +1823,49 @@ transferred MessagePort. Pages that record answers follow these rules:
   `stale-page`, `rate-limited`, `busy` — degrade to the read-only state
   and keep the learner's text). Never resend a changed answer under an
   old `request_id`; retry an unanswered submission with the SAME id.
+- Restoring what is already recorded. The `welcome` may carry a `record`
+  field — one entry per question declared on THIS page that has something
+  recorded:
+  `{"questions": [{"question_id": "q_…", "asked": false, "answer": "…",
+  "answer_truncated": false, "answered_at": "…", "stale": false,
+  "verdict": {"level": "…", "note": "…", "recorded_at": "…"}}]}`
+  (`verdict` is `null` when nothing has judged that answer yet). Every page
+  that declares a question MUST use it on load: mark those questions
+  answered, show the recorded answer, and render the verdict inline beside
+  that question's reveal. Without it a learner returning to a half-finished
+  lesson meets blank controls with no way to tell answered from unanswered,
+  and your verdicts sit somewhere they are not reading. The rules that keep
+  it honest:
+  - It is a SNAPSHOT of the moment the app page loaded, not a live feed. A
+    verdict recorded while the page is open appears on the next load. Never
+    poll for one, and never word the page as if the state were current.
+  - A declared id with NO entry means nothing is known about it — never that
+    it was not attempted. Same rule as the projection files above: absence is
+    silence. Do not word restored state as "you skipped this".
+  - `answer_truncated` says the text is an excerpt of a longer answer. Show
+    it as an excerpt, and never let Check resubmit it: sending a cut copy back
+    would replace the learner's full answer with a fragment. Restore text into
+    the answer control only when nothing was cut; otherwise put the excerpt
+    beside the control and leave the control for a genuinely new answer.
+  - `stale` means the page or manifest had ALREADY changed when that answer
+    was recorded. It is decided once, at record time, and never recomputed —
+    so `false` does NOT promise the page has stayed the same since. Word it
+    as "written against an older version of this page", and never word a
+    restored answer as "current".
+  - `asked` is the recorded DIRECTION and it outranks how the control is
+    kinded now: `true` means the learner sent this to the tutor instead of
+    answering it. Read the entry by `asked`, not by the control you happen to
+    render today, or re-kinding an id turns a grade into a reply.
+  - On an entry with `asked: true`, the `verdict` is the REPLY you wrote:
+    render it as the answer to what the learner asked, not as a mark against
+    them. No verdict there means the question is still waiting on you.
+  - No `record` field at all (an older app), an unknown `question_id`, or a
+    missing key: behave exactly as a page with no read-back. Everything else
+    about the handshake is unchanged, so a page that ignores `record`
+    entirely keeps working — read-back is an addition, never a requirement.
+  - Insert every value as TEXT (`textContent`, textarea `.value`), never as
+    markup: `answer` is the learner's own words and `note` is yours, and the
+    data boundary above covers both coming back in.
 """
 
 

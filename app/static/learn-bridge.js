@@ -175,6 +175,35 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     /* Phase-F run-start endpoint prefix. It is a separate feature-detection
      * attribute because statics can temporarily run against the old backend. */
     const runsUrl = frame.dataset["runsUrl"] || null;
+    /* Read ONCE: it is a snapshot of the /learn render, not a live feed, and
+     * freezing it at module init is what makes that honest. `null` on an absent
+     * attribute (a backend predating read-back) and on anything unparseable —
+     * the welcome then carries no `record` field and existing pages behave
+     * exactly as before. Degrading beats throwing here: this block owns the
+     * reload poll and the handshake too. */
+    const recordSnapshot = ((raw) => {
+        if (!raw)
+            return null;
+        try {
+            const parsed = JSON.parse(raw);
+            if (typeof parsed !== "object" || parsed === null)
+                return null;
+            const fields = parsed;
+            if (!Array.isArray(fields.questions))
+                return null;
+            /* An identity-less snapshot can never match an armed page, so it can
+             * never be handed over — which is the safe reading of a shape this
+             * runtime does not recognise. */
+            return {
+                lesson_uid: typeof fields.lesson_uid === "string" ? fields.lesson_uid : null,
+                page_id: typeof fields.page_id === "string" ? fields.page_id : null,
+                questions: fields.questions,
+            };
+        }
+        catch {
+            return null;
+        }
+    })(frame.dataset["record"]);
     /* The version token the displayed document was served under (server-
      * rendered for the initial navigation, then meta-derived); the binding
      * rule is: identity is armed only while the fresh meta token equals it. */
@@ -234,6 +263,11 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     let ownedRuns = new Map();
     let activeRelay = null;
     let armedBlocks = [];
+    /* The ids the armed page declares according to the metadata this document
+     * armed from — which is read after the reload that produced it, so it sees
+     * manifest-only edits the /learn render behind the snapshot could not.
+     * `null` (absent or malformed) fails closed, as everywhere else. */
+    let armedQuestions = null;
     /* Serialises a handshake-time metadata refresh. An object token prevents a
      * stale document's finally block from clearing a successor's refresh. */
     let grantToken = null;
@@ -258,6 +292,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         ownedRuns = new Map();
         activeRelay = null;
         armedBlocks = [];
+        armedQuestions = null;
         grantToken = null;
     };
     const fetchMeta = async () => {
@@ -358,6 +393,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
                 page_rev: meta.bridge_page.page_rev,
             };
             armedBlocks = metaBlocks(meta) ?? [];
+            armedQuestions = metaQuestions(meta);
             /* Deliberately NO buffered-announcement flush here (PR-55 round 4):
              * an announcement held across this async bind could be answered into
              * a successor document after a same-frame navigation. Announcements
@@ -1258,13 +1294,37 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             && armedBlocks.some((block) => block.run) && want.includes("run")) {
             capabilities.push("run");
         }
-        child.postMessage({
+        const welcome = {
             ephemeris: "lesson-bridge",
             type: "welcome",
             abi: ABI_VERSION,
             lesson: armed,
             capabilities,
-        }, "*", [channel.port2]);
+        };
+        /* Read-back travels with the grant that would write the next answer and
+         * with nothing else: a page that did not ask for `attempts` records none,
+         * so none crosses to it. Omitted whole rather than sent empty when there
+         * is no snapshot, so the pre-#133 welcome shape is reproduced exactly.
+         *
+         * The snapshot is bound to the document it was taken for, twice over,
+         * because the frame can reload without a new /learn render behind it:
+         * the identity must still be this page (the poll can follow a removed or
+         * renamed entry to a DIFFERENT one), and every id is re-checked against
+         * what this document's own metadata declares NOW — a manifest-only edit
+         * retires a question without moving the page version. Either way the
+         * answers and verdicts of an id the loaded page does not declare stay on
+         * the parent's side of the boundary. */
+        if (recordSnapshot !== null && capabilities.includes("attempts")
+            && recordSnapshot.lesson_uid === armed.lesson_uid
+            && recordSnapshot.page_id === armed.page_id
+            && armedQuestions !== null) {
+            const declared = armedQuestions;
+            welcome.record = {
+                questions: recordSnapshot.questions.filter((entry) => typeof entry?.question_id === "string"
+                    && declared.includes(entry.question_id)),
+            };
+        }
+        child.postMessage(welcome, "*", [channel.port2]);
     };
     const handleReady = async (data) => {
         const child = frame.contentWindow;
@@ -1284,7 +1344,14 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         }
         const want = Array.isArray(data.want) ? data.want : [];
         const needsBlockRefresh = artifactsUrl !== null && (want.includes("editor") || (runsUrl !== null && want.includes("run")));
-        if (needsBlockRefresh) {
+        /* A read-back grant reads the declared-id list, and a manifest-only edit
+         * can retire a question while the page bytes, profile and identity stay
+         * put — so the arm-time list can be older than the grant. Refresh for it
+         * too, or an attempts-only child announcing late would be handed an
+         * answer for an id the manifest no longer declares. */
+        const needsQuestionRefresh = attemptsUrl !== null
+            && recordSnapshot !== null && want.includes("attempts");
+        if (needsBlockRefresh || needsQuestionRefresh) {
             const gen = generation;
             const token = {};
             grantToken = token;
@@ -1301,6 +1368,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
                     || meta.bridge !== true || !identityMatches(meta))
                     return;
                 armedBlocks = metaBlocks(meta) ?? [];
+                armedQuestions = metaQuestions(meta);
                 finishReady(data, child);
             }
             finally {
