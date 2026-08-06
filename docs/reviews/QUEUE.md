@@ -53,6 +53,14 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   and no consent prompt gates it, unlike the artifact-read path
   (`allowArtifactRead`). PR #151 round 3 raised that pairing; it is documented
   in the ABI §2.1 and left for this drain and the owner to decide.
+  Diagnosis-only drain 2026-08-06 →
+  `docs/reviews/2026-08-06-chain-u-batch-review.md`: 1 Medium finding remains
+  open on this entry. The ungated snapshot reaches untrusted lesson script
+  while the interactive profile still permits same-frame navigation; an
+  invented headless-Chrome probe carried invented answer text in the
+  navigation request. A separate owner-decided repair must establish the
+  consent/trust boundary and exact-browser denial/approval regressions. The
+  entry stays Pending; no application fix or restart was performed.
 
 - [ ] 2026-08-03 — `0b25126`..`113b1dd` on `fix/23-limits-retention`, merged to
   `main` as `898bbed` — `app/security.py`, `app/limits.py`,
@@ -122,6 +130,13 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `5684085`). Host verification on merged `main` at `3d92e37`: `uv run pytest`
   179 passed, `verify_restore.py` 34 passed 0 failed, public hygiene clean. The
   entry stays Pending for the owner's re-drain; no restart was performed.
+  Resolution re-drain 2026-08-06 →
+  `docs/reviews/2026-08-06-chain-u-batch-review.md`: both August 4 Low findings
+  are resolved at the current tree and no new issue #23 finding was found.
+  Impossible claimed sizes now reject the manifest before formatting, and
+  offset-less timestamps use the configured ledger zone. The entry remains
+  Pending for owner closure under the batch protocol; no restart was
+  performed.
 
 - [ ] 2026-08-05 — `d71cff5`..`0627649` on `fix/135-runs-projection` —
   `app/services/runs.py`, `app/services/bundle_schema.py`,
@@ -140,6 +155,14 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   via a new `prepare_terminal_workspace` step, plus staged-inode and state-
   directory durability fixes in the publish path (`0627649`). Squash-merged to
   `main` as `64c2fb0` (PR #140).
+  Diagnosis-only drain 2026-08-06 →
+  `docs/reviews/2026-08-06-chain-u-batch-review.md`: 1 Low finding remains open
+  on this entry. The append-only 8 KiB-tail history has no storage ceiling; a
+  legal maximally escaped line measured 49,622 bytes, allowing about 682
+  MiB/day at the existing ten-per-minute lesson rate. A separate owner-decided
+  repair must define bounded durable retention while preserving newest
+  complete records and the seal/durability contract. The entry stays Pending;
+  no application fix or restart was performed.
 
 ## Done
 
