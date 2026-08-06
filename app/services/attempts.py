@@ -873,6 +873,67 @@ def latest_is_question(attempt: dict | None) -> bool:
     return bool(attempt) and attempt.get("kind") == RECORD_KIND_QUESTION
 
 
+def row_is_question(attempt: dict | None, declared_kind: str | None) -> bool:
+    """Which direction a displayed row travels, over BOTH of its inputs.
+
+    The recorded kind decides whenever there is a record, and the manifest is
+    consulted only for a control nobody has used yet. Not an OR (PR #149): a
+    question re-kinded to `ask_tutor` while keeping its durable id would
+    otherwise relabel the ordinary answers already recorded under it as things
+    the learner asked — and the mirror case, a control re-kinded away, would
+    turn the learner's question back into a wrong answer. The record-time
+    direction is frozen with the record, so a reader must not re-derive it.
+    """
+    if attempt is not None:
+        return latest_is_question(attempt)
+    return declared_kind == bundle_schema.ASK_TUTOR_KIND
+
+
+# How many open questions the generated STATE names before it stops counting
+# and says "and N more". A tutor who owes more than this has a session's work
+# in front of them either way, and the brief stays readable.
+OPEN_QUESTIONS_SHOWN = 12
+
+
+def open_questions(
+    conn: sqlite3.Connection,
+    lesson_id: int,
+    reviewed_attempt_ids: set[str],
+    limit: int = OPEN_QUESTIONS_SHOWN,
+) -> tuple[list[dict], int]:
+    """Every question to the tutor that no active review answers, oldest first.
+
+    NOT the latest-per-question read above (PR #149): one ask-the-tutor control
+    is asked through again and again, so grouping by question would let a reply
+    to today's question silently close yesterday's. The debt is per ATTEMPT —
+    the same grain a `review` names — so nothing the learner asked can be
+    abandoned by being asked twice.
+
+    Bounded without bounding the truth: the cursor is streamed over three
+    narrow columns and at most `limit` rows are ever retained, while the rest
+    are counted rather than listed — so a lesson with a long question history
+    costs the walk, never the memory, and STATE still reports the true size of
+    the debt. Returns (rows, total_open).
+    """
+    open_rows: list[dict] = []
+    total = 0
+    rows = conn.execute(
+        "SELECT attempt_id, question_id, created_at FROM lesson_attempts "
+        "WHERE lesson_id = ? AND kind = ? ORDER BY id",
+        (lesson_id, RECORD_KIND_QUESTION),
+    )
+    try:
+        for row in rows:
+            if row["attempt_id"] in reviewed_attempt_ids:
+                continue
+            total += 1
+            if len(open_rows) < limit:
+                open_rows.append(dict(row))
+    finally:
+        rows.close()
+    return open_rows, total
+
+
 def lesson_attempt_summary(conn: sqlite3.Connection, lesson_id: int) -> dict:
     """How many attempts a lesson has recorded, and the latest attempt per
     question — the join the record panel hangs verdicts on."""

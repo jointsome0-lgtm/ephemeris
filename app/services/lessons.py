@@ -1063,15 +1063,51 @@ def _page_starters(
     )
 
 
-def _go_on_agent_path() -> bool:
+def _agent_path_dirs() -> list[Path]:
+    """Where an agent shell will look for an executable, in its own order."""
     home = os.path.expanduser("~")
     path = f"{home}/.local/bin:/usr/local/bin:" + os.environ.get(
         "PATH", "/usr/bin:/bin"
     )
+    return [Path(directory) for directory in path.split(os.pathsep)]
+
+
+def _on_agent_path(program: str) -> bool:
     return any(
-        os.access(Path(directory) / "go", os.X_OK)
-        for directory in path.split(os.pathsep)
+        os.access(directory / program, os.X_OK)
+        for directory in _agent_path_dirs()
     )
+
+
+def _go_on_agent_path() -> bool:
+    return _on_agent_path("go")
+
+
+# The tutor CLIs this app is used with (app/terminal.py: Claude Code, codex,
+# aider), each with how it takes an opening prompt. Preference order, not
+# ranking: the first one actually installed is the one the learner has.
+TUTOR_CLIS = (
+    ("claude", 'claude "{prompt}"'),
+    ("codex", 'codex "{prompt}"'),
+    ("aider", 'aider --message "{prompt}"'),
+)
+TUTOR_PROMPT = "Read my record and review my answers."
+
+
+def tutor_launch_command() -> str | None:
+    """The command the "Review my answers" button types, or None (PR #149).
+
+    Which agent CLI is installed is a fact about this machine, not something a
+    template may assume: hard-coding `claude` on a codex-only install promises
+    a one-click review and delivers `command not found`. So the button is
+    rendered from what is on the agent shell's PATH — the same probe the
+    generated STATE reports Go with — and when nothing is there it is not
+    rendered at all. An unkeepable promise is worse than no button.
+    """
+    for program, template in TUTOR_CLIS:
+        if _on_agent_path(program):
+            return template.format(prompt=TUTOR_PROMPT)
+    return None
 
 
 def _render_lesson_state(
@@ -1082,7 +1118,26 @@ def _render_lesson_state(
     """Serialize the current lesson record for the regenerated agent brief."""
     from . import attempts as attempts_service
 
-    state, attempt_state, _focus_total = record_panel_db_state(conn, lesson["id"])
+    # What the learner asked and nobody has answered yet (#136) comes from the
+    # same committed version as the rest of the panel state — the debt and the
+    # verdicts that clear it cannot be read from two. Derived from the RECORDED
+    # kind rather than from the manifest, so retiring a control cannot retire
+    # the debt, and counted per ATTEMPT rather than per question: one control
+    # is asked through repeatedly, and a reply to the newest question must not
+    # close the ones before it (PR #149).
+    own_snapshot = not conn.in_transaction
+    if own_snapshot:
+        conn.execute("BEGIN")
+    try:
+        state, attempt_state, _focus_total = record_panel_db_state(
+            conn, lesson["id"]
+        )
+        open_questions, open_total = attempts_service.open_questions(
+            conn, lesson["id"], state["reviewed_attempt_ids"]
+        )
+    finally:
+        if own_snapshot:
+            conn.rollback()
     latest = attempt_state["latest_by_question"]
 
     def reviewed(attempt: dict | None) -> dict | None:
@@ -1090,17 +1145,6 @@ def _render_lesson_state(
             state["reviews_by_attempt"].get(attempt["attempt_id"])
             if attempt else None
         )
-
-    # What the learner asked and nobody has answered yet (#136). Read from the
-    # RECORDED kind rather than from the manifest, so a question the page
-    # stopped declaring is still owed an answer — retiring the control cannot
-    # retire the debt. A question the tutor has already reviewed is answered:
-    # the review IS the reply, and it is the only per-attempt record there is.
-    pending_questions = [
-        question_id
-        for question_id, attempt in latest.items()
-        if attempts_service.latest_is_question(attempt) and not reviewed(attempt)
-    ]
     try:
         current = None if read.rejected else _resolve_entry(lesson, read, None)
     except LessonError:
@@ -1111,21 +1155,31 @@ def _render_lesson_state(
         f"- Lesson slug: `{lesson['slug']}`",
         f"- Current page (data): {json.dumps(current or 'unavailable')}",
     ]
-    if pending_questions:
+    if open_questions:
         lines.append(
-            "- FIRST: answer the tutor questions the learner asked — "
-            + ", ".join(f"`{question_id}`" for question_id in pending_questions)
-            + ". Their text is in `attempts.jsonl` (records with "
-            '`"kind": "question"`). Answer each one before teaching anything '
-            "new, then record a `review` on that attempt so the answer is "
-            "part of the record."
+            f"- FIRST: the learner asked you {open_total} question"
+            f"{'' if open_total == 1 else 's'} nobody has answered. Answer "
+            "each one before teaching anything new, then record a `review` "
+            "naming that attempt — the review IS the answer, and it is what "
+            'marks the question closed. Their text is in `attempts.jsonl`'
+            ' (the records with `"kind": "question"`):'
         )
+        for row in open_questions:
+            lines.append(
+                f"  - `{row['question_id']}`, attempt `{row['attempt_id']}` "
+                f"({row['created_at']})"
+            )
+        if open_total > len(open_questions):
+            lines.append(
+                f"  - …and {open_total - len(open_questions)} more, oldest "
+                "first in `attempts.jsonl`"
+            )
     lines.append("- Questions:")
     for question in read.questions:
         attempt = latest.get(question["id"])
         review = reviewed(attempt)
         verdict = review["level"] if review else "none"
-        if question["kind"] == bundle_schema.ASK_TUTOR_KIND:
+        if attempts_service.row_is_question(attempt, question["kind"]):
             # This control asks nothing — the learner writes into it. So the
             # two facts worth serializing are reversed: whether they used it,
             # and whether YOU have replied.

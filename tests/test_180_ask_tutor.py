@@ -266,7 +266,7 @@ def test_state_asks_for_the_unanswered_questions_first(client):
     assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
     quiet = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
     assert (
-        "- FIRST: answer the tutor questions" not in quiet
+        "- FIRST: the learner asked you" not in quiet
         and f"`{ASK_ID}` (the learner asks YOU): nothing asked; "
             "answered_by_you=no" in quiet
         and f"`{ANSWER_ID}`: unanswered; verdict=none" in quiet
@@ -278,10 +278,13 @@ def test_state_asks_for_the_unanswered_questions_first(client):
     )
     assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
     pending = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
+    owed = pending.split("- FIRST:", 1)[-1].split("- Questions:", 1)[0]
     assert (
-        "- FIRST: answer the tutor questions" in pending
-        and f"`{ASK_ID}`" in pending.split("- FIRST:", 1)[-1].split("\n", 1)[0]
-        and ANSWER_ID not in pending.split("- FIRST:", 1)[-1].split("\n", 1)[0]
+        "- FIRST: the learner asked you" in pending
+        and "asked you 1 question nobody has answered" in pending
+        and f"`{ASK_ID}`" in owed
+        and asked.json()["attempt_id"] in owed
+        and ANSWER_ID not in owed
         and f"`{ASK_ID}` (the learner asks YOU): asked; answered_by_you=no"
             in pending
     ), "an unanswered question to the tutor is the first thing STATE says"
@@ -299,7 +302,7 @@ def test_state_asks_for_the_unanswered_questions_first(client):
     assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
     answered = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
     assert (
-        "- FIRST: answer the tutor questions" not in answered
+        "- FIRST: the learner asked you" not in answered
         and f"`{ASK_ID}` (the learner asks YOU): asked; answered_by_you=yes"
             in answered
     ), "the review is what clears the debt"
@@ -313,7 +316,7 @@ def test_state_asks_for_the_unanswered_questions_first(client):
     assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
     retired = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
     assert (
-        "- FIRST: answer the tutor questions" not in retired
+        "- FIRST: the learner asked you" not in retired
         and f"`{ANSWER_ID}`: answered; verdict=none" in retired
     ), "an answered question stays answered once its control is retired"
 
@@ -327,6 +330,117 @@ def test_state_asks_for_the_unanswered_questions_first(client):
         and f'`"{attempts.RECORD_KIND_QUESTION}"` for' in retired
         and "the same call is your REPLY" in retired
     ), "the pedagogy contract carries the control it now asks pages to build"
+
+
+def test_every_unanswered_question_is_owed_an_answer_not_just_the_latest(client):
+    """A learner who asks the same control twice is owed two replies. STATE
+    counts the ATTEMPTS, so answering the newest does not bury the older one —
+    the panel's latest-per-question fold would have."""
+    lesson, lesson_dir, page_id = _ask_lesson("Ask Tutor Debt Fixture")
+    first = _submit(
+        client, lesson, lesson_dir, page_id, ASK_ID,
+        "Invented first question", "ask-debt-1",
+    )
+    second = _submit(
+        client, lesson, lesson_dir, page_id, ASK_ID,
+        "Invented second question", "ask-debt-2",
+    )
+
+    conn = get_conn()
+    try:
+        assessments.record_assessment(conn, lesson, {
+            "kind": "review", "level": "unclear",
+            "attempt_id": second.json()["attempt_id"],
+            "note": "Invented reply to the newest one only",
+            "idempotency_key": "ask-debt-reply",
+        })
+    finally:
+        conn.close()
+
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    brief = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
+    owed = brief.split("- FIRST:", 1)[-1].split("- Questions:", 1)[0]
+    assert (
+        "- FIRST: the learner asked you" in brief
+        and first.json()["attempt_id"] in owed
+        and second.json()["attempt_id"] not in owed
+    ), "the reviewed attempt drops out of the debt and the unreviewed one stays"
+
+
+def test_re_kinding_a_control_leaves_what_was_already_recorded_alone(client):
+    """The manifest classifies a write at record time and never again. Turning
+    an ordinary question into an ask control afterwards must not retro-label
+    the answers already given to it — the row says what it was."""
+    lesson, lesson_dir, page_id = _ask_lesson("Ask Tutor Re-kind Fixture")
+    _submit(
+        client, lesson, lesson_dir, page_id, ANSWER_ID,
+        "Invented answer given while it was a prediction", "ask-rekind-answer",
+    )
+
+    manifest_path = lesson_dir / lessons.MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["questions"][0]["kind"] = bundle_schema.ASK_TUTOR_KIND
+    bundle_schema.write_manifest(manifest_path, manifest)
+
+    html = client.get(f"/learn?lesson={lesson['id']}").text
+    row = html.split(f'id="rec-q-{ANSWER_ID}"', 1)[-1].split("</li>", 1)[0]
+    assert (
+        "asked the tutor" not in row and "No verdict yet." in row
+    ), "an answer stays an answer when its control changes kind under it"
+
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    brief = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
+    assert (
+        "- FIRST: the learner asked you" not in brief
+        and f"`{ANSWER_ID}`: answered; verdict=none" in brief
+    ), "and owes the tutor nothing, so STATE reports it the way it always did"
+
+    # From here on it is an ask control, and the next write travels the other way.
+    _submit(
+        client, lesson, lesson_dir, page_id, ANSWER_ID,
+        "Invented question asked after the change", "ask-rekind-ask",
+    )
+    assert _rows(lesson["id"])[ANSWER_ID]["kind"] == (
+        attempts.RECORD_KIND_QUESTION
+    ), "the new kind governs the writes that come after it"
+
+
+def test_the_launch_button_names_a_tutor_this_machine_actually_has(
+    client, monkeypatch
+):
+    """One click must land on a real program. The command is probed from the
+    agent shell's PATH, and with no agent CLI installed there is no button."""
+    installed: set[str] = set()
+    monkeypatch.setattr(
+        lessons, "_on_agent_path", lambda program: program in installed
+    )
+    # The whole tools row is behind the same local-only gate as the terminal.
+    monkeypatch.setitem(
+        templates.env.globals, "client_is_local", lambda request: True
+    )
+
+    installed.update({"codex", "aider"})
+    assert lessons.tutor_launch_command() == (
+        f'codex "{lessons.TUTOR_PROMPT}"'
+    ), "the first installed CLI in preference order wins"
+    installed.add("claude")
+    assert lessons.tutor_launch_command() == f'claude "{lessons.TUTOR_PROMPT}"'
+
+    lesson, _lesson_dir, _page_id = _ask_lesson("Ask Tutor Launch Fixture")
+    present = client.get(f"/learn?lesson={lesson['id']}").text
+    assert (
+        'id="lesson-review-btn"' in present
+        and f'data-term-command="claude &#34;{lessons.TUTOR_PROMPT}&#34;"'
+            in present
+    ), "the page offers the command it can keep"
+
+    installed.clear()
+    assert lessons.tutor_launch_command() is None
+    absent = client.get(f"/learn?lesson={lesson['id']}").text
+    assert (
+        'id="lesson-review-btn"' not in absent
+        and 'id="lesson-term-btn"' in absent
+    ), "with nothing to launch the button is gone, the bare terminal stays"
 
 
 def test_learn_html_renders_under_a_pre_136_router_context(client, monkeypatch):
@@ -442,7 +556,7 @@ def test_the_review_button_rides_the_existing_terminal_input_path():
 
     assert (
         "lesson-review-btn" in template
-        and 'data-term-command="claude ' in template
+        and 'data-term-command="{{ selected.tutor_command }}"' in template
         and "lesson-review-btn" in source
         and "openLessonTab(slug" in source
     ), "the button is wired to the lesson's own agent tab"

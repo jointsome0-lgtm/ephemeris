@@ -646,7 +646,13 @@ additive v2 field later if ever needed).
   rewritten; pre-C3 events stay as-is, and a consumer needing identity for
   them joins on `lesson_id` against the local DB.
 - `lesson_attempt` (D4) event payload: `lesson_uid`, `lesson_id`, `slug`,
-  `attempt_id`, `page_id`, `question_id`, `page_rev`, `answer`, `stale`.
+  `attempt_id`, `page_id`, `question_id`, `page_rev`, `answer`, `stale`,
+  `kind`. `kind` (#136) joined the payload after the field list was frozen,
+  so a consumer written against the earlier list must ignore it rather than
+  reject the event — the same forward-compatibility stance every other reader
+  here takes. It is the §6.2 value (`attempt` or `question`) and it is the
+  only frozen record of the direction an attempt travelled: an event without
+  it predates the field and is an answer.
 - Never echoed into events: `title`, `path`, `step`, `concepts`, `pages`.
   The manifest is the single truth for those; adapters read them from the
   bundle at delivery time, keyed by `lesson_uid`, so events can't carry
