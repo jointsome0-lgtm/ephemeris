@@ -427,12 +427,12 @@ def test_crossing_the_ceiling_drops_the_oldest_records_not_the_newest(
     bundle = tmp_path / "invented-over-ceiling"
     bundle.mkdir()
     projection = bundle / runs.PROJECTION_NAME
-    assert runs._record_finish_sync(_job(bundle, "invented run 0\n")) is True
+    assert runs._record_finish_sync(_job(bundle, "invented run\n")) is True
     one_line = projection.stat().st_size
-    # Room for three records; the fourth run has to make space for itself.
-    monkeypatch.setattr(runs, "PROJECTION_MAX_BYTES", one_line * 3 + 8)
+    # Room for four records; compaction cuts back to three quarters of that.
+    monkeypatch.setattr(runs, "PROJECTION_MAX_BYTES", one_line * 4)
 
-    jobs = [_job(bundle, f"invented run {index}\n") for index in range(1, 6)]
+    jobs = [_job(bundle, "invented run\n") for _ in range(4)]
     for job in jobs:
         assert runs._record_finish_sync(job) is True
 
@@ -447,9 +447,13 @@ def test_crossing_the_ceiling_drops_the_oldest_records_not_the_newest(
     assert not list(bundle.glob(f"{runs.PROJECTION_NAME}.collision-*"))
     assert not list(bundle.glob(".runs-*.tmp"))
     # And the compacted file is still the app's own, so the next run appends
-    # to it rather than retiring it as foreign.
-    last = _job(bundle, "invented run after compaction\n")
+    # to it in place rather than retiring it — the headroom is what keeps the
+    # rewrite amortised instead of landing on every later finish hook.
+    compacted = projection.stat()
+    last = _job(bundle, "invented run\n")
     assert runs._record_finish_sync(last) is True
+    after = projection.stat()
+    assert (after.st_dev, after.st_ino) == (compacted.st_dev, compacted.st_ino)
     assert _lines(bundle)[-1]["run_id"] == last.job_id
     assert not list(bundle.glob(f"{runs.PROJECTION_NAME}.collision-*"))
 
@@ -469,6 +473,38 @@ def test_a_single_record_larger_than_the_ceiling_is_still_published(
 
     records = _lines(bundle)
     assert [record["run_id"] for record in records] == [job.job_id]
+
+
+def test_a_file_planted_while_the_compaction_staged_is_preserved(
+    tmp_path, monkeypatch,
+):
+    """Staging a compacted copy is a long window on a directory the agent can
+    write. Whatever holds the name when the swap is ready must still be the
+    app's own file, or it is preserved like any other foreign node instead of
+    being overwritten by the rename."""
+    bundle = tmp_path / "invented-swapped-under-compaction"
+    bundle.mkdir()
+    assert runs._record_finish_sync(_job(bundle, "invented run\n")) is True
+    monkeypatch.setattr(
+        runs, "PROJECTION_MAX_BYTES", (bundle / runs.PROJECTION_NAME).stat().st_size)
+
+    planted = '{"kind":"run","v":1,"run_id":"invented-planted"}\n'
+    real_read_sealed = runs._read_sealed
+
+    def read_then_swap(dir_fd, state):
+        data = real_read_sealed(dir_fd, state)
+        (bundle / runs.PROJECTION_NAME).write_text(planted, encoding="utf-8")
+        return data
+
+    monkeypatch.setattr(runs, "_read_sealed", read_then_swap)
+    job = _job(bundle, "invented run\n")
+    assert runs._record_finish_sync(job) is True
+
+    assert [record["run_id"] for record in _lines(bundle)] == [job.job_id]
+    moved = list(bundle.glob(f"{runs.PROJECTION_NAME}.collision-*"))
+    assert len(moved) == 1
+    assert moved[0].read_text(encoding="utf-8") == planted
+    assert not list(bundle.glob(".runs-*.tmp"))
 
 
 def test_a_compaction_interrupted_while_staging_leaves_the_old_file(

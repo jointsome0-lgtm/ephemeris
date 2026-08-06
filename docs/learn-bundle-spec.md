@@ -596,12 +596,18 @@ fixes only what the bundle contains (#135).
 - **Retention**: the file is capped at **20 MiB per lesson**. It grows with
   lifetime runs rather than with current state, so without a bound a page that
   keeps running would grow the private bundle without end. On the append that
-  would cross the cap the app republishes the newest whole records that fit,
-  plus the new one, and the dropped records are gone for good — the ledger,
-  not this projection, is the durable history. The cut always lands on a
-  record boundary, the newest record always survives (published alone if it
-  alone exceeds the cap), and compaction replaces the app's OWN seal-verified
-  file, so nothing is preserved as a collision. A reader still treats the file
+  would cross the cap the app republishes the newest whole records fitting in
+  **three quarters** of it, plus the new one, and the dropped records are gone
+  for good — the ledger, not this projection, is the durable history. Cutting
+  back to the cap rather than under it would put the next run over it again
+  and make every later run rewrite the file, which is why the quarter of
+  headroom is part of the contract, not a tuning choice. The cut always lands
+  on a record boundary, the newest record always survives (published alone if
+  it alone exceeds the cap), and compaction replaces the app's OWN
+  seal-verified file, so nothing is preserved as a collision — and the swap is
+  conditional on that seal still holding the name, so a file planted while the
+  compacted copy was being staged is preserved like any other foreign node
+  instead of being overwritten. A reader still treats the file
   like §6.5: read it whole while it fits, otherwise read the newest complete
   lines and declare the omission — and never read a missing old run as
   evidence that it never happened.

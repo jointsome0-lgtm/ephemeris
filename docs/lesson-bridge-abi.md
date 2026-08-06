@@ -188,6 +188,11 @@ Semantics:
   only, so a reload, or any other page, decides again. Nothing to hand over is
   not a decision: when the filtered list is empty the field is attached
   unasked, so opening a lesson nobody has answered yet never opens a modal.
+  The prompt blocks, and a document can commit a navigation while it stands
+  open without `contentWindow` ever changing, so the parent waits out the
+  navigation-settle interval and re-checks the document generation before the
+  welcome goes out — the answer authorises the document it was asked about,
+  and a successor that appears mid-prompt is left to its own handshake.
   The cost is honest and known: a learner who declines sees the blank controls
   this feature exists to end, which is why the ask is once per document rather
   than once per read.

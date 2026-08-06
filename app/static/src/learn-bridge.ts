@@ -1384,11 +1384,12 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     return protocolError("unknown-op", requestId);
   };
 
-  const finishReady = (
+  const finishReady = async (
     data: { abi: unknown[]; want?: unknown[] },
     child: Window,
-  ): void => {
+  ): Promise<void> => {
     if (armed === null || granted || frame.contentWindow !== child) return;
+    const gen = generation;
     const channel = new MessageChannel();
     port = channel.port1;
     port.onmessage = onPortMessage;
@@ -1460,10 +1461,20 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
       let attach = true;
       if (questions.length > 0) {
         attach = allowRecordRead();
-        /* The prompt blocks this task, but the frame can have been navigated
-         * by the time it returns; the answer belongs to the child we checked,
-         * and a successor gets its own handshake on its own load. */
-        if (frame.contentWindow !== child) return;
+        /* The prompt is a blocking modal and a document can commit a
+         * navigation while it stands open — which `contentWindow` would NOT
+         * reveal, an iframe's WindowProxy being the same object across
+         * navigations (PR-152 round 1). What does reveal it is the `load`
+         * task queued behind this one, so yield the same settle interval the
+         * editor save uses for the same reason and then re-check the
+         * generation that handler bumps. Consent authorises the document it
+         * was asked about, or nothing: a successor gets its own handshake,
+         * its own question, on its own load. */
+        await new Promise((resolve) => setTimeout(resolve, EDITOR_SETTLE_MS));
+        if (
+          gen !== generation || armed === null || !granted
+          || navPending || quarantined || frame.contentWindow !== child
+        ) return;
       }
       if (attach) welcome.record = { questions };
     }
@@ -1520,13 +1531,13 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         ) return;
         armedBlocks = metaBlocks(meta) ?? [];
         armedQuestions = metaQuestions(meta);
-        finishReady(data, child);
+        await finishReady(data, child);
       } finally {
         if (grantToken === token) grantToken = null;
       }
       return;
     }
-    finishReady(data, child);
+    await finishReady(data, child);
   };
 
   /* In-flight latch for the late-initialisation rescue bind below (PR-55

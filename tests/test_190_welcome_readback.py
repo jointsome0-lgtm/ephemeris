@@ -423,9 +423,13 @@ const frame = {
   set src(value) { this.attrs["src"] = value; },
   getAttribute(name) { return this.attrs[name] ?? null; },
   setAttribute(name, value) { this.attrs[name] = value; },
-  addEventListener() {},
+  addEventListener(type, cb) { if (type === "load") frameLoads.push(cb); },
   contentWindow: child,
 };
+/* An iframe's `contentWindow` is the SAME object across navigations, so the
+ * only thing that reports a document change is its `load` task. */
+const frameLoads = [];
+const fireFrameLoad = () => { for (const cb of frameLoads) cb(); };
 if (config.record !== null) frame.dataset["record"] = config.record;
 
 globalThis.document = {
@@ -445,6 +449,14 @@ globalThis.window = {
 if (config.consent !== "unavailable") {
   globalThis.window.confirm = (question) => {
     confirms.push(question);
+    if (config.consent === "navigate") {
+      /* The document commits a same-frame navigation while the modal stands
+       * open. A browser queues its `load` behind the task the prompt is
+       * blocking, so schedule it the same way and answer yes: the grant must
+       * still not follow the answer into the successor. */
+      setTimeout(fireFrameLoad, 10);
+      return true;
+    }
     return config.consent === true;
   };
 }
@@ -505,6 +517,14 @@ import "./learn-bridge.mjs";
 
 await announce();
 await announce();
+/* The grant can take a navigation-settle interval when the consent prompt
+ * stands between the snapshot and the welcome, so wait for the message rather
+ * than for a fixed time. */
+const patience = Date.now() + 3000;
+while (!posted.some((entry) => entry.message?.type === "welcome")
+       && Date.now() < patience) {
+  await new Promise((resolve) => setTimeout(resolve, 25));
+}
 
 const welcome = posted.find((entry) => entry.message?.type === "welcome");
 const result = {
@@ -703,6 +723,27 @@ def test_a_parent_that_cannot_ask_refuses_the_read_back(tmp_path):
 
     assert "record" not in result["message"]
     assert result["confirms"] == []
+
+
+def test_consent_does_not_follow_a_navigation_that_happened_during_the_prompt(
+    tmp_path,
+):
+    """A yes answers for the document that was asked about, and no other.
+
+    The prompt is a blocking modal, so a page can start a same-frame
+    navigation just before announcing and have it commit while the owner
+    reads the question. `contentWindow` cannot see that — an iframe's
+    WindowProxy is the same object across navigations — so the parent waits
+    out the navigation-settle interval and re-checks the generation the load
+    handler bumps. The successor gets no welcome at all, and therefore no
+    answers: it may ask for itself, on its own load.
+    """
+    result = _drive_bridge(
+        tmp_path, want=["attempts"], record=SNAPSHOT, consent="navigate")
+
+    assert len(result["confirms"]) == 1
+    assert result["postedCount"] == 0
+    assert result["message"] is None
 
 
 def test_a_page_with_nothing_recorded_for_it_is_handed_an_empty_list_unasked(

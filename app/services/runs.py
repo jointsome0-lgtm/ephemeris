@@ -421,7 +421,9 @@ def _move_aside(dir_fd: int) -> bool:
     return True
 
 
-def _publish_whole(dir_fd: int, uid: str, payload: bytes) -> None:
+def _publish_whole(
+    dir_fd: int, uid: str, payload: bytes, expect: dict | None = None,
+) -> bool:
     """Stage `payload` beside the projection, then take the name atomically.
 
     Every durable guarantee of the write path lives here: the staged bytes are
@@ -429,6 +431,15 @@ def _publish_whole(dir_fd: int, uid: str, payload: bytes) -> None:
     directory entry is fsynced after it, and the seal is written for the inode
     whose bytes were actually synced. A crash anywhere leaves either the whole
     old file or the whole new one on the name — never a half-written log.
+
+    `expect` (a seal) makes the swap CONDITIONAL, and a compaction passes one:
+    staging up to the ceiling is a long window on an agent-writable directory,
+    and `os.replace` would silently destroy whatever appeared on the name
+    meanwhile. False then means "someone else holds the name" — nothing was
+    replaced, and the caller preserves what it found the way §6.5 does. The
+    check cannot be fused with the rename (POSIX has no rename-if-inode), so a
+    hair-thin window remains; it is the same one `_move_aside` already leaves
+    between retiring a file and creating its successor.
     """
     tmp_name = f".runs-{uuid4().hex}.tmp"
     tmp_fd = os.open(
@@ -447,6 +458,13 @@ def _publish_whole(dir_fd: int, uid: str, payload: bytes) -> None:
                 raise OSError("unsafe staged run projection")
         finally:
             os.close(tmp_fd)
+        if expect is not None:
+            try:
+                holder = os.stat(PROJECTION_NAME, dir_fd=dir_fd, follow_symlinks=False)
+            except OSError:
+                return False
+            if not _seal_matches(holder, expect):
+                return False
         os.replace(tmp_name, PROJECTION_NAME, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
         tmp_name = ""
         os.fsync(dir_fd)
@@ -474,6 +492,7 @@ def _publish_whole(dir_fd: int, uid: str, payload: bytes) -> None:
     if (published_st.st_dev, published_st.st_ino) != (staged.st_dev, staged.st_ino):
         raise OSError("run projection was replaced under the publisher")
     _write_state(uid, published_st)
+    return True
 
 
 def _restart_projection(dir_fd: int, uid: str, line: bytes) -> None:
@@ -546,23 +565,35 @@ def _retained_tail(data: bytes, budget: int) -> bytes:
     return data[start:]
 
 
+def _compact_budget() -> int:
+    """How much of the file compaction keeps: three quarters of the ceiling.
+
+    Not the ceiling itself. Refilling the file exactly would put the very next
+    run over it again, so every later run would rewrite the whole projection —
+    on the finish hook terminal status and cancel wait on. The quarter of
+    headroom is what makes that copy amortised instead of per-run.
+    """
+    return PROJECTION_MAX_BYTES * 3 // 4
+
+
 def _compact_projection(dir_fd: int, uid: str, line: bytes, state: dict) -> bool:
     """Republish the newest records that fit, plus this run's line.
 
-    False means the file stopped being ours between the append attempt and
-    now; the caller then treats it as foreign, because a rewrite that adopted
-    it would launder unverified bytes into app-recorded history. The newest
-    record always survives — if it alone exceeds the bound, it is published
-    alone rather than dropped, since a run that cannot be recorded at all is
-    worse than a bound overshot by one line.
+    False means the file stopped being ours — between the append attempt and
+    the read, or between the read and the swap. The caller then treats it as
+    foreign, because a rewrite that adopted or destroyed it would launder or
+    lose bytes the app cannot verify. The newest record always survives: if it
+    alone exceeds the bound it is published alone rather than dropped, since a
+    run that cannot be recorded at all is worse than a bound overshot by one
+    line.
     """
     data = _read_sealed(dir_fd, state)
     if data is None:
         return False
-    _publish_whole(
-        dir_fd, uid, _retained_tail(data, PROJECTION_MAX_BYTES - len(line)) + line,
+    return _publish_whole(
+        dir_fd, uid, _retained_tail(data, _compact_budget() - len(line)) + line,
+        expect=state["file"],
     )
-    return True
 
 
 def _publish_projection_line(job: runner.RunnerJob, line: bytes) -> None:
