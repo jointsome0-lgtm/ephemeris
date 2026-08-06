@@ -46,7 +46,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `questions` list alone. No new port
   operation, no change to the `targetOrigin`, `event.source` or one-welcome-per-
   document rules. The generated `_AGENTS_TEMPLATE` gained a bridge-conventions
-  block describing the field to lesson authors.
+  block describing the field to lesson authors. The field crosses only into
+  bridge-eligible pages, i.e. the `interactive-local-v1` profile (CSP
+  `connect-src 'none'`; same-frame navigation not blocked — spec §5 residual),
+  and no consent prompt gates it, unlike the artifact-read path
+  (`allowArtifactRead`). PR #151 round 3 raised that pairing; it is documented
+  in the ABI §2.1 and left for this drain and the owner to decide.
 
 - [ ] 2026-08-03 — `0b25126`..`113b1dd` on `fix/23-limits-retention`, merged to
   `main` as `898bbed` — `app/security.py`, `app/limits.py`,

@@ -175,6 +175,16 @@ Semantics:
   panel's excerpt (`answer_truncated` marks the cut), not a re-read of the
   full 32 KiB body. The snapshot is bounded by the panel it mirrors, which is
   why it carries no separate size limit.
+- **Ungated by design, and where that is decided.** No prompt stands between
+  the record and the page: read-back happens on every load, so a prompt would
+  mean a modal per lesson opening, and declining it would restore exactly the
+  blank controls this feature exists to end. That is unlike the artifact READ
+  path, which asks (`allowArtifactRead`) because a page requests it explicitly
+  and rarely. What crosses is the learner's own answers and the tutor's notes
+  for this page's questions — the same rows the Record panel renders under the
+  frame — into a document whose profile leaves same-frame navigation open
+  (spec §5 residual). Whether that pairing stays ungated is an owner decision,
+  taken through the review queue, not inside the runtime.
 - **Children:** insert every value as text; `answer` is learner-authored and
   `note` is agent-authored. Never resubmit a truncated `answer` as a new
   attempt — it would replace the full body with a fragment.
