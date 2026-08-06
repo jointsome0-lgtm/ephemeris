@@ -110,15 +110,16 @@ Manual and rare. When bumping or adding a library:
    ```
    scratch=$(mktemp -d) && cp .npmrc "$scratch"/ && cd "$scratch" && : > empty.npmrc
 
-   # let only this project's .npmrc speak: no ~/.npmrc, no global file, no env
-   unset ${!npm_config_@} ${!NPM_CONFIG_@}
-   export npm_config_userconfig="$PWD/empty.npmrc" npm_config_globalconfig=/dev/null
-   npm init -y >/dev/null
-
-   # liveness check, then resolve — chained, so a dead gate resolves nothing
-   npm config list | grep -q "^before = \"$(date -u -d '30 days ago' +%F)T" \
-     && npm install --package-lock-only <name> \
-     && npm ls --package-lock-only <name>
+   # a built environment, so only this project's .npmrc speaks: no ~/.npmrc,
+   # no global file, no npm_config_* variables inherited from the shell
+   env -i HOME="$HOME" PATH="$PATH" ${https_proxy:+https_proxy="$https_proxy"} \
+       npm_config_userconfig="$PWD/empty.npmrc" npm_config_globalconfig=/dev/null \
+       bash -c '
+         npm init -y >/dev/null
+         # liveness check, then resolve — chained, so a dead gate resolves nothing
+         npm config list | grep -q "^before = \"$(date -u -d "30 days ago" +%F)T" \
+           && npm install --package-lock-only <name> \
+           && npm ls --package-lock-only <name>'
    ```
 
    Two details that quietly turn this into a no-op if you skip them. The `cp`
@@ -142,16 +143,18 @@ Manual and rare. When bumping or adding a library:
    gate rather than a remark: when it fails nothing is resolved, where three
    separate lines would have sailed on into an unquarantined install.
 
-   The isolation lines exist because a personal npm config can weaken the gate
-   in more ways than one date check can spot — `min-release-age-exclude` exempts
+   The `env -i` exists because a personal npm config can weaken the gate in
+   more ways than one date check can spot — `min-release-age-exclude` exempts
    named packages from the age rule outright, and every setting also travels as
-   an `npm_config_*` environment variable. Rather than enumerate the ways,
-   point `userconfig` at an empty file and clear the variables, so the only
-   configuration in play is the `.npmrc` just copied in. Verified against a
-   hostile personal config (`min-release-age-exclude=katex`, `before=2099-01-01`,
-   plus `npm_config_before` in the environment): inside the isolated shell
-   `npm config list` shows nothing but the generated cutoff, and `katex`
-   resolves to 0.17.0 rather than the still-quarantined 0.18.1.
+   an `npm_config_*` variable, which npm matches case-insensitively, so
+   clearing a list of names is a game you lose eventually. Building the
+   environment instead of pruning it leaves exactly one source of
+   configuration: the `.npmrc` just copied in. Verified against a hostile
+   personal config (`min-release-age-exclude=katex`, `before=2099-01-01`, plus
+   `Npm_Config_before` and an `npm_config_registry` override in the
+   environment): inside it `npm config list` shows nothing but the generated
+   cutoff, and `katex` resolves to 0.17.0 rather than the still-quarantined
+   0.18.1.
 
    `npm ls` needs `--package-lock-only` too: `--package-lock-only` on the
    install writes the lockfile without populating `node_modules`, and a plain
