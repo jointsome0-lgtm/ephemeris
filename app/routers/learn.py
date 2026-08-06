@@ -116,6 +116,12 @@ def get_learn(
         # reason: a live pre-#133 backend rendering this template must render
         # no poll target rather than one that 404s every few seconds.
         selected["record_counts_url"] = f"/learn/lessons/{selected['id']}/record-counts"
+        # #136: what the "Review my answers" button types. None when no agent
+        # CLI is installed here — the template then renders no button, because
+        # a one-click review that ends in `command not found` is worse than the
+        # bare terminal it replaces. Guarded in the template as well, for the
+        # live pre-#136 backend that renders it without this key.
+        selected["tutor_command"] = lessons.tutor_launch_command()
         # D2: the iframe sandbox attribute follows the effective profile
         # (same owner as the header-level directive); the profile is folded
         # into the version token, so a flip reloads the frame and the parent
@@ -320,7 +326,8 @@ def _document_question_ids(read) -> set[str] | None:
 
 def _record_entry(state: dict, attempt: dict | None, *, label: str,
                   question_id: str, page_id: str | None, retired: bool,
-                  unvalidated: bool = False) -> dict:
+                  unvalidated: bool = False,
+                  declared_kind: str | None = None) -> dict:
     """One question row: its latest attempt and the verdict on THAT attempt.
 
     A review names the attempt it judged, so a verdict on a superseded answer
@@ -335,6 +342,13 @@ def _record_entry(state: dict, attempt: dict | None, *, label: str,
     `stale` flag was decided at record time, so a move after the answer leaves
     no mark on it — the row therefore shows the page the answer was written on
     and names the current binding beside it rather than silently adopting it.
+
+    `ask_tutor` (#136) is the row's DIRECTION: the learner asked this instead
+    of answering it. It follows the same rule as `stale` — what was recorded
+    wins, and `declared_kind` speaks only for a control nobody has used yet —
+    so neither retiring an ask control nor re-kinding an ordinary question can
+    relabel what the learner already wrote. Turning a recorded question back
+    into a wrong answer is the exact misreading this issue exists to end.
     """
     review = None
     earlier = 0
@@ -353,6 +367,7 @@ def _record_entry(state: dict, attempt: dict | None, *, label: str,
                                 and page_id != recorded_page) else None,
         "retired": retired,
         "unvalidated": unvalidated,
+        "ask_tutor": attempts.row_is_question(attempt, declared_kind),
         "attempt": attempt,
         "attempt_date": _record_date(attempt["created_at"]) if attempt else "",
         "review": review,
@@ -425,7 +440,7 @@ def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> d
         _record_entry(
             state, latest.get(q["id"]),
             label=q["label"] or q["id"], question_id=q["id"],
-            page_id=q["page"], retired=False,
+            page_id=q["page"], retired=False, declared_kind=q["kind"],
         )
         for q in declared
     ]
@@ -501,7 +516,12 @@ def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> d
         # backwards) through either.
         "cursor": _record_signal(state, attempt_state),
         "counts": {
-            "attempts": attempt_state["total"],
+            # Answers only (#136): a question to the tutor is recorded in the
+            # same table, but calling it an attempt in the line the learner
+            # reads would make asking for help look like a failed try. It is
+            # counted beside it instead, and only when there is one.
+            "attempts": attempt_state.get("answers", attempt_state["total"]),
+            "questions": attempt_state.get("questions", 0),
             "assessments": state["active_count"],
             "focus": _focus_label(focus_total),
             "focus_seconds": focus_total["seconds"],
@@ -810,7 +830,8 @@ def get_lesson_record_counts(lesson_id: int, since: str | None = None,
     return JSONResponse(
         {
             "ok": True,
-            "attempts": attempt_state["total"],
+            "attempts": attempt_state.get("answers", attempt_state["total"]),
+            "questions": attempt_state.get("questions", 0),
             "assessments": state["active_count"],
             "verdicts": len(reviews),
             # Against the ASSESSMENT field of the baseline only: what counts as

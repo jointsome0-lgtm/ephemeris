@@ -163,6 +163,10 @@
         var activeId = null;
         var storedActiveId = null;
         var idSeq = 0;
+        /* A command a lesson button asked to be typed into a tab that was not
+         * connected yet (#136). It waits for that tab's socket and for nothing
+         * else: a tab that never connects types nothing. */
+        var pendingCommand = null;
         function onLearn() {
             return document.body.dataset.rail === 'learn';
         }
@@ -593,6 +597,9 @@
             tab.ws.onopen = function () {
                 updateActiveDot();
                 refitTab(tab);
+                if (pendingCommand && pendingCommand.id === tab.id) {
+                    typeCommand(tab, pendingCommand.text);
+                }
                 if (tab.id === activeId && tab.term)
                     tab.term.focus();
             };
@@ -632,6 +639,10 @@
             tab.ws.onclose = function () {
                 if (tab.ws && tab.ws.readyState >= 2)
                     tab.ws = null;
+                /* Nothing was typed and this tab is no longer the one the learner
+                 * clicked on — a later reconnect must not surprise them with it. */
+                if (pendingCommand && pendingCommand.id === tab.id)
+                    pendingCommand = null;
                 // E3 refuses stale learner SID healing without an explicit role. Clear
                 // only after a failed attach; the next deliberate click can create a new
                 // learner session with the selector instead of looping on the stale SID.
@@ -796,16 +807,21 @@
             else
                 switchTab(tab.id);
         }
+        /* Returns whether this call CREATED the session, which is the only state a
+         * caller can safely write into: a reused tab may have an editor or an agent
+         * in the foreground (#136 review round 2). */
         function openLessonTab(slug, title) {
             slug = String(slug || '').slice(0, 80);
             if (!slug)
-                return;
+                return false;
+            var created = false;
             var tab = tabs.find(function (t) { return t.lesson === slug; });
             if (!tab) {
                 if (tabs.length >= MAX_TABS) {
                     fail('[terminal: maximum 8 sessions]');
-                    return;
+                    return false;
                 }
+                created = true;
                 tab = {
                     id: newId(), sid: null, lesson: slug, title: cleanTitle(title, slug),
                     role: null,
@@ -824,6 +840,27 @@
                 switchTab(tab.id);
             if (drawer.classList.contains('minimized'))
                 setMinimized(false);
+            return created;
+        }
+        /* Type a command into a tab and STOP at the prompt (#136).
+         *
+         * Not a new way to run anything: this is xterm's own paste path, the same
+         * one the paste button and Ctrl+Shift+V use, so the text reaches the shell
+         * as keystrokes over the tab's existing input socket and bracketed paste
+         * keeps it inert. Line breaks are collapsed here as well — whatever a
+         * caller hands over, what arrives is one line the learner still has to
+         * press Enter on. */
+        function typeCommand(tab, text) {
+            if (!tab || !text)
+                return;
+            if (!tab.term || !tab.ws || tab.ws.readyState !== 1) {
+                pendingCommand = { id: tab.id, text: text };
+                return;
+            }
+            pendingCommand = null;
+            if (tab.term.paste)
+                tab.term.paste(text);
+            focusSoon();
         }
         function closeActiveTab() {
             var tab = activeTab();
@@ -978,6 +1015,31 @@
         if (lessonBtn) {
             lessonBtn.addEventListener('click', function () {
                 openLessonTab(lessonBtn.dataset.lesson, lessonBtn.dataset.lessonTitle);
+            });
+        }
+        /* "Review my answers": the lesson's agent terminal, with the tutor command
+         * already typed. Same tab the terminal icon opens — asking for a review is
+         * not a second kind of session. */
+        var reviewBtn = config.reviewButtonId
+            ? document.getElementById(config.reviewButtonId) : null;
+        if (reviewBtn) {
+            reviewBtn.addEventListener('click', function () {
+                var slug = String(reviewBtn.dataset.lesson || '').slice(0, 80);
+                var text = String(reviewBtn.dataset.termCommand || '')
+                    .replace(/[\r\n]+/g, ' ').slice(0, 400);
+                var created = openLessonTab(slug, reviewBtn.dataset.lessonTitle);
+                var tab = tabs.find(function (t) { return t.lesson === slug; }) || null;
+                /* Only into a shell this click just started, and only if it is the tab
+                 * on screen: at the tab ceiling openLessonTab refuses, and a session
+                 * already open may have an editor or an agent in the foreground, which
+                 * would swallow the text as content. So a reused session is brought
+                 * forward and left alone — the learner types in it, or closes it and
+                 * clicks again for a fresh one. */
+                if (created && tab && tab.id === activeId)
+                    typeCommand(tab, text);
+                else if (tab && tab.id === activeId) {
+                    fail('[terminal: session already open — command not typed]');
+                }
             });
         }
         if (findPrevBtn)
@@ -1136,13 +1198,15 @@
     var learnerToggle = document.getElementById('lesson-learner-term-btn');
     initSurface({
         kind: 'agent', idPrefix: 'term', toggleId: 'term-toggle',
-        lessonButtonId: 'lesson-term-btn', currentLesson: null,
+        lessonButtonId: 'lesson-term-btn', reviewButtonId: 'lesson-review-btn',
+        currentLesson: null,
         currentLessonTitle: null, restoreOpen: true, keyboardShortcuts: true
     });
     if (learnerToggle) {
         initSurface({
             kind: 'learner', idPrefix: 'learner-term',
             toggleId: 'lesson-learner-term-btn', lessonButtonId: null,
+            reviewButtonId: null,
             currentLesson: learnerToggle.dataset.lesson || null,
             currentLessonTitle: learnerToggle.dataset.lessonTitle || null,
             restoreOpen: false, keyboardShortcuts: false

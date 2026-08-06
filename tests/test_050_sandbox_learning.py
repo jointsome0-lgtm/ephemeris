@@ -865,7 +865,8 @@ def test_sandbox_learning(client, suite_state):
 
     assert (
         '<details class="lesson-record"' in _s4_html
-        and _s4_ctx["counts"] == {"attempts": 4, "assessments": 6,
+        and _s4_ctx["counts"] == {"attempts": 4, "questions": 0,
+                                "assessments": 6,
                                 "focus": "25m", "focus_seconds": 1500}
         and 'data-record-count="attempts">4</span> attempts' in _s4_body
         and 'data-record-count="assessments">6</span> active' in _s4_body

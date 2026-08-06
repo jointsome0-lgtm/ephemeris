@@ -1009,6 +1009,13 @@ def panel_state(
         keys = [_fold_keys(row) for row
                 in conn.execute(ACTIVE_FOLD_KEYS_SQL, (lesson_id,)).fetchall()]
         state = fold_rows(keys)
+        # Which attempts carry a standing verdict AT ALL, before the display
+        # filter below narrows the fold to the rows the panel will draw. The
+        # fold already knows this and used to throw it away; the ask-the-tutor
+        # debt (#136) is exactly "a question attempt no review answers", and it
+        # must see reviews on attempts the panel does not display — an older
+        # question on a control that has since been asked again.
+        reviewed_attempt_ids = set(state["reviews_by_attempt"])
         if review_attempt_ids is not None:
             state["reviews_by_attempt"] = {
                 attempt_id: row
@@ -1016,6 +1023,8 @@ def panel_state(
                 if attempt_id in review_attempt_ids
             }
         state = _hydrate(conn, lesson_id, state)
+        # After the hydration, which rebuilds the dict from the fold's own keys.
+        state["reviewed_attempt_ids"] = reviewed_attempt_ids
         state["active_count"] = sum(
             1 for row in keys if row["kind"] != "retraction"
         )

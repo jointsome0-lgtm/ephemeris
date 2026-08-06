@@ -257,7 +257,7 @@ def immediate(conn: sqlite3.Connection):
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -811,6 +811,35 @@ def _migrate_to_16(conn: sqlite3.Connection) -> None:
         meta_set(conn, SEEDED_AT, now_iso())
 
 
+# v17 — what an attempt IS (#136). Until now every `lesson_attempts` row was
+# one thing: the learner's answer to a question the lesson asked. The lesson
+# page can now also carry the reverse channel — the learner asking the tutor —
+# and that submission travels the same bridge op, the same endpoint and the
+# same authority row, so the record has to say which of the two it is or the
+# two read as one.
+#
+# The value is SERVER-derived at record time from the declared question's kind
+# (`bundle_schema.ASK_TUTOR_KIND`), never client-supplied, and then frozen in
+# the row: retiring or re-kinding the question later must not silently reclas-
+# sify what the learner already sent. Existing rows are answers by definition —
+# nothing else could record before this column existed — so the default is
+# exactly right for them, and `attempts.jsonl` keeps echoing this value in the
+# `kind` field its §6.2 shape already has.
+_SCHEMA_V17 = """
+ALTER TABLE lesson_attempts ADD COLUMN kind TEXT NOT NULL DEFAULT 'attempt'
+  CHECK(kind IN ('attempt','question'));
+"""
+
+
+def _migrate_to_17(conn: sqlite3.Connection) -> None:
+    # ADD COLUMN has no IF NOT EXISTS. The user_version gate runs this exactly
+    # once per database, and a repaired/hand-upgraded database that already has
+    # the column is converged rather than crashed on.
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(lesson_attempts)")}
+    if "kind" not in have:
+        conn.executescript(_SCHEMA_V17)
+
+
 # Ordered, idempotent steps. A schema change must NEVER require deleting the
 # ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
 _MIGRATIONS = [
@@ -830,6 +859,7 @@ _MIGRATIONS = [
     (14, _migrate_to_14),
     (15, _migrate_to_15),
     (16, _migrate_to_16),
+    (17, _migrate_to_17),
 ]
 
 

@@ -1033,6 +1033,10 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
                 return answerError(boundPort, code, requestId);
             }
             const result = rec["result"] === "duplicate" ? "duplicate" : "recorded";
+            /* Which direction this record travels (#136). Server-derived from the
+             * manifest; the page never says. An older backend sends no `kind` at
+             * all, and everything then reads as the answer it always was. */
+            const asked = rec["kind"] === "question";
             const reply = {
                 op: "attempt",
                 request_id: requestId,
@@ -1040,15 +1044,22 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
                 attempt_id: rec["attempt_id"],
                 stale: rec["stale"] === true,
             };
+            if (typeof rec["kind"] === "string")
+                reply["kind"] = rec["kind"];
             if (result === "recorded") {
                 reply["attempt_number"] = rec["attempt_number"];
                 reply["projection"] = rec["projection"];
                 const n = rec["attempt_number"];
-                /* Check v1 confirmation: an M5 toast, deliberately no modal. */
-                toast(typeof n === "number" ? `attempt #${n} recorded` : "attempt recorded");
+                /* Check v1 confirmation: an M5 toast, deliberately no modal. A
+                 * question was not attempted at anything, so it is not counted at the
+                 * learner either. */
+                if (asked)
+                    toast("question sent to the tutor");
+                else
+                    toast(typeof n === "number" ? `attempt #${n} recorded` : "attempt recorded");
             }
             else {
-                toast("attempt already recorded");
+                toast(asked ? "question already sent" : "attempt already recorded");
             }
             boundPort.postMessage(reply);
         }
@@ -1468,6 +1479,14 @@ if (recordPanel && recordCountsUrl && recordKey) {
         /* A pre-#133 backend renders no verdicts cell; the others always exist. */
         if (cell && cell.textContent !== value)
             cell.textContent = value;
+        /* The asked chip (#136) is on the line at zero but hidden, because a
+         * lesson nobody asked about should not carry a "0 asked". The first
+         * question of the session is therefore also the one that reveals it. */
+        if (cell && name === "questions") {
+            const chip = cell.parentElement;
+            if (chip instanceof HTMLElement)
+                chip.hidden = value === "0";
+        }
     };
     const showUnread = (count) => {
         if (!badge)
@@ -1556,7 +1575,7 @@ if (recordPanel && recordCountsUrl && recordKey) {
                 return;
             if (typeof counts.cursor === "string")
                 latestCursor = counts.cursor;
-            for (const name of ["attempts", "assessments", "verdicts"]) {
+            for (const name of ["attempts", "questions", "assessments", "verdicts"]) {
                 const value = counts[name];
                 if (typeof value === "number" && Number.isFinite(value)) {
                     setCount(name, String(value));

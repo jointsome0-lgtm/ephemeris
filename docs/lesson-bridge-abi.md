@@ -164,6 +164,7 @@ child → parent   { "op": "attempt", "v": 1, "request_id": "a1",
 parent → child   { "op": "attempt", "request_id": "a1",
                    "result": "recorded",       // or "duplicate"
                    "attempt_id": "…uuid…", "stale": false,
+                   "kind": "attempt",          // or "question" (#136)
                    "attempt_number": 3,        // recorded only
                    "projection": "projected" } // recorded only
 ```
@@ -216,9 +217,14 @@ parent → child   { "op": "attempt", "request_id": "a1",
   manifest declares, against the on-disk revision the server re-hashes at
   record time. Port possession buys nothing the armed page did not already
   have.
+- `kind` is the server-derived record direction (`attempt`, or `question`
+  when the manifest declares that question `ask_tutor` — lesson-attempts-api.md).
+  The child never sends it; a backend that predates it sends none, and the
+  field is then absent from the reply rather than guessed.
 - Confirmation UX is parent-owned: a recorded attempt raises the app's
-  toast ("attempt #N recorded"); there is no modal, and the child receives
-  only the structured reply above.
+  toast ("attempt #N recorded", or "question sent to the tutor" for the
+  ask direction); there is no modal, and the child receives only the
+  structured reply above.
 
 ### 3.2 The `editor` capability (phase F)
 

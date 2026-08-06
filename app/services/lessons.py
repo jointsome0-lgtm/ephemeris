@@ -1063,15 +1063,51 @@ def _page_starters(
     )
 
 
-def _go_on_agent_path() -> bool:
+def _agent_path_dirs() -> list[Path]:
+    """Where an agent shell will look for an executable, in its own order."""
     home = os.path.expanduser("~")
     path = f"{home}/.local/bin:/usr/local/bin:" + os.environ.get(
         "PATH", "/usr/bin:/bin"
     )
+    return [Path(directory) for directory in path.split(os.pathsep)]
+
+
+def _on_agent_path(program: str) -> bool:
     return any(
-        os.access(Path(directory) / "go", os.X_OK)
-        for directory in path.split(os.pathsep)
+        os.access(directory / program, os.X_OK)
+        for directory in _agent_path_dirs()
     )
+
+
+def _go_on_agent_path() -> bool:
+    return _on_agent_path("go")
+
+
+# The tutor CLIs this app is used with (app/terminal.py: Claude Code, codex,
+# aider), each with how it takes an opening prompt. Preference order, not
+# ranking: the first one actually installed is the one the learner has.
+TUTOR_CLIS = (
+    ("claude", 'claude "{prompt}"'),
+    ("codex", 'codex "{prompt}"'),
+    ("aider", 'aider --message "{prompt}"'),
+)
+TUTOR_PROMPT = "Read my record and review my answers."
+
+
+def tutor_launch_command() -> str | None:
+    """The command the "Review my answers" button types, or None (PR #149).
+
+    Which agent CLI is installed is a fact about this machine, not something a
+    template may assume: hard-coding `claude` on a codex-only install promises
+    a one-click review and delivers `command not found`. So the button is
+    rendered from what is on the agent shell's PATH — the same probe the
+    generated STATE reports Go with — and when nothing is there it is not
+    rendered at all. An unkeepable promise is worse than no button.
+    """
+    for program, template in TUTOR_CLIS:
+        if _on_agent_path(program):
+            return template.format(prompt=TUTOR_PROMPT)
+    return None
 
 
 def _render_lesson_state(
@@ -1080,8 +1116,35 @@ def _render_lesson_state(
     read: bundle_schema.ManifestRead,
 ) -> str:
     """Serialize the current lesson record for the regenerated agent brief."""
-    state, attempt_state, _focus_total = record_panel_db_state(conn, lesson["id"])
+    from . import attempts as attempts_service
+
+    # What the learner asked and nobody has answered yet (#136) comes from the
+    # same committed version as the rest of the panel state — the debt and the
+    # verdicts that clear it cannot be read from two. Derived from the RECORDED
+    # kind rather than from the manifest, so retiring a control cannot retire
+    # the debt, and counted per ATTEMPT rather than per question: one control
+    # is asked through repeatedly, and a reply to the newest question must not
+    # close the ones before it (PR #149).
+    own_snapshot = not conn.in_transaction
+    if own_snapshot:
+        conn.execute("BEGIN")
+    try:
+        state, attempt_state, _focus_total = record_panel_db_state(
+            conn, lesson["id"]
+        )
+        open_questions, open_total = attempts_service.open_questions(
+            conn, lesson["id"], state["reviewed_attempt_ids"]
+        )
+    finally:
+        if own_snapshot:
+            conn.rollback()
     latest = attempt_state["latest_by_question"]
+
+    def reviewed(attempt: dict | None) -> dict | None:
+        return (
+            state["reviews_by_attempt"].get(attempt["attempt_id"])
+            if attempt else None
+        )
     try:
         current = None if read.rejected else _resolve_entry(lesson, read, None)
     except LessonError:
@@ -1091,15 +1154,44 @@ def _render_lesson_state(
         f"- Lesson title (data): {json.dumps(lesson['title'])}",
         f"- Lesson slug: `{lesson['slug']}`",
         f"- Current page (data): {json.dumps(current or 'unavailable')}",
-        "- Questions:",
     ]
+    if open_questions:
+        lines.append(
+            f"- FIRST: the learner asked you {open_total} question"
+            f"{'' if open_total == 1 else 's'} nobody has answered. Answer "
+            "each one before teaching anything new, then record a `review` "
+            "naming that attempt — the review IS the answer, and it is what "
+            "marks the question closed:"
+        )
+        for row in open_questions:
+            asked = json.dumps(row["asked"])
+            if row["asked_truncated"]:
+                asked += " (cut here; the whole text is the record with this "
+                asked += 'attempt id in `attempts.jsonl`)'
+            lines.append(
+                f"  - `{row['question_id']}`, attempt `{row['attempt_id']}` "
+                f"({row['created_at']}): {asked}"
+            )
+        if open_total > len(open_questions):
+            lines.append(
+                f"  - …and {open_total - len(open_questions)} more, oldest "
+                "first in `attempts.jsonl`"
+            )
+    lines.append("- Questions:")
     for question in read.questions:
         attempt = latest.get(question["id"])
-        review = (
-            state["reviews_by_attempt"].get(attempt["attempt_id"])
-            if attempt else None
-        )
+        review = reviewed(attempt)
         verdict = review["level"] if review else "none"
+        if attempts_service.row_is_question(attempt, question["kind"]):
+            # This control asks nothing — the learner writes into it. So the
+            # two facts worth serializing are reversed: whether they used it,
+            # and whether YOU have replied.
+            lines.append(
+                f"  - `{question['id']}` (the learner asks YOU): "
+                f"{'asked' if attempt else 'nothing asked'}; "
+                f"answered_by_you={'yes' if review else 'no'}"
+            )
+            continue
         lines.append(
             f"  - `{question['id']}`: "
             f"{'answered' if attempt else 'unanswered'}; verdict={verdict}"
@@ -1239,6 +1331,34 @@ the bundle before publishing the section. If it needs the network or a
 tool you could not verify, redesign the experiment — do not ship it with
 a caveat.
 
+## Let the learner ask you back
+
+A learner who does not understand the QUESTION has nowhere to put that in a
+page that only has answer fields — so the confusion goes into the answer box,
+is recorded as a wrong answer, and you read a broken mental model where there
+was only an unclear prompt. Give them the other direction:
+
+- Beside every declared question, put a second small control — "I don't
+  understand this question" / "Ask about this" — that opens a short free-text
+  field and a send button. Keep it quiet: a text link or a small button, never
+  competing with Check.
+- It records like everything else: declare it in `questions[]` as its own
+  `q_…` id with `"kind": "ask_tutor"` (and a `label` naming what it belongs
+  to, e.g. "Ask about the buffered-channel prediction"), then wire its send
+  button through the SAME bridge `attempt` operation as Check — same
+  envelope, its own `question_id`, a fresh `request_id`. There is no separate
+  operation and nothing else to call; the app reads the manifest kind and
+  files the record as a question to you rather than as an answer.
+- One page-level "Ask about this page" control is the minimum. A per-question
+  one wherever a prediction is subtle is better — the learner should never
+  have to leave the question to ask about it.
+- Confirm it the same quiet way as Check ("sent — the tutor will answer next
+  session"), and degrade the same way: without the bridge the control shows
+  the read-only state instead of erroring.
+
+Answering those is the first thing you do in the next session — see the
+record and verdict sections below.
+
 ## The learner's record — read it first, teach from it
 
 `attempts.jsonl`, `assessments.jsonl`, and the files under the artifact
@@ -1284,6 +1404,13 @@ This is what turns you from a page generator into a tutor:
   Never load it unboundedly, and skip malformed lines and unknown record
   versions. The newest runs are the ones that matter — usually the last
   few for the block in front of you, not the whole log.
+- A record whose `kind` is `"question"` is not an answer at all: it is the
+  learner asking YOU (the control above). Those come first, before any new
+  teaching — STATE lists the unanswered ones. Answer in the chat, fix
+  whatever made the question unclear (usually the prompt itself, and often
+  a missing visualization), and record a `review` on that attempt so the
+  answer survives the session. A `"kind"` you do not recognize is a record
+  written by a newer app: skip it, do not guess.
 - A wrong answer is a window into a wrong model. Do not restate the
   reveal. Work out what model would produce THAT answer, name it, and
   design a narrower question or experiment that makes the model fail
@@ -1325,6 +1452,11 @@ The call is ordinary HTTP: POST a JSON object to that URL with
   from `attempts.jsonl`, a `level` of `correct`, `partial`, `incorrect`, or
   `unclear`, and a `note` that names the wrong model which would produce
   THAT answer. Do not restate the reveal.
+  On a record whose `kind` is `"question"` the same call is your REPLY, and
+  writing it is what marks the question answered: the `note` is the answer
+  you gave the learner, in a form that still teaches when read alone, and
+  the `level` judges the understanding the question revealed — `unclear`
+  when it shows you cannot yet tell.
 - `evidence` — a durable mastery statement: 1–8 `concepts` (reuse the
   manifest's own tags before minting near-synonyms), a `level` of `seen`,
   `weak`, `developing`, or `passed`, and an honest `basis` — `attempts`,
@@ -1428,10 +1560,12 @@ offline from this bundle before you shipped it.
   bundle consumer shares: depth ≤ 4, at most 512 entries per root,
   regular files only (skip symlinks, FIFOs, sockets), files over 2 MiB
   listed but not read.
-- `attempts.jsonl` — app-owned log of the learner's recorded attempts, one
-  JSON object per line (`question_id`, `page_id`, `answer`, `created_at`).
-  It may be absent or lag behind. Read-only for you:
-  never write or rewrite it.
+- `attempts.jsonl` — app-owned log of what the learner recorded, one JSON
+  object per line (`kind`, `question_id`, `page_id`, `answer`,
+  `created_at`). `kind` is `"attempt"` for an answer and `"question"` for
+  the learner asking you something; treat any other value as a record from
+  a newer app and skip it. It may be absent or lag behind. Read-only for
+  you: never write or rewrite it.
 - `runs.jsonl` — app-owned history of finished editor runs, one JSON object
   per line: run/block/file-revision metadata, exit result and timestamps, plus
   the newest 8192 UTF-8 bytes of combined stdout/stderr. It may be absent or
@@ -1509,9 +1643,12 @@ as in daylight:
   included, in reading order: `{"id": "pg_…", "path": …, "title": …}`.
   Declare every prediction/self-check question a page poses in
   `questions[]`: `{"id": "q_…", "page": "pg_…", "kind": …, "label": "short
-  summary"}` (kinds: `prediction`, `free_text`, `self_check`) — the full
-  prompt lives in the page HTML, and a question not declared in the
-  manifest does not exist to the app.
+  summary"}` (kinds: `prediction`, `free_text`, `self_check`, `ask_tutor`)
+  — the full prompt lives in the page HTML, and a question not declared in
+  the manifest does not exist to the app. `ask_tutor` is the one that
+  reverses the direction: it declares an ask-the-tutor control (above), not
+  something the page asks, and what the learner sends through it is filed as
+  a question to you.
 - Stable ids (v2): mint `pg_`/`q_` ids of 4–32 chars `[a-z0-9]`; the
   suffix carries no meaning — never derive it from a title, never
   re-derive it on rename. Content edits, file renames, and reordering keep
@@ -1569,11 +1706,15 @@ holds exactly one block and one textarea. When the block declares a
 registered runner, add Run and Cancel while a run is active. For that
 runner-backed page, the one ready announcement is
 `{"ephemeris":"lesson-bridge","type":"ready","abi":[1],"want":["editor","run"]}`.
-Add `attempts` to that same array only when the page also records answers to
-declared questions; then its list is `["attempts","editor","run"]`. Use that
-capability list in place of the attempts-only ready example in the general
-bridge recipe below. An editor-only page asks for `editor`, adds `attempts`
-under the same declared-answer condition, and omits `run` and its controls.
+Add `attempts` to that same array whenever the page submits anything through
+the attempt operation — an answer to a declared question OR an ask-the-tutor
+control, which travels the same way; then its list is
+`["attempts","editor","run"]`. A page that carries only an ask control still
+needs it: without the grant every question the learner sends you is refused
+`capability-not-granted`. Use that capability list in place of the
+attempts-only ready example in the general bridge recipe below. An
+editor-only page asks for `editor`, adds `attempts` under the same
+condition, and omits `run` and its controls.
 Gate each affordance independently: only an `editor` grant makes the textarea
 writable and enables Load/Save; only a `run` grant enables Run/Cancel. A
 missing `run` grant never disables a granted editor.
@@ -1652,6 +1793,9 @@ transferred MessagePort. Pages that record answers follow these rules:
   at runtime, never one derived from the question text. If the question
   is not declared in the manifest, declare it first: to the app an
   undeclared question does not exist, so its attempts cannot land.
+  An ask-the-tutor control is the same rule with its own declared id: it
+  sends this same operation, and the manifest's `ask_tutor` kind — not
+  anything the page sends — is what makes the record a question to you.
 - Port requests carry a page-chosen `request_id` (1–128 chars). Mint a
   fresh opaque id, unique across the whole lesson, for every new logical
   submission; reuse the same `request_id` only when retrying that exact
@@ -2139,6 +2283,31 @@ def _reconcile_assessment_projection(lesson: dict) -> None:
         pass
 
 
+def _reconcile_attempt_projection(lesson: dict) -> None:
+    """Rebuild `attempts.jsonl` from the authority if it does not match.
+
+    Verify-first (review round 5): a terminal open is not a reason to rewrite
+    a file that is already the projection of its own authority, and a lesson's
+    attempt history has no ceiling. The seal check is what an intact file
+    costs; only a missing, mutated or behind file pays for the rebuild — the
+    same rule the assessment reconcile beside it follows.
+
+    Best effort in every direction: the service answers False rather than
+    raising, and nothing here may keep the terminal from opening. Deferred
+    import for the same cycle reason.
+    """
+    try:
+        from .attempts import reconcile_projection_if_stale
+
+        conn = get_conn()
+        try:
+            reconcile_projection_if_stale(conn, lesson)
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error, ImportError):
+        pass
+
+
 def _retire_foreign_run_projection(lesson: dict) -> None:
     """The run projection has no authority to rebuild from — its output tails
     live nowhere else — so the terminal-open trigger verifies rather than
@@ -2170,6 +2339,13 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
             return None
         slug, lesson, lesson_dir = resolved
         read = _ensure_bundle_manifest(lesson)
+        # Before the brief, unlike the two reconciles below: STATE quotes the
+        # open questions but sends the tutor to `attempts.jsonl` for the rest
+        # of a long one, and for every answer it names. Healing the file first
+        # is what makes that pointer true after a `projection: pending` write
+        # or a deleted file (review round 3). Best effort, like its siblings —
+        # a projection that cannot be repaired still costs no brief.
+        _reconcile_attempt_projection(lesson)
         conn = get_conn()
         try:
             state = _render_lesson_state(conn, lesson, read)

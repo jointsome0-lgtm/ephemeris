@@ -192,6 +192,7 @@ def test_record_panel_keeps_the_shared_snapshot_counts_and_rendering(client):
     assert learn._record_panel_db_state is lessons.record_panel_db_state
     assert panel["counts"] == {
         "attempts": 1,
+        "questions": 0,
         "assessments": 2,
         "focus": "2m",
         "focus_seconds": 120,

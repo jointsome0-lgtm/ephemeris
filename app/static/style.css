@@ -909,6 +909,14 @@ body {
 .rec-retired { background: var(--hover); color: var(--muted); }
 .rec-moved { background: var(--hover); color: var(--muted); }
 .rec-unvalidated { background: rgba(245, 158, 11, .14); color: var(--prio-medium); }
+/* #136: what the learner asked, not what they answered. The row reads as an
+   open thread — a left rule in the accent the rest of the panel keeps for
+   "the tutor's own writing" — so an unanswered question cannot be skimmed
+   past as one more attempt awaiting a verdict. */
+.rec-ask { background: var(--primary-soft); color: var(--primary); }
+.rec-lvl-tag { background: var(--hover); color: var(--muted); }
+.rec-q-ask { border-left: 2px solid var(--primary); }
+.rec-q-ask .rec-answer { color: var(--text); }
 .rec-q-retired { opacity: .82; }
 /* Where a retired question's work continues (#133): the manifest's `replaces`
    claim, rendered as the link between the two rows. */

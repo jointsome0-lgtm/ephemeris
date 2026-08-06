@@ -239,7 +239,13 @@ a stored selection absent from `pages[]` falls back to `entry` with an
 - `kind`: optional, `^[a-z0-9_-]{1,40}$`; readers treat unknown but
   grammar-valid kinds as `free_text`; a kind violating the grammar is
   dropped (`invalid-value`, the question stays with the default kind);
-  recommended values: `prediction`, `free_text`, `self_check`;
+  recommended values: `prediction`, `free_text`, `self_check`, `ask_tutor`.
+  `ask_tutor` (#136) declares the reverse channel — an "I don't understand
+  this question" / free-question control the LEARNER writes into — and is
+  the only kind the app itself reads: an attempt recorded against such a
+  question is filed as a question to the tutor (§6.2 `kind`), never as an
+  answer. It is a declaration like any other, submitted over the same
+  bridge operation and the same endpoint;
 - `label`: optional adapter-facing summary ≤ 200. The full prompt lives in
   the page HTML; the manifest only declares existence and identity.
 - `replaces`: optional; the `q_…` id of a **retired** predecessor this
@@ -409,6 +415,11 @@ default writes), `entry` `index.html`,
  "created_at": "2026-07-16T12:00:00+00:00", "stale": false}
 ```
 
+- `kind` is `attempt` for an answer to a question the lesson asked, and
+  `question` when the learner asked the tutor instead — derived server-side
+  at record time from the declared question's `ask_tutor` kind (§4.3), never
+  supplied by the page, and frozen with the record. Readers that do not know
+  a kind skip that record, the same way they skip an unknown `v`;
 - `v` versions the record shape; unknown record versions and malformed
   lines are skipped by readers, never a crash. These are out-of-band
   conditions (reconcile reporting, adapter-side findings), NOT §9.2
@@ -635,7 +646,13 @@ additive v2 field later if ever needed).
   rewritten; pre-C3 events stay as-is, and a consumer needing identity for
   them joins on `lesson_id` against the local DB.
 - `lesson_attempt` (D4) event payload: `lesson_uid`, `lesson_id`, `slug`,
-  `attempt_id`, `page_id`, `question_id`, `page_rev`, `answer`, `stale`.
+  `attempt_id`, `page_id`, `question_id`, `page_rev`, `answer`, `stale`,
+  `kind`. `kind` (#136) joined the payload after the field list was frozen,
+  so a consumer written against the earlier list must ignore it rather than
+  reject the event — the same forward-compatibility stance every other reader
+  here takes. It is the §6.2 value (`attempt` or `question`) and it is the
+  only frozen record of the direction an attempt travelled: an event without
+  it predates the field and is an answer.
 - Never echoed into events: `title`, `path`, `step`, `concepts`, `pages`.
   The manifest is the single truth for those; adapters read them from the
   bundle at delivery time, keyed by `lesson_uid`, so events can't carry
