@@ -2341,8 +2341,10 @@ def test_assessment_artifact_migration(client, suite_state):
         < _fe_get.index("boundPort.postMessage(reply)")
     ), "artifact reads revalidate the page block after GET before disclosure"
     assert (
-        "let artifactReadConsent: boolean | null = null" in _d2_ts
-        and "artifactReadConsent = null" in _d2_ts
+        "let readConsent: { artifact: boolean | null; record: boolean | null }" in _d2_ts
+        # Cleared on every teardown, so the decision is per loaded document.
+        and "readConsent = { artifact: null, record: null }" in _d2_ts[
+            _d2_ts.index("const teardown"):_d2_ts.index("const fetchMeta")]
         and "window.confirm(" in _d2_ts
         and 'answerError(boundPort, "artifact-read-denied", requestId)' in _fe_get
         and _fe_get.index("allowArtifactRead()")

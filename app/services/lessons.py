@@ -1398,9 +1398,12 @@ This is what turns you from a page generator into a tutor:
   exited green, and the tail of what it printed. It separates "saved and
   abandoned" from "ran and hit a compile error" from "ran green", which
   no other file can tell you. It is a history log with an 8 KiB output
-  tail per line and no compaction, so it is the largest file here: read
-  at most the newest 2 MiB of complete lines, start after the next
-  newline if the file is bigger, and say that older runs went unread.
+  tail per line, kept under a 20 MiB ceiling by dropping its oldest whole
+  records, so it is the largest file here: read at most the newest 2 MiB
+  of complete lines, start after the next newline if the file is bigger,
+  and say that older runs went unread. Runs older than the ceiling are
+  gone from this file for good — never read their absence as evidence
+  that the learner did not run something.
   Never load it unboundedly, and skip malformed lines and unknown record
   versions. The newest runs are the ones that matter — usually the last
   few for the block in front of you, not the whole log.
@@ -1572,8 +1575,9 @@ learner with blank controls has thrown their work away on screen.
 - `runs.jsonl` — app-owned history of finished editor runs, one JSON object
   per line: run/block/file-revision metadata, exit result and timestamps, plus
   the newest 8192 UTF-8 bytes of combined stdout/stderr. It may be absent or
-  lag behind, it has no ceiling, and it is read under the 2 MiB bound above.
-  Read-only for you: never write or rewrite it.
+  lag behind, it is capped at 20 MiB by dropping its oldest whole records, and
+  it is read under the 2 MiB bound above. Read-only for you: never write or
+  rewrite it.
 - `AGENTS.md` / `CLAUDE.md` — app-generated briefs (this file); never
   author or repurpose these names.
 
@@ -1859,10 +1863,16 @@ transferred MessagePort. Pages that record answers follow these rules:
   - On an entry with `asked: true`, the `verdict` is the REPLY you wrote:
     render it as the answer to what the learner asked, not as a mark against
     them. No verdict there means the question is still waiting on you.
-  - No `record` field at all (an older app), an unknown `question_id`, or a
-    missing key: behave exactly as a page with no read-back. Everything else
-    about the handshake is unchanged, so a page that ignores `record`
-    entirely keeps working — read-back is an addition, never a requirement.
+  - The owner decides whether it comes at all. Answers and notes are private
+    runtime state and the page can navigate itself elsewhere, so the app asks
+    once per loaded page before attaching anything to read back, and a refusal
+    omits the field. Design the page to work without it and to say nothing
+    about why it is missing; never re-prompt for it or nag through the page.
+  - No `record` field at all (an older app, or a refusal), an unknown
+    `question_id`, or a missing key: behave exactly as a page with no
+    read-back. Everything else about the handshake is unchanged, so a page
+    that ignores `record` entirely keeps working — read-back is an addition,
+    never a requirement.
   - Insert every value as TEXT (`textContent`, textarea `.value`), never as
     markup: `answer` is the learner's own words and `note` is yours, and the
     data boundary above covers both coming back in.

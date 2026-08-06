@@ -330,9 +330,15 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
   let capabilities: string[] = [];
   let attemptsInflight = new Set<string>();
   let editorInflight = new Set<string>();
-  /* null = no decision yet; a denial is sticky for this document so hostile
-   * content cannot turn artifact.get into a browser-dialog loop. */
-  let artifactReadConsent: boolean | null = null;
+  /* One store, one rule, for every private read the untrusted page can obtain:
+   * saved artifact bytes and the record read-back both leave the parent only
+   * behind an owner decision. `null` = not asked yet; a denial is sticky for
+   * this document so hostile content cannot turn a read into a browser-dialog
+   * loop, and an acceptance covers that document's later reads of the same
+   * kind. Cleared on every load, so a reload decides again. */
+  let readConsent: { artifact: boolean | null; record: boolean | null } = {
+    artifact: null, record: null,
+  };
   let runInflight = new Set<string>();
   let runStartToken: object | null = null;
   let ownedRuns = new Map<string, OwnedRun>();
@@ -360,7 +366,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     capabilities = [];
     attemptsInflight = new Set();
     editorInflight = new Set();
-    artifactReadConsent = null;
+    readConsent = { artifact: null, record: null };
     runInflight = new Set();
     runStartToken = null;
     ownedRuns = new Map();
@@ -674,19 +680,36 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     }
   };
 
-  const allowArtifactRead = (): boolean => {
-    if (artifactReadConsent !== null) return artifactReadConsent;
+  const allowPrivateRead = (
+    kind: "artifact" | "record",
+    question: string,
+  ): boolean => {
+    const decided = readConsent[kind];
+    if (decided !== null) return decided;
+    let allowed: boolean;
     try {
-      artifactReadConsent = window.confirm(
-        "Allow this untrusted lesson page to read saved learner code? "
-        + "A lesson page can navigate the preview and send code it reads to another site. "
-        + "Allow only if you trust this lesson.",
-      );
+      allowed = window.confirm(question);
     } catch {
-      artifactReadConsent = false;
+      allowed = false; // no dialog available is a refusal, never a grant
     }
-    return artifactReadConsent;
+    readConsent[kind] = allowed;
+    return allowed;
   };
+
+  const allowArtifactRead = (): boolean => allowPrivateRead(
+    "artifact",
+    "Allow this untrusted lesson page to read saved learner code? "
+    + "A lesson page can navigate the preview and send code it reads to another site. "
+    + "Allow only if you trust this lesson.",
+  );
+
+  const allowRecordRead = (): boolean => allowPrivateRead(
+    "record",
+    "Allow this untrusted lesson page to read your recorded answers and the "
+    + "tutor's notes for its questions? "
+    + "A lesson page can navigate the preview and send what it reads to another site. "
+    + "Allow only if you trust this lesson.",
+  );
 
   const getArtifact = async (
     boundPort: MessagePort,
@@ -1361,11 +1384,12 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     return protocolError("unknown-op", requestId);
   };
 
-  const finishReady = (
+  const finishReady = async (
     data: { abi: unknown[]; want?: unknown[] },
     child: Window,
-  ): void => {
+  ): Promise<void> => {
     if (armed === null || granted || frame.contentWindow !== child) return;
+    const gen = generation;
     const channel = new MessageChannel();
     port = channel.port1;
     port.onmessage = onPortMessage;
@@ -1399,10 +1423,11 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
       lesson: armed,
       capabilities,
     };
-    /* Read-back travels with the grant that would write the next answer and
-     * with nothing else: a page that did not ask for `attempts` records none,
-     * so none crosses to it. Omitted whole rather than sent empty when there
-     * is no snapshot, so the pre-#133 welcome shape is reproduced exactly.
+    /* Read-back travels with the grant that would write the next answer, with
+     * the owner's consent, and with nothing else: a page that did not ask for
+     * `attempts` records none, so none crosses to it. Omitted whole rather
+     * than sent empty when there is no snapshot, so the pre-#133 welcome shape
+     * is reproduced exactly.
      *
      * The snapshot is bound to the document it was taken for, twice over,
      * because the frame can reload without a new /learn render behind it:
@@ -1419,12 +1444,39 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
       && armedQuestions !== null
     ) {
       const declared = armedQuestions;
-      welcome.record = {
-        questions: recordSnapshot.questions.filter(
-          (entry) => typeof entry?.question_id === "string"
-            && declared.includes(entry.question_id),
-        ),
-      };
+      const questions = recordSnapshot.questions.filter(
+        (entry) => typeof entry?.question_id === "string"
+          && declared.includes(entry.question_id),
+      );
+      /* The last gate is the owner's. What crosses here is the learner's own
+       * answers and the tutor's notes about them, and the receiving document
+       * keeps the same-frame navigation residual (spec §5): permitted script
+       * can assign `location.href`, and that request is outside the response
+       * CSP. So this asks before attaching, exactly as the artifact READ path
+       * asks before handing over saved code, and a refusal omits the field
+       * whole — the rest of the welcome, and the write direction, are
+       * unaffected. Nothing to disclose is not a decision: an empty list is
+       * attached unasked, so opening a lesson nobody has answered yet does
+       * not open a modal to hand over nothing. */
+      let attach = true;
+      if (questions.length > 0) {
+        attach = allowRecordRead();
+        /* The prompt is a blocking modal and a document can commit a
+         * navigation while it stands open — which `contentWindow` would NOT
+         * reveal, an iframe's WindowProxy being the same object across
+         * navigations (PR-152 round 1). What does reveal it is the `load`
+         * task queued behind this one, so yield the same settle interval the
+         * editor save uses for the same reason and then re-check the
+         * generation that handler bumps. Consent authorises the document it
+         * was asked about, or nothing: a successor gets its own handshake,
+         * its own question, on its own load. */
+        await new Promise((resolve) => setTimeout(resolve, EDITOR_SETTLE_MS));
+        if (
+          gen !== generation || armed === null || !granted
+          || navPending || quarantined || frame.contentWindow !== child
+        ) return;
+      }
+      if (attach) welcome.record = { questions };
     }
     child.postMessage(welcome, "*", [channel.port2]);
   };
@@ -1479,13 +1531,13 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         ) return;
         armedBlocks = metaBlocks(meta) ?? [];
         armedQuestions = metaQuestions(meta);
-        finishReady(data, child);
+        await finishReady(data, child);
       } finally {
         if (grantToken === token) grantToken = null;
       }
       return;
     }
-    finishReady(data, child);
+    await finishReady(data, child);
   };
 
   /* In-flight latch for the late-initialisation rescue bind below (PR-55

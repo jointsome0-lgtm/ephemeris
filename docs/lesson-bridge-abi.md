@@ -125,8 +125,8 @@ own record is decided once, by the parent, at grant time.
 Semantics:
 
 - **Additive.** The field is present only when the parent has a snapshot to
-  give AND `attempts` was granted; otherwise it is omitted entirely and the
-  welcome is byte-for-byte the pre-#133 shape. A child that ignores `record`
+  give AND `attempts` was granted AND the owner allowed it (below); otherwise
+  it is omitted entirely and the welcome is byte-for-byte the pre-#133 shape. A child that ignores `record`
   is unaffected in every case — it is not a capability, nothing is negotiated
   for it, and no operation depends on it.
 - **Gated by `attempts`.** A page that did not ask to record answers has none
@@ -175,16 +175,40 @@ Semantics:
   panel's excerpt (`answer_truncated` marks the cut), not a re-read of the
   full 32 KiB body. The snapshot is bounded by the panel it mirrors, which is
   why it carries no separate size limit.
-- **Ungated by design, and where that is decided.** No prompt stands between
-  the record and the page: read-back happens on every load, so a prompt would
-  mean a modal per lesson opening, and declining it would restore exactly the
-  blank controls this feature exists to end. That is unlike the artifact READ
-  path, which asks (`allowArtifactRead`) because a page requests it explicitly
-  and rarely. What crosses is the learner's own answers and the tutor's notes
-  for this page's questions — the same rows the Record panel renders under the
-  frame — into a document whose profile leaves same-frame navigation open
-  (spec §5 residual). Whether that pairing stays ungated is an owner decision,
-  taken through the review queue, not inside the runtime.
+- **Gated by an owner decision, per loaded document.** What crosses is the
+  learner's own answers and the tutor's notes for this page's questions — the
+  same rows the Record panel renders under the frame — into a document whose
+  profile leaves same-frame navigation open (spec §5 residual): permitted
+  script can assign `location.href` and carry those bytes to a destination the
+  response CSP does not cover. So the parent asks first, through the same
+  sticky per-document consent the artifact READ path uses
+  (`allowPrivateRead`), with a warning that names that egress. A refusal omits
+  `record` entirely — not an empty list — and leaves the rest of the welcome
+  and the whole write direction untouched; an acceptance covers that document
+  only, so a reload, or any other page, decides again. Nothing to hand over is
+  not a decision: when the filtered list is empty the field is attached
+  unasked, so opening a lesson nobody has answered yet never opens a modal.
+  The prompt blocks, and a document can commit a navigation while it stands
+  open without `contentWindow` ever changing, so the parent waits out the
+  navigation-settle interval and re-checks the document generation before the
+  welcome goes out — the answer authorises the document it was asked about,
+  and a successor that appears mid-prompt is left to its own handshake.
+- **Known residual, unchanged by the gate.** The welcome is delivered to the
+  frame's `WindowProxy`, and a document that navigates itself after announcing
+  and then delays its `load` event (a slow blocking subresource on the
+  successor) is not distinguishable from the announcer at delivery time. Such
+  a successor receives the welcome — the port, and with it whatever `record`
+  the owner just approved. This is the §4 same-frame-navigation residual the
+  whole bridge carries (D5 L1), not something read-back introduces: the port
+  it delivers already grants the write direction. Consent narrows it from
+  automatic on every load to requiring an explicit yes, and no signal
+  available to the parent closes it. Closing it needs a channel the announcing
+  document alone can hold — a port it transfers with its own `ready` — or a
+  non-navigable isolation profile. Both change the ABI and are owner
+  decisions, carried on the review queue rather than taken in the runtime.
+  The cost is honest and known: a learner who declines sees the blank controls
+  this feature exists to end, which is why the ask is once per document rather
+  than once per read.
 - **Children:** insert every value as text; `answer` is learner-authored and
   `note` is agent-authored. Never resubmit a truncated `answer` as a new
   attempt — it would replace the full body with a fragment.
@@ -352,7 +376,9 @@ parent → child   { "op": "artifact.save", "request_id": "s1",
   and send code it reads to another site. A denial is sticky for that document
   and returns `artifact-read-denied` without HTTP; acceptance covers its later
   reads. The parent repeats fresh page/block validation after the prompt and
-  before the GET. A reload requires a new decision.
+  before the GET. A reload requires a new decision. Artifact bytes and the
+  §2.1 read-back are decided separately but by one mechanism
+  (`allowPrivateRead`), so neither answer speaks for the other kind.
 - Content is limited to 64 KiB raw UTF-8 bytes. `base_rev` is either
   `"absent"` or the exact revision returned by `artifact.get` or the previous
   successful save. A `file-conflict` answer carries the current `file_rev`
