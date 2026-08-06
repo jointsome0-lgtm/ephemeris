@@ -45,6 +45,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   approval, the transferred-port welcome plus a port `ping`/`pong`, and a
   `ready` without a transferred port. pytest 280 → 283, verify_restore 34/34,
   `npm run build` reproduces the committed JavaScript.
+  Resolution re-drain 2026-08-06 →
+  `docs/reviews/2026-08-06-chain-u-abi-v2-review.md`: no finding remains. The
+  transferred reply channel binds the complete handshake to the announcing
+  document, and the exact delayed-successor browser regression passes. The
+  entry stays Pending for owner closure; no application fix or restart was
+  performed.
 
 - [ ] 2026-08-06 — `67fd594` and later commits on `fix/133-welcome-readback`,
   merged to `main` as `d6e15bc` —
@@ -89,6 +95,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   received the approved snapshot in a focused browser probe, leaving 1 Low
   finding open on this entry. It stays Pending; no application fix or restart
   was performed.
+  ABI v2 re-drain 2026-08-06 →
+  `docs/reviews/2026-08-06-chain-u-abi-v2-review.md`: the remaining Low finding
+  is resolved. The welcome and approved snapshot now travel only on the
+  announcing document's transferred reply channel; no new finding was found.
+  The entry stays Pending for owner closure; no restart was performed.
 
 - [ ] 2026-08-03 — `0b25126`..`113b1dd` on `fix/23-limits-retention`, merged to
   `main` as `898bbed` — `app/security.py`, `app/limits.py`,
@@ -169,6 +180,10 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `docs/reviews/2026-08-06-chain-u-repair-review.md`: both issue #23 findings
   remain resolved and no new issue #23 finding was found. The entry stays
   Pending with the batch; no application fix or restart was performed.
+  ABI v2 batch re-drain 2026-08-06 →
+  `docs/reviews/2026-08-06-chain-u-abi-v2-review.md`: both issue #23 findings
+  remain resolved and no new issue #23 finding was found. The entry stays
+  Pending for owner closure; no restart was performed.
 
 - [ ] 2026-08-05 — `d71cff5`..`0627649` on `fix/135-runs-projection` —
   `app/services/runs.py`, `app/services/bundle_schema.py`,
@@ -201,6 +216,10 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   publication resolve the original Low finding, and no new run-projection
   finding was found. The entry stays Pending with the batch; no application
   fix or restart was performed.
+  ABI v2 batch re-drain 2026-08-06 →
+  `docs/reviews/2026-08-06-chain-u-abi-v2-review.md`: the projection finding
+  remains resolved and no new run-projection finding was found. The entry
+  stays Pending for owner closure; no restart was performed.
 
 - [ ] 2026-08-06 — squash-merged to `main` as `6b99ab2` (PR #152, branch
   `fix/drain-m1-l1`) — `app/static/src/learn-bridge.ts`,
@@ -226,6 +245,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   A separate owner-decided ABI or isolation repair needs the exact delayed-
   successor browser regression. The entry stays Pending; no application fix
   or restart was performed.
+  Resolution re-drain 2026-08-06 →
+  `docs/reviews/2026-08-06-chain-u-abi-v2-review.md`: the remaining Low finding
+  is resolved by the ABI v2 reply channel and its exact delayed-successor
+  browser regression. No new finding was found. The entry stays Pending for
+  owner closure; no restart was performed.
 
 ## Done
 
