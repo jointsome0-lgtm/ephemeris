@@ -508,8 +508,15 @@ def _restart_projection(dir_fd: int, uid: str, line: bytes) -> None:
     _publish_whole(dir_fd, uid, line)
 
 
-def _read_sealed(dir_fd: int, state: dict) -> bytes | None:
-    """The published file's bytes, or None unless it is still exactly ours.
+def _read_sealed_tail(dir_fd: int, state: dict, budget: int) -> bytes | None:
+    """The last `budget`+1 bytes of the published file, or None unless ours.
+
+    Bounded on purpose: the first run after this ceiling ships meets a file
+    written under the old unbounded contract, which can be far larger than the
+    ceiling itself, and reading it whole would put its entire size in memory on
+    the finish hook. One byte past the budget is exactly enough to decide the
+    retained tail — any record boundary that matters lies inside it, and that
+    extra byte is what says whether the cut is already on one.
 
     The seal is re-checked here rather than trusted from the append attempt:
     the bundle is agent-writable, so the file can be swapped between the two.
@@ -529,16 +536,19 @@ def _read_sealed(dir_fd: int, state: dict) -> bytes | None:
         st = os.fstat(fd)
         if not _seal_matches(st, state["file"]):
             return None
+        want = min(st.st_size, max(0, budget) + 1)
         parts: list[bytes] = []
-        remaining = st.st_size
+        offset = st.st_size - want
+        remaining = want
         while remaining > 0:
-            chunk = os.read(fd, min(remaining, 1 << 20))
+            chunk = os.pread(fd, min(remaining, 1 << 20), offset)
             if not chunk:
                 break
             parts.append(chunk)
+            offset += len(chunk)
             remaining -= len(chunk)
         data = b"".join(parts)
-        if len(data) != st.st_size or (data and not data.endswith(b"\n")):
+        if len(data) != want or (data and not data.endswith(b"\n")):
             return None
         return data
     finally:
@@ -587,12 +597,12 @@ def _compact_projection(dir_fd: int, uid: str, line: bytes, state: dict) -> bool
     run that cannot be recorded at all is worse than a bound overshot by one
     line.
     """
-    data = _read_sealed(dir_fd, state)
+    budget = max(0, _compact_budget() - len(line))
+    data = _read_sealed_tail(dir_fd, state, budget)
     if data is None:
         return False
     return _publish_whole(
-        dir_fd, uid, _retained_tail(data, _compact_budget() - len(line)) + line,
-        expect=state["file"],
+        dir_fd, uid, _retained_tail(data, budget) + line, expect=state["file"],
     )
 
 

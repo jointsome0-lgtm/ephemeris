@@ -607,7 +607,10 @@ fixes only what the bundle contains (#135).
   seal-verified file, so nothing is preserved as a collision — and the swap is
   conditional on that seal still holding the name, so a file planted while the
   compacted copy was being staged is preserved like any other foreign node
-  instead of being overwritten. A reader still treats the file
+  instead of being overwritten. Compaction reads only the tail it keeps, never
+  the whole file: the first run after this bound ships meets a projection
+  written under the old unbounded contract, which may be far larger than the
+  ceiling. A reader still treats the file
   like §6.5: read it whole while it fits, otherwise read the newest complete
   lines and declare the omission — and never read a missing old run as
   evidence that it never happened.

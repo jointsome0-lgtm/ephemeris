@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -475,6 +476,44 @@ def test_a_single_record_larger_than_the_ceiling_is_still_published(
     assert [record["run_id"] for record in records] == [job.job_id]
 
 
+def test_a_projection_written_before_the_ceiling_is_not_read_whole(
+    tmp_path, monkeypatch,
+):
+    """The first run after this bound ships meets a file written under the old
+    unbounded contract, which can be far larger than the ceiling. Compaction
+    must not put that whole file in memory on the finish hook — it reads only
+    as much of the tail as it can keep."""
+    bundle = tmp_path / "invented-legacy-projection"
+    bundle.mkdir()
+    projection = bundle / runs.PROJECTION_NAME
+    for index in range(24):
+        assert runs._record_finish_sync(_job(bundle, f"invented legacy {index}\n")) is True
+    legacy = projection.stat().st_size
+    one_line = legacy // 24
+    # The ceiling arrives with the file already six times over it.
+    monkeypatch.setattr(runs, "PROJECTION_MAX_BYTES", one_line * 4)
+
+    read_bytes = 0
+    real_pread = os.pread
+
+    def counting_pread(fd, count, offset):
+        nonlocal read_bytes
+        chunk = real_pread(fd, count, offset)
+        read_bytes += len(chunk)
+        return chunk
+
+    monkeypatch.setattr(os, "pread", counting_pread)
+    job = _job(bundle, "invented run under the new ceiling\n")
+    assert runs._record_finish_sync(job) is True
+
+    records = _lines(bundle)
+    assert projection.stat().st_size <= runs.PROJECTION_MAX_BYTES
+    assert records[-1]["run_id"] == job.job_id
+    # Only the retained tail plus its boundary byte, never the whole history.
+    assert read_bytes <= runs._compact_budget() + 1
+    assert read_bytes < legacy
+
+
 def test_a_file_planted_while_the_compaction_staged_is_preserved(
     tmp_path, monkeypatch,
 ):
@@ -489,14 +528,14 @@ def test_a_file_planted_while_the_compaction_staged_is_preserved(
         runs, "PROJECTION_MAX_BYTES", (bundle / runs.PROJECTION_NAME).stat().st_size)
 
     planted = '{"kind":"run","v":1,"run_id":"invented-planted"}\n'
-    real_read_sealed = runs._read_sealed
+    real_read_tail = runs._read_sealed_tail
 
-    def read_then_swap(dir_fd, state):
-        data = real_read_sealed(dir_fd, state)
+    def read_then_swap(dir_fd, state, budget):
+        data = real_read_tail(dir_fd, state, budget)
         (bundle / runs.PROJECTION_NAME).write_text(planted, encoding="utf-8")
         return data
 
-    monkeypatch.setattr(runs, "_read_sealed", read_then_swap)
+    monkeypatch.setattr(runs, "_read_sealed_tail", read_then_swap)
     job = _job(bundle, "invented run\n")
     assert runs._record_finish_sync(job) is True
 

@@ -193,6 +193,19 @@ Semantics:
   navigation-settle interval and re-checks the document generation before the
   welcome goes out — the answer authorises the document it was asked about,
   and a successor that appears mid-prompt is left to its own handshake.
+- **Known residual, unchanged by the gate.** The welcome is delivered to the
+  frame's `WindowProxy`, and a document that navigates itself after announcing
+  and then delays its `load` event (a slow blocking subresource on the
+  successor) is not distinguishable from the announcer at delivery time. Such
+  a successor receives the welcome — the port, and with it whatever `record`
+  the owner just approved. This is the §4 same-frame-navigation residual the
+  whole bridge carries (D5 L1), not something read-back introduces: the port
+  it delivers already grants the write direction. Consent narrows it from
+  automatic on every load to requiring an explicit yes, and no signal
+  available to the parent closes it. Closing it needs a channel the announcing
+  document alone can hold — a port it transfers with its own `ready` — or a
+  non-navigable isolation profile. Both change the ABI and are owner
+  decisions, carried on the review queue rather than taken in the runtime.
   The cost is honest and known: a learner who declines sees the blank controls
   this feature exists to end, which is why the ask is once per document rather
   than once per read.
