@@ -24,6 +24,26 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
+- [ ] 2026-08-06 — `67fd594` on `fix/133-welcome-readback` —
+  `app/static/src/learn-bridge.ts`, `app/static/learn-bridge.js`,
+  `app/routers/learn.py`, `app/templates/learn.html`,
+  `app/services/lessons.py`, `docs/lesson-bridge-abi.md`,
+  `docs/learn-bundle-spec.md`, `tests/test_190_welcome_readback.py` —
+  issue #133 tier 2: the lesson-page bridge `welcome` now carries a `record`
+  snapshot across the lesson-iframe boundary. Content per entry: the latest
+  attempt's answer text (the Record panel's excerpt, with `answer_truncated`),
+  its `created_at`, its stored `stale` flag, and the standing review's
+  `level`/`note`/`created_at`, or `null`. Entries cover only the question ids
+  in `bridge_page.questions` for the page in the frame, and only those with a
+  recorded attempt. `/learn` renders the snapshot as JSON in the frame's
+  `data-record` attribute, projected in `_record_snapshot` from the same
+  `_record_panel` result that renders the panel; the runtime `JSON.parse`s the
+  attribute once at module init and attaches it to the welcome only when the
+  `attempts` capability was granted, omitting the field otherwise. No new port
+  operation, no change to the `targetOrigin`, `event.source` or one-welcome-per-
+  document rules. The generated `_AGENTS_TEMPLATE` gained a bridge-conventions
+  block describing the field to lesson authors.
+
 - [ ] 2026-08-03 — `0b25126`..`113b1dd` on `fix/23-limits-retention`, merged to
   `main` as `898bbed` — `app/security.py`, `app/limits.py`,
   `tests/test_130_limits.py` (rest of the change: `app/db.py`,
