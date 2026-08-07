@@ -257,7 +257,7 @@ def immediate(conn: sqlite3.Connection):
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -840,6 +840,58 @@ def _migrate_to_17(conn: sqlite3.Connection) -> None:
         conn.executescript(_SCHEMA_V17)
 
 
+# v18 — where a task IS on the board (#53). Tasks had priority and sort_order
+# but no notion of being *in flight*: a task was either open or completed, so
+# "started it yesterday" lived nowhere. The kanban board (§30.5) needs that
+# third state, and a column is the honest place for it.
+#
+# `completed_at` stays the single owner of *when* a task was finished — every
+# statistic, the Completed view and the export read it, and none of them change.
+# `status` only says which column the card sits in, and the two are bound by one
+# invariant, enforced in the write path and healed here: status='done' ⇔
+# completed_at IS NOT NULL.
+_SCHEMA_V18 = """
+ALTER TABLE tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'backlog'
+  CHECK(status IN ('backlog','doing','done'));
+"""
+
+
+def backfill_task_status(conn: sqlite3.Connection) -> int:
+    """Restore the status ⇔ completed_at invariant; returns how many rows moved.
+
+    Two writers can break it. The v18 migration itself, which lands the column
+    with every row defaulted to 'backlog' including the already-completed ones;
+    and the live service between the merge and its next restart — it runs the
+    pre-#53 code, so its completes and reopens write `completed_at` and know
+    nothing about `status`. Both leave the same footprint, so one rule repairs
+    both, and it is idempotent: on a consistent table it updates nothing.
+
+    A database older than v18 has no column to heal and no skew to heal it out
+    of, so it is answered with 0 rather than an error — the boot calls this
+    before knowing which schema it opened.
+    """
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
+    if "status" not in have:
+        return 0
+    cur = conn.execute(
+        "UPDATE tasks SET status = CASE WHEN completed_at IS NOT NULL "
+        "THEN 'done' ELSE 'backlog' END "
+        "WHERE (completed_at IS NOT NULL AND status <> 'done') "
+        "   OR (completed_at IS NULL AND status = 'done')"
+    )
+    return cur.rowcount
+
+
+def _migrate_to_18(conn: sqlite3.Connection) -> None:
+    # ADD COLUMN has no IF NOT EXISTS; the user_version gate runs this once per
+    # database, and one that already carries the column is converged, not
+    # crashed on (same shape as v17).
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
+    if "status" not in have:
+        conn.executescript(_SCHEMA_V18)
+    backfill_task_status(conn)
+
+
 # Ordered, idempotent steps. A schema change must NEVER require deleting the
 # ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
 _MIGRATIONS = [
@@ -860,6 +912,7 @@ _MIGRATIONS = [
     (15, _migrate_to_15),
     (16, _migrate_to_16),
     (17, _migrate_to_17),
+    (18, _migrate_to_18),
 ]
 
 
@@ -876,11 +929,12 @@ def init_db() -> None:
                 conn.execute(f"PRAGMA user_version = {target}")
                 conn.commit()
                 version = target
-        # Heal rows a pre-v9/pre-v11 process may have inserted after the
+        # Heal rows a pre-v9/pre-v11/pre-v18 process may have written after the
         # migration ran (the live service lags the working tree until its
         # next restart).
         healed = backfill_event_uuids(conn)
         healed += backfill_lesson_uids(conn)
+        healed += backfill_task_status(conn)
         if healed:
             conn.commit()
     finally:

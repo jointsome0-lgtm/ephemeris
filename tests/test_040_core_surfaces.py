@@ -1697,7 +1697,9 @@ def test_core_surfaces(client, suite_state):
         + "  -- "
         + (str(rpal.status_code))
     )
-    assert any(v["href"] == "/today" for v in _pj["views"]) and any(
+    from app.templating import TASKS_HOME
+
+    assert any(v["href"] == TASKS_HOME for v in _pj["views"]) and any(
         v["href"] == "/focus" for v in _pj["views"]
     ), "/palette.json views expose Tasks + Focus destinations"
 

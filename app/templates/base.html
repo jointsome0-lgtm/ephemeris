@@ -52,7 +52,10 @@
     <nav class="rail" aria-label="Sections">
       <span class="rail-avatar" title="Premium account">🙂</span>
 
-      <a class="rail-ico {% if R == 'tasks' %}active{% endif %}" href="/today" title="Tasks">{{ ic.icon('tasks') }}</a>
+      {# tasks_home is the board once the routes that serve it are running; the
+         live pre-#53 process has no such global and keeps pointing at /today,
+         so a merged template can never link a 404 (live-template skew). #}
+      <a class="rail-ico {% if R == 'tasks' %}active{% endif %}" href="{{ tasks_home | default('/today') }}" title="Tasks">{{ ic.icon('tasks') }}</a>
       <a class="rail-ico {% if R == 'calendar' %}active{% endif %}" href="/calendar" title="Calendar">{{ ic.icon('calendar') }}</a>
       <a class="rail-ico {% if R == 'focus' %}active{% endif %}" href="/focus" title="Focus">{{ ic.icon('focus') }}</a>
       <a class="rail-ico {% if R == 'habit' %}active{% endif %}" href="/habits" title="Habit">{{ ic.icon('habit') }}</a>
@@ -83,7 +86,7 @@
      toggle via #more-toggle so it works without JS. #}
   <input type="checkbox" id="more-toggle" class="more-toggle" hidden>
   <nav class="bottom-nav" aria-label="Primary">
-    <a href="/today" class="nav-link {% if R == 'tasks' %}active{% endif %}">{{ ic.icon('tasks') }}<span>Tasks</span></a>
+    <a href="{{ tasks_home | default('/today') }}" class="nav-link {% if R == 'tasks' %}active{% endif %}">{{ ic.icon('tasks') }}<span>Tasks</span></a>
     <a href="/calendar" class="nav-link {% if R == 'calendar' %}active{% endif %}">{{ ic.icon('calendar') }}<span>Calendar</span></a>
     <a href="/focus" class="nav-link {% if R == 'focus' %}active{% endif %}">{{ ic.icon('focus') }}<span>Focus</span></a>
     <a href="/learn" class="nav-link {% if R == 'learn' %}active{% endif %}">{{ ic.icon('learn') }}<span>Learn</span></a>
@@ -138,5 +141,8 @@
   {# Learn overrides this next to the agent drawer so both surfaces share the
      terminal chrome and runtime while keeping learner markup lesson-only. #}
   {% block learner_terminal %}{% endblock %}
+  {# Per-page enhancement scripts (the board's drag handler): loaded only where
+     they have something to bind to, unlike the app-wide bundles in <head>. #}
+  {% block page_scripts %}{% endblock %}
 </body>
 </html>

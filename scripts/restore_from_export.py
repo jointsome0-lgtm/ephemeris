@@ -56,6 +56,7 @@ PARTIAL_TABLE_EVENTS = {
         "task_moved",
         "task_completed",
         "task_reopened",
+        "task_status_changed",
         "task_updated",
     },
     "focus_sessions": {"focus_session_recorded"},

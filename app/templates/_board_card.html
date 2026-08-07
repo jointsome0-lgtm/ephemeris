@@ -1,0 +1,44 @@
+{# One board card (#53): title · meta (due / list tag / note) · move controls.
+   The body opens the detail pane (?sel=task-{id}), exactly as a task row does.
+
+   The two arrow forms are the no-JS contract: every move the drag handler can
+   make is reachable by submitting a plain POST, so the board is fully usable
+   with JavaScript off. board.js intercepts the same forms when it is loaded.
+   Context: t, col_key (this card's status), prev_status/prev_label,
+   next_status/next_label, sel, sel_id, cur_path. #}
+{% import "_icons.html" as ic %}
+<article class="bcard{% if t.completed_at %} done{% endif %}{% if sel == 'task' and sel_id == t.id %} sel{% endif %}"
+         id="task-{{ t.id }}" data-task-id="{{ t.id }}" data-status="{{ col_key }}" draggable="true">
+  {# draggable="false": without it the browser drags the link, not the card #}
+  <a class="bcard-main" href="?sel=task-{{ t.id }}" draggable="false">
+    <span class="bcard-title">{{ t.title }}</span>
+    <span class="bcard-meta">
+      {% if t.priority %}<span class="bcard-prio p{{ t.priority }}" title="Priority" aria-hidden="true"></span>{% endif %}
+      {% if t.due_date %}
+        {# data-due so a move that crosses Done can recompute "overdue", which
+           is a fact about an OPEN task and stops being one on completion #}
+        <span class="due{% if t.due_date == today %} today{% elif t.due_date < today and not t.completed_at %} overdue{% endif %}"
+              data-due="{{ t.due_date }}">{{ due_label(t.due_date) }}</span>
+      {% endif %}
+      {% if t.list_name %}<span class="trow-tag">{{ t.list_emoji or '📥' }} {{ t.list_name }}</span>{% endif %}
+      {% if t.note %}<span class="trow-note-ico" aria-hidden="true">{{ ic.icon('note') }}</span>{% endif %}
+    </span>
+  </a>
+  {# Both forms are always in the markup, the impossible one merely hidden: a
+     card dragged into a middle column needs the neighbour it did not have, and
+     board.js refills these two in this order (left, then right). #}
+  <div class="bcard-move">
+    <form method="post" action="/tasks/{{ t.id }}/status" class="bmove-form"{% if not prev_status %} hidden{% endif %}>
+      <input type="hidden" name="return_to" value="{{ cur_path }}">
+      <input type="hidden" name="status" value="{{ prev_status }}">
+      <button type="submit" class="bmove" title="Move to {{ prev_label or 'the previous column' }}"
+              aria-label="Move “{{ t.title }}” to {{ prev_label or 'the previous column' }}">{{ ic.icon('chev-left') }}</button>
+    </form>
+    <form method="post" action="/tasks/{{ t.id }}/status" class="bmove-form"{% if not next_status %} hidden{% endif %}>
+      <input type="hidden" name="return_to" value="{{ cur_path }}">
+      <input type="hidden" name="status" value="{{ next_status }}">
+      <button type="submit" class="bmove" title="Move to {{ next_label or 'the next column' }}"
+              aria-label="Move “{{ t.title }}” to {{ next_label or 'the next column' }}">{{ ic.icon('chev-right') }}</button>
+    </form>
+  </div>
+</article>

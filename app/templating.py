@@ -274,8 +274,19 @@ def due_label(date_str: str | None, today: str | None = None) -> str:
     return pretty_date(d, year=True)
 
 
+# Where the Tasks rail icon points (#53). A Jinja global rather than a per-route
+# context variable so every surface agrees, and so the LIVE service — which
+# renders these templates from the working tree while still running the pre-#53
+# routers, i.e. without GET /board — resolves it as undefined and keeps sending
+# people to /today instead of a 404. Templates must therefore read it as
+# `tasks_home | default('/today')`, and `{% if tasks_home is defined %}` is what
+# guards board-only chrome.
+TASKS_HOME = "/board"
+
+
 templates.env.globals.update(
     static_url=static_url,
+    tasks_home=TASKS_HOME,
     avatar=item_avatar,
     status_glyph=status_glyph,
     status_desc=status_desc,
@@ -351,8 +362,14 @@ def _render_tasks(request: Request, conn, *, page_title: str, active: str, secti
                   show_add: bool, add_list_id=None, add_list_name: str = "",
                   add_due: str | None = None, add_kind: str = "task",
                   sel: str | None = None, month: str | None = None,
-                  flash: str | None = None, rail: str = "tasks", pulse=None):
-    """Render tasks.html: list-sidebar + sections + (optional) detail pane."""
+                  flash: str | None = None, rail: str = "tasks", pulse=None,
+                  template: str = "tasks.html", extra: dict | None = None):
+    """Render a tasks surface: list-sidebar + body + (optional) detail pane.
+
+    `template` and `extra` are what the board (#53) needs on top: it is the same
+    page furniture — sidebar, quick-add, counts, `?sel=` pane — with columns
+    instead of sections, so it renders through this one owner rather than
+    growing a second copy of the context."""
     ctx = {
         "request": request,
         "rail": rail,
@@ -374,5 +391,6 @@ def _render_tasks(request: Request, conn, *, page_title: str, active: str, secti
         "today_count": tasks.today_count(conn),
         "next7_count": tasks.next7_count(conn),
     }
+    ctx.update(extra or {})
     ctx.update(_selection_ctx(conn, request, sel, month))
-    return templates.TemplateResponse(request,"tasks.html", ctx)
+    return templates.TemplateResponse(request, template, ctx)
