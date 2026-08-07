@@ -61,7 +61,9 @@
   }
 
   /** Drop what a capped column (Done) no longer shows, so a completion does
-   *  not leave the server's limit + 1 cards on screen. */
+   *  not leave the server's limit + 1 cards on screen. Only a CONFIRMED
+   *  arrival may evict: an eviction cannot be undone, and a move that turns
+   *  out to be refused must not cost the board a card it never got back. */
   function trim(body) {
     const limit = parseInt(body.dataset.limit || "0", 10);
     if (!limit) return;
@@ -81,7 +83,6 @@
     if (status === "done") body.insertBefore(card, body.firstElementChild);
     else body.insertBefore(card, body.querySelector(".bcol-empty"));
     card.dataset.status = status;
-    trim(body);
     return true;
   }
 
@@ -107,6 +108,29 @@
     card.classList.toggle("done", !!completed);
   }
 
+  /** Show a card exactly as the server last stored it: right column, right
+   *  arrows, right completed look — and, when the open detail pane was
+   *  rendered from the other completion state, re-render the page, since the
+   *  pane's toggle would otherwise advertise the wrong transition. Used for a
+   *  confirmed move and for the rollback of a refused one, so a card can never
+   *  come to rest showing a state nobody stored. */
+  function settle(card, status, completed) {
+    place(card, status);
+    recount();
+    trim(bodyOf(status));
+    retarget(card, status, completed);
+    if (selected && selected.id === card.dataset.taskId && completed !== selected.completed) {
+      location.reload();
+    }
+  }
+
+  /** Back to the last state the server acknowledged. `status='done' ⇔
+   *  completed` is the server's own invariant, so the column says everything. */
+  function rollback(card) {
+    const status = card.dataset.serverStatus || card.dataset.status;
+    settle(card, status, status === "done");
+  }
+
   // One writer per card. A second gesture on a card whose request is still in
   // flight is remembered, not raced: the in-flight writer picks it up when it
   // returns, so the last gesture is the one that ends up stored — two POSTs for
@@ -126,8 +150,7 @@
         { status: target, return_to: location.pathname });
       if (!res.ok) {
         pending.delete(id);
-        place(card, card.dataset.serverStatus || target);   // back to the stored truth
-        recount();
+        rollback(card);        // including back to a move that already succeeded
         toast(res.error || "could not move");
         return;
       }
@@ -135,10 +158,7 @@
       const queued = pending.get(id);
       if (queued === res.status) {
         pending.delete(id);
-        retarget(card, res.status, res.completed);
-        if (selected && selected.id === id && res.completed !== selected.completed) {
-          location.reload();                   // the open pane now says the wrong thing
-        }
+        settle(card, res.status, res.completed);
         return;
       }
       target = queued;                         // a newer gesture arrived while we waited

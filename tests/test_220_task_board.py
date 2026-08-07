@@ -314,6 +314,11 @@ def test_rail_points_at_today_until_the_board_route_is_running(client):
     live = client.get("/board").text
     assert f'href="{TASKS_HOME}"' in live, "the running app points the rail at the board"
 
+    palette = client.get("/palette.json").json()["views"]
+    assert [v["href"] for v in palette if v["label"] == "Tasks"] == [TASKS_HOME], (
+        "the command palette reaches the same Tasks surface the rail does"
+    )
+
     templates.env.globals.pop("tasks_home")
     try:
         old = client.get("/today").text

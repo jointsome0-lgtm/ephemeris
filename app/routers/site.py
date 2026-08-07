@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse, Response
 
 from ..db import get_db
 from ..services import items, lessons, lists
+from ..templating import TASKS_HOME
 from .learn import _learn_url
 
 favicon_router = APIRouter()  # GET /favicon.ico
@@ -32,7 +33,8 @@ def favicon() -> Response:
 
 # --- command palette (Ctrl/⌘K) index ----------------------------------------
 _PALETTE_VIEWS = [
-    {"label": "Tasks", "href": "/today", "icon": "tasks"},
+    # the same destination the rail's Tasks icon has (#53), from its one owner
+    {"label": "Tasks", "href": TASKS_HOME, "icon": "tasks"},
     {"label": "Calendar", "href": "/calendar", "icon": "calendar"},
     {"label": "Focus", "href": "/focus", "icon": "focus"},
     {"label": "Habits", "href": "/habits", "icon": "habit"},
