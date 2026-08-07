@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ic %}
+{% block title %}{{ page_title }} · Ephemeris{% endblock %}
+{% block content_class %}wide board-page{% endblock %}
+
+{% block middle %}{% include "_listbar.html" %}{% endblock %}
+
+{% block content %}
+  <header class="page-head">
+    <h1>{{ page_title }}</h1>
+  </header>
+
+  {% if show_add %}
+  <form class="quick-add" method="post" action="/tasks" autocomplete="off">
+    <input type="hidden" name="return_to" value="{{ cur_path }}">
+    <input type="hidden" name="smart" value="1">
+    <input type="hidden" name="list_id" value="{{ add_list_id }}">
+    <span class="qa-plus" aria-hidden="true">+</span>
+    <input type="text" name="title" class="qa-input" placeholder="Add task to “{{ add_list_name }}” · lands in Backlog" required>
+  </form>
+  {% endif %}
+
+  {% if flash %}<p class="flash" role="status">{{ flash }}</p>{% endif %}
+
+  {# Three fixed columns. Each is a drop target for board.js and, without it,
+     the destination of its neighbours' arrow buttons. #}
+  <div class="board" id="board">
+    {% for col in columns %}
+    {% set col_key = col.key %}
+    {% set prev_status = columns[loop.index0 - 1].key if not loop.first else '' %}
+    {% set prev_label = columns[loop.index0 - 1].title if not loop.first else '' %}
+    {% set next_status = columns[loop.index0 + 1].key if not loop.last else '' %}
+    {% set next_label = columns[loop.index0 + 1].title if not loop.last else '' %}
+    <section class="bcol" data-status="{{ col_key }}" aria-label="{{ col.title }}">
+      <header class="bcol-head">
+        <span class="bcol-dot" aria-hidden="true"></span>
+        <h2 class="bcol-name">{{ col.title }}</h2>
+        <span class="bcol-count" data-count>{{ col.rows|length }}</span>
+      </header>
+      <div class="bcol-body" data-drop="{{ col_key }}">
+        {% for t in col.rows %}{% include "_board_card.html" %}{% endfor %}
+        <p class="bcol-empty">{% if col_key == 'done' %}Nothing finished yet.{% elif col_key == 'doing' %}Nothing in flight.{% else %}Backlog is clear.{% endif %}</p>
+      </div>
+    </section>
+    {% endfor %}
+  </div>
+{% endblock %}
+
+{% block detail %}
+<aside class="detail{% if not sel %} detail-empty{% endif %}"{% if not sel %} aria-hidden="true"{% endif %}>
+  {% if sel %}<div class="detail-inner">
+  {% if sel == 'task' %}{% include "_task_detail.html" %}
+  {% elif sel == 'habit' %}{% include "_habit_detail.html" %}
+  {% endif %}
+  </div>{% endif %}
+</aside>
+{% endblock %}
+
+{% block page_scripts %}<script src="{{ static_url('board.js') }}" defer></script>{% endblock %}

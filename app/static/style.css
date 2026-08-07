@@ -1073,6 +1073,80 @@ body {
 .checkbox.on .cbx-tick { opacity: 1; }
 
 
+/* ===== board (#53) ======================================================= */
+/* Three fixed columns — the primary Tasks view. Same materials as the rest of
+   the app: the column is a panel (one layer down, like the listbar), the card
+   lifts off it (--card-bg), and gold marks the one column that means "in
+   flight". Both themes get this for free through the tokens. */
+.board-page .content-inner { max-width: 1220px; }
+.board {
+  display: grid; grid-template-columns: repeat(3, minmax(230px, 1fr));
+  gap: 14px; align-items: stretch; margin-top: 10px;
+}
+.bcol {
+  display: flex; flex-direction: column; min-width: 0;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.bcol-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 6px; }
+.bcol-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ghost); flex: 0 0 auto; }
+.bcol[data-status="doing"] .bcol-dot { background: var(--astral); box-shadow: 0 0 0 3px var(--glow); }
+.bcol[data-status="done"] .bcol-dot { background: var(--green); }
+.bcol-name {
+  flex: 1 1 auto; margin: 0; font-size: 11.5px; font-weight: 600;
+  letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted);
+}
+.bcol-count { font-family: var(--font-mono); font-size: 11.5px; color: var(--faint); }
+/* the body takes the column's slack so the whole panel, not just the strip
+   under the last card, is a drop target */
+.bcol-body {
+  display: flex; flex-direction: column; gap: 8px; flex: 1 1 auto;
+  padding: 6px 10px 12px; min-height: 110px; border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+.bcol-body.over { background: var(--glow); outline: 1px dashed var(--astral); outline-offset: -4px; }
+.bcol-empty { margin: 0; padding: 8px 4px; font-size: 12.5px; color: var(--faint); }
+/* the empty line is always last, so any card before it means the column is not
+   empty — no JS bookkeeping needed when a drag adds the first card */
+.bcard ~ .bcol-empty { display: none; }
+
+.bcard {
+  display: flex; align-items: flex-start; gap: 8px; padding: 9px 10px;
+  background: var(--card-bg); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow-sm);
+  cursor: grab; transition: transform 0.12s, box-shadow 0.12s, border-color 0.12s;
+}
+.bcard:hover { transform: translateY(-1px); box-shadow: var(--shadow); }
+.bcard.sel { border-color: var(--astral); box-shadow: 0 0 0 3px var(--glow); }
+.bcard.dragging { opacity: 0.45; cursor: grabbing; }
+.bcard-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 5px; color: var(--text); }
+.bcard-title { font-size: 14px; line-height: 1.3; overflow-wrap: anywhere; }
+.bcard.done .bcard-title { color: var(--faint); }
+.bcard-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; color: var(--muted); }
+.bcard-prio { width: 6px; height: 6px; border-radius: 50%; background: var(--prio-none); }
+.bcard-prio.p1 { background: var(--prio-low); }
+.bcard-prio.p2 { background: var(--prio-medium); }
+.bcard-prio.p3 { background: var(--prio-high); }
+
+.bcard-move { flex: 0 0 auto; display: flex; gap: 2px; }
+.bmove-form { display: flex; margin: 0; }
+.bmove {
+  width: 22px; height: 22px; display: grid; place-items: center;
+  padding: 0; border: none; border-radius: 6px;
+  background: transparent; color: var(--faint); cursor: pointer;
+}
+.bmove:hover { background: var(--hover); color: var(--text); }
+.bmove svg { width: 14px; height: 14px; }
+/* Pointer devices reveal the arrows on approach; touch devices, which have no
+   hover, keep them visible — they are the only no-drag way to move a card. */
+@media (hover: hover) {
+  .bcard-move { opacity: 0; transition: opacity 0.12s; }
+  .bcard:hover .bcard-move, .bcard:focus-within .bcard-move { opacity: 1; }
+}
+@media (max-width: 860px) {
+  .board { grid-template-columns: 1fr; }
+}
+
+
 /* ===== habit tab ========================================================= */
 /* TickTick anchors the habit list left of the rail (~890px) and keeps the
    detail column present on the right (pane when selected, doodle when not). */

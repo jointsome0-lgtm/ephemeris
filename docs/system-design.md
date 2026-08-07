@@ -1955,6 +1955,41 @@ pane share `_habit_detail.html` via `_habit_detail_ctx()` (the route passes
 - **T4:** Tags + Filters + search.
 - **T5 (optional):** Calendar view.
 
+### 30.5 Kanban board (schema v18, #53) — 2026-08-07
+
+Owner decision 2026-07-19: Tasks stays, converted into a **board**. `GET /board`
+is now the primary Tasks view and the destination of the rail's Tasks icon; the
+older views (`/today`, `/next7`, `/list/{id}`, `/completed`) are unchanged and
+still linked from the calendar and the day view.
+
+- **Model.** `tasks.status TEXT NOT NULL DEFAULT 'backlog' CHECK(status IN
+  ('backlog','doing','done'))`. Three fixed columns, no configuration and no WIP
+  limits. `completed_at` remains the single owner of *when* a task was finished
+  — statistics, `/completed` and the export are untouched — and one invariant
+  binds the two: **status='done' ⇔ completed_at IS NOT NULL**. Completing sets
+  `status='done'`, reopening returns the task to `'backlog'`, and moving in or
+  out of Done through the board completes/reopens it. `db.backfill_task_status`
+  is that rule as a repair: it runs in the migration and again at every boot,
+  because the live service keeps writing pre-#53 completions until its restart.
+- **Writes.** `POST /tasks/{id}/status {status, return_to}` → validated move;
+  `X-Partial:1` ⇒ JSON `{ok, task_id, status, completed}` (Mode B), else 303 PRG.
+  It journals `task_status_changed` for the move plus the existing
+  `task_completed` / `task_reopened` when the move crosses Done.
+- **Board reads.** `services.tasks.board()` returns the three columns: Backlog
+  and Doing hold *every* open task (nothing may be invisible on the primary
+  view), Done is the newest `DONE_LIMIT` completions — `/completed` remains the
+  unbounded list.
+- **Interaction.** Drag between columns lives in `app/static/board.js`, its own
+  file next to the calendar's `dnd.js` (shared shape, nothing else). Every drag
+  has a plain POST form behind it — the ←/→ buttons on each card — so the board
+  is fully usable with JavaScript off; quick-add stays on top and files into
+  Backlog.
+- **Live-restart guard.** The rail link is the Jinja global `tasks_home`
+  (`app/templating.py`), read as `tasks_home | default('/today')`. The live
+  process renders merged templates immediately but keeps its old routers, and an
+  undefined global keeps it pointing at `/today` instead of a 404 until the
+  restart lands `/board`.
+
 ## 31. Habit Tab (TickTick parity) — 2026-06-06
 
 The user sent TickTick's **Habit tab** ("У нас такой вкладки нет" — "we don't have

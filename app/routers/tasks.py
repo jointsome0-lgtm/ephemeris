@@ -1,6 +1,6 @@
-"""Tasks routes (#24 cut 3): the tasks surface (Today, Next 7 Days, a single
-list, Completed, Trash, Search), the day view behind GET /history, and the task
-write contract (sec21).
+"""Tasks routes (#24 cut 3): the tasks surface (the Board, Today, Next 7 Days, a
+single list, Completed, Trash, Search), the day view behind GET /history, and
+the task write contract (sec21).
 
 A pure move out of app/main.py. The surface was never contiguous there — the
 day views, GET /history and the write routes sit at three different points of
@@ -23,9 +23,9 @@ from ..templating import (
     _with_flash, due_label, templates,
 )
 
-views_router = APIRouter()    # GET /, /today, /next7, /list/{list_id}, /completed, /trash, /search
+views_router = APIRouter()    # GET /, /today, /board, /next7, /list/{list_id}, /completed, /trash, /search
 history_router = APIRouter()  # GET /history
-write_router = APIRouter()    # POST /lists, /tasks, /tasks/{task_id}/complete, /update
+write_router = APIRouter()    # POST /lists, /tasks, /tasks/{task_id}/complete, /status, /update
 
 
 def _habit_rows(conn, today: str) -> list[dict]:
@@ -64,6 +64,28 @@ def get_today(request: Request, sel: str | None = None, month: str | None = None
         show_add=True, add_list_id=lists.inbox_id(conn), add_list_name="Inbox",
         add_due=today, sel=sel, month=month, flash=flash,
         pulse=stats.week_pulse(conn, today),
+    )
+
+
+@views_router.get("/board")
+def get_board(request: Request, sel: str | None = None, month: str | None = None,
+              flash: str | None = None,
+              conn: sqlite3.Connection = Depends(get_db)):
+    """The kanban board (#53) — the primary Tasks view: Backlog / Doing / Done.
+
+    The older views (/today, /next7, /list/{id}, /completed) stay exactly as
+    they were; the calendar and the day view still link into them. This one just
+    became the destination the rail points at."""
+    by_status = tasks.board(conn)
+    columns = [
+        {"key": key, "title": title, "rows": by_status[key]}
+        for key, title in tasks.BOARD_COLUMNS
+    ]
+    return _render_tasks(
+        request, conn, page_title="Board", active="board", sections=[],
+        show_add=True, add_list_id=lists.inbox_id(conn), add_list_name="Inbox",
+        add_due=None, sel=sel, month=month, flash=flash,
+        template="board.html", extra={"columns": columns},
     )
 
 
@@ -217,6 +239,29 @@ def post_task_complete(request: Request, task_id: int, return_to: str = Form("/t
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
         return RedirectResponse(_with_flash(_safe_return(return_to), str(exc)), status_code=303)
     return RedirectResponse(_safe_return(return_to), status_code=303)
+
+
+@write_router.post("/tasks/{task_id}/status")
+def post_task_status(request: Request, task_id: int, status: str = Form(...),
+                     return_to: str = Form("/board"),
+                     conn: sqlite3.Connection = Depends(get_db)):
+    """Move a task to another board column (#53).
+
+    Both board paths land here: the per-card arrow forms (Mode A, works with
+    JavaScript off) and the drag handler's `X-Partial` fetch (Mode B). The
+    status is validated in the service, so an edited form value is a 422 / flash
+    rather than a stored column nobody can render."""
+    json_mode = _wants_json(request)
+    try:
+        moved = tasks.set_status(conn, task_id, status)
+    except tasks.TaskError as exc:
+        if json_mode:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+        return RedirectResponse(_with_flash(_safe_return(return_to, "/board"), str(exc)),
+                                status_code=303)
+    if json_mode:
+        return JSONResponse({"ok": True, "task_id": task_id, **moved})
+    return RedirectResponse(_safe_return(return_to, "/board"), status_code=303)
 
 
 @write_router.post("/tasks/{task_id}/update")

@@ -17,6 +17,16 @@ from . import lists as lists_svc
 
 PRIORITIES = (0, 1, 2, 3)
 
+# The board's columns (#53), in reading order. Three fixed states, no user
+# configuration: a task is waiting, in flight, or finished. 'done' is not a
+# state of its own — it is the mirror of `completed_at`, kept in step by
+# `set_status` / `toggle_complete` below and healed by `db.backfill_task_status`.
+BOARD_COLUMNS = (("backlog", "Backlog"), ("doing", "Doing"), ("done", "Done"))
+STATUSES = tuple(key for key, _label in BOARD_COLUMNS)
+# How much of the Done column is shown. The column is a receipt, not an
+# archive — /completed already lists everything, without a length bound.
+DONE_LIMIT = 50
+
 # Seeded once on first run so Today/Lists aren't empty (sec17 seed pattern).
 # (title, list_name|None=Inbox, due_offset_days|None, kind, completed)
 SEED_TASKS = [
@@ -154,13 +164,57 @@ def toggle_complete(conn: sqlite3.Connection, task_id: int) -> bool:
         if row is None:
             raise TaskError("unknown task")
         now_completed = row["completed_at"] is None
+        # The board column follows completion, never the other way round (#53):
+        # completing lands the card in Done, reopening returns it to Backlog —
+        # the state it would have had if it had never been started.
         conn.execute(
-            "UPDATE tasks SET completed_at = ?, updated_at = ? WHERE id = ?",
-            (ts if now_completed else None, ts, task_id),
+            "UPDATE tasks SET completed_at = ?, status = ?, updated_at = ? WHERE id = ?",
+            (ts if now_completed else None, "done" if now_completed else "backlog",
+             ts, task_id),
         )
         append_event(conn, "task_completed" if now_completed else "task_reopened",
                      {"task_id": task_id, "title": row["title"]})
     return now_completed
+
+
+def set_status(conn: sqlite3.Connection, task_id: int, status: str) -> dict:
+    """Move a task to a board column (#53). Returns {status, completed}.
+
+    One write owns both halves of the invariant, under the writer lock for the
+    same reason `toggle_complete` is: the read (was it completed?) decides what
+    the write does. Moving into Done completes the task and moving out of Done
+    reopens it, so a drag and the checkbox produce byte-identical rows and the
+    same ledger events — `task_completed` / `task_reopened` keep meaning what
+    they always meant, and `task_status_changed` records the column move itself.
+    """
+    status = (status or "").strip().lower()
+    if status not in STATUSES:
+        raise TaskError("unknown status")
+    ts = now_iso()
+    with immediate(conn):
+        row = conn.execute(
+            "SELECT status, title, completed_at FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if row is None:
+            raise TaskError("unknown task")
+        was_completed = row["completed_at"] is not None
+        now_completed = status == "done"
+        completed_at = row["completed_at"]
+        if now_completed != was_completed:
+            completed_at = ts if now_completed else None
+        conn.execute(
+            "UPDATE tasks SET status = ?, completed_at = ?, updated_at = ? WHERE id = ?",
+            (status, completed_at, ts, task_id),
+        )
+        if row["status"] != status:
+            append_event(conn, "task_status_changed", {
+                "task_id": task_id, "title": row["title"],
+                "from": row["status"], "to": status,
+            })
+        if now_completed != was_completed:
+            append_event(conn, "task_completed" if now_completed else "task_reopened",
+                         {"task_id": task_id, "title": row["title"]})
+    return {"status": status, "completed": now_completed}
 
 
 def update_task(conn: sqlite3.Connection, task_id: int, **fields) -> None:
@@ -231,6 +285,31 @@ def list_tasks(conn: sqlite3.Connection, list_id: int, include_done: bool = Fals
         q += " AND t.completed_at IS NULL"
     q += " ORDER BY t.completed_at IS NOT NULL, t.priority DESC, t.sort_order, t.id"
     return conn.execute(q, (list_id,)).fetchall()
+
+
+def board(conn: sqlite3.Connection, done_limit: int = DONE_LIMIT) -> dict[str, list]:
+    """The three board columns, keyed by status (#53).
+
+    Backlog and Doing carry every open task — the board is the whole Tasks
+    surface, not a slice of it, so nothing may be invisible there. Done is
+    capped and newest-first, because it grows forever and only its recent tail
+    is board material.
+    """
+    open_rows = conn.execute(
+        _SELECT + "WHERE t.kind='task' AND t.status IN ('backlog','doing') "
+        "ORDER BY t.priority DESC, t.due_date IS NULL, t.due_date, t.sort_order, t.id"
+    ).fetchall()
+    columns: dict[str, list] = {key: [] for key in STATUSES}
+    for row in open_rows:
+        # A status the CHECK constraint allows is the only one that can be
+        # stored, so every open row has a column to land in.
+        columns[row["status"]].append(row)
+    columns["done"] = conn.execute(
+        _SELECT + "WHERE t.kind='task' AND t.status='done' "
+        "ORDER BY t.completed_at DESC, t.id DESC LIMIT ?",
+        (done_limit,),
+    ).fetchall()
+    return columns
 
 
 def recent_completed(conn: sqlite3.Connection, limit: int = 100) -> list[sqlite3.Row]:
