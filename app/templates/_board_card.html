@@ -15,7 +15,10 @@
     <span class="bcard-meta">
       {% if t.priority %}<span class="bcard-prio p{{ t.priority }}" title="Priority" aria-hidden="true"></span>{% endif %}
       {% if t.due_date %}
-        <span class="due{% if t.due_date == today %} today{% elif t.due_date < today and not t.completed_at %} overdue{% endif %}">{{ due_label(t.due_date) }}</span>
+        {# data-due so a move that crosses Done can recompute "overdue", which
+           is a fact about an OPEN task and stops being one on completion #}
+        <span class="due{% if t.due_date == today %} today{% elif t.due_date < today and not t.completed_at %} overdue{% endif %}"
+              data-due="{{ t.due_date }}">{{ due_label(t.due_date) }}</span>
       {% endif %}
       {% if t.list_name %}<span class="trow-tag">{{ t.list_emoji or '📥' }} {{ t.list_name }}</span>{% endif %}
       {% if t.note %}<span class="trow-note-ico" aria-hidden="true">{{ ic.icon('note') }}</span>{% endif %}

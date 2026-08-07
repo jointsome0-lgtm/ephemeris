@@ -24,7 +24,7 @@
 
   {# Three fixed columns. Each is a drop target for board.js and, without it,
      the destination of its neighbours' arrow buttons. #}
-  <div class="board" id="board">
+  <div class="board" id="board" data-today="{{ today }}">
     {% for col in columns %}
     {% set col_key = col.key %}
     {% set prev_status = columns[loop.index0 - 1].key if not loop.first else '' %}

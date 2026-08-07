@@ -32,6 +32,7 @@
 
   // Column order and names come from what the server rendered, so this file
   // never carries a second copy of the board's shape.
+  const TODAY = board.dataset.today || "";
   const ORDER = Array.from(board.querySelectorAll(".bcol")).map((c) => c.dataset.status);
   const LABEL = {};
   board.querySelectorAll(".bcol").forEach((c) => {
@@ -64,11 +65,21 @@
    *  not leave the server's limit + 1 cards on screen. Only a CONFIRMED
    *  arrival may evict: an eviction cannot be undone, and a move that turns
    *  out to be refused must not cost the board a card it never got back. */
+  const capOf = (body) => (body ? parseInt(body.dataset.limit || "0", 10) : 0);
+
   function trim(body) {
-    const limit = parseInt(body.dataset.limit || "0", 10);
+    const limit = capOf(body);
     if (!limit) return;
     const cards = body.querySelectorAll(".bcard");
     for (let i = limit; i < cards.length; i += 1) cards[i].remove();
+  }
+
+  /** A capped column showing its full quota may be hiding more behind it, so a
+   *  card leaving it takes the board out of step with what the server would
+   *  render — there is a replacement to show and only the server knows it. */
+  function isCappedFull(body) {
+    const limit = capOf(body);
+    return limit > 0 && body.querySelectorAll(".bcard").length >= limit;
   }
 
   /** Put a card in a column. Done reads newest-first, so a completion goes to
@@ -106,6 +117,13 @@
       }
     });
     card.classList.toggle("done", !!completed);
+    // "Overdue" is a warning about an open task; completing it answers the
+    // warning, and reopening it late brings it back.
+    const due = card.querySelector(".due");
+    if (due && !due.classList.contains("today")) {
+      const late = !completed && !!due.dataset.due && due.dataset.due < TODAY;
+      due.classList.toggle("overdue", late);
+    }
   }
 
   /** Show a card exactly as the server last stored it: right column, right
@@ -140,6 +158,8 @@
   async function move(card, status) {
     const id = card.dataset.taskId;
     if (!id || status === card.dataset.status) return;
+    const leaving = card.dataset.status;
+    const leavingFullCap = isCappedFull(bodyOf(leaving));
     place(card, status);                       // optimistic: the gesture shows at once
     recount();
     if (pending.has(id)) { pending.set(id, status); return; }
@@ -159,6 +179,9 @@
       if (queued === res.status) {
         pending.delete(id);
         settle(card, res.status, res.completed);
+        if (leavingFullCap && res.status !== leaving) {
+          location.reload();   // let the server show what was hidden behind it
+        }
         return;
       }
       target = queued;                         // a newer gesture arrived while we waited
