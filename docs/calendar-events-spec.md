@@ -14,10 +14,12 @@
 
 ## 1. Goal & scope
 
-Today the Calendar (`/calendar`, `_month_grid` in `app/routers/calendar.py:37`)
-is a month grid that renders **tasks by `due_date` only** — a date, no
-time-of-day, no recurrence (`tasks.due_between`,
-`app/services/tasks.py:229`). We add a new
+At the time of writing, the Calendar (`/calendar`, `_month_grid` in
+`app/main.py`) is a month grid that renders **tasks by `due_date` only** — a
+date, no time-of-day, no recurrence (`tasks.due_between`,
+`app/services/tasks.py:229`). That is the state this spec starts from; the
+implemented `_month_grid` (`app/routers/calendar.py:37`) now merges expanded
+event occurrences with due tasks. We add a new
 first-class entity, **calendar events**, that have:
 
 - a **time slot** (`start_time`–`end_time`, wall-clock local), or an all-day flag;
