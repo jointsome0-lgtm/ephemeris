@@ -37,7 +37,7 @@
         <h2 class="bcol-name">{{ col.title }}</h2>
         <span class="bcol-count" data-count>{{ col.rows|length }}</span>
       </header>
-      <div class="bcol-body" data-drop="{{ col_key }}">
+      <div class="bcol-body" data-drop="{{ col_key }}"{% if col.limit %} data-limit="{{ col.limit }}"{% endif %}>
         {% for t in col.rows %}{% include "_board_card.html" %}{% endfor %}
         <p class="bcol-empty">{% if col_key == 'done' %}Nothing finished yet.{% elif col_key == 'doing' %}Nothing in flight.{% else %}Backlog is clear.{% endif %}</p>
       </div>

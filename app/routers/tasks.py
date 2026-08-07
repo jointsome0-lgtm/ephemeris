@@ -78,7 +78,11 @@ def get_board(request: Request, sel: str | None = None, month: str | None = None
     became the destination the rail points at."""
     by_status = tasks.board(conn)
     columns = [
-        {"key": key, "title": title, "rows": by_status[key]}
+        # Done is the only capped column, and the cap travels to the page so the
+        # drag handler evicts the overflow instead of showing one card more than
+        # the server would have rendered.
+        {"key": key, "title": title, "rows": by_status[key],
+         "limit": tasks.DONE_LIMIT if key == "done" else 0}
         for key, title in tasks.BOARD_COLUMNS
     ]
     return _render_tasks(

@@ -1907,6 +1907,7 @@ Added alongside the unchanged habit tables (`routine_items`, `checkins`):
 
 Migrations stay append-only (`PRAGMA user_version`, now 2). Each task/list write
 appends its `events` row (task_created / task_completed / task_reopened /
+task_status_changed (§30.5) /
 task_updated / list_created / list_updated / list_archived) in **one** `with conn:`
 transaction (§14.1).
 

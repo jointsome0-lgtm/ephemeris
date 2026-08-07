@@ -276,6 +276,30 @@ def test_done_column_is_capped(client):
         )
     finally:
         conn.close()
+    assert f'data-limit="{tasks.DONE_LIMIT}"' in client.get("/board").text, (
+        "the cap travels to the page, so the drag handler evicts the same overflow"
+    )
+
+
+def test_the_move_event_is_known_to_the_restore_tool(client):
+    """An event type the recovery path does not know is reported as unsupported
+    and dropped from its counts, which would make every export written after a
+    board move read as damaged."""
+    import importlib.util
+    import sys
+
+    from conftest import ROOT
+
+    spec = importlib.util.spec_from_file_location(
+        "_restore_board_events", ROOT / "scripts" / "restore_from_export.py"
+    )
+    restore = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = restore  # the @dataclass needs to resolve its module
+    spec.loader.exec_module(restore)
+    assert "task_status_changed" in restore.PARTIAL_TABLE_EVENTS["tasks"], (
+        "a board move is a task event the restore tool counts"
+    )
+    assert "task_status_changed" in restore.KNOWN_EVENT_TYPES, "and knows"
 
 
 # --- the live-restart guard -------------------------------------------------

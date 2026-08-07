@@ -5,8 +5,8 @@
 //
 // Framework-free progressive enhancement. Every move here is also a plain POST
 // form on the card (the ←/→ buttons), so with this file blocked or broken the
-// board still works; errors fall back to a full reload, which re-renders the
-// truth from the server.
+// board still works; errors put the card back where the server last said it
+// was, and anything this file cannot keep exact resolves on the next render.
 (() => {
   "use strict";
 
@@ -39,6 +39,18 @@
     LABEL[c.dataset.status] = name ? name.textContent.trim() : c.dataset.status;
   });
 
+  // What the detail pane, if one is open, was rendered from. A move that
+  // changes THAT task's completion makes the pane lie (its toggle would
+  // advertise the transition it no longer performs), so the page is re-rendered
+  // rather than patched in two places.
+  const selected = (() => {
+    const form = document.querySelector('.detail form[action^="/tasks/"]');
+    const hit = form && /\/tasks\/(\d+)\//.exec(form.getAttribute("action"));
+    if (!hit) return null;
+    const box = document.querySelector(".detail .checkbox");
+    return { id: hit[1], completed: !!box && box.classList.contains("on") };
+  })();
+
   /** Recount every column header from what is actually in the DOM. */
   function recount() {
     board.querySelectorAll(".bcol").forEach((col) => {
@@ -48,15 +60,28 @@
     });
   }
 
-  /** Put a card in a column, before the empty-state line so the CSS rule that
-   *  hides it (`.bcard ~ .bcol-empty`) keeps holding. */
+  /** Drop what a capped column (Done) no longer shows, so a completion does
+   *  not leave the server's limit + 1 cards on screen. */
+  function trim(body) {
+    const limit = parseInt(body.dataset.limit || "0", 10);
+    if (!limit) return;
+    const cards = body.querySelectorAll(".bcard");
+    for (let i = limit; i < cards.length; i += 1) cards[i].remove();
+  }
+
+  /** Put a card in a column. Done reads newest-first, so a completion goes to
+   *  the top there; the open columns are sorted by priority and due date,
+   *  which is the server's rule and stays the server's — a card dropped into
+   *  one sits at the end until the next render rather than being re-sorted
+   *  here by a second copy of that rule. Insertion stays before the empty-state
+   *  line so the CSS that hides it (`.bcard ~ .bcol-empty`) keeps holding. */
   function place(card, status) {
     const body = bodyOf(status);
     if (!body) return false;
-    const empty = body.querySelector(".bcol-empty");
-    if (empty) body.insertBefore(card, empty);
-    else body.appendChild(card);
+    if (status === "done") body.insertBefore(card, body.firstElementChild);
+    else body.insertBefore(card, body.querySelector(".bcol-empty"));
     card.dataset.status = status;
+    trim(body);
     return true;
   }
 
@@ -82,21 +107,42 @@
     card.classList.toggle("done", !!completed);
   }
 
+  // One writer per card. A second gesture on a card whose request is still in
+  // flight is remembered, not raced: the in-flight writer picks it up when it
+  // returns, so the last gesture is the one that ends up stored — two POSTs for
+  // the same task can never be outstanding at once and finish out of order.
+  const pending = new Map();
+
   async function move(card, status) {
-    const from = card.dataset.status;
-    if (!card || status === from) return;
-    const home = bodyOf(from);
-    if (!place(card, status)) return;          // optimistic
+    const id = card.dataset.taskId;
+    if (!id || status === card.dataset.status) return;
+    place(card, status);                       // optimistic: the gesture shows at once
     recount();
-    const res = await post("/tasks/" + card.dataset.taskId + "/status",
-      { status: status, return_to: location.pathname });
-    if (!res.ok) {
-      if (home) place(card, from);             // put it back, then tell the truth
-      recount();
-      toast(res.error || "could not move");
-      return;
+    if (pending.has(id)) { pending.set(id, status); return; }
+    pending.set(id, status);
+    let target = status;
+    for (;;) {
+      const res = await post("/tasks/" + id + "/status",
+        { status: target, return_to: location.pathname });
+      if (!res.ok) {
+        pending.delete(id);
+        place(card, card.dataset.serverStatus || target);   // back to the stored truth
+        recount();
+        toast(res.error || "could not move");
+        return;
+      }
+      card.dataset.serverStatus = res.status;
+      const queued = pending.get(id);
+      if (queued === res.status) {
+        pending.delete(id);
+        retarget(card, res.status, res.completed);
+        if (selected && selected.id === id && res.completed !== selected.completed) {
+          location.reload();                   // the open pane now says the wrong thing
+        }
+        return;
+      }
+      target = queued;                         // a newer gesture arrived while we waited
     }
-    retarget(card, res.status, res.completed);
   }
 
   // ===== the ←/→ buttons: same move, without the page reload =====
@@ -141,6 +187,12 @@
       body.classList.remove("over");
       move(dragged, body.dataset.drop);
     });
+  });
+
+  // Remember where the server last had each card, so a refused move puts it
+  // back there instead of wherever the failed gesture dropped it.
+  board.querySelectorAll(".bcard").forEach((card) => {
+    card.dataset.serverStatus = card.dataset.status;
   });
 
   // The detail pane's complete toggle is app.js's, and it only knows how to

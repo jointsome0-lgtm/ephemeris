@@ -104,14 +104,15 @@ separate calls.
 | `calendar_events` | Partially | Every row is exported as a complete `calendar_event_series` snapshot, including archived rows and IDs (`app/services/export.py:50-64`), but linked list rows may be unavailable. Restore keeps the DB foreign-key clean by clearing and reporting those `list_id` values. |
 | `lessons` | Partially | Lifecycle events exist, but ordinary lesson opens update current entry/last-opened time without an event (`app/services/lessons.py:450-565`, especially `473-482`). Generated lesson files under `$ACTIVITY_DATA_DIR/lessons/` are not exported. |
 
-`append_event(...)` defines 26 audit event types:
+`append_event(...)` defines 27 audit event types:
 
 - routine: `routine_item_created`, `routine_item_updated`,
   `routine_item_deactivated`, `routine_item_deleted`;
 - check-in/note: `routine_checkin_upserted`, `routine_checkin_cleared`,
   `daily_note_updated`;
 - list/task: `list_created`, `list_updated`, `list_archived`, `task_created`,
-  `task_moved`, `task_completed`, `task_reopened`, `task_updated`;
+  `task_moved`, `task_completed`, `task_reopened`, `task_status_changed`,
+  `task_updated`;
 - focus: `focus_session_recorded`;
 - calendar: `calendar_event_created`, `calendar_event_updated`,
   `calendar_event_archived`, `calendar_occurrence_skipped`,

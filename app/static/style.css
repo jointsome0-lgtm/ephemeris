@@ -1078,10 +1078,18 @@ body {
    the app: the column is a panel (one layer down, like the listbar), the card
    lifts off it (--card-bg), and gold marks the one column that means "in
    flight". Both themes get this for free through the tokens. */
-.board-page .content-inner { max-width: 1220px; }
+/* The board is sized by the pane it sits in, not by the viewport: opening a
+   task detail takes 400px off that pane at an unchanged window width, and
+   fixed 230px tracks would then overflow and cut the Done column off. So the
+   tracks may shrink (minmax 0) and the stack point is a container query on the
+   content pane — one owner for the phone and for the narrowed desktop pane. */
+.board-page .content-inner { max-width: 1220px; container-type: inline-size; }
 .board {
-  display: grid; grid-template-columns: repeat(3, minmax(230px, 1fr));
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px; align-items: stretch; margin-top: 10px;
+}
+@container (max-width: 660px) {
+  .board { grid-template-columns: 1fr; }
 }
 .bcol {
   display: flex; flex-direction: column; min-width: 0;
@@ -1142,7 +1150,9 @@ body {
   .bcard-move { opacity: 0; transition: opacity 0.12s; }
   .bcard:hover .bcard-move, .bcard:focus-within .bcard-move { opacity: 1; }
 }
-@media (max-width: 860px) {
+/* A browser without container queries keeps three tracks; because they may
+   shrink to 0 they still fit, and this is the phone floor for that case. */
+@media (max-width: 620px) {
   .board { grid-template-columns: 1fr; }
 }
 
