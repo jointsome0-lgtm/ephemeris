@@ -116,8 +116,8 @@
    *  come to rest showing a state nobody stored. */
   function settle(card, status, completed) {
     place(card, status);
+    trim(bodyOf(status));   // before the count, or the header reports the evicted card
     recount();
-    trim(bodyOf(status));
     retarget(card, status, completed);
     if (selected && selected.id === card.dataset.taskId && completed !== selected.completed) {
       location.reload();
