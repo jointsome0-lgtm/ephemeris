@@ -528,6 +528,14 @@ The first version should be understandable, hackable, and disposable.
 
 ## 12. Project Structure
 
+The layout proposed in the v0.1 draft, kept as the record of what the design
+sketched. It was never built exactly this way (there is no `app/models.py` or
+`tests/reference/`, and it omits most of the services and templates that
+shipped), and the tree has diverged further since: the repository is
+`ephemeris/`, routes live in `app/routers/`, configuration in
+`app/settings.py`, and the test suite is `tests/` (pytest) plus
+`verify_restore.py`.
+
 ```text
 activity-ledger/
   app/

@@ -909,8 +909,10 @@ this table (given the fixture's `lesson_uid`).
 "Vera Example" marker required by `scripts/check_public_hygiene.py`; no real
 lesson content). `cases.json` is the machine-readable expectation table:
 each case names a fixture, the expected outcome, and finding codes that MUST
-appear (others MAY). Consumers: C3 `verify.py` reader tests, C4 migration
-tool tests.
+appear (others MAY). Consumers: the C3 reader tests, now in
+`tests/test_020_bundle_attempts.py`, and the C4 migration-tool tests, now in
+`tests/test_030_assessment_artifact_migration.py` (both lived in `verify.py`
+when this spec was written).
 
 | fixture | expectation |
 |---------|-------------|

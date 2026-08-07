@@ -4,7 +4,8 @@
 > and journaled for the future selfos → exp2res adapter. Numbered **sec33** in
 > the `docs/system-design.md` sequence (same pattern as sec32 living in
 > `docs/calendar-events-spec.md`). Grounded in schema v10 (`app/db.py`),
-> `app/services/retro.py`, the `/retro` routes (`app/main.py`) and
+> `app/services/retro.py`, the `/retro` routes (now `app/routers/retro.py`;
+> `app/main.py` when this spec was written) and
 > `app/templates/retro.html`.
 
 ---

@@ -51,12 +51,13 @@ How to apply:
 - The top two split by shape, not rank: fable-5 is stronger on architecture
   and interconnections; gpt-5.6 on driving a goal to completion and finding
   defects. Pick by task shape, not the raw intelligence number.
-- Implementation pen: opus-5 (owner, 2026-08-06). Codex verifies —
-  `codex exec` checkpoints mid-work, the Codex PR bot on push; the
-  pen-holder drives its own PR rounds, no separate review-babysitter
-  session. gpt-5.6 pen for taste-irrelevant or genuinely light work
-  (data analysis, migrations, small clear-spec fixes) — effectively
-  free, running end-to-end incl. its own PR loop to merge.
+- Implementation pen: opus-5 (owner, 2026-08-06).
+  - Codex verifies — `codex exec` checkpoints mid-work, the Codex PR bot
+    on push; the pen-holder drives its own PR rounds, no separate
+    review-babysitter session.
+  - gpt-5.6 pen for taste-irrelevant or genuinely light work (data
+    analysis, migrations, small clear-spec fixes) — effectively free,
+    running end-to-end incl. its own PR loop to merge.
 - Anything user-facing (UI, copy, API design) needs taste ≥ 7.
 - Reviews of plans/implementations: fable-5 or opus-5, optionally gpt-5.6 as
   an extra independent perspective.
@@ -64,14 +65,18 @@ How to apply:
   Haiku. When gpt-5.6 held the pen, independent review of that work goes to a
   Claude session (fable-5, otherwise opus-5); degrading never weakens review
   independence.
-- Mechanics: gpt-5.6 is only reachable through the Codex CLI — `codex exec` /
-  `codex review` (my `~/.codex/config.toml` defaults to `gpt-5.6-sol` at xhigh
-  effort). Always run `codex exec` directly via Bash
-  with a self-contained prompt you wrote: `-s read-only` for pure
-  reading/analysis; `-s workspace-write` when it must edit files OR run
-  tests/builds — test runs write caches and temp state, so read-only makes
-  them fail or stall (this produced a false "verify.py hangs" finding once).
-  Health check: `codex --version` plus a trivial exec.
+- Mechanics:
+  - gpt-5.6 is only reachable through the Codex CLI — `codex exec` /
+    `codex review` (my `~/.codex/config.toml` defaults to `gpt-5.6-sol` at
+    xhigh effort).
+  - Always run `codex exec` directly via Bash with a self-contained prompt
+    you wrote.
+  - `-s read-only` for pure reading/analysis; `-s workspace-write` when it
+    must edit files OR run tests/builds — test runs write caches and temp
+    state, so read-only makes them fail or stall (this produced a false
+    "verify.py hangs" finding once, back when `verify.py` was the test
+    runner).
+  - Health check: `codex --version` plus a trivial exec.
 - Effort sizing (2026-07-19): the xhigh config default is for full
   adversarial/design passes only — open-ended search where a missed
   defect costs more than the hours. Scoped real work — implementing

@@ -4,7 +4,8 @@
 > TickTick clone. Written to drop into `docs/system-design.md` as **sec32**
 > (scope change, same style as sec30 Task Manager / sec31 Habit Tab). Grounded in
 > the current code: schema v4 (`app/db.py`), services (`app/services/tasks.py`,
-> `items.py`), calendar route + `_month_grid` (`app/main.py`), `calendar.html`.
+> `items.py`), calendar route + `_month_grid` (now `app/routers/calendar.py`;
+> `app/main.py` when this spec was written), `calendar.html`.
 >
 > Author: planning pass. Implementer: a coding model. **Section 13 lists the few
 > genuinely-open choices** — confirm those before building.
@@ -13,9 +14,12 @@
 
 ## 1. Goal & scope
 
-Today the Calendar (`/calendar`, `_month_grid` in `app/main.py:575`) is a month
-grid that renders **tasks by `due_date` only** — a date, no time-of-day, no
-recurrence (`tasks.due_between`, `app/services/tasks.py:229`). We add a new
+At the time of writing, the Calendar (`/calendar`, `_month_grid` in
+`app/main.py`) is a month grid that renders **tasks by `due_date` only** — a
+date, no time-of-day, no recurrence (`tasks.due_between`,
+`app/services/tasks.py:229`). That is the state this spec starts from; the
+implemented `_month_grid` (`app/routers/calendar.py:37`) now merges expanded
+event occurrences with due tasks. We add a new
 first-class entity, **calendar events**, that have:
 
 - a **time slot** (`start_time`–`end_time`, wall-clock local), or an all-day flag;
@@ -205,7 +209,7 @@ Audit event types: `calendar_event_created`, `calendar_event_updated`,
 
 ---
 
-## 6. Routes — `app/main.py`
+## 6. Routes — `app/routers/calendar.py` (`app/main.py` when this spec was written)
 
 All POSTs: same-origin guarded + **303 PRG redirect** like every other write
 (sec15.3 / sec20). New view switcher uses the existing `Month ⌄` pill placeholder

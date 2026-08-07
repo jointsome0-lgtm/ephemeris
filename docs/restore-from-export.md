@@ -96,7 +96,7 @@ separate calls.
 | `checkins` | Fully* | Upsert carries the natural key plus final status/note; clear carries the natural key (`app/services/checkins.py:147-185`). The generated row ID and exact row timestamps are absent. |
 | `daily_notes` | Fully* | `daily_note_updated` carries the complete business state `{date, text}` (`app/services/checkins.py:205-226`). Exact row timestamps are absent. |
 | `events` | Fully* | Export preserves content, order, and stable identity: each line carries the row's `events.uuid` as `id` (`app/services/export.py` `iter_jsonl`; schema v9 at `app/db.py:488-515`), and restore reinstates that uuid. The local autoincrement `events.id` is still a fresh per-database value. |
-| `lists` | Partially | Startup inserts Inbox/demo rows without events (`app/services/lists.py:30-48`, `app/main.py:48-57`); create events also omit kind/order/timestamps (`app/services/lists.py:86-100`). |
+| `lists` | Partially | Startup inserts Inbox/demo rows without events (`app/services/lists.py:30-48`, `app/main.py:57-69`); create events also omit kind/order/timestamps (`app/services/lists.py:86-100`). |
 | `tasks` | Partially | Create omits note/order (`app/services/tasks.py:56-86`). Update writes title, note, due date, priority, and list ID but emits only task ID/title (`app/services/tasks.py:192-211`). Respace and list archive also change rows without complete payloads (`app/services/tasks.py:98-143`, `app/services/lists.py:119-131`). |
 | `tags` | Not journaled | The table exists (`app/db.py:191-195`) but has no application write/event vocabulary. |
 | `task_tags` | Not journaled | The table exists (`app/db.py:197-201`) but has no application write/event vocabulary. |

@@ -4,17 +4,21 @@
 
 Ephemeris is an implementation repository. No repository-wide SDD freeze
 applies: changes proceed through the normal issue, security, test, review-queue,
-and PR protocols. Integration v1 follows
-[selfos#25](https://github.com/jointsome0-lgtm/selfos/issues/25) and the relevant
-Ephemeris issues ([#1](https://github.com/jointsome0-lgtm/ephemeris/issues/1),
-[#2](https://github.com/jointsome0-lgtm/ephemeris/issues/2),
+and PR protocols.
+
+Integration v1 follows
+[selfos#25](https://github.com/jointsome0-lgtm/selfos/issues/25): peer systems
+remain separate and are integrated by configured URLs only, with deterministic
+cross-system adapters owned by Selfos. The Ephemeris issues that carried it —
+[#1](https://github.com/jointsome0-lgtm/ephemeris/issues/1),
 [#17](https://github.com/jointsome0-lgtm/ephemeris/issues/17),
 [#35](https://github.com/jointsome0-lgtm/ephemeris/issues/35),
 [#36](https://github.com/jointsome0-lgtm/ephemeris/issues/36),
-[#38](https://github.com/jointsome0-lgtm/ephemeris/issues/38), and
-[#39](https://github.com/jointsome0-lgtm/ephemeris/issues/39)): peer systems
-remain separate and are integrated by configured URLs only, with deterministic
-cross-system adapters owned by Selfos.
+[#38](https://github.com/jointsome0-lgtm/ephemeris/issues/38),
+[#39](https://github.com/jointsome0-lgtm/ephemeris/issues/39) — are all closed
+as of 2026-08-07;
+[#2](https://github.com/jointsome0-lgtm/ephemeris/issues/2) (Diary tab) is the
+one still open.
 
 The existing special review rules for `app/terminal.py`, `app/agent/`, and
 listening surfaces remain binding.
@@ -67,9 +71,18 @@ git status --short --ignored
 
 The app has no auth in v0. Keeping the code in public Git is acceptable; exposing a running instance to the public internet is not.
 
-Changes touching `app/terminal.py`, `app/agent/`, a new bundle file the lesson sandboxes read, or anything about to listen on a port get one entry appended to `docs/reviews/QUEUE.md` when they land, and do not go live while their entries are Pending (that file's header describes the drain protocol). Nothing else earns an entry: UI, templates, and portability work go straight to the deploy gate.
+Review-queue entries:
 
-Git worktrees: create them only in `.worktrees/<name>` inside the repo (globally gitignored via `~/.config/git/ignore`), never as sibling directories. Any work that will open a PR branches and builds in such a worktree, never in the primary checkout — the primary checkout stays on a clean `main` so parallel sessions don't fight for its index. Trivial read-only work and single-file doc edits on a clean main need no worktree. Remove the worktree and delete its local branch once its PR merges.
+- Changes touching `app/terminal.py`, `app/agent/`, a new bundle file the lesson sandboxes read, or anything about to listen on a port get one entry appended to `docs/reviews/QUEUE.md` when they land.
+- Those changes do not go live while their entries are Pending. That file's header describes the drain protocol.
+- Nothing else earns an entry: UI, templates, and portability work go straight to the deploy gate.
+
+Git worktrees:
+
+- Create them only in `.worktrees/<name>` inside the repo (globally gitignored via `~/.config/git/ignore`), never as sibling directories.
+- Any work that will open a PR branches and builds in such a worktree, never in the primary checkout — the primary checkout stays on a clean `main` so parallel sessions don't fight for its index.
+- Trivial read-only work and single-file doc edits on a clean main need no worktree.
+- Remove the worktree and delete its local branch once its PR merges.
 
 ## Style
 
