@@ -528,6 +528,11 @@ The first version should be understandable, hackable, and disposable.
 
 ## 12. Project Structure
 
+The v0.1 baseline layout, kept as the record of what the MVP shipped with. The
+tree has since diverged: the repository is `ephemeris/`, routes live in
+`app/routers/`, configuration in `app/settings.py`, and the test suite is
+`tests/` (pytest) plus `verify_restore.py`.
+
 ```text
 activity-ledger/
   app/
