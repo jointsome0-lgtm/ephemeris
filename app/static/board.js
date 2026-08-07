@@ -171,6 +171,10 @@
       if (!res.ok) {
         pending.delete(id);
         rollback(card);        // including back to a move that already succeeded
+        if (leavingFullCap && card.dataset.status !== leaving) {
+          location.reload();   // an earlier move DID take it out of the full column
+          return;
+        }
         toast(res.error || "could not move");
         return;
       }
