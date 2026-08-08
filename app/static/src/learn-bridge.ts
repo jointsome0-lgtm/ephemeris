@@ -350,39 +350,22 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
    * hostile content cannot turn a read into a browser-dialog loop, and an
    * acceptance covers later reads of the same kind.
    *
-   * The decision's LIFETIME is the lesson, not the document (owner,
-   * 2026-08-08). Per-document was one modal per page of a multi-page bundle —
-   * the friction taught the answer instead of the question, which is worse
-   * than the wider grant. What the wider grant actually reaches is bounded by
-   * the runtime, not by trust: only an ARMED document can ask, arming requires
-   * the fresh metadata identity, and the re-assert/quarantine path forces an
-   * off-manifest successor back before it can arm — so an inherited decision
-   * covers the pages of the same lesson bundle and nothing else. Kept
-   * deliberately outside `teardown` — it is not per-document state.
-   *
-   * Module memory alone would not deliver that lifetime: the page tabs in
-   * learn.html are ordinary `/learn?...&entry=…` links, so walking a bundle
-   * RELOADS this parent and every page would ask again (PR-159 round 1). The
-   * decision is therefore mirrored into `sessionStorage` under the lesson_uid.
-   * `sessionStorage` and not `localStorage`: a consent that outlived the
-   * browsing session would answer for bundles the owner has not seen — the
-   * study agent rewrites a lesson's pages in place, under the same uid.
-   *
-   * So this pair is a WORKING COPY, not the record: a new armed lesson_uid
-   * swaps in that lesson's own stored decision, and switching back swaps the
-   * first one in again — `A → B → A` in one tab does not re-ask (PR-159
-   * round 3). What revokes is closing the tab, which is what the prompt
-   * promises; the lesson switch only changes whose answer is in hand. */
+   * The lifetime is the lesson, not the document (ABI §2.1), and this pair is
+   * only the working copy: `sessionStorage` under the lesson_uid holds the
+   * decision, because the learn.html page tabs are ordinary `/learn` links
+   * whose navigation reloads this parent. Not `localStorage` — a consent
+   * outliving the browsing session would answer for bundle content the owner
+   * has not seen, since the study agent rewrites a lesson's pages under the
+   * same uid. */
   let readConsent: { artifact: boolean | null; record: boolean | null } = {
     artifact: null, record: null,
   };
-  /* The lesson `readConsent` was decided for; a different one starts over. */
+  /* The lesson `readConsent` currently holds the decision for. */
   let consentLesson: string | null = null;
   const CONSENT_KEY_PREFIX = "ephemeris.lesson-read-consent.";
 
-  /* Anything absent, unreadable or unrecognised reads as "not asked yet",
-   * which costs one prompt and never invents a grant. Storage can throw
-   * outright (a browser configured without it), and that is the same answer. */
+  /* Absent, unreadable or unrecognised reads as "not asked yet": one extra
+   * prompt, never an invented grant. */
   const storedConsent = (
     lesson: string,
   ): { artifact: boolean | null; record: boolean | null } => {
@@ -402,9 +385,8 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     }
   };
 
-  /* Best effort by design: a storage that refuses the write leaves the
-   * decision in module memory for this document, which degrades to the old
-   * per-load prompt rather than to a silent grant. */
+  /* Best effort: a refused write degrades to a prompt per parent load, never
+   * to a silent grant. */
   const rememberConsent = (
     lesson: string,
     consent: { artifact: boolean | null; record: boolean | null },
@@ -761,9 +743,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     kind: "artifact" | "record",
     question: string,
   ): boolean => {
-    /* Only an armed document reaches here (both call sites re-validate the
-     * identity first), so a missing one is a torn-down state, not a lesson —
-     * refuse rather than decide on behalf of no page at all. */
+    /* No armed identity is a torn-down state, not a lesson: refuse. */
     const lesson = armed?.lesson_uid ?? null;
     if (lesson === null) return false;
     if (consentLesson !== lesson) {
@@ -783,9 +763,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     return allowed;
   };
 
-  /* The copy names the lesson, not the page, because that is now the grant's
-   * real extent — a prompt that says "this page" while the answer covers the
-   * next one would be the worse kind of wrong. */
+  /* The copy names the lesson because that is the grant's extent. */
   const allowArtifactRead = (): boolean => allowPrivateRead(
     "artifact",
     "Allow this lesson to read saved learner code? "
@@ -1552,9 +1530,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
        * asks before handing over saved code, and a refusal omits the field
        * whole — the rest of the welcome, and the write direction, are
        * unaffected. Asked once per lesson, not per document (see
-       * `readConsent`): the pages of one bundle are one trust decision, and
-       * the second page of thirteen re-asking taught the owner to click
-       * through. Nothing to disclose is not a decision: an empty list is
+       * `readConsent`). Nothing to disclose is not a decision: an empty list is
        * attached unasked, so opening a lesson nobody has answered yet does
        * not open a modal to hand over nothing. */
       let attach = true;
