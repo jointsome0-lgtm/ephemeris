@@ -24,19 +24,6 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-08-08 — `consent-per-lesson` branch, PR #159 —
-  `app/static/src/learn-bridge.ts`, `app/static/learn-bridge.js`,
-  `docs/lesson-bridge-abi.md`,
-  `tests/test_030_assessment_artifact_migration.py`,
-  `tests/test_210_bridge_browser.py` —
-  the parent runtime's `readConsent` store is no longer cleared by
-  `teardown`. `allowPrivateRead` reads `armed?.lesson_uid`, returns `false`
-  when nothing is armed, and resets the store when that value changes, so a
-  recorded acceptance or refusal for the `artifact` and `record` reads
-  carries across document loads while the armed lesson stays the same. The
-  two `window.confirm` strings were reworded to name the lesson and the
-  lifetime. No endpoint, capability, CSP or sandbox token changed.
-
 ## Done
 
 - [x] 2026-08-08 — `8483d68` (squash of `agent-home-persist`, PR #158) —
