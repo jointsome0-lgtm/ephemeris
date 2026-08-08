@@ -1167,6 +1167,38 @@ def test_002_ui_and_workspace(client, suite_state):
     assert _mount in _bschema_84.RESERVED_NAMES and not _bschema_84.valid_v2_path(
         _mount
     ), "the build mount point must be a reserved bundle name"
+
+    # `node_modules` was an ordinary authorable name before that reservation,
+    # so a bundle may already hold a populated one. Binding an empty workspace
+    # over it would hide it from the agent and leave it on disk: it is moved
+    # aside like any other foreign node instead.
+    _stale_pkgs = Path(ws_info["dir"]) / _mount / "left-by-an-older-bundle"
+    _stale_pkgs.mkdir(parents=True, exist_ok=True)
+    (_stale_pkgs / "index.js").write_text("older", encoding="utf-8")
+    assert lessons_svc.prepare_terminal_workspace(_lt["slug"]) is not None
+    _asides = [
+        p for p in Path(ws_info["dir"]).iterdir()
+        if p.name.startswith(f"{_mount}.collision-")
+    ]
+    assert (
+        len(_asides) == 1
+        and (_asides[0] / "left-by-an-older-bundle" / "index.js").read_text(
+            encoding="utf-8") == "older"
+        and (Path(ws_info["dir"]) / _mount).is_dir()
+        and not any((Path(ws_info["dir"]) / _mount).iterdir())
+    ), "a populated bundle node_modules is preserved, not silently shadowed"
+
+    # The bundle directory is what `_ensure_bundle_manifest` recreates when it
+    # goes missing. Preparing the mount point — a directory INSIDE it — before
+    # that recovery would turn a recoverable bundle into a refused terminal.
+    import shutil as _shutil_161
+    _shutil_161.rmtree(Path(ws_info["dir"]))
+    assert lessons_svc.prepare_terminal_workspace(_lt["slug"]) is not None, (
+        "a missing bundle directory is rebuilt, not turned into a refusal"
+    )
+    assert (Path(ws_info["dir"]) / _mount).is_dir(), (
+        "the rebuilt bundle carries its mount point"
+    )
     term_py = (ROOT / "app" / "terminal.py").read_text(encoding="utf-8")
     assert (
         "prepare_terminal_workspace" in term_py

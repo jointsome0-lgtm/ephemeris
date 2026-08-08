@@ -2090,18 +2090,22 @@ def _ensure_build_workspace(slug: str, lesson_dir: Path) -> Path:
     while the bundle on disk never carries a byte of it (`app/sandbox.py`,
     `BUILD_WORKSPACE_MOUNT`).
 
-    Kept out of the bundle for the reason :func:`seed_lesson_libs` states about
-    hardlinks, sharpened by the package manager: bun populates `node_modules`
-    with hardlinks into one shared cache, so a real directory inside a bundle
-    that its own session can write would put every other lesson's packages
-    behind one shared inode. Same posture as :func:`_ensure_agent_home` on each
-    name — a link or special file is moved aside rather than followed — and the
-    same failure contract, for a sharper reason: without the mount, an agent
-    running `bun install` would fill the *bundle* with those hardlinks, so a
-    workspace that cannot be created has to mean "no terminal" rather than a
-    shell that quietly does the thing this directory exists to prevent.
+    Kept out of the bundle because a bundle is served, walked by the manifest
+    reader, and writable from inside its own session — none of which packages
+    want. Same posture as :func:`_ensure_agent_home` on each name — a link or
+    special file is moved aside rather than followed — and the same failure
+    contract: an OSError here becomes "no workspace", so the caller refuses to
+    open a shell rather than opening one whose installs land in the bundle.
 
-    Both sides of the bind are created here, the bundle-side mountpoint
+    This does NOT isolate one lesson's packages from another's. A package
+    manager that hardlinks out of one shared cache hands every lesson the same
+    inode, so an edit through any copy reaches all of them wherever
+    `node_modules` sits (measured: `>>` into one, no chmod, and the next
+    install elsewhere receives the tampered file). Whatever writable cache the
+    build step needs arrives with that step, which can force a copying backend
+    on its own command line.
+
+    Both sides of the bind are created here, the bundle-side mount point
     included. bwrap would create it anyway — a bind target inside a bind of the
     real bundle directory is a real `mkdir` on disk — so the choice is between
     an empty directory this function owns, at a known mode, and one that
@@ -2110,20 +2114,28 @@ def _ensure_build_workspace(slug: str, lesson_dir: Path) -> Path:
     block file or artifact root may claim it and the preview surface will not
     serve through it.
 
-    A link or special file at either name is moved aside; an existing
-    *directory* is used as-is, mount point or not. That is the same rule the
-    agent home follows, and the case it would matter for — a populated
-    `node_modules` already in a bundle — cannot predate the mount that this
-    function introduces.
+    On the bundle side a *populated* directory is moved aside as well, not only
+    a link: `node_modules` was an ordinary authorable name before this
+    reservation, and binding an empty workspace over a directory that already
+    held something would hide it from the agent while leaving it on disk. On
+    the workspace side a populated directory is exactly what is wanted — it is
+    the last install.
     """
     if not _SLUG_RE.match(slug or ""):
         raise LessonError("invalid lesson slug")
     BUILD_WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
     workspace = BUILD_WORKSPACES_DIR / slug
     mount = sandbox.BUILD_WORKSPACE_MOUNT
-    for path in (workspace, workspace / mount, lesson_dir / mount):
-        if path.is_symlink() or (path.exists() and not path.is_dir()):
-            _preserve_foreign(path)  # incl. a dangling link: exists() follows, says False
+    for path, keep_contents in (
+        (workspace, True), (workspace / mount, True), (lesson_dir / mount, False),
+    ):
+        # exists() follows links, so a dangling one reads as absent here; the
+        # is_symlink() term is what catches it.
+        foreign = path.is_symlink() or (path.exists() and not path.is_dir())
+        if not foreign and not keep_contents and path.is_dir():
+            foreign = any(path.iterdir())
+        if foreign:
+            _preserve_foreign(path)
         try:
             os.mkdir(path, 0o700)
         except FileExistsError:
@@ -2510,7 +2522,11 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
 
     The agent home is prepared here too, and on the same terms: this is the
     only role that runs agents, and a home that cannot be created is a refusal
-    rather than a shell whose agents silently forget everything again.
+    rather than a shell whose agents silently forget everything again. So is
+    the build workspace, which additionally waits for the bundle: its mount
+    point is a directory inside the bundle, and `_ensure_bundle_manifest` is
+    what recreates a bundle directory that went missing. Preparing it earlier
+    would turn that recoverable case into a refused terminal.
     """
     try:
         resolved = _resolve_terminal_lesson(slug)
@@ -2518,8 +2534,8 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
             return None
         slug, lesson, lesson_dir = resolved
         agent_home = _ensure_agent_home(slug)
-        build_workspace = _ensure_build_workspace(slug, lesson_dir)
         read = _ensure_bundle_manifest(lesson)
+        build_workspace = _ensure_build_workspace(slug, lesson_dir)
         # Before the brief, unlike the two reconciles below: STATE quotes the
         # open questions but sends the tutor to `attempts.jsonl` for the rest
         # of a long one, and for every answer it names. Healing the file first

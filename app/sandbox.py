@@ -143,8 +143,6 @@ _AGENT_HOME_MOUNTS = (
                "writable Go module cache for agent-driven dependency work"),
     _HomeMount("--bind-try", f"{USER_HOME}/.cache/go-build",
                "writable Go build cache for agent-driven builds"),
-    _HomeMount("--bind-try", f"{USER_HOME}/.bun",
-               "writable bun package cache for agent-driven dependency work"),
 )
 
 # The two directories under the blank home that hold the agents' OWN memory:
@@ -476,12 +474,20 @@ def build_sandbox_argv(
         if workspace is not None:
             # After the bundle bind, so it is not shadowed by it. The packages
             # an agent installs belong to the lesson but not IN it: the bundle
-            # is served, walked by the manifest reader and writable from inside
-            # its own session, while bun hardlinks out of a shared cache — a
-            # real `node_modules` here would put that cache one `chmod` away
-            # from every other lesson. A bwrap bind lives only in this mount
-            # namespace, so the bundle on disk never grows the directory at all
-            # and the read path cannot see it.
+            # is served, walked by the manifest reader, and writable from
+            # inside its own session. A bwrap bind lives only in this mount
+            # namespace, so the bundle on disk never grows the directory and
+            # the read path cannot see it.
+            #
+            # This does NOT isolate lessons from each other. A package manager
+            # that hardlinks out of one shared cache — bun's default — hands
+            # every lesson the same inode, so an edit through any of them
+            # reaches all of them wherever `node_modules` happens to live
+            # (measured on katex: `>>` into one copy, no chmod, and the next
+            # install elsewhere receives the tampered file). Whatever writable
+            # package cache the build step needs arrives with that step, which
+            # can force a copying backend on its own command line; nothing here
+            # gives a session one.
             argv.extend([
                 "--bind", f"{workspace}/{BUILD_WORKSPACE_MOUNT}",
                 f"{bundle}/{BUILD_WORKSPACE_MOUNT}",

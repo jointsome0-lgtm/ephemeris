@@ -404,15 +404,10 @@ def test_role_runner(client, suite_state):
             json.dumps(argv, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
 
-    # The agent digest moved once, deliberately: #161 added a writable
-    # `~/.bun` beside the writable Go caches, so agents can install the
-    # packages a lesson page is built from. The learner digest did NOT move,
-    # which is the half of this check that matters — the learner gained no
-    # package cache, writable or otherwise.
     assert (
         _f3_argv_digest(_sandbox.build_sandbox_argv(
             "lesson-agent", _sb_bundle, bundle_root=_sb_root
-        )) == "92ebb2f2f6c9156b998b3c242e72098c8276a6b4e95bd3ad907431d80f7bc2c0"
+        )) == "a0a6b85c4d66389748fd17572dc7f5f2bbfb69c92414d9fb21732dde5a0acf5a"
         and _f3_argv_digest(_sandbox.build_sandbox_argv(
             "lesson-learner", _sb_bundle, bundle_root=_sb_root
         )) == "a77d4eeef5689810b8a10cd123fe5600dbe8332b994072c1d09fdd605ce8301f"

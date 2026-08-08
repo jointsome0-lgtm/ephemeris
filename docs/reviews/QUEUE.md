@@ -38,18 +38,18 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `build_workspace` is rejected for `lesson-learner` and
   `lesson-runner`, and rejected unless it is absolute, free of `..`, a
   strict descendant of `private_root`, and outside `bundle_root` — the
-  same checks `agent_home` receives. One mount is added to
-  `_AGENT_HOME_MOUNTS`: `--bind-try` of `~/.bun`, placed after the
-  existing `--bind-try` entries for `~/go` and `~/.cache/go-build`. With
-  no `build_workspace` the agent argv differs from before only by that
-  mount; the learner and runner argv are unchanged.
-  `prepare_terminal_workspace` creates
+  same checks `agent_home` receives. `_AGENT_HOME_MOUNTS` is unchanged,
+  and with no `build_workspace` every profile's argv is byte-identical
+  to before. `prepare_terminal_workspace` creates
   `DATA_DIR/lesson-builds/<slug>/node_modules` and the `node_modules`
-  directory inside the bundle, both with `os.mkdir(0o700)`, moving a
-  symlink or non-directory at either name aside first, and returns the
-  workspace path in the workspace view; failure to create either raises
-  and the terminal is refused. `resolve_terminal_workspace` (the learner
-  path) returns `None` for it. `node_modules` is added to
+  directory inside the bundle, both with `os.mkdir(0o700)`, after
+  `_ensure_bundle_manifest` has created the bundle directory. A symlink
+  or non-directory at any of the three names is renamed to
+  `<name>.collision-<hex>` first; on the bundle side a non-empty
+  directory is renamed too. The workspace path is returned in the
+  workspace view, and failure to create it raises, refusing the
+  terminal. `resolve_terminal_workspace` (the learner path) returns
+  `None` for it. `node_modules` is added to
   `bundle_schema.RESERVED_NAMES` and to §2 of the bundle spec.
 
 ## Done

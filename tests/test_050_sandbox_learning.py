@@ -99,7 +99,6 @@ def test_sandbox_learning(client, suite_state):
         and set(_sb_mounts(_sb_agent, "--bind-try")) == {
           ("/home/aina/go", "/home/aina/go"),
           ("/home/aina/.cache/go-build", "/home/aina/.cache/go-build"),
-          ("/home/aina/.bun", "/home/aina/.bun"),
         }
         and _sb_mounts(_sb_agent, "--bind") == [(_sb_bundle, _sb_bundle)]
         and {"/home/aina/.codex", "/home/aina/.claude"}.issubset(
@@ -194,14 +193,13 @@ def test_sandbox_learning(client, suite_state):
         and _sb_agent_build.index(f"{_sb_build}/{_sb_mount}")
         > _sb_agent_build.index(_sb_bundle)
         and _sb_agent_build[-2:] == ["--chdir", _sb_bundle]
-        # The package cache the mount is populated from is writable for the
-        # agent, exactly as the Go caches beside it are.
-        and ("/home/aina/.bun", "/home/aina/.bun")
-        in set(_sb_mounts(_sb_agent_build, "--bind-try"))
+        # A place for packages is not a package cache. Nothing here makes one
+        # writable: a shared cache with a hardlinking backend would let an edit
+        # in one lesson reach every other, which the mount cannot prevent and
+        # must not be read as preventing. That arrives with the build step.
+        and f"{_sandbox.USER_HOME}/.bun" not in _sb_agent_build
     ), "E1 argv: the build workspace lands under the bundle, after it"
-    assert _sb_mount not in set(
-        _sb_agent[i + 1] for i, x in enumerate(_sb_agent) if x == "--bind"
-    ) and not any(_sb_mount in arg for arg in _sb_agent), (
+    assert not any(_sb_mount in arg for arg in _sb_agent), (
         "E1 argv: no build workspace, no mount — the bundle keeps its own name"
     )
     assert _sb_mount in _bundle_schema.RESERVED_NAMES, (
