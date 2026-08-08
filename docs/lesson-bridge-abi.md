@@ -198,17 +198,35 @@ Semantics:
   panel's excerpt (`answer_truncated` marks the cut), not a re-read of the
   full 32 KiB body. The snapshot is bounded by the panel it mirrors, which is
   why it carries no separate size limit.
-- **Gated by an owner decision, per loaded document.** What crosses is the
+- **Gated by an owner decision, per lesson.** What crosses is the
   learner's own answers and the tutor's notes for this page's questions — the
   same rows the Record panel renders under the frame — into a document whose
   profile leaves same-frame navigation open (spec §5 residual): permitted
   script can assign `location.href` and carry those bytes to a destination the
   response CSP does not cover. So the parent asks first, through the same
-  sticky per-document consent the artifact READ path uses
-  (`allowPrivateRead`), with a warning that names that egress. A refusal omits
-  `record` entirely — not an empty list — and leaves the rest of the welcome
-  and the whole write direction untouched; an acceptance covers that document
-  only, so a reload, or any other page, decides again. Nothing to hand over is
+  sticky consent the artifact READ path uses (`allowPrivateRead`), with a
+  warning that names that egress. A refusal omits `record` entirely — not an
+  empty list — and leaves the rest of the welcome and the whole write
+  direction untouched. Both answers are remembered for the **lesson**, keyed on
+  `lesson_uid` (owner, 2026-08-08 — per-document meant one modal per page of a
+  multi-page bundle, which taught the click rather than the question). The
+  runtime holds one in-memory working copy and swaps it when the armed lesson
+  changes; each lesson's own decision is written to `sessionStorage` under its
+  uid and rehydrated whenever that lesson is armed again, so `A → B → A` in one
+  tab reuses A's earlier answer rather than re-asking. **The revocation
+  boundary is the browsing session, not the lesson switch** — closing the tab,
+  exactly what the prompt tells the owner. Storage is what makes the stated
+  lifetime true at all: the lesson page tabs are ordinary `/learn` links whose
+  navigation reloads the parent, so module memory alone would keep the per-page
+  interrogation under a new name. `localStorage` is deliberately not
+  used: a consent outliving the browsing session would answer for bundle
+  content the owner has never seen, since the study agent rewrites a lesson's
+  pages under the same uid. Unreadable or unrecognised stored state reads as
+  undecided, which costs a prompt and never invents a grant. The
+  decision therefore reaches the pages of that one bundle and no further: only
+  an armed document can ask, arming requires the fresh metadata identity, and
+  the re-assert/quarantine path (§4) forces an off-manifest successor back
+  before it can arm. Nothing to hand over is
   not a decision: when the filtered list is empty the field is attached
   unasked, so opening a lesson nobody has answered yet never opens a modal.
   The prompt blocks, and a document can commit a navigation while it stands
@@ -224,7 +242,11 @@ Semantics:
   with its own `ready` (§1, §2). A successor produced by a same-frame
   navigation, including one that delays its own `load` event behind a slow
   blocking subresource, never holds that port and cannot be handed one; it
-  gets its own handshake, its own question, on its own load. This retires the
+  gets its own handshake, on its own load. What it does *not* repeat is the
+  owner's question: delivery is per document, the §2.1 decision is per lesson,
+  and the two are different mechanisms — the successor must still arm and
+  announce for itself before an inherited `record` can be built for it, and an
+  unarmed or quarantined successor is answered with silence. This retires the
   read-back half of the §4 `WindowProxy` delivery residual (D5 L1) at its
   root — the earlier gate could only narrow it from automatic on every load to
   requiring an explicit yes. The alternative, a non-navigable isolation
@@ -232,7 +254,7 @@ Semantics:
   do, where the port change costs one `MessageChannel` in the child.
   The remaining cost is honest and known: a learner who declines sees the
   blank controls this feature exists to end, which is why the ask is once per
-  document rather than once per read.
+  lesson rather than once per read.
 - **Children:** insert every value as text; `answer` is learner-authored and
   `note` is agent-authored. Never resubmit a truncated `answer` as a new
   attempt — it would replace the full body with a fragment.
@@ -399,14 +421,15 @@ parent → child   { "op": "artifact.save", "request_id": "s1",
   `file_rev`; its first save uses the literal `base_rev: "absent"`.
 - Artifact bytes are private runtime state, while lesson pages are untrusted
   and retain the documented same-frame navigation residual (§4). The first
-  `artifact.get` for each loaded document therefore opens a parent-owned
+  `artifact.get` in each lesson therefore opens a parent-owned
   confirmation that explicitly warns the learner that the page can navigate
-  and send code it reads to another site. A denial is sticky for that document
-  and returns `artifact-read-denied` without HTTP; acceptance covers its later
-  reads. The parent repeats fresh page/block validation after the prompt and
-  before the GET. A reload requires a new decision. Artifact bytes and the
-  §2.1 read-back are decided separately but by one mechanism
-  (`allowPrivateRead`), so neither answer speaks for the other kind.
+  and send code it reads to another site. A denial is sticky and returns
+  `artifact-read-denied` without HTTP; acceptance covers later reads. Both
+  answers last for the lesson, not the document — see §2.1 for the lifetime
+  and what bounds it. The parent repeats fresh page/block validation after the
+  prompt and before the GET.
+  Artifact bytes and the §2.1 read-back are decided separately but by one
+  mechanism (`allowPrivateRead`), so neither answer speaks for the other kind.
 - Content is limited to 64 KiB raw UTF-8 bytes. `base_rev` is either
   `"absent"` or the exact revision returned by `artifact.get` or the previous
   successful save. A `file-conflict` answer carries the current `file_rev`
