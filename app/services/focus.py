@@ -386,10 +386,11 @@ def finish_run(conn: sqlite3.Connection, token: str) -> dict:
             started_at=row["started_at"], ended_at=ended_at, token=token,
             targets=_stored_targets(row), run_id=row["id"],
         )
-    except sqlite3.IntegrityError:
+    except (sqlite3.IntegrityError, FocusError):
         # A double-click on Stop: both calls read the run, one wrote the session.
-        # The token is the idempotency key, so the loser returns the winner's row
-        # rather than a 500.
+        # The loser fails either on the token's unique index or on finding the
+        # run already claimed — and the token is the idempotency key, so it
+        # returns the winner's row instead of a 500 or a 422.
         recorded = session_by_token(conn, token)
         if recorded is None:
             raise

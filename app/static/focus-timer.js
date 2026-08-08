@@ -46,6 +46,7 @@
   async function call(path, params) {
     busy = true;
     const ticket = ++issueSeq;
+    let refused = false;
     try {
       const r = await fetch(path, {
         method: "POST",
@@ -54,7 +55,11 @@
         body: new URLSearchParams(params).toString(),
       });
       const data = await r.json();
-      if (!data.ok) { showError(data.error || "could not save"); return null; }
+      if (!data.ok) {
+        showError(data.error || "could not save");
+        refused = true;
+        return null;
+      }
       absorb(data, ticket);
       return data;
     } catch (_) {
@@ -64,23 +69,28 @@
       return null;
     } finally {
       busy = false;
+      // A refusal usually means this tab is out of date — another tab discarded
+      // the run, or it was already recorded. Without asking, the drawer would
+      // keep showing a timer nobody has, and a finished countdown would retry
+      // autoFinish every second forever.
+      if (refused) sync(true);
     }
   }
 
-  async function sync() {
+  async function sync(keepError) {
     if (busy) return;  // a write is in flight; its own answer is the newer one
     const ticket = ++issueSeq;
     try {
       const r = await fetch("/focus/timer", { headers: { "X-Partial": "1" } });
       if (!r.ok) return;
-      absorb(await r.json(), ticket);
+      absorb(await r.json(), ticket, keepError);
     } catch (_) { /* offline: keep interpolating from the last sync */ }
   }
 
   // Tickets are handed out in send order. A read issued before a write can
   // still answer after it — describing a world without the run the user just
   // started — so an older answer loses instead of erasing the newer one.
-  function absorb(data, ticket) {
+  function absorb(data, ticket, keepError) {
     if (ticket <= appliedSeq) return;
     appliedSeq = ticket;
     run = data.run || null;
@@ -91,7 +101,9 @@
         ? ov.today_focus.value + ov.today_focus.unit + " today" : "";
     }
     if (data.recent) renderRecent(data.recent);
-    showError("");
+    // ...except the one that sent us here: a resync after a refusal is what
+    // explains the refusal, so its message stays on screen.
+    if (!keepError) showError("");
     render();
   }
 

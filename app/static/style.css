@@ -1378,7 +1378,10 @@ body {
 .text-input:focus { outline: none; border-color: var(--primary); }
 
 /* ===== modal (create habit / list / event) ============================== */
-.modal-overlay { position: fixed; inset: 0; z-index: 90; display: none; background: rgba(6,8,15,0.55); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); }
+/* Above the timer drawer (110) and the mobile habit detail (100): a modal is
+   a blocking backdrop, so nothing it is supposed to block may stay clickable
+   on top of it. The palette (150) and toasts (200) still win over it. */
+.modal-overlay { position: fixed; inset: 0; z-index: 120; display: none; background: rgba(6,8,15,0.55); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); }
 /* .open = server-opened (the ?ev= edit modal — a redirect can't set :target) */
 .modal-overlay:target, .modal-overlay.open { display: flex; align-items: flex-start; justify-content: center; padding: 8vh 16px; }
 .modal { width: 100%; max-width: 440px; max-height: 86vh; overflow-y: auto; background: var(--card-bg); border-radius: var(--radius-lg); box-shadow: var(--shadow); padding: 18px 20px 16px; }
@@ -1497,9 +1500,14 @@ body {
    would look like a dead button. The max-height keeps the head and the controls
    reachable on a short or landscape viewport: the body scrolls, the head never
    leaves the screen. */
+/* `--timer-gap` is the floor the drawer sits on, so the mobile breakpoint can
+   raise it over the bottom nav by redefining ONE value instead of restating the
+   terminal arithmetic in a rule that would have to out-specify this one. */
 .timer-drawer {
-  position: fixed; right: 18px; bottom: 18px; z-index: 110; width: 300px;
-  max-height: calc(100dvh - 36px - var(--term-h, 0px));
+  --timer-gap: 18px;
+  position: fixed; right: 18px; z-index: 110; width: 300px;
+  bottom: calc(var(--timer-gap) + var(--term-h, 0px));
+  max-height: calc(100dvh - var(--timer-gap) - 18px - var(--term-h, 0px));
   display: flex; flex-direction: column; overflow: hidden;
   background: var(--card-bg); color: var(--text);
   border: 1px solid var(--border-2); border-radius: var(--radius-lg);
@@ -1508,9 +1516,8 @@ body {
 .timer-drawer[hidden] { display: none; }
 /* Both drawers are docked to the same corner, and the timer sits above the
    terminal's z-index by design (it also has to clear the mobile habit detail).
-   So it steps aside instead: the terminal already publishes its live height and
-   right-dock width for exactly this kind of dodging. */
-body.term-open .timer-drawer { bottom: calc(18px + var(--term-h, 0px)); }
+   So it steps aside instead — the bottom drawer via `--term-h` in the offsets
+   above, the right dock here. Both are published by the terminal runtime. */
 body.term-stack-open .timer-drawer { right: calc(18px + var(--term-stack-w, 0px)); }
 .timer-head {
   display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 12px;
@@ -1833,9 +1840,8 @@ body.term-stack-open .timer-drawer { right: calc(18px + var(--term-stack-w, 0px)
   .stat-grid { grid-template-columns: 1fr 1fr; }
   /* the timer clears the bottom nav rather than hiding behind it */
   .timer-drawer {
+    --timer-gap: calc(60px + env(safe-area-inset-bottom, 0px));
     left: 10px; right: 10px; width: auto;
-    bottom: calc(60px + env(safe-area-inset-bottom, 0px));
-    max-height: calc(100dvh - 80px - env(safe-area-inset-bottom, 0px));
   }
   .cal-month { min-height: 0; }
   .cm-cell { min-height: 64px; }
@@ -1853,11 +1859,11 @@ body.term-stack-open .timer-drawer { right: calc(18px + var(--term-stack-w, 0px)
   .nav-link.active { color: var(--primary); }
   .more-open { cursor: pointer; }
 
-  .more-backdrop { display: none; position: fixed; inset: 0; z-index: 81; background: rgba(6,8,15,0.55); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); }
+  .more-backdrop { display: none; position: fixed; inset: 0; z-index: 120; background: rgba(6,8,15,0.55); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); }
   #more-toggle:checked ~ .more-backdrop { display: block; }
   .more-sheet {
     display: flex; flex-direction: column; gap: 2px;
-    position: fixed; left: 0; right: 0; bottom: 0; z-index: 82;
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 121;
     background: var(--panel); border-top: 1px solid var(--border);
     border-radius: 18px 18px 0 0; box-shadow: var(--shadow);
     padding: 6px 10px calc(12px + env(safe-area-inset-bottom, 0));
