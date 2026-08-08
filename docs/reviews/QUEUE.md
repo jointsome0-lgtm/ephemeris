@@ -24,6 +24,31 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
+- [ ] 2026-08-08 — `df891df` on `agent-home-persist`, PR #158 —
+  `app/sandbox.py`, `app/services/lessons.py`, `app/terminal.py`,
+  `docs/backup-restore.md`, `tests/test_010_platform_ui.py`,
+  `tests/test_050_sandbox_learning.py` —
+  the `lesson-agent` profile can be given a persistent agent home.
+  `build_sandbox_argv` and `spawn_sandboxed` take a new `agent_home`
+  argument; when set, the two `--tmpfs` mounts for `~/.claude` and
+  `~/.codex` become `--bind` of `<agent_home>/claude` and
+  `<agent_home>/codex` at the same positions in the mount order, so the
+  `--ro-bind-try` login and configuration entries still follow them. The
+  other agent mounts, the `--tmpfs` on `$HOME` and `/tmp`, and the argv
+  of every other profile are unchanged; with no `agent_home` the agent
+  argv is unchanged too. `agent_home` is rejected for `lesson-learner`
+  and `lesson-runner`, and rejected unless it is absolute, free of
+  `..`, a strict descendant of `private_root`, and outside
+  `bundle_root`. `prepare_terminal_workspace` creates
+  `<ACTIVITY_DATA_DIR>/agent-homes/<slug>/{claude,codex}` (0700, slug
+  matched against `_SLUG_RE`, each name moved aside via
+  `_preserve_foreign` if it is a link or non-directory) and returns its
+  path in the workspace view; `resolve_terminal_workspace` returns None
+  there. `app/terminal.py` passes that value to `spawn_sandboxed` for
+  sandboxed sessions. Backups already archive `$ACTIVITY_DATA_DIR` by
+  exclusion, so the new directory is included. pytest 294,
+  verify_restore 34/34.
+
 ## Done
 
 - [x] 2026-08-06 — `2e636c2` (squash of `fix/drain-l1-successor`, PR #153) —
