@@ -127,9 +127,12 @@ def pickable_targets(conn: sqlite3.Connection) -> dict:
             "SELECT id, title FROM routine_items WHERE active = 1 "
             "ORDER BY sort_order, id"
         ),
+        # No LIMIT on the tasks: the picker is the only way to aim the timer at
+        # one, and it has neither search nor pagination, so a cap would make
+        # every task past it unfocusable rather than merely inconvenient.
         "task": rows(
             "SELECT id, title FROM tasks WHERE completed_at IS NULL "
-            "ORDER BY due_date IS NULL, due_date, sort_order, id LIMIT 100"
+            "ORDER BY due_date IS NULL, due_date, sort_order, id"
         ),
     }
 
@@ -429,6 +432,14 @@ def record_session(conn: sqlite3.Connection, mode: str, seconds, *,
     # session counts towards follows the former.
     ended_at = ended_at or ts
     with conn:
+        # The run is claimed BEFORE the session is written: Stop and Discard can
+        # both be in flight, and whichever deletes the run owns the span. A
+        # finish that finds it already gone is recording time the user threw
+        # away, so it rolls back instead.
+        if run_id is not None and not conn.execute(
+            "DELETE FROM focus_runs WHERE id = ?", (run_id,)
+        ).rowcount:
+            raise FocusError("that timer is no longer running")
         cur = conn.execute(
             "INSERT INTO focus_sessions (mode, seconds, target_seconds, note, date, "
             "started_at, ended_at, created_at, lesson_id, habit_id, task_id, client_token) "
@@ -437,8 +448,6 @@ def record_session(conn: sqlite3.Connection, mode: str, seconds, *,
              targets["lesson_id"], targets["habit_id"], targets["task_id"], token),
         )
         session_id = cur.lastrowid
-        if run_id is not None:
-            conn.execute("DELETE FROM focus_runs WHERE id = ?", (run_id,))
         append_event(conn, "focus_session_recorded",
                      {"session_id": session_id, "mode": mode, "seconds": seconds,
                       "target_seconds": target_seconds, **targets})

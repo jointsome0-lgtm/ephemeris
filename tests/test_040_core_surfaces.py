@@ -832,6 +832,30 @@ def test_core_surfaces(client, suite_state):
     )
     c.post("/focus/timer/discard", data={"token": "tok-z"}, headers={"X-Partial": "1"})
 
+    # Discard beats a finish that read the run before it vanished: the span the
+    # user threw away must not be recorded by the request already in flight.
+    c.post("/focus/timer/start", data={"token": "tok-y", "mode": "open"},
+           headers={"X-Partial": "1"})
+    _backdate("tok-y", 300)
+    cy = get_conn()
+    try:
+        stale = cy.execute("SELECT * FROM focus_runs WHERE client_token = 'tok-y'").fetchone()
+        c.post("/focus/timer/discard", data={"token": "tok-y"}, headers={"X-Partial": "1"})
+        from app.services import focus as _focus
+        try:
+            _focus.record_session(cy, "open", 300, token="tok-y",
+                                  targets={"lesson_id": None, "habit_id": None,
+                                           "task_id": None},
+                                  run_id=stale["id"])
+            raise AssertionError("a discarded run was still recorded")
+        except _focus.FocusError:
+            pass
+        assert cy.execute(
+            "SELECT COUNT(*) FROM focus_sessions WHERE client_token = 'tok-y'"
+        ).fetchone()[0] == 0, "and the rolled-back finish left no session"
+    finally:
+        cy.close()
+
     # a mis-start is not focused time: discard leaves no session behind
     c.post("/focus/timer/start", data={"token": "tok-d", "mode": "open"},
            headers={"X-Partial": "1"})

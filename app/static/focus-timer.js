@@ -323,7 +323,9 @@
     // list lands — the row can be clicked before the picker has ever loaded.
     pendingTarget = btn.getAttribute("data-timer-target");
     els.target.value = pendingTarget;
-    if (drawer.hidden) setOpen(true, false); else loadTargets();
+    // Always expanded, never merely open: a minimized drawer hides the setup and
+    // Start controls, so the row's button would look like it did nothing.
+    setOpen(true, false);
   });
 
   // Coming back to a tab that slept: the interpolated clock has drifted, and a
