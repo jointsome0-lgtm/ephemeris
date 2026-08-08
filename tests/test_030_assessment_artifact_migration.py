@@ -2342,6 +2342,8 @@ def test_assessment_artifact_migration(client, suite_state):
     ), "artifact reads revalidate the page block after GET before disclosure"
     _fe_consent = _d2_ts[_d2_ts.index("const allowPrivateRead"):
                          _d2_ts.index("const allowArtifactRead")]
+    _fe_store = _d2_ts[_d2_ts.index("const storedConsent"):
+                       _d2_ts.index("const teardown")]
     assert (
         "let readConsent: { artifact: boolean | null; record: boolean | null }" in _d2_ts
         # The decision's lifetime is the lesson, not the loaded document, so
@@ -2352,7 +2354,16 @@ def test_assessment_artifact_migration(client, suite_state):
         and "const lesson = armed?.lesson_uid ?? null" in _fe_consent
         and _fe_consent.index("if (consentLesson !== lesson)")
         < _fe_consent.index("const decided = readConsent[kind]")
-        and "readConsent = { artifact: null, record: null }" in _fe_consent
+        and "readConsent = storedConsent(lesson)" in _fe_consent
+        # The lifetime spans parent reloads (the lesson page tabs are ordinary
+        # links), so the decision is mirrored per lesson_uid into per-tab
+        # storage — never localStorage, which would outlive the session.
+        and "window.sessionStorage.getItem(CONSENT_KEY_PREFIX + lesson)" in _fe_store
+        and "window.sessionStorage.setItem(" in _fe_store
+        and "rememberConsent(lesson, readConsent)" in _fe_consent
+        # Not the whole module: the record poll's acknowledged cursor is a
+        # legitimate localStorage user. The consent store must not become one.
+        and "localStorage" not in _fe_store
         and "window.confirm(" in _d2_ts
         and 'answerError(boundPort, "artifact-read-denied", requestId)' in _fe_get
         and _fe_get.index("allowArtifactRead()")

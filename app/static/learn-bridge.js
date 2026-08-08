@@ -283,14 +283,53 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
      * the fresh metadata identity, and the re-assert/quarantine path forces an
      * off-manifest successor back before it can arm — so an inherited decision
      * covers the pages of the same lesson bundle and nothing else. Kept
-     * deliberately outside `teardown` (it is not per-document state); reset when
-     * the armed lesson_uid changes, and gone entirely on a /learn reload, since
-     * this lives only in the module. */
+     * deliberately outside `teardown` (it is not per-document state) and reset
+     * when the armed lesson_uid changes.
+     *
+     * Module memory alone would not deliver that lifetime: the page tabs in
+     * learn.html are ordinary `/learn?...&entry=…` links, so walking a bundle
+     * RELOADS this parent and every page would ask again (PR-159 round 1). The
+     * decision is therefore mirrored into `sessionStorage` under the lesson_uid.
+     * `sessionStorage` and not `localStorage`: a consent that outlived the
+     * browsing session would answer for bundles the owner has not seen — the
+     * study agent rewrites a lesson's pages in place, under the same uid. */
     let readConsent = {
         artifact: null, record: null,
     };
     /* The lesson `readConsent` was decided for; a different one starts over. */
     let consentLesson = null;
+    const CONSENT_KEY_PREFIX = "ephemeris.lesson-read-consent.";
+    /* Anything absent, unreadable or unrecognised reads as "not asked yet",
+     * which costs one prompt and never invents a grant. Storage can throw
+     * outright (a browser configured without it), and that is the same answer. */
+    const storedConsent = (lesson) => {
+        const blank = { artifact: null, record: null };
+        try {
+            const raw = window.sessionStorage.getItem(CONSENT_KEY_PREFIX + lesson);
+            if (raw === null)
+                return blank;
+            const parsed = JSON.parse(raw);
+            if (typeof parsed !== "object" || parsed === null)
+                return blank;
+            const fields = parsed;
+            return {
+                artifact: typeof fields.artifact === "boolean" ? fields.artifact : null,
+                record: typeof fields.record === "boolean" ? fields.record : null,
+            };
+        }
+        catch {
+            return blank;
+        }
+    };
+    /* Best effort by design: a storage that refuses the write leaves the
+     * decision in module memory for this document, which degrades to the old
+     * per-load prompt rather than to a silent grant. */
+    const rememberConsent = (lesson, consent) => {
+        try {
+            window.sessionStorage.setItem(CONSENT_KEY_PREFIX + lesson, JSON.stringify(consent));
+        }
+        catch { /* nothing to do and nothing to report */ }
+    };
     let runInflight = new Set();
     let runStartToken = null;
     let ownedRuns = new Map();
@@ -616,7 +655,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             return false;
         if (consentLesson !== lesson) {
             consentLesson = lesson;
-            readConsent = { artifact: null, record: null };
+            readConsent = storedConsent(lesson);
         }
         const decided = readConsent[kind];
         if (decided !== null)
@@ -629,6 +668,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             allowed = false; // no dialog available is a refusal, never a grant
         }
         readConsent[kind] = allowed;
+        rememberConsent(lesson, readConsent);
         return allowed;
     };
     /* The copy names the lesson, not the page, because that is now the grant's
@@ -636,12 +676,12 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
      * next one would be the worse kind of wrong. */
     const allowArtifactRead = () => allowPrivateRead("artifact", "Allow this lesson to read saved learner code? "
         + "A lesson page can navigate the preview and send code it reads to another site. "
-        + "Your answer covers every page of this lesson until you reload Learn — "
+        + "Your answer covers every page of this lesson until you close this tab — "
         + "allow only if you trust it.");
     const allowRecordRead = () => allowPrivateRead("record", "Allow this lesson to read your recorded answers and the "
         + "tutor's notes for its questions? "
         + "A lesson page can navigate the preview and send what it reads to another site. "
-        + "Your answer covers every page of this lesson until you reload Learn — "
+        + "Your answer covers every page of this lesson until you close this tab — "
         + "allow only if you trust it.");
     const getArtifact = async (boundPort, gen, requestId, blockId) => {
         const inflight = editorInflight;

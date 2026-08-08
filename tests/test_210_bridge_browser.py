@@ -549,6 +549,31 @@ def test_a_grant_covers_the_next_page_of_the_same_lesson():
         site.close()
 
 
+def test_a_grant_survives_the_page_tab_navigation_it_exists_for():
+    """The navigation the owner actually performs, and the one that made the
+    per-document rule feel like a per-page interrogation.
+
+    A lesson's page tabs are ordinary `/learn?...&entry=…` links, so stepping
+    through a bundle reloads the whole parent document — module memory would
+    not survive it. This drives the same thing: the parent page is navigated
+    again, in the same browser tab, and the decision has to still be there.
+    """
+    browser, site = _run([True], egress=False, settle=3.0)
+    try:
+        assert len(browser.dialogs) == 1
+        assert _welcomes(browser)[0]["answer"] == ANSWER
+
+        browser.call("Page.navigate", url=f"{site.base}/parent.html")
+        browser.pump(3.0)
+        welcomes = _welcomes(browser)
+        assert welcomes, "the reloaded parent never granted a bridge"
+        assert len(browser.dialogs) == 1, "the reloaded parent asked again"
+        assert welcomes[-1]["answer"] == ANSWER
+    finally:
+        browser.close()
+        site.close()
+
+
 def test_a_refusal_covers_the_next_page_of_the_same_lesson():
     """The other direction of the same rule, and the one that must not slip: a
     refusal is not re-litigated by the next document either, so a bundle cannot

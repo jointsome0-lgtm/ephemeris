@@ -208,9 +208,16 @@ Semantics:
   warning that names that egress. A refusal omits `record` entirely — not an
   empty list — and leaves the rest of the welcome and the whole write
   direction untouched. Both answers are remembered for the **lesson**, keyed on
-  `lesson_uid` and dropped when the armed lesson changes or the /learn page
-  reloads (owner, 2026-08-08 — per-document meant one modal per page of a
+  `lesson_uid` (owner, 2026-08-08 — per-document meant one modal per page of a
   multi-page bundle, which taught the click rather than the question). The
+  store is dropped when the armed lesson changes, and it is mirrored into
+  `sessionStorage` because the lesson page tabs are ordinary `/learn` links
+  whose navigation reloads the parent — module memory alone would keep the
+  per-page interrogation under a new name. `localStorage` is deliberately not
+  used: a consent outliving the browsing session would answer for bundle
+  content the owner has never seen, since the study agent rewrites a lesson's
+  pages under the same uid. Unreadable or unrecognised stored state reads as
+  undecided, which costs a prompt and never invents a grant. The
   decision therefore reaches the pages of that one bundle and no further: only
   an armed document can ask, arming requires the fresh metadata identity, and
   the re-assert/quarantine path (§4) forces an off-manifest successor back
@@ -230,7 +237,11 @@ Semantics:
   with its own `ready` (§1, §2). A successor produced by a same-frame
   navigation, including one that delays its own `load` event behind a slow
   blocking subresource, never holds that port and cannot be handed one; it
-  gets its own handshake, its own question, on its own load. This retires the
+  gets its own handshake, on its own load. What it does *not* repeat is the
+  owner's question: delivery is per document, the §2.1 decision is per lesson,
+  and the two are different mechanisms — the successor must still arm and
+  announce for itself before an inherited `record` can be built for it, and an
+  unarmed or quarantined successor is answered with silence. This retires the
   read-back half of the §4 `WindowProxy` delivery residual (D5 L1) at its
   root — the earlier gate could only narrow it from automatic on every load to
   requiring an explicit yes. The alternative, a non-navigable isolation
@@ -238,7 +249,7 @@ Semantics:
   do, where the port change costs one `MessageChannel` in the child.
   The remaining cost is honest and known: a learner who declines sees the
   blank controls this feature exists to end, which is why the ask is once per
-  document rather than once per read.
+  lesson rather than once per read.
 - **Children:** insert every value as text; `answer` is learner-authored and
   `note` is agent-authored. Never resubmit a truncated `answer` as a new
   attempt — it would replace the full body with a fragment.
@@ -411,7 +422,7 @@ parent → child   { "op": "artifact.save", "request_id": "s1",
   `artifact-read-denied` without HTTP; acceptance covers later reads. Both
   answers last for the lesson, not the document — see §2.1 for the lifetime
   and what bounds it. The parent repeats fresh page/block validation after the
-  prompt and before the GET. Reloading /learn requires a new decision.
+  prompt and before the GET.
   Artifact bytes and the §2.1 read-back are decided separately but by one
   mechanism (`allowPrivateRead`), so neither answer speaks for the other kind.
 - Content is limited to 64 KiB raw UTF-8 bytes. `base_rev` is either
