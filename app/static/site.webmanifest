@@ -32,18 +32,6 @@
       ]
     },
     {
-      "name": "Focus",
-      "short_name": "Focus",
-      "url": "/focus",
-      "icons": [
-        {
-          "src": "/static/app-icon.svg",
-          "sizes": "any",
-          "type": "image/svg+xml"
-        }
-      ]
-    },
-    {
       "name": "Today",
       "short_name": "Today",
       "url": "/today",

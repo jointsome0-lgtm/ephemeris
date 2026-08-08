@@ -220,6 +220,15 @@ def delete_item(conn: sqlite3.Connection, item_id: int) -> None:
         n = conn.execute(
             "DELETE FROM checkins WHERE routine_item_id = ?", (item_id,)
         ).rowcount
+        # Focused time survives the habit it was spent on (schema v19, #75): the
+        # span really happened, so the session is detached rather than deleted.
+        # A run in flight has nothing to attribute yet and is simply unhooked.
+        conn.execute(
+            "UPDATE focus_sessions SET habit_id = NULL WHERE habit_id = ?", (item_id,)
+        )
+        conn.execute(
+            "UPDATE focus_runs SET habit_id = NULL WHERE habit_id = ?", (item_id,)
+        )
         conn.execute("DELETE FROM routine_items WHERE id = ?", (item_id,))
         append_event(conn, "routine_item_deleted", {
             "routine_item_id": item_id,

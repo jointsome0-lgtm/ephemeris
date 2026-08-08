@@ -944,6 +944,14 @@ FROM focus_sessions;
 DROP TABLE focus_sessions;
 ALTER TABLE focus_sessions_v19 RENAME TO focus_sessions;
 
+"""
+
+# The rest of v19 is CREATE ... IF NOT EXISTS throughout, so it runs on every
+# v19 upgrade regardless of how far a previous attempt got. `slot` is the
+# singleton: at most ONE timer may run, and saying so in the schema is what
+# makes it true under concurrent starts from two tabs — a SELECT-then-INSERT
+# check can be passed by both before either commits.
+_SCHEMA_V19_RUNS = """
 CREATE INDEX IF NOT EXISTS idx_focus_date ON focus_sessions(date);
 CREATE INDEX IF NOT EXISTS idx_focus_lesson ON focus_sessions(lesson_id);
 CREATE INDEX IF NOT EXISTS idx_focus_habit ON focus_sessions(habit_id);
@@ -952,6 +960,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_focus_token
 
 CREATE TABLE IF NOT EXISTS focus_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  slot INTEGER NOT NULL DEFAULT 0 UNIQUE CHECK(slot = 0),
   mode TEXT NOT NULL CHECK(mode IN ('countdown','open')),
   target_seconds INTEGER,
   note TEXT,
@@ -967,13 +976,17 @@ CREATE TABLE IF NOT EXISTS focus_runs (
 
 
 def _migrate_to_19(conn: sqlite3.Connection) -> None:
-    # The user_version gate runs this once per database; a hand-repaired one
-    # that already carries the new column set is converged, not crashed on
-    # (same shape as v17/v18). The rebuild must not run twice — it would copy
-    # rows into a table whose id sequence has already moved on.
+    # Two independently guarded halves, because `user_version` is bumped once
+    # the step returns: if an interrupted attempt had rebuilt the table but not
+    # yet created `focus_runs`, treating the new column as proof the whole
+    # script ran would strand the database on a schema the app cannot serve.
+    # The rebuild itself must not run twice — it would copy rows into a table
+    # whose id sequence has already moved on — so only that half is gated, on
+    # its own evidence, and the CREATE-IF-NOT-EXISTS half always runs.
     have = {r["name"] for r in conn.execute("PRAGMA table_info(focus_sessions)")}
     if "target_seconds" not in have:
         conn.executescript(_SCHEMA_V19)
+    conn.executescript(_SCHEMA_V19_RUNS)
 
 
 # Ordered, idempotent steps. A schema change must NEVER require deleting the

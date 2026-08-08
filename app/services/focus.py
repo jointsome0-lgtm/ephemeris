@@ -78,19 +78,36 @@ def _coerce_target(conn: sqlite3.Connection, kind: str, value) -> int | None:
     return target_id if row else None
 
 
-def _resolve_targets(conn: sqlite3.Connection, lesson_id=None, habit_id=None,
-                     task_id=None) -> dict:
-    """The three target columns for a write. At most one may survive coercion —
-    a span of attention is spent on one thing, and letting two through would
-    double-count it in every per-target total."""
-    resolved = {
-        "lesson_id": _coerce_target(conn, "lesson", lesson_id),
-        "habit_id": _coerce_target(conn, "habit", habit_id),
-        "task_id": _coerce_target(conn, "task", task_id),
-    }
+def _one_target(resolved: dict) -> dict:
+    """A span of attention is spent on one thing: letting two ids through would
+    double-count the same minutes in two per-target totals."""
     if sum(1 for v in resolved.values() if v is not None) > 1:
         raise FocusError("a timer attaches to one target at most")
     return resolved
+
+
+def _resolve_targets(conn: sqlite3.Connection, lesson_id=None, habit_id=None,
+                     task_id=None) -> dict:
+    """The three target columns for a write, coerced against what exists now."""
+    return _one_target({
+        "lesson_id": _coerce_target(conn, "lesson", lesson_id),
+        "habit_id": _coerce_target(conn, "habit", habit_id),
+        "task_id": _coerce_target(conn, "task", task_id),
+    })
+
+
+def _stored_targets(row: sqlite3.Row) -> dict:
+    """The targets a RUNNING timer already carries, taken as given.
+
+    Liveness was checked when the run started and must not be re-checked when
+    it ends: finishing a task, archiving a lesson or retiring a habit while the
+    timer is going is ordinary, and re-coercing would silently drop the target
+    exactly then — losing the attribution for the work that just caused it.
+    """
+    return _one_target({
+        "lesson_id": row["lesson_id"], "habit_id": row["habit_id"],
+        "task_id": row["task_id"],
+    })
 
 
 def pickable_targets(conn: sqlite3.Connection) -> dict:
@@ -243,17 +260,26 @@ def start_run(conn: sqlite3.Connection, mode: str, token: str, *,
     note = (note or "").strip() or None
     limits.check(note, limits.FOCUS_NOTE, "focus note", FocusError)
     targets = _resolve_targets(conn, lesson_id, habit_id, task_id)
-    if conn.execute("SELECT 1 FROM focus_runs LIMIT 1").fetchone():
+    # The `slot` column is a UNIQUE singleton, so the "only one timer" rule is
+    # the database's to enforce: two tabs starting at once would both clear a
+    # SELECT-then-INSERT check, and only one of them can win this INSERT.
+    try:
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO focus_runs (mode, target_seconds, note, started_at, "
+                "lesson_id, habit_id, task_id, client_token) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (mode, target_seconds, note, now_iso(), targets["lesson_id"],
+                 targets["habit_id"], targets["task_id"], token),
+            )
+            run_id = cur.lastrowid
+    except sqlite3.IntegrityError:
+        # Same race, seen from the other side: two clicks of the same button
+        # share a token, so the loser is a repeat of a start that succeeded.
+        raced = _run_by_token(conn, token)
+        if raced is not None:
+            return _run_view(raced)
         raise FocusError("a timer is already running")
-    with conn:
-        cur = conn.execute(
-            "INSERT INTO focus_runs (mode, target_seconds, note, started_at, "
-            "lesson_id, habit_id, task_id, client_token) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (mode, target_seconds, note, now_iso(), targets["lesson_id"],
-             targets["habit_id"], targets["task_id"], token),
-        )
-        run_id = cur.lastrowid
     row = conn.execute(_RUN_SELECT + "WHERE fs.id = ?", (run_id,)).fetchone()
     return _run_view(row)
 
@@ -321,8 +347,7 @@ def finish_run(conn: sqlite3.Connection, token: str) -> dict:
         conn, row["mode"], seconds,
         target_seconds=row["target_seconds"], note=row["note"],
         started_at=row["started_at"], token=token,
-        lesson_id=row["lesson_id"], habit_id=row["habit_id"], task_id=row["task_id"],
-        run_id=row["id"],
+        targets=_stored_targets(row), run_id=row["id"],
     )
     return get_session_view(conn, session_id)
 
@@ -334,10 +359,14 @@ def record_session(conn: sqlite3.Connection, mode: str, seconds, *,
                    target_seconds=None, note: str | None = None,
                    started_at: str | None = None, token: str | None = None,
                    lesson_id=None, habit_id=None, task_id=None,
+                   targets: dict | None = None,
                    run_id: int | None = None) -> int:
     """Persist one finished span; returns its id. Row, run deletion and event in
     one txn — the run must not outlive the session it became, and a session must
-    not exist without its ledger entry."""
+    not exist without its ledger entry.
+
+    `targets` is the already-resolved column set a finishing run hands over; any
+    other caller passes raw ids and gets them coerced against live rows."""
     if mode not in MODES:
         raise FocusError("unknown timer mode")
     try:
@@ -349,7 +378,8 @@ def record_session(conn: sqlite3.Connection, mode: str, seconds, *,
     seconds = min(seconds, MAX_SECONDS)
     note = (note or "").strip() or None
     limits.check(note, limits.FOCUS_NOTE, "focus note", FocusError)
-    targets = _resolve_targets(conn, lesson_id, habit_id, task_id)
+    if targets is None:
+        targets = _resolve_targets(conn, lesson_id, habit_id, task_id)
     ts = now_iso()
     with conn:
         cur = conn.execute(
