@@ -182,6 +182,24 @@ def _elapsed_seconds(row: sqlite3.Row, at: datetime | None = None) -> int:
     return max(0, min(int((at - started).total_seconds()) - paused, MAX_SECONDS))
 
 
+def _countdown_end(row: sqlite3.Row, target: int, now: datetime | None) -> str | None:
+    """When a finished countdown actually ran out, as an ISO stamp.
+
+    Only the totals are stored, not the pause history, so this reads as "the
+    moment `target` seconds of running time had passed". A clock that is paused
+    now was already past its target when it stopped, so the pause in flight is
+    the ceiling; otherwise now is. Either way the span never ends in the future.
+    """
+    started = _parse_iso(row["started_at"])
+    if started is None:
+        return None
+    ended = started + timedelta(seconds=target + int(row["paused_seconds"] or 0))
+    ceiling = _parse_iso(row["paused_at"]) or now
+    if ceiling is not None and ended > ceiling:
+        ended = ceiling
+    return ended.isoformat(timespec="seconds")
+
+
 def _run_view(row: sqlite3.Row | None, at: datetime | None = None) -> dict | None:
     """The whole state the drawer needs to render itself after any page load."""
     if row is None:
@@ -337,18 +355,36 @@ def finish_run(conn: sqlite3.Connection, token: str) -> dict:
         if recorded is not None:
             return recorded
         raise FocusError("that timer is no longer running")
-    seconds = _elapsed_seconds(row, _parse_iso(now_iso()))
-    if row["target_seconds"]:
-        seconds = min(seconds, int(row["target_seconds"]))
+    now = _parse_iso(now_iso())
+    seconds = _elapsed_seconds(row, now)
+    target = int(row["target_seconds"] or 0)
+    ended_at = None
+    if target and seconds >= target:
+        # The countdown ended when it ran out, not when the user came back to a
+        # sleeping laptop. Stamping the return time would credit yesterday's
+        # session to today and put it on the wrong bar of the Retro chart.
+        seconds = target
+        ended_at = _countdown_end(row, target, now)
     if seconds <= 0:
-        discard_run(conn, token)
+        # Stop pressed inside the same second as Start. The run stays: the drawer
+        # keeps its own copy either way, and discarding it here would leave a
+        # ticking timer the server no longer knows about.
         raise FocusError("nothing to record yet")
-    session_id = record_session(
-        conn, row["mode"], seconds,
-        target_seconds=row["target_seconds"], note=row["note"],
-        started_at=row["started_at"], token=token,
-        targets=_stored_targets(row), run_id=row["id"],
-    )
+    try:
+        session_id = record_session(
+            conn, row["mode"], seconds,
+            target_seconds=row["target_seconds"], note=row["note"],
+            started_at=row["started_at"], ended_at=ended_at, token=token,
+            targets=_stored_targets(row), run_id=row["id"],
+        )
+    except sqlite3.IntegrityError:
+        # A double-click on Stop: both calls read the run, one wrote the session.
+        # The token is the idempotency key, so the loser returns the winner's row
+        # rather than a 500.
+        recorded = session_by_token(conn, token)
+        if recorded is None:
+            raise
+        return recorded
     return get_session_view(conn, session_id)
 
 
@@ -357,7 +393,8 @@ def finish_run(conn: sqlite3.Connection, token: str) -> dict:
 
 def record_session(conn: sqlite3.Connection, mode: str, seconds, *,
                    target_seconds=None, note: str | None = None,
-                   started_at: str | None = None, token: str | None = None,
+                   started_at: str | None = None, ended_at: str | None = None,
+                   token: str | None = None,
                    lesson_id=None, habit_id=None, task_id=None,
                    targets: dict | None = None,
                    run_id: int | None = None) -> int:
@@ -381,12 +418,16 @@ def record_session(conn: sqlite3.Connection, mode: str, seconds, *,
     if targets is None:
         targets = _resolve_targets(conn, lesson_id, habit_id, task_id)
     ts = now_iso()
+    # `ended_at` is when the span finished, `created_at` when it was written
+    # down; they differ for a countdown finalised after the fact, and the day the
+    # session counts towards follows the former.
+    ended_at = ended_at or ts
     with conn:
         cur = conn.execute(
             "INSERT INTO focus_sessions (mode, seconds, target_seconds, note, date, "
             "started_at, ended_at, created_at, lesson_id, habit_id, task_id, client_token) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (mode, seconds, target_seconds, note, today_str(), started_at, ts, ts,
+            (mode, seconds, target_seconds, note, ended_at[:10], started_at, ended_at, ts,
              targets["lesson_id"], targets["habit_id"], targets["task_id"], token),
         )
         session_id = cur.lastrowid

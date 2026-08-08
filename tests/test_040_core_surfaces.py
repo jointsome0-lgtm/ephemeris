@@ -765,6 +765,26 @@ def test_core_surfaces(client, suite_state):
         "focus_session_recorded event appended"
     )
 
+    # ...and it is dated when it ran out, not when the user came back to it: the
+    # 25m ran out 15m ago, so ended_at is back then. A laptop reopened after
+    # midnight must not move yesterday's session onto today's bar.
+    cx = get_conn()
+    try:
+        ended = cx.execute("SELECT ended_at, created_at, date FROM focus_sessions "
+                           "WHERE id = ?", (body["recorded"]["id"],)).fetchone()
+    finally:
+        cx.close()
+    from datetime import datetime as _dtm
+
+    from app.db import now_iso as _ni
+    lag = (_dtm.fromisoformat(_ni()) - _dtm.fromisoformat(ended["ended_at"])).total_seconds()
+    assert 890 <= lag <= 910, (
+        "a capped countdown ends when it ran out, not when it was stopped"
+        + "  -- " + str(ended["ended_at"])
+    )
+    assert ended["date"] == ended["ended_at"][:10], "the day follows the end, not the write"
+    assert ended["created_at"] > ended["ended_at"], "written down after it happened"
+
     # a retried finish returns the same session instead of counting it twice
     again = c.post("/focus/timer/finish", data={"token": "tok-a"},
                    headers={"X-Partial": "1"}).json()
@@ -787,6 +807,20 @@ def test_core_surfaces(client, suite_state):
     assert ov["today_focus"]["value"] == 1 and ov["today_focus"]["unit"] == "h", (
         "an hour focused today, spelled in hours" + "  -- " + str(ov["today_focus"])
     )
+
+    # Stop pressed in the same second as Start: nothing to record, but the timer
+    # is still the server's — dropping it here would leave the drawer ticking
+    # against a run that no longer exists.
+    c.post("/focus/timer/start", data={"token": "tok-z", "mode": "open"},
+           headers={"X-Partial": "1"})
+    too_soon = c.post("/focus/timer/finish", data={"token": "tok-z"},
+                      headers={"X-Partial": "1"})
+    assert too_soon.status_code == 422, "an empty span is refused"
+    still = c.get("/focus/timer", headers={"X-Partial": "1"}).json()
+    assert still["run"] and still["run"]["token"] == "tok-z", (
+        "the run survives a too-early stop" + "  -- " + str(still["run"])
+    )
+    c.post("/focus/timer/discard", data={"token": "tok-z"}, headers={"X-Partial": "1"})
 
     # a mis-start is not focused time: discard leaves no session behind
     c.post("/focus/timer/start", data={"token": "tok-d", "mode": "open"},

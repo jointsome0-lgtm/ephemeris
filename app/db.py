@@ -915,7 +915,15 @@ def _migrate_to_18(conn: sqlite3.Connection) -> None:
 # `client_token` is the idempotency key on both: a retried start must not open
 # a second run, and a retried finish must return the session the first one
 # already recorded instead of double-counting the span.
+#
+# The rebuild is wrapped in its own transaction: `executescript` otherwise
+# commits statement by statement, so an interrupt between the staging INSERT and
+# the rename would leave `focus_sessions_v19` committed with `user_version` still
+# 18 — and the next boot would re-enter this script and die on "table
+# focus_sessions_v19 already exists", with no way in but manual repair.
 _SCHEMA_V19 = """
+BEGIN;
+
 CREATE TABLE focus_sessions_v19 (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   mode TEXT NOT NULL DEFAULT 'open' CHECK(mode IN ('countdown','open')),
@@ -944,6 +952,7 @@ FROM focus_sessions;
 DROP TABLE focus_sessions;
 ALTER TABLE focus_sessions_v19 RENAME TO focus_sessions;
 
+COMMIT;
 """
 
 # The rest of v19 is CREATE ... IF NOT EXISTS throughout, so it runs on every
@@ -982,7 +991,9 @@ def _migrate_to_19(conn: sqlite3.Connection) -> None:
     # script ran would strand the database on a schema the app cannot serve.
     # The rebuild itself must not run twice — it would copy rows into a table
     # whose id sequence has already moved on — so only that half is gated, on
-    # its own evidence, and the CREATE-IF-NOT-EXISTS half always runs.
+    # its own evidence, and the CREATE-IF-NOT-EXISTS half always runs. The
+    # rebuild carries its own transaction, so it either happened or it didn't;
+    # there is no half-rebuilt state for this guard to misread.
     have = {r["name"] for r in conn.execute("PRAGMA table_info(focus_sessions)")}
     if "target_seconds" not in have:
         conn.executescript(_SCHEMA_V19)
