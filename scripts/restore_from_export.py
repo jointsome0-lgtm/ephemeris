@@ -221,6 +221,11 @@ def _replay_routine(conn: sqlite3.Connection, record: Record) -> None:
         )
     elif record.type == "routine_item_deleted":
         conn.execute("DELETE FROM checkins WHERE routine_item_id = ?", (item_id,))
+        # Same detach as items.delete_item (schema v19): a target that already
+        # accrued focus time holds a foreign key, and a delivery replayed into a
+        # target that has some would otherwise roll back on the constraint.
+        conn.execute("UPDATE focus_sessions SET habit_id = NULL WHERE habit_id = ?", (item_id,))
+        conn.execute("UPDATE focus_runs SET habit_id = NULL WHERE habit_id = ?", (item_id,))
         conn.execute("DELETE FROM routine_items WHERE id = ?", (item_id,))
 
 

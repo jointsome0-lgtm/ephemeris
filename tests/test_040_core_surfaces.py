@@ -793,6 +793,16 @@ def test_core_surfaces(client, suite_state):
         "the retried finish appends no second event"
     )
 
+    # A spent token cannot open a second timer: it would sit in the single slot
+    # forever, since the session it already recorded owns the token a finish
+    # would need.
+    spent = c.post("/focus/timer/start", data={"token": "tok-a", "mode": "open"},
+                   headers={"X-Partial": "1"})
+    assert spent.status_code == 422, "a finished token is refused a new run"
+    assert c.get("/focus/timer", headers={"X-Partial": "1"}).json()["run"] is None, (
+        "and leaves no timer behind"
+    )
+
     # open-ended tracking: no target length, duration is whatever elapsed
     c.post("/focus/timer/start", data={"token": "tok-c", "mode": "open"},
            headers={"X-Partial": "1"})

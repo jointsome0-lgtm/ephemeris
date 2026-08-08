@@ -30,7 +30,7 @@
   let run = null;          // the server's last word on the running timer
   let syncedAt = 0;        // Date.now() when that word arrived
   let ticker = null;
-  let targetsLoaded = false;
+  let targetsLoading = null;  // the in-flight fetch, so two opens share one
   let mode = "countdown";
   let minutes = 25;
   let busy = false;
@@ -87,10 +87,15 @@
 
   // --- rendering -------------------------------------------------------------
 
+  // The server clamps a run at a day (focus.MAX_SECONDS): a laptop closed on
+  // Friday must not record a weekend. Showing more than it will ever record
+  // would just be a promise the Stop button then breaks.
+  const MAX_SECONDS = 24 * 60 * 60;
+
   function liveElapsed() {
     if (!run) return 0;
     const drift = run.paused ? 0 : Math.max(0, (Date.now() - syncedAt) / 1000);
-    return Math.floor(run.elapsed + drift);
+    return Math.min(MAX_SECONDS, Math.floor(run.elapsed + drift));
   }
 
   const clock = (s) => {
@@ -187,29 +192,40 @@
     if (opening && !run) (els.custom || els.start).focus();
   }
 
+  // Rebuilt on every open, not cached for the session: tasks are completed and
+  // habits archived without a page load, and offering one the server will
+  // silently refuse loses the attribution the picker just promised.
   async function loadTargets() {
-    if (targetsLoaded) return;
-    targetsLoaded = true;
-    try {
-      const r = await fetch("/focus/timer/targets", { headers: { "X-Partial": "1" } });
-      const data = await r.json();
-      if (!data.ok) return;
-      const LABEL = { lesson: "Lessons", habit: "Habits", task: "Tasks" };
-      Object.keys(LABEL).forEach((kind) => {
-        const rows = data.targets[kind] || [];
-        if (!rows.length) return;
-        const group = document.createElement("optgroup");
-        group.label = LABEL[kind];
-        rows.forEach((row) => {
-          const opt = document.createElement("option");
-          opt.value = kind + ":" + row.id;
-          opt.textContent = row.title;
-          group.appendChild(opt);
+    if (targetsLoading) return targetsLoading;
+    targetsLoading = (async () => {
+      try {
+        const r = await fetch("/focus/timer/targets", { headers: { "X-Partial": "1" } });
+        const data = await r.json();
+        if (!data.ok) return;
+        const keep = pendingTarget || els.target.value;
+        els.target.querySelectorAll("optgroup").forEach((g) => g.remove());
+        const LABEL = { lesson: "Lessons", habit: "Habits", task: "Tasks" };
+        Object.keys(LABEL).forEach((kind) => {
+          const rows = data.targets[kind] || [];
+          if (!rows.length) return;
+          const group = document.createElement("optgroup");
+          group.label = LABEL[kind];
+          rows.forEach((row) => {
+            const opt = document.createElement("option");
+            opt.value = kind + ":" + row.id;
+            opt.textContent = row.title;
+            group.appendChild(opt);
+          });
+          els.target.appendChild(group);
         });
-        els.target.appendChild(group);
-      });
-      if (pendingTarget) { els.target.value = pendingTarget; pendingTarget = null; }
-    } catch (_) { targetsLoaded = false; }
+        // A selection whose row is gone simply does not take, which is the
+        // honest outcome: the picker now shows what can still be focused on.
+        if (keep) els.target.value = keep;
+        pendingTarget = null;
+      } catch (_) { /* keep whatever options are already on screen */ }
+      finally { targetsLoading = null; }
+    })();
+    return targetsLoading;
   }
 
   // --- actions ---------------------------------------------------------------
@@ -298,8 +314,10 @@
     const btn = e.target.closest("[data-timer-target]");
     if (!btn) return;
     e.preventDefault();
+    // Applied now if the option is already there, and again once the refreshed
+    // list lands — the row can be clicked before the picker has ever loaded.
     pendingTarget = btn.getAttribute("data-timer-target");
-    if (targetsLoaded) { els.target.value = pendingTarget; pendingTarget = null; }
+    els.target.value = pendingTarget;
     if (drawer.hidden) setOpen(true, false); else loadTargets();
   });
 

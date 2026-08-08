@@ -272,6 +272,12 @@ def start_run(conn: sqlite3.Connection, mode: str, token: str, *,
     existing = _run_by_token(conn, token)
     if existing is not None:
         return _run_view(existing)
+    if session_by_token(conn, token) is not None:
+        # The token is spent: it already became a session. Opening a second run
+        # on it would create a timer that can never be recorded — the session's
+        # unique token would reject the finish, and the run would sit in the
+        # singleton slot blocking every later start.
+        raise FocusError("that timer already finished")
     if mode not in MODES:
         raise FocusError("unknown timer mode")
     target_seconds = _clean_target_seconds(mode, target_seconds)
