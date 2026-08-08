@@ -924,6 +924,15 @@ def _migrate_to_18(conn: sqlite3.Connection) -> None:
 _SCHEMA_V19 = """
 BEGIN;
 
+-- The id counter has to outlive the rebuild. A JSONL restore deliberately
+-- advances it past every session_id in the retained audit stream WITHOUT
+-- restoring the rows (focus_sessions is a partial table), so on such a database
+-- the counter is the only memory of those ids. Copying live rows and dropping
+-- the old table would throw it away, and the next session recorded would reuse
+-- an id the event log already refers to.
+CREATE TEMP TABLE focus_seq_v19 AS
+  SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'focus_sessions'), 0) AS seq;
+
 CREATE TABLE focus_sessions_v19 (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   mode TEXT NOT NULL DEFAULT 'open' CHECK(mode IN ('countdown','open')),
@@ -951,6 +960,16 @@ FROM focus_sessions;
 
 DROP TABLE focus_sessions;
 ALTER TABLE focus_sessions_v19 RENAME TO focus_sessions;
+
+-- ...and put it back, never lower than where the copied rows left it.
+-- sqlite_sequence carries no unique index, so this replaces the row by hand
+-- rather than trusting INSERT OR REPLACE to find it.
+UPDATE focus_seq_v19
+   SET seq = MAX(seq, COALESCE(
+     (SELECT seq FROM sqlite_sequence WHERE name = 'focus_sessions'), 0));
+DELETE FROM sqlite_sequence WHERE name = 'focus_sessions';
+INSERT INTO sqlite_sequence (name, seq) SELECT 'focus_sessions', seq FROM focus_seq_v19;
+DROP TABLE focus_seq_v19;
 
 COMMIT;
 """

@@ -1,0 +1,18 @@
+{# The Focus page is retired (#75) — nothing in this checkout routes here.
+   This file exists only for the restart window: merged templates reach the
+   RUNNING process immediately, and that process still holds its pre-#75
+   `GET /focus` handler in memory. Deleting the template outright would turn a
+   refresh of an already-open Focus tab into a 500 until the restart.
+
+   It uses no context variables, so the old handler's context renders it fine.
+   Delete this file after the first restart on a commit that has no /focus
+   route — see docs/system-design.md sec34. #}
+{% extends "base.html" %}
+{% block title %}Focus · Ephemeris{% endblock %}
+{% block content %}
+<header class="page-head"><h1>Focus</h1></header>
+<p class="empty">
+  The timer moved into a drawer you can open from any page — the clock icon in
+  the sidebar, or <strong>g</strong> then <strong>f</strong>. This page is gone.
+</p>
+{% endblock %}

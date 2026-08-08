@@ -2273,3 +2273,54 @@ def test_core_surfaces(client, suite_state):
             if name not in {"client", "suite_state"}
         }
     )
+
+
+def test_the_v19_rebuild_keeps_the_focus_session_id_counter(tmp_path):
+    """A JSONL restore advances `focus_sessions` in sqlite_sequence past every
+    session_id in the retained audit stream without restoring the rows — the
+    counter is the only memory those ids ever existed. Rebuilding the table for
+    v19 must not hand id 1 back out, or the ledger stops being unambiguous."""
+    from app import db
+
+    path = tmp_path / "pre-v19.sqlite"
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.executescript(
+            "CREATE TABLE lessons (id INTEGER PRIMARY KEY);"
+            "CREATE TABLE routine_items (id INTEGER PRIMARY KEY);"
+            "CREATE TABLE tasks (id INTEGER PRIMARY KEY);"
+            "CREATE TABLE focus_sessions ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  mode TEXT NOT NULL DEFAULT 'pomo' CHECK(mode IN ('pomo','stopwatch')),"
+            "  seconds INTEGER NOT NULL CHECK(seconds >= 0), note TEXT,"
+            "  date TEXT NOT NULL, started_at TEXT, ended_at TEXT NOT NULL,"
+            "  created_at TEXT NOT NULL, lesson_id INTEGER REFERENCES lessons(id));"
+            "INSERT INTO focus_sessions (id, mode, seconds, date, ended_at, created_at)"
+            " VALUES (7, 'pomo', 1500, '2026-01-01',"
+            "         '2026-01-01T10:00:00+03:00', '2026-01-01T10:00:00+03:00');"
+            "UPDATE sqlite_sequence SET seq = 500 WHERE name = 'focus_sessions';"
+        )
+        db._migrate_to_19(conn)
+        conn.commit()
+
+        seq = conn.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'focus_sessions'"
+        ).fetchone()
+        assert seq is not None and seq["seq"] == 500, (
+            "the rebuilt table keeps the counter the restore left behind"
+            + "  -- " + str(dict(seq) if seq else None)
+        )
+        row = conn.execute("SELECT id, mode, target_seconds FROM focus_sessions").fetchone()
+        assert (row["id"], row["mode"], row["target_seconds"]) == (7, "countdown", 1500), (
+            "a pomo was always a 25-minute countdown"
+        )
+        conn.execute(
+            "INSERT INTO focus_sessions (mode, seconds, date, ended_at, created_at)"
+            " VALUES ('open', 60, '2026-01-02', 't', 't')"
+        )
+        assert conn.execute(
+            "SELECT MAX(id) FROM focus_sessions"
+        ).fetchone()[0] == 501, "the next session lands past the retained ids"
+    finally:
+        conn.close()

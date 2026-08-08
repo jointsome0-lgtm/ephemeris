@@ -236,9 +236,14 @@
 
   async function startTimer() {
     if (busy || run) return;
+    // A row's timer button can open the drawer and be followed by Start before
+    // the picker's options arrive; until then the choice lives only in
+    // pendingTarget, and starting without it drops the attribution the button
+    // just promised.
+    if (targetsLoading) await targetsLoading;
     const params = { token: newToken(), mode: mode };
     if (mode === "countdown") params.target_seconds = String(minutes * 60);
-    const picked = els.target.value;
+    const picked = els.target.value || pendingTarget || "";
     if (picked) {
       const [kind, id] = picked.split(":");
       params[kind + "_id"] = id;

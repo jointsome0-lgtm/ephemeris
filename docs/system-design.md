@@ -2125,7 +2125,11 @@ thing being worked on, startable from wherever he already is.
 - **No Focus destination.** `GET /focus` is gone (404, not redirected); so are
   its rail entry, its mobile-nav slot and its palette *view*. The palette gained
   a `Focus timer` **action**, and the `g f` chord opens the drawer instead of
-  navigating.
+  navigating. `app/templates/focus.html` survives as an unrouted placeholder for
+  the restart window only: merged templates reach the running process at once,
+  and the pre-#75 worker still holds the old handler, which would 500 on a
+  missing template. It can be deleted after the first restart on a commit
+  without the route.
 - **A drawer on every surface.** `app/templates/_timer_drawer.html`, included
   once by `base.html`, docked bottom-right; open/minimized state persists in
   `al-timer-open` / `al-timer-min`, the same shape as the terminal drawer's
