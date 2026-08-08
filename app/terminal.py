@@ -925,6 +925,10 @@ async def _spawn_on_pty(
                 bundle_root=str(LESSONS_DIR),
                 private_root=str(LESSONS_DIR.parent),
                 private_masks=private_masks,
+                # Only the agent workspace carries one, and only that profile
+                # accepts one: this is what makes a reopened lesson terminal
+                # resumable (`claude --continue`) instead of amnesiac.
+                agent_home=workspace.get("agent_home") if workspace else None,
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,

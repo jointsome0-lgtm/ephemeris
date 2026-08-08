@@ -1107,11 +1107,36 @@ def test_002_ui_and_workspace(client, suite_state):
     _brief_before = [(path.stat().st_mtime_ns, path.read_bytes()) for path in _brief_paths]
     _learner_ws = lessons_svc.resolve_terminal_workspace(_lt["slug"])
     _brief_after = [(path.stat().st_mtime_ns, path.read_bytes()) for path in _brief_paths]
+    # Identical to the agent's view but for the agent home: the learner role
+    # runs no agents, so it is handed no memory directory to bind over $HOME.
     assert (
-        _learner_ws == ws_info and _brief_before == _brief_after
+        {k: v for k, v in _learner_ws.items() if k != "agent_home"}
+        == {k: v for k, v in ws_info.items() if k != "agent_home"}
+        and _learner_ws["agent_home"] is None
+        and _brief_before == _brief_after
         and lessons_svc.resolve_terminal_workspace("../evil") is None
         and lessons_svc.resolve_terminal_workspace("no-such-lesson-slug") is None
     ), "resolve_terminal_workspace validates the bundle without rewriting briefs"
+
+    # The agent home is real, per-lesson, outside the bundle, and persistent —
+    # the whole point of it (a reopened lesson terminal can `claude --continue`).
+    _agent_home = Path(ws_info["agent_home"])
+    _memory_probe = _agent_home / "claude" / "projects" / "probe.jsonl"
+    _memory_probe.parent.mkdir(parents=True, exist_ok=True)
+    _memory_probe.write_text("kept", encoding="utf-8")
+    assert (
+        _agent_home == lessons_svc.AGENT_HOMES_DIR / _lt["slug"]
+        and not _agent_home.is_relative_to(lessons_svc.LESSONS_DIR)
+        and all(
+            (_agent_home / name).is_dir()
+            for name in lessons_svc.AGENT_HOME_SUBDIRS
+        )
+    ), "prepare_terminal_workspace gives the lesson its own agent home outside the bundle"
+    assert (
+        lessons_svc.prepare_terminal_workspace(_lt["slug"])["agent_home"]
+        == str(_agent_home)
+        and _memory_probe.read_text(encoding="utf-8") == "kept"
+    ), "reopening a lesson terminal reuses the same agent home and keeps its memory"
     term_py = (ROOT / "app" / "terminal.py").read_text(encoding="utf-8")
     assert (
         "prepare_terminal_workspace" in term_py

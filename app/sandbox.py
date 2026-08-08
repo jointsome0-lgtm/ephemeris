@@ -145,6 +145,35 @@ _AGENT_HOME_MOUNTS = (
                "writable Go build cache for agent-driven builds"),
 )
 
+# The two directories under the blank home that hold the agents' OWN memory:
+# Claude's transcripts under `.claude/projects/`, Codex's sessions and
+# `history.jsonl`. Blank above, they die with the PTY — so `claude --continue`
+# and `codex resume` find nothing the next time a lesson terminal opens. A
+# caller that supplies a persistent agent home swaps each tmpfs for a bind of
+# that home's matching subdirectory; the login and configuration files bound
+# read-only AFTER them in the same tuple stay read-only either way.
+AGENT_STATE_SUBDIRS = {
+    f"{USER_HOME}/.claude": "claude",
+    f"{USER_HOME}/.codex": "codex",
+}
+
+
+def _agent_home_mounts(agent_home: str | None) -> tuple[_HomeMount, ...]:
+    """The agent profile's home mounts, ephemeral or backed by `agent_home`."""
+    if agent_home is None:
+        return _AGENT_HOME_MOUNTS
+    return tuple(
+        _HomeMount(
+            "--bind", mount.target,
+            "persistent per-lesson agent memory (transcripts and sessions)",
+            f"{agent_home}/{AGENT_STATE_SUBDIRS[mount.target]}",
+        )
+        if mount.flag == "--tmpfs" and mount.target in AGENT_STATE_SUBDIRS
+        else mount
+        for mount in _AGENT_HOME_MOUNTS
+    )
+
+
 _LEARNER_HOME_MOUNTS = (
     _HomeMount("--ro-bind-try", f"{USER_HOME}/go",
                "warm Go module cache for offline learner builds"),
@@ -211,6 +240,31 @@ def _pure_mask_root(root: str | os.PathLike[str]) -> str:
     return str(path)
 
 
+def _pure_agent_home(
+    agent_home: str | os.PathLike[str],
+    private_root: str | None,
+    bundle_root: str | os.PathLike[str],
+) -> str:
+    """Validate the persistent agent home without resolving or probing paths.
+
+    It must live under the private instance root — the same authority the
+    bundles answer to — and OUTSIDE the bundle root. A bundle is writable from
+    inside its own session, so an agent home reached through one would let a
+    lesson's files choose what gets bound over `$HOME` on the next open.
+    """
+    if private_root is None:
+        raise ValueError("a persistent agent home requires the private instance root")
+    path = Path(agent_home)
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("agent home must be absolute and without '..'")
+    private = Path(private_root)
+    if path == private or not path.is_relative_to(private):
+        raise ValueError("agent home must be a strict descendant of private_root")
+    if path.is_relative_to(Path(bundle_root)):
+        raise ValueError("agent home must be outside the bundle root")
+    return str(path)
+
+
 def _paths_overlap(left: Path, right: Path) -> bool:
     for child, parent in ((left, right), (right, left)):
         try:
@@ -249,6 +303,7 @@ def build_sandbox_argv(
     bundle_root: str | os.PathLike[str],
     private_root: str | os.PathLike[str] | None = None,
     private_masks: Sequence[str | os.PathLike[str]] = (),
+    agent_home: str | os.PathLike[str] | None = None,
     snapshot_fd: int | None = None,
     snapshot_name: str | None = None,
     module_cache_fd: int | None = None,
@@ -270,6 +325,12 @@ def build_sandbox_argv(
     )
     if profile == "lesson-runner" and private is None:
         raise ValueError("lesson-runner requires the private instance root")
+    if agent_home is not None and profile != "lesson-agent":
+        raise ValueError("a persistent agent home is valid only for lesson-agent")
+    home = (
+        _pure_agent_home(agent_home, private, bundle_root)
+        if agent_home is not None else None
+    )
     if profile == "lesson-runner" and (module_cache_fd is None or module_cache_fd < 0):
         raise ValueError("lesson-runner requires an open Go module-cache fd")
     if profile != "lesson-runner" and module_cache_fd is not None:
@@ -330,7 +391,7 @@ def build_sandbox_argv(
 
     mounts = [] if profile == "lesson-runner" else list(_COMMON_HOME_MOUNTS)
     if profile == "lesson-agent":
-        mounts.extend(_AGENT_HOME_MOUNTS)
+        mounts.extend(_agent_home_mounts(home))
     elif profile == "lesson-learner":
         mounts.extend(_LEARNER_HOME_MOUNTS)
     elif profile == "lesson-runner":
@@ -597,6 +658,7 @@ async def spawn_sandboxed(
     bundle_root: str | os.PathLike[str],
     private_root: str | os.PathLike[str] | None = None,
     private_masks: Sequence[str | os.PathLike[str]] = (),
+    agent_home: str | os.PathLike[str] | None = None,
     stdin: int | None = None,
     stdout: int | None = None,
     stderr: int | None = None,
@@ -636,6 +698,7 @@ async def spawn_sandboxed(
             profile, bundle_dir, bundle_root=bundle_root,
             private_root=private_root,
             private_masks=private_masks,
+            agent_home=agent_home,
             snapshot_fd=snapshot_fd,
             snapshot_name=snapshot_name,
             module_cache_fd=module_cache_fd,
