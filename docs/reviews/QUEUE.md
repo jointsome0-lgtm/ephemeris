@@ -24,6 +24,34 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
+- [ ] 2026-08-09 — pending squash of `lesson-build-workspace`, PR #164 —
+  `app/sandbox.py`, `app/services/bundle_schema.py`,
+  `app/services/lessons.py`, `app/terminal.py`,
+  `docs/learn-bundle-spec.md`, `docs/reviews/QUEUE.md`,
+  `tests/test_010_platform_ui.py`, `tests/test_050_sandbox_learning.py`,
+  `tests/test_060_role_runner.py` —
+  the `lesson-agent` profile can be given a build workspace.
+  `build_sandbox_argv` and `spawn_sandboxed` take a new `build_workspace`
+  argument; when set, `<build_workspace>/node_modules` is `--bind`
+  mounted at `<bundle>/node_modules`, emitted after the existing
+  `--bind` of the bundle and before the `--chdir` that ends the prefix.
+  `build_workspace` is rejected for `lesson-learner` and
+  `lesson-runner`, and rejected unless it is absolute, free of `..`, a
+  strict descendant of `private_root`, and outside `bundle_root` — the
+  same checks `agent_home` receives. One mount is added to
+  `_AGENT_HOME_MOUNTS`: `--bind-try` of `~/.bun`, placed after the
+  existing `--bind-try` entries for `~/go` and `~/.cache/go-build`. With
+  no `build_workspace` the agent argv differs from before only by that
+  mount; the learner and runner argv are unchanged.
+  `prepare_terminal_workspace` creates
+  `DATA_DIR/lesson-builds/<slug>/node_modules` and the `node_modules`
+  directory inside the bundle, both with `os.mkdir(0o700)`, moving a
+  symlink or non-directory at either name aside first, and returns the
+  workspace path in the workspace view; failure to create either raises
+  and the terminal is refused. `resolve_terminal_workspace` (the learner
+  path) returns `None` for it. `node_modules` is added to
+  `bundle_schema.RESERVED_NAMES` and to §2 of the bundle spec.
+
 ## Done
 
 - [x] 2026-08-08 — `8483d68` (squash of `agent-home-persist`, PR #158) —
