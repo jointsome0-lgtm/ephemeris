@@ -163,7 +163,11 @@
       dur.textContent = r.duration_label;
       const sub = document.createElement("span");
       sub.className = "tr-sub";
-      sub.textContent = r.target ? r.target.title : r.mode_label;
+      // What it was, most specific first: the thing focused on, then whatever
+      // the user typed about it. Without this the note is write-only.
+      const said = [r.target ? r.target.title : null, r.note].filter(Boolean);
+      sub.textContent = said.join(" · ") || r.mode_label;
+      sub.title = sub.textContent;
       const at = document.createElement("span");
       at.className = "tr-at";
       at.textContent = r.time_label;

@@ -804,7 +804,8 @@ def test_core_surfaces(client, suite_state):
     )
 
     # open-ended tracking: no target length, duration is whatever elapsed
-    c.post("/focus/timer/start", data={"token": "tok-c", "mode": "open"},
+    c.post("/focus/timer/start",
+           data={"token": "tok-c", "mode": "open", "note": "Invented deep work"},
            headers={"X-Partial": "1"})
     _backdate("tok-c", 35 * 60)
     open_done = c.post("/focus/timer/finish", data={"token": "tok-c"},
@@ -812,6 +813,10 @@ def test_core_surfaces(client, suite_state):
     assert 2100 <= open_done["recorded"]["seconds"] <= 2105, (
         "open tracking records the elapsed wall time"
         + "  -- " + str(open_done["recorded"]["seconds"])
+    )
+    assert open_done["recorded"]["note"] == "Invented deep work", (
+        "the note comes back with the span — the drawer's list is the only "
+        "surface left that can show what a session was about"
     )
     ov = open_done["overview"]
     assert ov["today_focus"]["value"] == 1 and ov["today_focus"]["unit"] == "h", (

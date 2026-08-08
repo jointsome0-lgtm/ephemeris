@@ -536,6 +536,9 @@ def _record_view(r: sqlite3.Row) -> dict:
         "seconds": r["seconds"],
         "time_label": _time_label(r["ended_at"]),
         "date": r["date"],
+        # The note is the only place a span says what it actually was. With the
+        # Focus page gone this list is the one surface that can show it back.
+        "note": r["note"],
         "target": _target_view(r),
     }
 
