@@ -318,3 +318,24 @@ def test_brief_points_the_study_agent_at_the_shelf():
     assert "built for the exact point stays the default" in template
     # The CDN ban and the hand-vendoring rule stay in force beside it.
     assert "loading anything from a CDN" in template
+
+
+def test_font_inlining_refuses_a_name_that_leaves_the_fonts_directory(tmp_path):
+    """The face names come out of a third-party stylesheet, and the derived CSS
+    is served to lesson pages — so a name that points elsewhere is refused
+    rather than read into public bytes."""
+    import scripts.build_lesson_libs_katex_css as builder
+
+    fonts = tmp_path / "fonts"
+    fonts.mkdir()
+    (fonts / "KaTeX_Main-Regular.woff2").write_bytes(b"woff2-bytes")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("do not serve me", encoding="utf-8")
+
+    ok = '@font-face{src:url(fonts/KaTeX_Main-Regular.woff2) format("woff2")}'
+    assert "data:font/woff2;base64," in builder.inline_fonts(ok, fonts)
+
+    for name in ("../secret.txt", str(secret), "sub/KaTeX_Main-Regular.woff2"):
+        css = f'@font-face{{src:url(fonts/{name}) format("woff2")}}'
+        with pytest.raises(SystemExit):
+            builder.inline_fonts(css, fonts)

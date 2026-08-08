@@ -29,6 +29,14 @@ from pathlib import Path
 # woff2 first, then the woff and ttf fallbacks after a comma.
 _FACE = re.compile(r'url\(fonts/([^)]+)\)\s*format\("([^"]+)"\)')
 
+# KaTeX names its faces plainly: `KaTeX_Main-Regular.woff2`. The name below is
+# read out of the stylesheet, which is third-party input, and `fonts_dir / name`
+# would follow it wherever it points — `../` walks out of the directory, and an
+# absolute path discards `fonts_dir` entirely. Either would copy an unrelated
+# app-user-readable file into a stylesheet we then serve. So the name has to
+# look like a font file or it is refused, never read.
+_FONT_NAME = re.compile(r"[A-Za-z0-9_-]+\.woff2")
+
 
 def inline_fonts(css: str, fonts_dir: Path) -> str:
     """Return `css` with woff2 faces inlined and other faces dropped."""
@@ -37,6 +45,8 @@ def inline_fonts(css: str, fonts_dir: Path) -> str:
         name, kind = match.group(1), match.group(2)
         if kind != "woff2":
             return "\x00"  # sentinel: this fallback is removed below
+        if not _FONT_NAME.fullmatch(name):
+            raise SystemExit(f"refusing to read a font named {name!r}")
         payload = base64.b64encode((fonts_dir / name).read_bytes()).decode("ascii")
         return f'url(data:font/woff2;base64,{payload}) format("woff2")'
 
