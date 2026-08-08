@@ -56,27 +56,35 @@ def test_shelf_matches_its_checksums():
 
 
 def test_the_quarantine_is_a_setting_not_a_promise():
-    """The shelf's refresh policy leans on npm refusing a young release rather
-    than on somebody comparing publish dates, so the setting that does the
-    refusing has to be in the repository, not in a shell history."""
+    """The shelf's refresh policy leans on the package manager refusing a young
+    release rather than on somebody comparing publish dates, so the setting that
+    does the refusing has to be in the repository, not in a shell history."""
     repo = lessons.LESSON_LIBS_DIR.parent.parent
-    npmrc = repo / ".npmrc"
-    assert npmrc.is_file(), "the repository carries no .npmrc"
-    # The key has to match exactly: npm ignores `min-release-age-typo` in
-    # silence, so a prefix match would keep passing over a dead gate.
+    bunfig = repo / "bunfig.toml"
+    assert bunfig.is_file(), "the repository carries no bunfig.toml"
+    # The key has to match exactly: bun ignores `minimumReleaseAgeTYPO` in
+    # silence (checked), so a prefix match would keep passing over a dead gate.
     setting = [
         value.strip()
-        for key, _, value in (line.partition("=") for line in npmrc.read_text("utf-8").splitlines())
-        if key.strip() == "min-release-age"
+        for key, _, value in (
+            line.partition("=") for line in bunfig.read_text("utf-8").splitlines()
+        )
+        if key.strip() == "minimumReleaseAge"
     ]
-    assert setting == ["30"], f"expected a 30-day npm quarantine, found {setting}"
-    # An npm older than 11.6 does not know the key and installs anyway.
+    # Seconds, not days — bun's unit differs from the npm setting it replaced.
+    assert setting == ["2592000"], f"expected a 30-day quarantine, found {setting}"
+    # A bun that predates the setting does not know the key and installs anyway.
     engines = json.loads((repo / "package.json").read_text("utf-8")).get("engines", {})
-    assert engines.get("npm") == ">=11.6.0", (
-        f"the npm that understands the gate is not declared: {engines}"
+    assert engines.get("bun") == ">=1.3.11", (
+        f"the bun that understands the gate is not declared: {engines}"
     )
+    # npm's gate is gone; a leftover .npmrc would look like a second, live one.
+    assert not (repo / ".npmrc").exists(), "a stale .npmrc survives the bun move"
+    assert not (repo / "package-lock.json").exists(), "a stale npm lockfile survives"
     readme = (lessons.LESSON_LIBS_DIR / "README.md").read_text(encoding="utf-8")
-    assert "min-release-age=30" in readme, "the refresh policy does not cite the gate"
+    assert "minimumReleaseAge = 2592000" in readme, (
+        "the refresh policy does not cite the gate"
+    )
 
 
 def test_katex_css_carries_its_fonts_inline():

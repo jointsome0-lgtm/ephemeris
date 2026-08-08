@@ -640,10 +640,10 @@ def test_bundle_attempts(client, suite_state):
     ), ".gitattributes marks both emitted runtimes as generated"
     _ci_workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
         encoding="utf-8")
-    _ci_npm = _ci_workflow.find("run: npm ci")
+    _ci_install = _ci_workflow.find("run: bun install --frozen-lockfile")
     _ci_verify = _ci_workflow.find("run: uv run pytest")
     assert (
-        0 <= _ci_npm < _ci_verify
+        0 <= _ci_install < _ci_verify
     ), "CI installs the pinned TypeScript toolchain before verification"
     # committed emit freshness: recompile to a scratch dir and byte-compare.
     # Clean CI installs the lockfile before this point. A local Python-only run
@@ -718,11 +718,11 @@ process.stdout.write(JSON.stringify([
                 "CI has the repo-local TypeScript compiler for emit freshness"
                 + "  -- "
                 + (
-                    "node_modules/.bin/tsc missing; run npm ci before verify.py"
+                    "node_modules/.bin/tsc missing; run bun install before the suite"
                 )
             )
         else:
-            print("[info] tsc not installed; emit-freshness check skipped (npm ci to enable)")
+            print("[info] tsc not installed; emit-freshness check skipped (bun install to enable)")
 
     # ---- D4: lesson attempts — authority, projection, endpoint semantics ----
     # (learn-bundle-spec.md §6 / §8, docs/lesson-attempts-api.md)
