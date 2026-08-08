@@ -43,6 +43,41 @@ def _rejected(exc: focus.FocusError) -> JSONResponse:
     return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
 
 
+@router.post("/focus/session")
+def post_focus_session_legacy(
+    request: Request,
+    mode: str = Form("pomo"),
+    seconds: int = Form(...),
+    note: str = Form(""),
+    lesson_id: str = Form(""),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """The pre-#75 write, kept for the restart window only.
+
+    The mirror of `focus.html`: that template protects a NEW checkout served by
+    an OLD process, this protects an OLD page still open in a browser after the
+    restart. Its `app.js` posts here when a Pomodoro completes, and a 404 would
+    silently drop a span the user really did spend. The old vocabulary is
+    translated once, here, rather than being kept alive in the schema.
+
+    Deletable together with `app/templates/focus.html`, once no pre-#75 page can
+    still be open — see docs/system-design.md sec34.
+    """
+    try:
+        sid = focus.record_session(
+            conn, "countdown" if mode == "pomo" else "open", seconds,
+            target_seconds=1500 if mode == "pomo" else None,
+            note=note, lesson_id=lesson_id,
+        )
+    except focus.FocusError as exc:
+        return _rejected(exc)
+    return JSONResponse({
+        "ok": True,
+        "overview": focus.overview(conn),
+        "record": focus.get_session_view(conn, sid),
+    })
+
+
 @router.get("/focus/timer")
 def get_focus_timer(request: Request, conn: sqlite3.Connection = Depends(get_db)):
     """The drawer's bootstrap: what is running right now, if anything."""

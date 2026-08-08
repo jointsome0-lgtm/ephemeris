@@ -267,8 +267,12 @@
     // pendingTarget, and starting without it drops the attribution the button
     // just promised.
     if (targetsLoading) await targetsLoading;
+    if (busy || run) return;  // a second click got here first while we waited
     const params = { token: newToken(), mode: mode };
-    if (mode === "countdown") params.target_seconds = String(minutes * 60);
+    // The length goes out as typed, capped by nobody here: the server owns the
+    // range, and quietly starting a different timer than the field shows would
+    // be worse than being told the number is out of bounds.
+    if (mode === "countdown") params.target_seconds = String(Math.round(minutes * 60));
     const picked = els.target.value || pendingTarget || "";
     if (picked) {
       const [kind, id] = picked.split(":");
@@ -320,9 +324,9 @@
     render();
   });
   els.custom.addEventListener("input", () => {
-    const v = parseInt(els.custom.value, 10);
-    if (v > 0) {
-      minutes = Math.min(v, 480);
+    const v = Number(els.custom.value);
+    if (Number.isFinite(v) && v > 0) {
+      minutes = v;
       els.lengths.querySelectorAll("button").forEach((x) => x.classList.remove("on"));
       render();
     }

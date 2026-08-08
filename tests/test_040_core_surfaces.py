@@ -937,6 +937,17 @@ def test_core_surfaces(client, suite_state):
     assert len(pulse) == 7 and pulse[-1]["focus_min"] == 70, (
         "week_pulse spans 7 days; today reflects 70m focus"
     )
+    # The pre-#75 write still answers, for a Focus tab left open across the
+    # restart: its app.js posts here when a Pomodoro completes, and a 404 would
+    # drop a span the user really did spend. The old words convert on the way in.
+    legacy = c.post("/focus/session", data={"mode": "pomo", "seconds": 1500},
+                    headers={"X-Partial": "1"})
+    assert legacy.status_code == 200, "the retired session write still records"
+    lrec = legacy.json()["record"]
+    assert lrec["mode"] == "countdown" and lrec["duration_label"] == "25m", (
+        "a pomo lands as the countdown it always was" + "  -- " + str(lrec)
+    )
+
     assert 'class="sky-strip"' in c.get("/today").text, (
         "/today carries the sky-strip constellation"
     )

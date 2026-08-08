@@ -2128,8 +2128,10 @@ thing being worked on, startable from wherever he already is.
   navigating. `app/templates/focus.html` survives as an unrouted placeholder for
   the restart window only: merged templates reach the running process at once,
   and the pre-#75 worker still holds the old handler, which would 500 on a
-  missing template. It can be deleted after the first restart on a commit
-  without the route.
+  missing template. `POST /focus/session`, the pre-#75 write, is kept for the
+  mirror case — an old page still open in a browser *after* the restart, whose
+  `app.js` posts a completed Pomodoro there. Both are deletable together, once
+  no pre-#75 page can still be open.
 - **A drawer on every surface.** `app/templates/_timer_drawer.html`, included
   once by `base.html`, docked bottom-right; open/minimized state persists in
   `al-timer-open` / `al-timer-min`, the same shape as the terminal drawer's
