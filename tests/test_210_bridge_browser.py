@@ -500,38 +500,95 @@ def test_an_allowed_read_back_is_what_the_page_can_carry_away():
         deadline = time.monotonic() + 10
         while not site.captured and time.monotonic() < deadline:
             browser.pump(0.5)
-        assert [query["value"][0] for query in site.captured] == [ANSWER]
-        assert site.captured[0]["note"] == [NOTE]
+        # Not a count: the page navigates itself away, the parent re-asserts
+        # the expected page, and every document of that chain inherits the
+        # lesson-scoped grant and repeats the egress. What is asserted is what
+        # the prompt is about — the bytes that leave are the learner's answer
+        # and the tutor's note.
+        assert site.captured
+        assert {query["value"][0] for query in site.captured} == {ANSWER}
+        assert {query["note"][0] for query in site.captured} == {NOTE}
     finally:
         browser.close()
         site.close()
 
 
-def test_consent_is_scoped_to_the_document_that_asked():
-    """A grant covers the document it was given for and nothing after it.
-
-    The frame is reloaded the way the app itself reloads it — a new version on
-    the metadata poll — and the successor document has to ask again. It is
-    refused this time, so the same lesson gets the answers on one load and
-    none on the next.
+def _reload_the_frame(browser: _Browser, site: _Site) -> list[dict]:
+    """Reload the frame the way the app itself does — a new version on the
+    metadata poll — and return the welcomes once a second document has landed.
     """
-    browser, site = _run([True, False], egress=False, settle=3.0)
+    site.version = "v2"
+    deadline = time.monotonic() + 15
+    while len(_welcomes(browser)) < 2 and time.monotonic() < deadline:
+        browser.pump(0.5)
+    welcomes = _welcomes(browser)
+    assert len(welcomes) >= 2, "the frame never loaded a second document"
+    return welcomes
+
+
+def test_a_grant_covers_the_next_page_of_the_same_lesson():
+    """The decision's unit is the lesson, not the document.
+
+    A bundle is many pages and the owner walks through them; asking again on
+    each one taught the click, not the question. So the successor document of
+    the same lesson inherits the answer and opens no second modal. Only ONE
+    answer is queued, so a second prompt would fail this test loudly rather
+    than silently reuse a stale one.
+    """
+    browser, site = _run([True], egress=False, settle=3.0)
     try:
         first = _welcomes(browser)
         assert first and first[0]["answer"] == ANSWER
         assert len(browser.dialogs) == 1
 
-        site.version = "v2"  # the parent-owned reload, through its own poll
-        deadline = time.monotonic() + 15
-        while len(_welcomes(browser)) < 2 and time.monotonic() < deadline:
-            browser.pump(0.5)
+        welcomes = _reload_the_frame(browser, site)
+        assert len(browser.dialogs) == 1, "the successor asked a second time"
+        assert welcomes[-1]["answer"] == ANSWER
+    finally:
+        browser.close()
+        site.close()
 
+
+def test_a_grant_survives_the_page_tab_navigation_it_exists_for():
+    """The navigation the owner actually performs, and the one that made the
+    per-document rule feel like a per-page interrogation.
+
+    A lesson's page tabs are ordinary `/learn?...&entry=…` links, so stepping
+    through a bundle reloads the whole parent document — module memory would
+    not survive it. This drives the same thing: the parent page is navigated
+    again, in the same browser tab, and the decision has to still be there.
+    """
+    browser, site = _run([True], egress=False, settle=3.0)
+    try:
+        assert len(browser.dialogs) == 1
+        assert _welcomes(browser)[0]["answer"] == ANSWER
+
+        browser.call("Page.navigate", url=f"{site.base}/parent.html")
+        browser.pump(3.0)
         welcomes = _welcomes(browser)
-        assert len(welcomes) >= 2, "the frame never loaded a second document"
-        assert len(browser.dialogs) == 2, "the successor document asked again"
-        second = welcomes[-1]
-        assert second["answer"] is None
-        assert ANSWER not in second["raw"] and NOTE not in second["raw"]
+        assert welcomes, "the reloaded parent never granted a bridge"
+        assert len(browser.dialogs) == 1, "the reloaded parent asked again"
+        assert welcomes[-1]["answer"] == ANSWER
+    finally:
+        browser.close()
+        site.close()
+
+
+def test_a_refusal_covers_the_next_page_of_the_same_lesson():
+    """The other direction of the same rule, and the one that must not slip: a
+    refusal is not re-litigated by the next document either, so a bundle cannot
+    reload its way to a modal loop until the owner clicks the wrong button."""
+    browser, site = _run([False], egress=False, settle=3.0)
+    try:
+        assert len(browser.dialogs) == 1
+        first = _welcomes(browser)
+        assert first and first[0]["answer"] is None
+
+        welcomes = _reload_the_frame(browser, site)
+        assert len(browser.dialogs) == 1, "the successor asked a second time"
+        last = welcomes[-1]
+        assert last["answer"] is None
+        assert ANSWER not in last["raw"] and NOTE not in last["raw"]
     finally:
         browser.close()
         site.close()

@@ -346,12 +346,56 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
   let editorInflight = new Set<string>();
   /* One store, one rule, for every private read the untrusted page can obtain:
    * saved artifact bytes and the record read-back both leave the parent only
-   * behind an owner decision. `null` = not asked yet; a denial is sticky for
-   * this document so hostile content cannot turn a read into a browser-dialog
-   * loop, and an acceptance covers that document's later reads of the same
-   * kind. Cleared on every load, so a reload decides again. */
+   * behind an owner decision. `null` = not asked yet; a denial is sticky so
+   * hostile content cannot turn a read into a browser-dialog loop, and an
+   * acceptance covers later reads of the same kind.
+   *
+   * The lifetime is the lesson, not the document (ABI §2.1), and this pair is
+   * only the working copy: `sessionStorage` under the lesson_uid holds the
+   * decision, because the learn.html page tabs are ordinary `/learn` links
+   * whose navigation reloads this parent. Not `localStorage` — a consent
+   * outliving the browsing session would answer for bundle content the owner
+   * has not seen, since the study agent rewrites a lesson's pages under the
+   * same uid. */
   let readConsent: { artifact: boolean | null; record: boolean | null } = {
     artifact: null, record: null,
+  };
+  /* The lesson `readConsent` currently holds the decision for. */
+  let consentLesson: string | null = null;
+  const CONSENT_KEY_PREFIX = "ephemeris.lesson-read-consent.";
+
+  /* Absent, unreadable or unrecognised reads as "not asked yet": one extra
+   * prompt, never an invented grant. */
+  const storedConsent = (
+    lesson: string,
+  ): { artifact: boolean | null; record: boolean | null } => {
+    const blank = { artifact: null, record: null };
+    try {
+      const raw = window.sessionStorage.getItem(CONSENT_KEY_PREFIX + lesson);
+      if (raw === null) return blank;
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed !== "object" || parsed === null) return blank;
+      const fields = parsed as { artifact?: unknown; record?: unknown };
+      return {
+        artifact: typeof fields.artifact === "boolean" ? fields.artifact : null,
+        record: typeof fields.record === "boolean" ? fields.record : null,
+      };
+    } catch {
+      return blank;
+    }
+  };
+
+  /* Best effort: a refused write degrades to a prompt per parent load, never
+   * to a silent grant. */
+  const rememberConsent = (
+    lesson: string,
+    consent: { artifact: boolean | null; record: boolean | null },
+  ): void => {
+    try {
+      window.sessionStorage.setItem(
+        CONSENT_KEY_PREFIX + lesson, JSON.stringify(consent),
+      );
+    } catch { /* nothing to do and nothing to report */ }
   };
   let runInflight = new Set<string>();
   let runStartToken: object | null = null;
@@ -382,7 +426,6 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     capabilities = [];
     attemptsInflight = new Set();
     editorInflight = new Set();
-    readConsent = { artifact: null, record: null };
     runInflight = new Set();
     runStartToken = null;
     ownedRuns = new Map();
@@ -700,6 +743,13 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     kind: "artifact" | "record",
     question: string,
   ): boolean => {
+    /* No armed identity is a torn-down state, not a lesson: refuse. */
+    const lesson = armed?.lesson_uid ?? null;
+    if (lesson === null) return false;
+    if (consentLesson !== lesson) {
+      consentLesson = lesson;
+      readConsent = storedConsent(lesson);
+    }
     const decided = readConsent[kind];
     if (decided !== null) return decided;
     let allowed: boolean;
@@ -709,22 +759,26 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
       allowed = false; // no dialog available is a refusal, never a grant
     }
     readConsent[kind] = allowed;
+    rememberConsent(lesson, readConsent);
     return allowed;
   };
 
+  /* The copy names the lesson because that is the grant's extent. */
   const allowArtifactRead = (): boolean => allowPrivateRead(
     "artifact",
-    "Allow this untrusted lesson page to read saved learner code? "
+    "Allow this lesson to read saved learner code? "
     + "A lesson page can navigate the preview and send code it reads to another site. "
-    + "Allow only if you trust this lesson.",
+    + "Your answer covers every page of this lesson until you close this tab — "
+    + "allow only if you trust it.",
   );
 
   const allowRecordRead = (): boolean => allowPrivateRead(
     "record",
-    "Allow this untrusted lesson page to read your recorded answers and the "
+    "Allow this lesson to read your recorded answers and the "
     + "tutor's notes for its questions? "
     + "A lesson page can navigate the preview and send what it reads to another site. "
-    + "Allow only if you trust this lesson.",
+    + "Your answer covers every page of this lesson until you close this tab — "
+    + "allow only if you trust it.",
   );
 
   const getArtifact = async (
@@ -1475,7 +1529,8 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
        * CSP. So this asks before attaching, exactly as the artifact READ path
        * asks before handing over saved code, and a refusal omits the field
        * whole — the rest of the welcome, and the write direction, are
-       * unaffected. Nothing to disclose is not a decision: an empty list is
+       * unaffected. Asked once per lesson, not per document (see
+       * `readConsent`). Nothing to disclose is not a decision: an empty list is
        * attached unasked, so opening a lesson nobody has answered yet does
        * not open a modal to hand over nothing. */
       let attach = true;
