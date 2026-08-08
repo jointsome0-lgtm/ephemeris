@@ -34,6 +34,8 @@
   let mode = "countdown";
   let minutes = 25;
   let busy = false;
+  let issueSeq = 0;        // every request takes a ticket when it is sent
+  let appliedSeq = 0;      // the ticket of the state currently on screen
   let pendingTarget = null;  // a target picked from a row before the list loaded
 
   const toast = (msg) => (window.alUI && window.alUI.toast
@@ -43,6 +45,7 @@
 
   async function call(path, params) {
     busy = true;
+    const ticket = ++issueSeq;
     try {
       const r = await fetch(path, {
         method: "POST",
@@ -52,7 +55,7 @@
       });
       const data = await r.json();
       if (!data.ok) { showError(data.error || "could not save"); return null; }
-      absorb(data);
+      absorb(data, ticket);
       return data;
     } catch (_) {
       // A pre-#75 process still serving these pages has no /focus/timer route;
@@ -65,14 +68,21 @@
   }
 
   async function sync() {
+    if (busy) return;  // a write is in flight; its own answer is the newer one
+    const ticket = ++issueSeq;
     try {
       const r = await fetch("/focus/timer", { headers: { "X-Partial": "1" } });
       if (!r.ok) return;
-      absorb(await r.json());
+      absorb(await r.json(), ticket);
     } catch (_) { /* offline: keep interpolating from the last sync */ }
   }
 
-  function absorb(data) {
+  // Tickets are handed out in send order. A read issued before a write can
+  // still answer after it — describing a world without the run the user just
+  // started — so an older answer loses instead of erasing the newer one.
+  function absorb(data, ticket) {
+    if (ticket <= appliedSeq) return;
+    appliedSeq = ticket;
     run = data.run || null;
     syncedAt = Date.now();
     if (data.overview) {
