@@ -24,9 +24,10 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-08-08 — `df891df` on `agent-home-persist`, PR #158 —
+- [ ] 2026-08-08 — `8483d68` (squash of `agent-home-persist`, PR #158) —
   `app/sandbox.py`, `app/services/lessons.py`, `app/terminal.py`,
-  `docs/backup-restore.md`, `tests/test_010_platform_ui.py`,
+  `docs/backup-restore.md`, `docs/reviews/QUEUE.md`,
+  `tests/test_010_platform_ui.py`,
   `tests/test_050_sandbox_learning.py` —
   the `lesson-agent` profile can be given a persistent agent home.
   `build_sandbox_argv` and `spawn_sandboxed` take a new `agent_home`
