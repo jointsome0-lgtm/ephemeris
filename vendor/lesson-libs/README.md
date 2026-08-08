@@ -93,8 +93,8 @@ Notes from the eyeball pass at retrieval time:
   a minified upstream artifact for an API that pages, having no network, have
   little reason to call.
 - Newer releases existed at retrieval time (KaTeX 0.18.1, mermaid 11.16.1) and
-  were skipped by the quarantine rule below — which npm's own resolver, under
-  the `.npmrc` gate, would have skipped identically.
+  were skipped by the quarantine rule below — which the resolver, under the
+  `bunfig.toml` gate, would have skipped identically.
 
 ## Refresh policy
 
@@ -103,71 +103,49 @@ Manual and rare. When bumping or adding a library:
 1. **Quarantine**: only take a release that is **at least 30 days old** — a
    cheap filter against a freshly compromised publish, not the control. Do not
    compare dates by hand; let the package manager refuse. The repository's
-   `.npmrc` sets `min-release-age=30`; resolve the version in a scratch
-   directory that carries that file, and npm both picks the newest release
-   outside the window and errors on a pin inside it:
+   `bunfig.toml` sets `minimumReleaseAge = 2592000` (seconds, not days), and
+   under it bun both picks the newest release outside the window and errors on
+   a pin inside it:
 
    ```
-   scratch=$(mktemp -d) && cp .npmrc "$scratch"/ && cd "$scratch" && : > empty.npmrc
+   scratch=$(mktemp -d) && cp bunfig.toml "$scratch"/ && cd "$scratch"
+   echo '{"name":"scratch","private":true}' > package.json
 
-   # a built environment, so only this project's .npmrc speaks: no ~/.npmrc,
-   # no global file, no npm_config_* variables inherited from the shell
-   env -i HOME="$HOME" PATH="$PATH" ${https_proxy:+https_proxy="$https_proxy"} \
-       npm_config_userconfig="$PWD/empty.npmrc" npm_config_globalconfig=/dev/null \
-       bash -c '
-         npm init -y >/dev/null
-         # liveness check, then resolve — chained, so a dead gate resolves nothing
-         npm config list | grep -q "^before = \"$(date -u -d "30 days ago" +%F)T" \
-           && npm install --package-lock-only <name> \
-           && npm ls --package-lock-only <name>'
+   # 1. liveness: pin the newest published version. A live gate REFUSES it,
+   #    naming itself. If it installs, read its publish date below before
+   #    trusting anything — the gate may simply be dead.
+   bun add "<name>@$(bun info <name> version)"
+
+   # 2. resolve without a pin: the newest release outside the window
+   bun add <name> && bun pm ls
    ```
 
-   Two details that quietly turn this into a no-op if you skip them. The `cp`
-   is load-bearing: npm reads a project `.npmrc` from the directory it runs
-   in, so a bare `mktemp -d` leaves the gate behind in the repository and the
-   resolver happily hands back a release published yesterday. And the `grep` is
-   the gate's own liveness check — npm below 11.6 does not know the key, warns
-   `Unknown project config "min-release-age"` and carries on unquarantined. npm
-   implements the setting by translating it into a cutoff date, so a live gate
-   is exactly a `before = "<today − 30 days>"` line in `npm config list`; no
-   such line, no quarantine, and the answer is a newer npm rather than a
-   version picked by eye.
-
-   The check matches the *date*, not merely the key, because `before` has an
-   independent life: a cutoff inherited from `~/.npmrc` or the environment
-   would print the same line while admitting anything published before some
-   unrelated date. (An npm that does understand `min-release-age` refuses the
-   combination outright — `--min-release-age cannot be provided when using
-   --before` — so that reading is aimed at the old-npm case, where the
-   inherited value silently wins.) And the `&&` chain is what makes the check a
-   gate rather than a remark: when it fails nothing is resolved, where three
-   separate lines would have sailed on into an unquarantined install.
-
-   The `env -i` exists because a personal npm config can weaken the gate in
-   more ways than one date check can spot — `min-release-age-exclude` exempts
-   named packages from the age rule outright, and every setting also travels as
-   an `npm_config_*` variable, which npm matches case-insensitively, so
-   clearing a list of names is a game you lose eventually. Building the
-   environment instead of pruning it leaves exactly one source of
-   configuration: the `.npmrc` just copied in. Verified against a hostile
-   personal config (`min-release-age-exclude=katex`, `before=2099-01-01`, plus
-   `Npm_Config_before` and an `npm_config_registry` override in the
-   environment): inside it `npm config list` shows nothing but the generated
-   cutoff, and `katex` resolves to 0.17.0 rather than the still-quarantined
-   0.18.1.
-
-   `npm ls` needs `--package-lock-only` too: `--package-lock-only` on the
-   install writes the lockfile without populating `node_modules`, and a plain
-   `npm ls` reports what is installed — an empty tree and a nonzero exit.
-
    ```
-   npm error notarget No matching version found for mermaid@11.16.1
-     with a date before 7/7/2026
+   error: No version matching "katex" found for specifier "0.18.2"
+     (blocked by minimum-release-age: 2592000 seconds)
    ```
 
-   is what a too-fresh pin looks like. (`bun` has the same gate as
-   `--minimum-release-age=<seconds>`.) Note that `npm ci` deliberately ignores
-   this and replays the lockfile as committed.
+   is what a live gate refusing a too-fresh pin looks like. If step 1 succeeds
+   instead, `bun info <name> time` prints every version's publish date — check
+   the one you just installed against today before concluding the gate worked;
+   a newest release that is already older than 30 days proves nothing either
+   way.
+
+   The `cp` is load-bearing: bun reads a project `bunfig.toml` from the
+   directory it runs in, so a bare `mktemp -d` leaves the gate behind in the
+   repository and the resolver happily hands back a release published
+   yesterday. A misspelled key is ignored in silence (checked:
+   `minimumReleaseAgeTYPO` installs unquarantined without a word), which is why
+   the liveness step is a behavioural check rather than a look at the file. A
+   *wrongly typed* value is the one mistake bun refuses outright.
+
+   Two ways the gate can be weakened that the check above will catch, since it
+   exercises the real resolver: `minimumReleaseAgeExcludes` exempts named
+   packages from the age rule, and a `~/.bunfig.toml` merges in underneath the
+   project file. Neither exists on this machine today.
+
+   Note that `bun install --frozen-lockfile` deliberately ignores all of this
+   and replays the lockfile as committed — which is what CI runs.
 2. **Pin** the exact version — never a range, never `latest`.
 3. **Fetch** the official npm tarball and check its `sha512` against
    `dist.integrity` from `https://registry.npmjs.org/<name>/<version>` before

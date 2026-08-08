@@ -1,0 +1,28 @@
+# Supply-chain quarantine: never resolve a release younger than 30 days.
+#
+# The lesson-libs shelf (vendor/lesson-libs/README.md) has carried this rule as
+# prose since #146 — "only take releases >= 30 days old" — which meant somebody
+# comparing publish dates by hand. The package manager can enforce it: with
+# `minimumReleaseAge` set, resolution skips a version published inside the
+# window and picks the newest one outside it instead. Age is the filter; the
+# lockfile and the shelf's recorded sha256 remain the control.
+#
+# The value is in SECONDS, unlike npm's `min-release-age`, which counted days.
+# 2592000 = 30 * 24 * 60 * 60.
+#
+# This binds `bun install <pkg>`/`bun add`/`bun update` — the moment a new
+# version actually enters the tree. It deliberately does NOT bind
+# `bun install --frozen-lockfile`, which replays an already-reviewed lockfile;
+# CI keeps installing exactly what is committed, at full speed.
+#
+# A bun that predates the setting ignores the key in silence, exactly as an old
+# npm ignored `min-release-age` — so the setting is not self-enforcing and
+# `engines.bun` in package.json records the version it was verified against
+# (1.3.11). A *misspelled* key is likewise ignored without a word; a wrongly
+# typed value is the only mistake bun refuses outright. The place the gate must
+# be proven live is the shelf refresh — vendor/lesson-libs/README.md step 1
+# checks it there, before resolving anything.
+#
+# No credentials belong in this file (AGENTS.md, public data boundary).
+[install]
+minimumReleaseAge = 2592000
