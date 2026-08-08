@@ -37,6 +37,10 @@ STATUS_LABELS = {
     "studied": "Studied",
 }
 LESSONS_DIR = DATA_DIR / "lessons"
+# Where each lesson's agent memory outlives its PTY. A sibling of the bundles,
+# never a directory inside one: the sandbox binds these over `$HOME`, and a
+# bundle is writable from inside its own session (see _ensure_agent_home).
+AGENT_HOMES_DIR = DATA_DIR / "agent-homes"
 DEFAULT_ENTRY = bundle_schema.DEFAULT_ENTRY
 MANIFEST_NAME = "lesson.json"
 
@@ -2035,6 +2039,43 @@ def _ensure_settings_dir(lesson_dir: Path) -> Path:
     return path
 
 
+AGENT_HOME_SUBDIRS = ("claude", "codex")
+
+
+def _ensure_agent_home(slug: str) -> Path:
+    """Return this lesson's persistent agent home, creating it if needed.
+
+    What lives here is the agents' own memory — Claude's transcripts under
+    `.claude/projects/`, Codex's sessions and `history.jsonl` — which the
+    sandbox binds over the otherwise blank home so that reopening a lesson
+    terminal can still `claude --continue` the conversation the last PTY left
+    behind. Before this, both directories were tmpfs and every reopen started
+    an agent with no past.
+
+    Deliberately a sibling of the bundles rather than a directory inside one:
+    the bundle is writable from inside its own session, and an agent home
+    reached through it would let a lesson's files pick what gets mounted over
+    `$HOME` next time (`sandbox._pure_agent_home` refuses that layout outright).
+    Same posture as :func:`_ensure_settings_dir` on each name — a link or
+    special file is moved aside rather than followed — and the same failure
+    contract: an OSError here becomes "no workspace", so the caller refuses to
+    open a shell rather than quietly opening one with no memory.
+    """
+    if not _SLUG_RE.match(slug or ""):
+        raise LessonError("invalid lesson slug")
+    AGENT_HOMES_DIR.mkdir(parents=True, exist_ok=True)
+    home = AGENT_HOMES_DIR / slug
+    for path in (home, *(home / name for name in AGENT_HOME_SUBDIRS)):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            _preserve_foreign(path)  # incl. a dangling link: exists() follows, says False
+        try:
+            os.mkdir(path, 0o700)
+        except FileExistsError:
+            if path.is_symlink() or not path.is_dir():
+                raise NotADirectoryError(f"{path.name} is not a directory")
+    return home
+
+
 # --- lesson-libs shelf (#146) ------------------------------------------------
 #
 # Lesson pages must work offline (the `interactive-local-v1` CSP allows 'self'
@@ -2284,13 +2325,21 @@ def _resolve_terminal_lesson(
     return slug, lesson, lesson_dir
 
 
-def _workspace_view(slug: str, lesson: dict, lesson_dir: Path) -> dict:
+def _workspace_view(
+    slug: str,
+    lesson: dict,
+    lesson_dir: Path,
+    agent_home: Path | None = None,
+) -> dict:
     """What a PTY role learns about the lesson it opens on.
 
     `id` and `uid` are the DB's own identity for the bundle: the terminal binds
     the lesson-agent session's assessment capability to them (S-DESIGN D-S2-2),
     which is why they travel with the workspace rather than being re-resolved
     from the slug on the websocket path.
+
+    `agent_home` is None for every role but lesson-agent: it is the only role
+    that runs agents, so it is the only one whose home carries their memory.
     """
     return {
         "slug": slug,
@@ -2298,6 +2347,7 @@ def _workspace_view(slug: str, lesson: dict, lesson_dir: Path) -> dict:
         "dir": str(lesson_dir),
         "id": lesson["id"],
         "uid": lesson["uid"],
+        "agent_home": str(agent_home) if agent_home is not None else None,
     }
 
 
@@ -2396,12 +2446,17 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
     symlink-redirected bundle dir, or any DB/filesystem error. Resolution and
     bundle safety are shared with the learner's no-regeneration entry point.
     Briefs are atomically replaced without following destination links.
+
+    The agent home is prepared here too, and on the same terms: this is the
+    only role that runs agents, and a home that cannot be created is a refusal
+    rather than a shell whose agents silently forget everything again.
     """
     try:
         resolved = _resolve_terminal_lesson(slug)
         if resolved is None:
             return None
         slug, lesson, lesson_dir = resolved
+        agent_home = _ensure_agent_home(slug)
         read = _ensure_bundle_manifest(lesson)
         # Before the brief, unlike the two reconciles below: STATE quotes the
         # open questions but sends the tutor to `attempts.jsonl` for the rest
@@ -2428,7 +2483,7 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
     seed_lesson_libs(lesson_dir)
     _reconcile_assessment_projection(lesson)
     _retire_foreign_run_projection(lesson)
-    return _workspace_view(slug, lesson, lesson_dir)
+    return _workspace_view(slug, lesson, lesson_dir, agent_home)
 
 
 def create_lesson(conn: sqlite3.Connection, title: str, source_url: str | None = None) -> int:

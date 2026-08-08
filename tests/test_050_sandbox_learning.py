@@ -105,6 +105,74 @@ def test_sandbox_learning(client, suite_state):
     ), (
         "E1 argv: lesson-agent exact home binds and ephemeral CLI state"
     )
+
+    # A persistent agent home swaps exactly the two ephemeral state directories
+    # for binds of its own subdirectories, so `claude --continue` / `codex
+    # resume` still find the last conversation after the PTY is gone. Every
+    # other mount — including the read-only login material layered on top of
+    # them — is untouched, and the blank $HOME above them stays blank.
+    _sb_home = "/tmp/agent-homes/some-lesson"
+    _sb_agent_persist = _sandbox.build_sandbox_argv(
+        "lesson-agent", _sb_bundle, bundle_root=_sb_root,
+        private_root="/tmp", agent_home=_sb_home)
+    assert (
+        set(_sb_mounts(_sb_agent_persist, "--bind")) == {
+          (_sb_bundle, _sb_bundle),
+          (f"{_sb_home}/claude", "/home/aina/.claude"),
+          (f"{_sb_home}/codex", "/home/aina/.codex"),
+        }
+        and set(_sb_mounts(_sb_agent_persist, "--ro-bind-try")) == _sb_agent_try_ro
+        and {_sb_agent_persist[i + 1]
+             for i, x in enumerate(_sb_agent_persist) if x == "--tmpfs"} == {
+          "/tmp", "/home/aina",
+        }
+        # The persistent binds land where the tmpfs entries were: before the
+        # read-only credentials, which must keep winning over them.
+        and all(
+          _sb_agent_persist.index(f"{_sb_home}/{name}")
+          < _sb_agent_persist.index(f"/home/aina/.{cli}/{leaf}")
+          for name, cli, leaf in (
+            ("claude", "claude", ".credentials.json"),
+            ("codex", "codex", "auth.json"),
+          )
+        )
+    ), "E1 argv: a persistent agent home replaces only the ephemeral state dirs"
+    assert (
+        set(_AGENT_TMPFS_TARGETS := {
+          m.target for m in _sandbox._AGENT_HOME_MOUNTS if m.flag == "--tmpfs"
+        }) == set(_sandbox.AGENT_STATE_SUBDIRS)
+    ), (
+        "E1 argv: every ephemeral agent state dir has a persistent counterpart "
+        "— a new tmpfs added without one would silently stay amnesiac"
+    )
+    for _sb_bad_home, _sb_bad_private, _sb_bad_why in (
+        (_sb_home, None, "no private root to answer to"),
+        ("relative/home", "/tmp", "not absolute"),
+        ("/tmp/../etc", "/tmp", "escapes via '..'"),
+        ("/tmp", "/tmp", "is the private root itself"),
+        ("/var/elsewhere", "/tmp", "outside the private root"),
+        (f"{_sb_bundle}/home", "/tmp", "inside the writable bundle root"),
+    ):
+        try:
+            _sandbox.build_sandbox_argv(
+                "lesson-agent", _sb_bundle, bundle_root=_sb_root,
+                private_root=_sb_bad_private, agent_home=_sb_bad_home)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                f"E1 argv: agent home {_sb_bad_why} must be refused")
+    for _sb_other in ("lesson-learner", "lesson-runner"):
+        try:
+            _sandbox.build_sandbox_argv(
+                _sb_other, _sb_bundle, bundle_root=_sb_root,
+                private_root="/tmp", agent_home=_sb_home,
+                **({"module_cache_fd": 7} if _sb_other == "lesson-runner" else {}))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                f"E1 argv: {_sb_other} must refuse a persistent agent home")
     assert (
         set(_sb_mounts(_sb_learner, "--ro-bind")) == {
           ("/", "/"),
