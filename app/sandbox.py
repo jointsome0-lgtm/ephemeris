@@ -143,6 +143,8 @@ _AGENT_HOME_MOUNTS = (
                "writable Go module cache for agent-driven dependency work"),
     _HomeMount("--bind-try", f"{USER_HOME}/.cache/go-build",
                "writable Go build cache for agent-driven builds"),
+    _HomeMount("--bind-try", f"{USER_HOME}/.bun",
+               "writable bun package cache for agent-driven dependency work"),
 )
 
 # The two directories under the blank home that hold the agents' OWN memory:
@@ -156,6 +158,12 @@ AGENT_STATE_SUBDIRS = {
     f"{USER_HOME}/.claude": "claude",
     f"{USER_HOME}/.codex": "codex",
 }
+
+# The one name a build workspace occupies, on both sides of its bind: the
+# subdirectory it keeps and the path it appears at inside the bundle. Node
+# resolution only looks for this name, so naming it once keeps the mount and
+# the bundle spec's reserved entry from drifting apart.
+BUILD_WORKSPACE_MOUNT = "node_modules"
 
 
 def _agent_home_mounts(agent_home: str | None) -> tuple[_HomeMount, ...]:
@@ -265,6 +273,31 @@ def _pure_agent_home(
     return str(path)
 
 
+def _pure_build_workspace(
+    build_workspace: str | os.PathLike[str],
+    private_root: str | None,
+    bundle_root: str | os.PathLike[str],
+) -> str:
+    """Validate the persistent build workspace on the agent home's terms.
+
+    Same authority rules as :func:`_pure_agent_home`, for the same reason: this
+    directory is bound over a path *inside* the writable bundle, so a workspace
+    reached through a bundle would let one lesson's files choose what appears
+    under another's `node_modules` on the next open.
+    """
+    if private_root is None:
+        raise ValueError("a build workspace requires the private instance root")
+    path = Path(build_workspace)
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("build workspace must be absolute and without '..'")
+    private = Path(private_root)
+    if path == private or not path.is_relative_to(private):
+        raise ValueError("build workspace must be a strict descendant of private_root")
+    if path.is_relative_to(Path(bundle_root)):
+        raise ValueError("build workspace must be outside the bundle root")
+    return str(path)
+
+
 def _paths_overlap(left: Path, right: Path) -> bool:
     for child, parent in ((left, right), (right, left)):
         try:
@@ -304,6 +337,7 @@ def build_sandbox_argv(
     private_root: str | os.PathLike[str] | None = None,
     private_masks: Sequence[str | os.PathLike[str]] = (),
     agent_home: str | os.PathLike[str] | None = None,
+    build_workspace: str | os.PathLike[str] | None = None,
     snapshot_fd: int | None = None,
     snapshot_name: str | None = None,
     module_cache_fd: int | None = None,
@@ -330,6 +364,12 @@ def build_sandbox_argv(
     home = (
         _pure_agent_home(agent_home, private, bundle_root)
         if agent_home is not None else None
+    )
+    if build_workspace is not None and profile != "lesson-agent":
+        raise ValueError("a build workspace is valid only for lesson-agent")
+    workspace = (
+        _pure_build_workspace(build_workspace, private, bundle_root)
+        if build_workspace is not None else None
     )
     if profile == "lesson-runner" and (module_cache_fd is None or module_cache_fd < 0):
         raise ValueError("lesson-runner requires an open Go module-cache fd")
@@ -432,7 +472,21 @@ def build_sandbox_argv(
             ])
         argv.extend(["--chdir", RUNNER_WORKDIR])
     else:
-        argv.extend(["--bind", bundle, bundle, "--chdir", bundle])
+        argv.extend(["--bind", bundle, bundle])
+        if workspace is not None:
+            # After the bundle bind, so it is not shadowed by it. The packages
+            # an agent installs belong to the lesson but not IN it: the bundle
+            # is served, walked by the manifest reader and writable from inside
+            # its own session, while bun hardlinks out of a shared cache — a
+            # real `node_modules` here would put that cache one `chmod` away
+            # from every other lesson. A bwrap bind lives only in this mount
+            # namespace, so the bundle on disk never grows the directory at all
+            # and the read path cannot see it.
+            argv.extend([
+                "--bind", f"{workspace}/{BUILD_WORKSPACE_MOUNT}",
+                f"{bundle}/{BUILD_WORKSPACE_MOUNT}",
+            ])
+        argv.extend(["--chdir", bundle])
     return argv
 
 
@@ -659,6 +713,7 @@ async def spawn_sandboxed(
     private_root: str | os.PathLike[str] | None = None,
     private_masks: Sequence[str | os.PathLike[str]] = (),
     agent_home: str | os.PathLike[str] | None = None,
+    build_workspace: str | os.PathLike[str] | None = None,
     stdin: int | None = None,
     stdout: int | None = None,
     stderr: int | None = None,
@@ -699,6 +754,7 @@ async def spawn_sandboxed(
             private_root=private_root,
             private_masks=private_masks,
             agent_home=agent_home,
+            build_workspace=build_workspace,
             snapshot_fd=snapshot_fd,
             snapshot_name=snapshot_name,
             module_cache_fd=module_cache_fd,

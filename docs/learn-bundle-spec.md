@@ -59,7 +59,19 @@ data/lessons/<slug>/
 
 Reserved names, which no page, block file, or artifact root may claim:
 `lesson.json`, `attempts.jsonl`, `assessments.jsonl`, `runs.jsonl`,
-`AGENTS.md`, `CLAUDE.md`, `.claude`.
+`AGENTS.md`, `CLAUDE.md`, `.claude`, `node_modules`.
+
+`node_modules` is a mount point, not bundle content. The packages an agent
+installs live outside the bundle, in that lesson's build workspace
+(`DATA_DIR/lesson-builds/<slug>/node_modules`), and the lesson-agent sandbox
+binds them over this name so the agent works in an ordinary project layout.
+The bind exists only in that mount namespace, so what a reader finds on disk
+is an empty directory — the app creates it deliberately rather than letting
+bwrap create it as a side effect of the bind. Packages are kept out of the
+bundle because a bundle is writable from inside its own session and bun
+populates `node_modules` with hardlinks into one shared cache: a real
+directory here would put every other lesson's packages behind a shared inode.
+(2026-08-09, issue #161.)
 
 `AGENTS.md`, `CLAUDE.md` and everything the app writes under `.claude/` are
 regenerated, never authored: the app rewrites them on every lesson-agent

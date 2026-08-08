@@ -25,6 +25,7 @@ from typing import BinaryIO, Iterator
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+from .. import sandbox
 from ..db import DATA_DIR, append_event, get_conn, now_iso
 from . import bundle_schema
 from .runner_registry import RUNNER_REGISTRY
@@ -41,6 +42,10 @@ LESSONS_DIR = DATA_DIR / "lessons"
 # never a directory inside one: the sandbox binds these over `$HOME`, and a
 # bundle is writable from inside its own session (see _ensure_agent_home).
 AGENT_HOMES_DIR = DATA_DIR / "agent-homes"
+# Where each lesson's installed packages live. A sibling of the bundles for the
+# same reason, and bound over `<bundle>/node_modules` inside the agent sandbox
+# so the bundle on disk never carries them (see _ensure_build_workspace).
+BUILD_WORKSPACES_DIR = DATA_DIR / "lesson-builds"
 DEFAULT_ENTRY = bundle_schema.DEFAULT_ENTRY
 MANIFEST_NAME = "lesson.json"
 
@@ -2076,6 +2081,57 @@ def _ensure_agent_home(slug: str) -> Path:
     return home
 
 
+def _ensure_build_workspace(slug: str, lesson_dir: Path) -> Path:
+    """Return this lesson's persistent build workspace, creating it if needed.
+
+    What lives here is what the agent installs — the packages a lesson page is
+    built from. The sandbox binds the `node_modules` subdirectory over the same
+    name inside the bundle, so the agent works in an ordinary project layout
+    while the bundle on disk never carries a byte of it (`app/sandbox.py`,
+    `BUILD_WORKSPACE_MOUNT`).
+
+    Kept out of the bundle for the reason :func:`seed_lesson_libs` states about
+    hardlinks, sharpened by the package manager: bun populates `node_modules`
+    with hardlinks into one shared cache, so a real directory inside a bundle
+    that its own session can write would put every other lesson's packages
+    behind one shared inode. Same posture as :func:`_ensure_agent_home` on each
+    name — a link or special file is moved aside rather than followed — and the
+    same failure contract, for a sharper reason: without the mount, an agent
+    running `bun install` would fill the *bundle* with those hardlinks, so a
+    workspace that cannot be created has to mean "no terminal" rather than a
+    shell that quietly does the thing this directory exists to prevent.
+
+    Both sides of the bind are created here, the bundle-side mountpoint
+    included. bwrap would create it anyway — a bind target inside a bind of the
+    real bundle directory is a real `mkdir` on disk — so the choice is between
+    an empty directory this function owns, at a known mode, and one that
+    appears as a side effect. `node_modules` is reserved in §2 of the bundle
+    spec for the same reason `.claude` is: the app owns the name, so no page,
+    block file or artifact root may claim it and the preview surface will not
+    serve through it.
+
+    A link or special file at either name is moved aside; an existing
+    *directory* is used as-is, mount point or not. That is the same rule the
+    agent home follows, and the case it would matter for — a populated
+    `node_modules` already in a bundle — cannot predate the mount that this
+    function introduces.
+    """
+    if not _SLUG_RE.match(slug or ""):
+        raise LessonError("invalid lesson slug")
+    BUILD_WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
+    workspace = BUILD_WORKSPACES_DIR / slug
+    mount = sandbox.BUILD_WORKSPACE_MOUNT
+    for path in (workspace, workspace / mount, lesson_dir / mount):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            _preserve_foreign(path)  # incl. a dangling link: exists() follows, says False
+        try:
+            os.mkdir(path, 0o700)
+        except FileExistsError:
+            if path.is_symlink() or not path.is_dir():
+                raise NotADirectoryError(f"{path.name} is not a directory")
+    return workspace
+
+
 # --- lesson-libs shelf (#146) ------------------------------------------------
 #
 # Lesson pages must work offline (the `interactive-local-v1` CSP allows 'self'
@@ -2330,6 +2386,7 @@ def _workspace_view(
     lesson: dict,
     lesson_dir: Path,
     agent_home: Path | None = None,
+    build_workspace: Path | None = None,
 ) -> dict:
     """What a PTY role learns about the lesson it opens on.
 
@@ -2338,8 +2395,9 @@ def _workspace_view(
     which is why they travel with the workspace rather than being re-resolved
     from the slug on the websocket path.
 
-    `agent_home` is None for every role but lesson-agent: it is the only role
-    that runs agents, so it is the only one whose home carries their memory.
+    `agent_home` and `build_workspace` are None for every role but lesson-agent:
+    it is the only role that runs agents, so it is the only one whose home
+    carries their memory and the only one that installs packages.
     """
     return {
         "slug": slug,
@@ -2348,6 +2406,9 @@ def _workspace_view(
         "id": lesson["id"],
         "uid": lesson["uid"],
         "agent_home": str(agent_home) if agent_home is not None else None,
+        "build_workspace": (
+            str(build_workspace) if build_workspace is not None else None
+        ),
     }
 
 
@@ -2457,6 +2518,7 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
             return None
         slug, lesson, lesson_dir = resolved
         agent_home = _ensure_agent_home(slug)
+        build_workspace = _ensure_build_workspace(slug, lesson_dir)
         read = _ensure_bundle_manifest(lesson)
         # Before the brief, unlike the two reconciles below: STATE quotes the
         # open questions but sends the tutor to `attempts.jsonl` for the rest
@@ -2483,7 +2545,7 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
     seed_lesson_libs(lesson_dir)
     _reconcile_assessment_projection(lesson)
     _retire_foreign_run_projection(lesson)
-    return _workspace_view(slug, lesson, lesson_dir, agent_home)
+    return _workspace_view(slug, lesson, lesson_dir, agent_home, build_workspace)
 
 
 def create_lesson(conn: sqlite3.Connection, title: str, source_url: str | None = None) -> int:

@@ -1089,7 +1089,7 @@ def test_002_ui_and_workspace(client, suite_state):
     ), "the v1 preview surface serves an ordinary file but not .claude/"
     _spec_84 = (ROOT / "docs" / "learn-bundle-spec.md").read_text(encoding="utf-8")
     assert (
-        "`CLAUDE.md`, `.claude`." in _spec_84
+        "`CLAUDE.md`, `.claude`, `node_modules`." in _spec_84
         and ".claude/         app-generated agent-harness config" in _spec_84
         and 'constant `{"outputStyle": "Learning"}`' in _spec_84
         and "regenerated, never authored: the app rewrites them" in _spec_84
@@ -1107,12 +1107,14 @@ def test_002_ui_and_workspace(client, suite_state):
     _brief_before = [(path.stat().st_mtime_ns, path.read_bytes()) for path in _brief_paths]
     _learner_ws = lessons_svc.resolve_terminal_workspace(_lt["slug"])
     _brief_after = [(path.stat().st_mtime_ns, path.read_bytes()) for path in _brief_paths]
-    # Identical to the agent's view but for the agent home: the learner role
-    # runs no agents, so it is handed no memory directory to bind over $HOME.
+    # Identical to the agent's view but for the two agent-only directories: the
+    # learner role runs no agents, so it is handed no memory directory to bind
+    # over $HOME and no build workspace to install packages into.
+    _agent_only = ("agent_home", "build_workspace")
     assert (
-        {k: v for k, v in _learner_ws.items() if k != "agent_home"}
-        == {k: v for k, v in ws_info.items() if k != "agent_home"}
-        and _learner_ws["agent_home"] is None
+        {k: v for k, v in _learner_ws.items() if k not in _agent_only}
+        == {k: v for k, v in ws_info.items() if k not in _agent_only}
+        and all(_learner_ws[k] is None for k in _agent_only)
         and _brief_before == _brief_after
         and lessons_svc.resolve_terminal_workspace("../evil") is None
         and lessons_svc.resolve_terminal_workspace("no-such-lesson-slug") is None
@@ -1137,6 +1139,34 @@ def test_002_ui_and_workspace(client, suite_state):
         == str(_agent_home)
         and _memory_probe.read_text(encoding="utf-8") == "kept"
     ), "reopening a lesson terminal reuses the same agent home and keeps its memory"
+
+    # The build workspace, on the same terms and for a sharper reason: bun
+    # fills `node_modules` with hardlinks into one shared cache, so it must not
+    # be a real directory inside a bundle its own session can write (#161).
+    from app import sandbox as _sandbox_161
+    _build_ws = Path(ws_info["build_workspace"])
+    _mount = _sandbox_161.BUILD_WORKSPACE_MOUNT
+    _pkg_probe = _build_ws / _mount / "left-by-an-install"
+    _pkg_probe.write_text("kept", encoding="utf-8")
+    assert (
+        _build_ws == lessons_svc.BUILD_WORKSPACES_DIR / _lt["slug"]
+        and not _build_ws.is_relative_to(lessons_svc.LESSONS_DIR)
+        and (_build_ws / _mount).is_dir()
+        # The bundle carries the mount POINT and nothing else: bwrap makes a
+        # real directory of it on the host either way, so the app owns it.
+        and (Path(ws_info["dir"]) / _mount).is_dir()
+        and not any((Path(ws_info["dir"]) / _mount).iterdir())
+    ), "prepare_terminal_workspace gives the lesson a build workspace outside the bundle"
+    assert (
+        lessons_svc.prepare_terminal_workspace(_lt["slug"])["build_workspace"]
+        == str(_build_ws)
+        and _pkg_probe.read_text(encoding="utf-8") == "kept"
+    ), "reopening a lesson terminal reuses the same build workspace and its packages"
+    # Reserved, so no page, block file or artifact root can claim the name and
+    # the preview surface will not serve through it.
+    assert _mount in _bschema_84.RESERVED_NAMES and not _bschema_84.valid_v2_path(
+        _mount
+    ), "the build mount point must be a reserved bundle name"
     term_py = (ROOT / "app" / "terminal.py").read_text(encoding="utf-8")
     assert (
         "prepare_terminal_workspace" in term_py
