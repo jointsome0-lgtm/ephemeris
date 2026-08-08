@@ -24,7 +24,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-08-08 — `8483d68` (squash of `agent-home-persist`, PR #158) —
+## Done
+
+- [x] 2026-08-08 — `8483d68` (squash of `agent-home-persist`, PR #158) —
   `app/sandbox.py`, `app/services/lessons.py`, `app/terminal.py`,
   `docs/backup-restore.md`, `docs/reviews/QUEUE.md`,
   `tests/test_010_platform_ui.py`,
@@ -49,8 +51,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   sandboxed sessions. Backups already archive `$ACTIVITY_DATA_DIR` by
   exclusion, so the new directory is included. pytest 294,
   verify_restore 34/34.
-
-## Done
+  Drained 2026-08-08 →
+  `docs/reviews/2026-08-08-persistent-agent-home-review.md`: no Critical,
+  High, Medium, Low, Info, or other finding; SAFE TO MAKE LIVE for the
+  documented direct-loopback, single-worker, single-user deployment. Wider,
+  proxy-adjacent, multi-user, or less-trusted deployment remains unsupported;
+  no live service action was performed.
 
 - [x] 2026-08-06 — `2e636c2` (squash of `fix/drain-l1-successor`, PR #153) —
   `app/static/src/learn-bridge.ts`, `app/static/learn-bridge.js`,
