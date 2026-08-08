@@ -358,8 +358,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
    * the fresh metadata identity, and the re-assert/quarantine path forces an
    * off-manifest successor back before it can arm — so an inherited decision
    * covers the pages of the same lesson bundle and nothing else. Kept
-   * deliberately outside `teardown` (it is not per-document state) and reset
-   * when the armed lesson_uid changes.
+   * deliberately outside `teardown` — it is not per-document state.
    *
    * Module memory alone would not deliver that lifetime: the page tabs in
    * learn.html are ordinary `/learn?...&entry=…` links, so walking a bundle
@@ -367,7 +366,13 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
    * decision is therefore mirrored into `sessionStorage` under the lesson_uid.
    * `sessionStorage` and not `localStorage`: a consent that outlived the
    * browsing session would answer for bundles the owner has not seen — the
-   * study agent rewrites a lesson's pages in place, under the same uid. */
+   * study agent rewrites a lesson's pages in place, under the same uid.
+   *
+   * So this pair is a WORKING COPY, not the record: a new armed lesson_uid
+   * swaps in that lesson's own stored decision, and switching back swaps the
+   * first one in again — `A → B → A` in one tab does not re-ask (PR-159
+   * round 3). What revokes is closing the tab, which is what the prompt
+   * promises; the lesson switch only changes whose answer is in hand. */
   let readConsent: { artifact: boolean | null; record: boolean | null } = {
     artifact: null, record: null,
   };

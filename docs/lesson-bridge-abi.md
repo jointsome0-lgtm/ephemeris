@@ -210,10 +210,15 @@ Semantics:
   direction untouched. Both answers are remembered for the **lesson**, keyed on
   `lesson_uid` (owner, 2026-08-08 — per-document meant one modal per page of a
   multi-page bundle, which taught the click rather than the question). The
-  store is dropped when the armed lesson changes, and it is mirrored into
-  `sessionStorage` because the lesson page tabs are ordinary `/learn` links
-  whose navigation reloads the parent — module memory alone would keep the
-  per-page interrogation under a new name. `localStorage` is deliberately not
+  runtime holds one in-memory working copy and swaps it when the armed lesson
+  changes; each lesson's own decision is written to `sessionStorage` under its
+  uid and rehydrated whenever that lesson is armed again, so `A → B → A` in one
+  tab reuses A's earlier answer rather than re-asking. **The revocation
+  boundary is the browsing session, not the lesson switch** — closing the tab,
+  exactly what the prompt tells the owner. Storage is what makes the stated
+  lifetime true at all: the lesson page tabs are ordinary `/learn` links whose
+  navigation reloads the parent, so module memory alone would keep the per-page
+  interrogation under a new name. `localStorage` is deliberately not
   used: a consent outliving the browsing session would answer for bundle
   content the owner has never seen, since the study agent rewrites a lesson's
   pages under the same uid. Unreadable or unrecognised stored state reads as
