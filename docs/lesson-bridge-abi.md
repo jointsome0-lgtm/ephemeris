@@ -198,17 +198,23 @@ Semantics:
   panel's excerpt (`answer_truncated` marks the cut), not a re-read of the
   full 32 KiB body. The snapshot is bounded by the panel it mirrors, which is
   why it carries no separate size limit.
-- **Gated by an owner decision, per loaded document.** What crosses is the
+- **Gated by an owner decision, per lesson.** What crosses is the
   learner's own answers and the tutor's notes for this page's questions — the
   same rows the Record panel renders under the frame — into a document whose
   profile leaves same-frame navigation open (spec §5 residual): permitted
   script can assign `location.href` and carry those bytes to a destination the
   response CSP does not cover. So the parent asks first, through the same
-  sticky per-document consent the artifact READ path uses
-  (`allowPrivateRead`), with a warning that names that egress. A refusal omits
-  `record` entirely — not an empty list — and leaves the rest of the welcome
-  and the whole write direction untouched; an acceptance covers that document
-  only, so a reload, or any other page, decides again. Nothing to hand over is
+  sticky consent the artifact READ path uses (`allowPrivateRead`), with a
+  warning that names that egress. A refusal omits `record` entirely — not an
+  empty list — and leaves the rest of the welcome and the whole write
+  direction untouched. Both answers are remembered for the **lesson**, keyed on
+  `lesson_uid` and dropped when the armed lesson changes or the /learn page
+  reloads (owner, 2026-08-08 — per-document meant one modal per page of a
+  multi-page bundle, which taught the click rather than the question). The
+  decision therefore reaches the pages of that one bundle and no further: only
+  an armed document can ask, arming requires the fresh metadata identity, and
+  the re-assert/quarantine path (§4) forces an off-manifest successor back
+  before it can arm. Nothing to hand over is
   not a decision: when the filtered list is empty the field is attached
   unasked, so opening a lesson nobody has answered yet never opens a modal.
   The prompt blocks, and a document can commit a navigation while it stands
@@ -399,14 +405,15 @@ parent → child   { "op": "artifact.save", "request_id": "s1",
   `file_rev`; its first save uses the literal `base_rev: "absent"`.
 - Artifact bytes are private runtime state, while lesson pages are untrusted
   and retain the documented same-frame navigation residual (§4). The first
-  `artifact.get` for each loaded document therefore opens a parent-owned
+  `artifact.get` in each lesson therefore opens a parent-owned
   confirmation that explicitly warns the learner that the page can navigate
-  and send code it reads to another site. A denial is sticky for that document
-  and returns `artifact-read-denied` without HTTP; acceptance covers its later
-  reads. The parent repeats fresh page/block validation after the prompt and
-  before the GET. A reload requires a new decision. Artifact bytes and the
-  §2.1 read-back are decided separately but by one mechanism
-  (`allowPrivateRead`), so neither answer speaks for the other kind.
+  and send code it reads to another site. A denial is sticky and returns
+  `artifact-read-denied` without HTTP; acceptance covers later reads. Both
+  answers last for the lesson, not the document — see §2.1 for the lifetime
+  and what bounds it. The parent repeats fresh page/block validation after the
+  prompt and before the GET. Reloading /learn requires a new decision.
+  Artifact bytes and the §2.1 read-back are decided separately but by one
+  mechanism (`allowPrivateRead`), so neither answer speaks for the other kind.
 - Content is limited to 64 KiB raw UTF-8 bytes. `base_rev` is either
   `"absent"` or the exact revision returned by `artifact.get` or the previous
   successful save. A `file-conflict` answer carries the current `file_rev`

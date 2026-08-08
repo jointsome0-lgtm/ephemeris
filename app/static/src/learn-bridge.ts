@@ -346,13 +346,26 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
   let editorInflight = new Set<string>();
   /* One store, one rule, for every private read the untrusted page can obtain:
    * saved artifact bytes and the record read-back both leave the parent only
-   * behind an owner decision. `null` = not asked yet; a denial is sticky for
-   * this document so hostile content cannot turn a read into a browser-dialog
-   * loop, and an acceptance covers that document's later reads of the same
-   * kind. Cleared on every load, so a reload decides again. */
+   * behind an owner decision. `null` = not asked yet; a denial is sticky so
+   * hostile content cannot turn a read into a browser-dialog loop, and an
+   * acceptance covers later reads of the same kind.
+   *
+   * The decision's LIFETIME is the lesson, not the document (owner,
+   * 2026-08-08). Per-document was one modal per page of a multi-page bundle —
+   * the friction taught the answer instead of the question, which is worse
+   * than the wider grant. What the wider grant actually reaches is bounded by
+   * the runtime, not by trust: only an ARMED document can ask, arming requires
+   * the fresh metadata identity, and the re-assert/quarantine path forces an
+   * off-manifest successor back before it can arm — so an inherited decision
+   * covers the pages of the same lesson bundle and nothing else. Kept
+   * deliberately outside `teardown` (it is not per-document state); reset when
+   * the armed lesson_uid changes, and gone entirely on a /learn reload, since
+   * this lives only in the module. */
   let readConsent: { artifact: boolean | null; record: boolean | null } = {
     artifact: null, record: null,
   };
+  /* The lesson `readConsent` was decided for; a different one starts over. */
+  let consentLesson: string | null = null;
   let runInflight = new Set<string>();
   let runStartToken: object | null = null;
   let ownedRuns = new Map<string, OwnedRun>();
@@ -382,7 +395,6 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     capabilities = [];
     attemptsInflight = new Set();
     editorInflight = new Set();
-    readConsent = { artifact: null, record: null };
     runInflight = new Set();
     runStartToken = null;
     ownedRuns = new Map();
@@ -700,6 +712,15 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     kind: "artifact" | "record",
     question: string,
   ): boolean => {
+    /* Only an armed document reaches here (both call sites re-validate the
+     * identity first), so a missing one is a torn-down state, not a lesson —
+     * refuse rather than decide on behalf of no page at all. */
+    const lesson = armed?.lesson_uid ?? null;
+    if (lesson === null) return false;
+    if (consentLesson !== lesson) {
+      consentLesson = lesson;
+      readConsent = { artifact: null, record: null };
+    }
     const decided = readConsent[kind];
     if (decided !== null) return decided;
     let allowed: boolean;
@@ -712,19 +733,24 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     return allowed;
   };
 
+  /* The copy names the lesson, not the page, because that is now the grant's
+   * real extent — a prompt that says "this page" while the answer covers the
+   * next one would be the worse kind of wrong. */
   const allowArtifactRead = (): boolean => allowPrivateRead(
     "artifact",
-    "Allow this untrusted lesson page to read saved learner code? "
+    "Allow this lesson to read saved learner code? "
     + "A lesson page can navigate the preview and send code it reads to another site. "
-    + "Allow only if you trust this lesson.",
+    + "Your answer covers every page of this lesson until you reload Learn — "
+    + "allow only if you trust it.",
   );
 
   const allowRecordRead = (): boolean => allowPrivateRead(
     "record",
-    "Allow this untrusted lesson page to read your recorded answers and the "
+    "Allow this lesson to read your recorded answers and the "
     + "tutor's notes for its questions? "
     + "A lesson page can navigate the preview and send what it reads to another site. "
-    + "Allow only if you trust this lesson.",
+    + "Your answer covers every page of this lesson until you reload Learn — "
+    + "allow only if you trust it.",
   );
 
   const getArtifact = async (
@@ -1475,7 +1501,10 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
        * CSP. So this asks before attaching, exactly as the artifact READ path
        * asks before handing over saved code, and a refusal omits the field
        * whole — the rest of the welcome, and the write direction, are
-       * unaffected. Nothing to disclose is not a decision: an empty list is
+       * unaffected. Asked once per lesson, not per document (see
+       * `readConsent`): the pages of one bundle are one trust decision, and
+       * the second page of thirteen re-asking taught the owner to click
+       * through. Nothing to disclose is not a decision: an empty list is
        * attached unasked, so opening a lesson nobody has answered yet does
        * not open a modal to hand over nothing. */
       let attach = true;
