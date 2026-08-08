@@ -628,7 +628,10 @@ Later schema versions add the task-manager tables (`lists`, `tasks`, `tags`,
 `focus_sessions` (v4, sec15.4), `calendar_events` (v5, sec32 §3 — the row IS
 the recurring series; occurrences are expanded on read, never materialized),
 the Learn `lessons` table and its bundle-navigation columns (v6/v7),
-`focus_sessions.lesson_id` (v8), and a persistent unique `events.uuid` (v9 —
+`focus_sessions.lesson_id` (v8), the timer's own tables (v19, sec34 — the
+Pomodoro modes converted to countdown/open, target columns for habit and task,
+and `focus_runs` for the one timer currently running), and a persistent unique
+`events.uuid` (v9 —
 service-owned identity stamped by `append_event()` and returned to the caller;
 pre-v9 rows are backfilled once, payload history untouched; the backfill is
 idempotent and re-run on every `init_db()` to heal rows written by a not-yet-
@@ -2109,3 +2112,54 @@ flash; edit (partial, reminder cleared); pane check-in 303s back to `?sel=habit-
 and the pane reflects the new status; archive (`active=0`, hidden but kept); delete
 (row + check-ins gone, `routine_item_deleted` event kept); cross-origin `POST /habits`
 → 403; `/history` still serves the day-layout.
+
+---
+
+## 34. Focus timer (schema v19, #75) — 2026-08-08
+
+Owner decision 2026-07-24, built 2026-08-08: the **Pomodoro tab is retired**.
+The 25-minute cycle was TickTick's ritual, not this product's need — what the
+day actually wants is a timer whose length the user chooses, attached to the
+thing being worked on, startable from wherever he already is.
+
+- **No Focus destination.** `GET /focus` is gone (404, not redirected); so are
+  its rail entry, its mobile-nav slot and its palette *view*. The palette gained
+  a `Focus timer` **action**, and the `g f` chord opens the drawer instead of
+  navigating.
+- **A drawer on every surface.** `app/templates/_timer_drawer.html`, included
+  once by `base.html`, docked bottom-right; open/minimized state persists in
+  `al-timer-open` / `al-timer-min`, the same shape as the terminal drawer's
+  `al-term-min`. The astrolabe ring from the old page is kept as the progress
+  indicator. Minimized still shows the clock — a running timer is never
+  invisible — and the rail/nav toggle carries a pip while one runs.
+- **The server owns the clock (#20).** A start writes a `focus_runs` row with
+  `started_at`; the duration is computed on finish from that timestamp and is
+  never sent by the browser. `focus-timer.js` only interpolates between syncs
+  and re-syncs on `visibilitychange`, so reloads, navigation and a sleeping
+  laptop cost accuracy at worst, never the session. Pausing stamps `paused_at`
+  and resuming folds the interval into `paused_seconds`, keeping elapsed time a
+  pure function of stored timestamps.
+- **Model.** `focus_sessions.mode` becomes `CHECK(mode IN ('countdown','open'))`
+  with the chosen length in `target_seconds`; the v19 migration converts the old
+  rows (`pomo` → a 1500-second countdown, `stopwatch` → open). Historical
+  `focus_session_recorded` payloads keep their original words — the ledger is
+  never rewritten (sec13.3) — and the restore script does not replay this table,
+  so an old export stays restorable.
+- **One target, at most.** `lesson_id` (v8) is joined by `habit_id` and
+  `task_id`; the write refuses two at once, because a span of attention spent on
+  one thing must not be double-counted in two per-target totals. A stale or junk
+  id stores as NULL rather than dangling.
+- **Idempotency.** `client_token` is unique on both tables: a retried start
+  reuses the run, a retried finish returns the session the first call recorded.
+  A countdown is capped at its chosen length — a tab left open into minute 30 of
+  a 25-minute timer records 25 minutes of intent, not 30 of credit.
+- **Writes.** `POST /focus/timer/{start,pause,finish,discard}` and
+  `GET /focus/timer[/targets]`, all JSON. This surface has **no Mode A twin**
+  (sec16.4): a timer without JavaScript cannot tick, so there is no no-JS
+  behaviour to preserve. The same-origin write guard covers them like any other
+  POST.
+- **Where the numbers live.** Per-target stats sit with the target — focused
+  time on the habit page and the Learn record line — and the 14-day bar chart
+  plus the focus-day streak moved to **Retro**. The global "Today's/Total Pomo"
+  dashboard is gone: a count of cycles measured the ritual, duration measures the
+  thing itself.

@@ -355,13 +355,17 @@ def test_002_ui_and_workspace(client, suite_state):
     # the rich day-review view now lives at /history (week strip + day sections)
     assert 'class="week-strip"' in c.get("/history").text, "history has week strip"
 
-    # --- premium views: calendar / focus / search / trash
+    # --- premium views: calendar / search / trash
     r = c.get("/calendar")
     assert r.status_code == 200, "GET /calendar 200"
     assert "cal-month" in r.text, "calendar has month grid"
-    r = c.get("/focus")
-    assert r.status_code == 200, "GET /focus 200"
-    assert 'id="focus-time"' in r.text and 'id="focus-start"' in r.text, "focus has timer"
+    # Focus is no longer a destination (#75): the timer rides in a drawer that
+    # every page carries, and the old page is gone rather than redirected.
+    assert c.get("/focus").status_code == 404, "GET /focus is gone"
+    assert (
+        'id="timer-drawer"' in r.text and 'id="timer-start"' in r.text
+    ), "the timer drawer ships with every surface"
+    assert 'class="rail-ico timer-toggle"' in r.text, "the rail slot toggles the timer"
     r = c.get("/search?q=groceries")
     assert r.status_code == 200 and "Buy groceries" in r.text, "GET /search 200 + finds task"
     r = c.get("/search")

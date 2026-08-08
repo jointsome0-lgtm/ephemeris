@@ -257,7 +257,7 @@ def immediate(conn: sqlite3.Connection):
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -892,6 +892,90 @@ def _migrate_to_18(conn: sqlite3.Connection) -> None:
     backfill_task_status(conn)
 
 
+# v19 — the timer, not the Pomodoro (#75). Two changes to how focused time is
+# stored, both forced by the same decision: the 25-minute cycle stops being the
+# model and the timer moves into a drawer shared by every page.
+#
+# 1. `focus_sessions.mode` was the TickTick vocabulary — 'pomo' (a fixed
+#    25-minute cycle, also counted as a headline metric) vs 'stopwatch'. It
+#    becomes 'countdown' (a span the user chose the length of, kept in the new
+#    `target_seconds`) vs 'open' (untimed tracking). Old rows convert without
+#    losing anything: a pomo WAS a 25-minute countdown. The CHECK has to be
+#    rewritten, so the table is rebuilt — which is also the cheapest moment to
+#    add the remaining target columns. `focus_session_recorded` events keep
+#    their historical payloads verbatim (sec13.3); only the table converts.
+#
+# 2. `focus_runs` holds the ONE timer currently running. A drawer that survives
+#    page loads cannot keep its state in a `setInterval` closure (#20): the
+#    elapsed time has to be derived from a server-owned `started_at`, so a
+#    reload, a sleep or a closed tab costs nothing. A run is not a session —
+#    it becomes one only when it is finished, which is why it lives in its own
+#    table instead of nullable columns on the history.
+#
+# `client_token` is the idempotency key on both: a retried start must not open
+# a second run, and a retried finish must return the session the first one
+# already recorded instead of double-counting the span.
+_SCHEMA_V19 = """
+CREATE TABLE focus_sessions_v19 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mode TEXT NOT NULL DEFAULT 'open' CHECK(mode IN ('countdown','open')),
+  seconds INTEGER NOT NULL CHECK(seconds >= 0),
+  target_seconds INTEGER,
+  note TEXT,
+  date TEXT NOT NULL,
+  started_at TEXT,
+  ended_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  lesson_id INTEGER REFERENCES lessons(id),
+  habit_id INTEGER REFERENCES routine_items(id),
+  task_id INTEGER REFERENCES tasks(id),
+  client_token TEXT
+);
+
+INSERT INTO focus_sessions_v19
+  (id, mode, seconds, target_seconds, note, date, started_at, ended_at, created_at, lesson_id)
+SELECT id,
+       CASE WHEN mode = 'pomo' THEN 'countdown' ELSE 'open' END,
+       seconds,
+       CASE WHEN mode = 'pomo' THEN 1500 ELSE NULL END,
+       note, date, started_at, ended_at, created_at, lesson_id
+FROM focus_sessions;
+
+DROP TABLE focus_sessions;
+ALTER TABLE focus_sessions_v19 RENAME TO focus_sessions;
+
+CREATE INDEX IF NOT EXISTS idx_focus_date ON focus_sessions(date);
+CREATE INDEX IF NOT EXISTS idx_focus_lesson ON focus_sessions(lesson_id);
+CREATE INDEX IF NOT EXISTS idx_focus_habit ON focus_sessions(habit_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_focus_token
+  ON focus_sessions(client_token) WHERE client_token IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS focus_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mode TEXT NOT NULL CHECK(mode IN ('countdown','open')),
+  target_seconds INTEGER,
+  note TEXT,
+  started_at TEXT NOT NULL,
+  paused_at TEXT,
+  paused_seconds INTEGER NOT NULL DEFAULT 0 CHECK(paused_seconds >= 0),
+  lesson_id INTEGER REFERENCES lessons(id),
+  habit_id INTEGER REFERENCES routine_items(id),
+  task_id INTEGER REFERENCES tasks(id),
+  client_token TEXT NOT NULL UNIQUE
+);
+"""
+
+
+def _migrate_to_19(conn: sqlite3.Connection) -> None:
+    # The user_version gate runs this once per database; a hand-repaired one
+    # that already carries the new column set is converged, not crashed on
+    # (same shape as v17/v18). The rebuild must not run twice — it would copy
+    # rows into a table whose id sequence has already moved on.
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(focus_sessions)")}
+    if "target_seconds" not in have:
+        conn.executescript(_SCHEMA_V19)
+
+
 # Ordered, idempotent steps. A schema change must NEVER require deleting the
 # ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
 _MIGRATIONS = [
@@ -913,6 +997,7 @@ _MIGRATIONS = [
     (16, _migrate_to_16),
     (17, _migrate_to_17),
     (18, _migrate_to_18),
+    (19, _migrate_to_19),
 ]
 
 

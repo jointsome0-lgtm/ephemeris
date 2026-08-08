@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from ..db import get_db
-from ..services import retro
+from ..services import focus, retro
 from ..templating import _wants_json, _with_flash, templates
 
 router = APIRouter()  # GET /retro, POST /retro, /retro/{entry_id}/*
@@ -35,6 +35,10 @@ def get_retro(request: Request, archived: int = 0, edit: int | None = None,
     editing = retro.get_entry(conn, edit) if edit is not None else None
     if show_archived:
         rows = [r for r in rows if r["archived_at"] is not None]
+    # The 14-day focus chart landed here when the Focus page was retired (#75):
+    # the only Focus number that was not about one habit or lesson is the shape
+    # of the fortnight, and this is the surface for looking back at one.
+    daily = focus.daily_totals(conn)
     return templates.TemplateResponse(request, "retro.html", {
         "request": request,
         "rail": "retro",
@@ -44,6 +48,9 @@ def get_retro(request: Request, archived: int = 0, edit: int | None = None,
         "precisions": retro.PRECISIONS,
         "confidences": retro.CONFIDENCES,
         "flash": flash,
+        "focus_daily": daily,
+        "focus_streak": focus.focus_day_streak(daily),
+        "focus_ov": focus.overview(conn),
     })
 
 

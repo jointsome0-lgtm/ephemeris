@@ -125,6 +125,7 @@
     if (it.href) { window.location.href = it.href; return; }
     const ui = window.alUI || {};
     if (it.shortcut === "n" && ui.newTask) ui.newTask();
+    else if (it.shortcut === "f" && ui.toggleTimer) ui.toggleTimer();
     else if (it.shortcut === "t" && ui.toggleTheme) ui.toggleTheme();
     else if (it.shortcut === "?" && ui.showHints) ui.showHints();
   }

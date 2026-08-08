@@ -904,7 +904,7 @@ def test_sandbox_learning(client, suite_state):
     try:
         _s4_id = lessons_svc.create_lesson(_s4_conn, "Record Panel Fixture")
         _s4 = lessons_svc.get_lesson(_s4_conn, _s4_id)
-        _s4_focus.record_session(_s4_conn, "pomo", 25 * 60, None, _s4_id)
+        _s4_focus.record_session(_s4_conn, "countdown", 25 * 60, lesson_id=_s4_id)
     finally:
         _s4_conn.close()
     _s4_dir = Path(lessons_svc.LESSONS_DIR) / _s4["slug"]

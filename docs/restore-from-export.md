@@ -100,7 +100,7 @@ separate calls.
 | `tasks` | Partially | Create omits note/order (`app/services/tasks.py:56-86`). Update writes title, note, due date, priority, and list ID but emits only task ID/title (`app/services/tasks.py:192-211`). Respace and list archive also change rows without complete payloads (`app/services/tasks.py:98-143`, `app/services/lists.py:119-131`). |
 | `tags` | Not journaled | The table exists (`app/db.py:191-195`) but has no application write/event vocabulary. |
 | `task_tags` | Not journaled | The table exists (`app/db.py:197-201`) but has no application write/event vocabulary. |
-| `focus_sessions` | Partially | The row contains note/date/timestamps, while the event carries only session ID, mode, seconds, and lesson ID (`app/services/focus.py:46-71`). |
+| `focus_sessions` | Partially | The row contains note/date/timestamps, while the event carries only session ID, mode, seconds, target length and the target ids (`app/services/focus.py`, `record_session`). Pre-#75 events name the retired `pomo`/`stopwatch` modes; nothing replays them into the table, so they stay restorable. |
 | `calendar_events` | Partially | Every row is exported as a complete `calendar_event_series` snapshot, including archived rows and IDs (`app/services/export.py:50-64`), but linked list rows may be unavailable. Restore keeps the DB foreign-key clean by clearing and reporting those `list_id` values. |
 | `lessons` | Partially | Lifecycle events exist, but ordinary lesson opens update current entry/last-opened time without an event (`app/services/lessons.py:450-565`, especially `473-482`). Generated lesson files under `$ACTIVITY_DATA_DIR/lessons/` are not exported. |
 

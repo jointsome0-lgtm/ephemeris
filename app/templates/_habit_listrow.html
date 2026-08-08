@@ -29,6 +29,12 @@
     </span>
   </a>
 
+  {# start the timer on this habit without drilling into it (#75) — the drawer
+     opens prefilled, so "an hour of X" costs one click from the list #}
+  <button type="button" class="hl-timer timer-here" data-timer-target="habit:{{ it.id }}"
+          title="Start the focus timer on {{ it.title }}"
+          aria-label="Start the focus timer on {{ it.title }}">{{ ic.icon('focus') }}</button>
+
   <button type="submit" form="dot-{{ it.id }}" data-dot
           class="hl-check{% if it.status %} done{% endif %}"
           aria-label="Check in {{ it.title }} for today"><span class="wd-glyph">✓</span></button>

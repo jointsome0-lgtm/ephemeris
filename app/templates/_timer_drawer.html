@@ -1,0 +1,76 @@
+{# The focus timer (#75) — one drawer, present on every surface, so starting a
+   span of focused time costs no navigation and the running clock survives an
+   MPA page load. Included once by base.html; everything inside is driven by
+   focus-timer.js, which reads the running state back from /focus/timer rather
+   than trusting anything rendered here.
+
+   The astrolabe ring is inherited from the retired Focus page: the same
+   progress indicator, now sized for a drawer. #}
+{% import "_icons.html" as ic %}
+<aside id="timer-drawer" class="timer-drawer" hidden aria-hidden="true"
+       aria-label="Focus timer" data-state="idle">
+  <header class="timer-head">
+    <span class="timer-dot" aria-hidden="true"></span>
+    <span class="timer-head-title">Focus</span>
+    {# the collapsed strip's clock: the only part of the drawer that stays
+       readable while minimized, so a running timer is never invisible #}
+    <span class="timer-head-clock" id="timer-head-clock" hidden></span>
+    <span class="timer-today" id="timer-today"></span>
+    <button type="button" class="timer-btn" id="timer-min" title="Minimize" aria-label="Minimize timer">–</button>
+    <button type="button" class="timer-btn" id="timer-close" title="Close" aria-label="Close timer">{{ ic.icon('close') }}</button>
+  </header>
+
+  <div class="timer-body">
+    <div class="timer-ring" id="timer-ring">
+      <svg class="astrolabe" viewBox="0 0 300 300" fill="none" aria-hidden="true">
+        <circle class="astro-rim" cx="150" cy="150" r="147"/>
+        <circle class="astro-ticks" cx="150" cy="150" r="133" pathLength="60"/>
+        <circle class="astro-ticks astro-ticks-major" cx="150" cy="150" r="129" pathLength="12"/>
+        <circle class="astro-rim" cx="150" cy="150" r="117"/>
+        <circle class="astro-track" cx="150" cy="150" r="104"/>
+        <circle class="astro-progress" cx="150" cy="150" r="104" pathLength="1"/>
+        <circle class="astro-star" cx="150" cy="46" r="3.5"/>
+      </svg>
+      <span class="timer-time" id="timer-time">25:00</span>
+      <span class="timer-on" id="timer-on"></span>
+    </div>
+
+    {# setup is visible only while nothing runs: mid-span the length and the
+       target are already decided, and offering them again would invite a
+       change the recorded row could not honour #}
+    <div class="timer-setup" id="timer-setup">
+      <div class="seg timer-mode" id="timer-mode" role="group" aria-label="Timer mode">
+        <button type="button" class="on" data-mode="countdown">Countdown</button>
+        <button type="button" data-mode="open">Open-ended</button>
+      </div>
+      <div class="timer-lengths" id="timer-lengths" role="group" aria-label="Length">
+        <button type="button" data-minutes="15">15m</button>
+        <button type="button" data-minutes="25" class="on">25m</button>
+        <button type="button" data-minutes="45">45m</button>
+        <button type="button" data-minutes="60">1h</button>
+        <input type="number" id="timer-custom" class="timer-custom" min="1" max="480"
+               inputmode="numeric" placeholder="min" aria-label="Custom length in minutes">
+      </div>
+      <label class="timer-field" for="timer-target">
+        <span>On</span>
+        <select id="timer-target" class="timer-target">
+          <option value="">Nothing in particular</option>
+        </select>
+      </label>
+      <input type="text" id="timer-note" class="timer-note" maxlength="200"
+             placeholder="Note (optional)" aria-label="Session note">
+    </div>
+
+    <div class="timer-controls">
+      <button type="button" class="timer-go" id="timer-start">Start</button>
+      <button type="button" class="timer-go" id="timer-pause" hidden>Pause</button>
+      <button type="button" class="timer-stop" id="timer-stop" hidden>Stop &amp; record</button>
+      <button type="button" class="timer-drop" id="timer-discard" hidden
+              title="Throw this timer away without recording it">Discard</button>
+    </div>
+
+    <p class="timer-error" id="timer-error" role="status" hidden></p>
+
+    <ul class="timer-recent" id="timer-recent" aria-label="Recent focus"></ul>
+  </div>
+</aside>

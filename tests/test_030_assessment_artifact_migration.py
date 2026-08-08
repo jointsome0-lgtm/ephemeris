@@ -3205,12 +3205,12 @@ def test_assessment_artifact_migration(client, suite_state):
     assert (
         'application-name" content="Ephemeris"' in tday
     ), "base metas rebranded to Ephemeris"
-    focus = c.get("/focus").text
+    # the astrolabe outlived its page: the timer drawer (#75) reuses the dial
     assert (
-        'class="astrolabe"' in focus and "astro-progress" in focus and 'id="focus-ring"' in focus
-    ), "focus ring is a progress-driven astrolabe SVG"
+        'class="astrolabe"' in tday and "astro-progress" in tday and 'id="timer-ring"' in tday
+    ), "timer ring is a progress-driven astrolabe SVG"
     assert (
-        'id="focus-time"' in focus and 'id="focus-start"' in focus
+        'id="timer-time"' in tday and 'id="timer-start"' in tday
     ), "astrolabe keeps the timer ids"
 
     r = c.get("/items")

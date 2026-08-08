@@ -51,7 +51,7 @@ html[data-theme="light"] {
   --primary-soft:   rgba(84,104,232,0.12);
 
   --bg:        #f7f8fa;   /* cartographic paper — the content sheet */
-  --panel:     #eff1f6;   /* docked columns one layer down: listbar, detail, focus-side */
+  --panel:     #eff1f6;   /* docked columns one layer down: listbar, detail, drawers */
   --rail-bg:   #e8ebf2;   /* far-left icon rail, deepest layer */
   --card-bg:   #ffffff;   /* cards lift off the paper: stat cards, inputs, quadrants */
   --hover:     rgba(35,40,56,0.05);   /* selected/hover row */
@@ -131,7 +131,7 @@ html[data-theme="dark"] {
   --primary-soft:   rgba(109,127,247,0.22);
 
   --bg:        #10131f;   /* deep indigo sky */
-  --panel:     #171b2c;   /* first raised layer: listbar, detail, focus-side */
+  --panel:     #171b2c;   /* first raised layer: listbar, detail, drawers */
   --rail-bg:   #0b0e18;
   --card-bg:   #1e2338;   /* second raised layer: cards, quadrants, floating panes */
   --hover:     rgba(230,228,218,0.06);
@@ -199,15 +199,15 @@ button { font: inherit; }
   /* a star flashes when a check is tapped */
   @keyframes eph-burst { from { opacity: .5; transform: scale(.5); } to { opacity: 0; transform: scale(2.3); } }
 
-  .trow, .habit-row, .lesson-row, .focus-rec-row { animation: eph-rise .30s ease both; }
-  .trow:nth-child(2), .habit-row:nth-child(2), .lesson-row:nth-child(2), .focus-rec-row:nth-child(2) { animation-delay: 30ms; }
-  .trow:nth-child(3), .habit-row:nth-child(3), .lesson-row:nth-child(3), .focus-rec-row:nth-child(3) { animation-delay: 60ms; }
-  .trow:nth-child(4), .habit-row:nth-child(4), .lesson-row:nth-child(4), .focus-rec-row:nth-child(4) { animation-delay: 90ms; }
-  .trow:nth-child(5), .habit-row:nth-child(5), .lesson-row:nth-child(5), .focus-rec-row:nth-child(5) { animation-delay: 120ms; }
-  .trow:nth-child(6), .habit-row:nth-child(6), .lesson-row:nth-child(6), .focus-rec-row:nth-child(6) { animation-delay: 150ms; }
-  .trow:nth-child(7), .habit-row:nth-child(7), .lesson-row:nth-child(7), .focus-rec-row:nth-child(7) { animation-delay: 180ms; }
-  .trow:nth-child(8), .habit-row:nth-child(8), .lesson-row:nth-child(8), .focus-rec-row:nth-child(8) { animation-delay: 210ms; }
-  .trow:nth-child(n+9), .habit-row:nth-child(n+9), .lesson-row:nth-child(n+9), .focus-rec-row:nth-child(n+9) { animation-delay: 0ms; }
+  .trow, .habit-row, .lesson-row, .timer-rec { animation: eph-rise .30s ease both; }
+  .trow:nth-child(2), .habit-row:nth-child(2), .lesson-row:nth-child(2), .timer-rec:nth-child(2) { animation-delay: 30ms; }
+  .trow:nth-child(3), .habit-row:nth-child(3), .lesson-row:nth-child(3), .timer-rec:nth-child(3) { animation-delay: 60ms; }
+  .trow:nth-child(4), .habit-row:nth-child(4), .lesson-row:nth-child(4), .timer-rec:nth-child(4) { animation-delay: 90ms; }
+  .trow:nth-child(5), .habit-row:nth-child(5), .lesson-row:nth-child(5), .timer-rec:nth-child(5) { animation-delay: 120ms; }
+  .trow:nth-child(6), .habit-row:nth-child(6), .lesson-row:nth-child(6), .timer-rec:nth-child(6) { animation-delay: 150ms; }
+  .trow:nth-child(7), .habit-row:nth-child(7), .lesson-row:nth-child(7), .timer-rec:nth-child(7) { animation-delay: 180ms; }
+  .trow:nth-child(8), .habit-row:nth-child(8), .lesson-row:nth-child(8), .timer-rec:nth-child(8) { animation-delay: 210ms; }
+  .trow:nth-child(n+9), .habit-row:nth-child(n+9), .lesson-row:nth-child(n+9), .timer-rec:nth-child(n+9) { animation-delay: 0ms; }
 
   .checkbox::after, .hl-check::after {
     content: ""; position: absolute; inset: -4px; border-radius: inherit;
@@ -275,7 +275,7 @@ body.term-stack-open .tt-shell { padding-right: var(--term-stack-w); }
 /* Each one subtracts --term-h (the open terminal drawer's live height, set on
    <body> by terminal.js; unset = 0) so nothing can hide behind the drawer.
    A new full-height column just joins this list. */
-.listbar, .content, .detail, .focus-side {
+.listbar, .content, .detail {
   height: calc(100vh - var(--term-h, 0px)); overflow-y: auto;
 }
 
@@ -1484,38 +1484,52 @@ body {
 .event-form:not(:has(select[name="freq"] option[value="weekly"]:checked)) .ef-days-row { display: none; }
 .event-form:has(select[name="freq"] option[value="once"]:checked) .ef-interval-row { display: none; }
 
-/* ===== focus / pomodoro ================================================= */
-.focus-layout { display: flex; gap: 0; }
-.focus-main { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; padding-top: 56px; }
-.seg { display: inline-flex; background: var(--hover); border-radius: 9px; padding: 3px; gap: 2px; margin-bottom: 40px; }
+/* ===== focus timer drawer (#75) ========================================= */
+/* The timer has no page any more: it is a card docked bottom-right on every
+   surface, so starting a span costs no navigation. The astrolabe ring below is
+   inherited verbatim from the retired Focus page — same dial, drawer-sized. */
+.seg { display: inline-flex; background: var(--hover); border-radius: 9px; padding: 3px; gap: 2px; }
 .seg button { border: none; background: none; color: var(--muted); padding: 6px 18px; border-radius: 7px; cursor: pointer; font-weight: 500; }
 .seg button.on { background: var(--card-bg); color: var(--text); box-shadow: var(--shadow-sm); }
-/* Pomo/Stopwatch switch lives centered in the header (TickTick) */
-.focus-head { position: relative; }
-.focus-head .seg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); margin: 0; }
-.focus-task { display: inline-flex; align-items: center; gap: 2px; color: var(--muted); font-size: 14px; margin: 4px 0 16px; }
-.focus-task:hover { color: var(--text); }
-.focus-task svg { width: 14px; height: 14px; }
-.focus-lesson { gap: 8px; }
-.focus-lesson .fl-cap { color: var(--faint); }
-.focus-lesson-select {
-  border: 1px solid var(--border); background: var(--card-bg); color: var(--text);
-  font: inherit; font-size: 14px; border-radius: var(--radius-pill);
-  padding: 4px 10px; cursor: pointer; max-width: 260px;
+
+.timer-drawer {
+  position: fixed; right: 18px; bottom: 18px; z-index: 70; width: 300px;
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--card-bg); color: var(--text);
+  border: 1px solid var(--border-2); border-radius: var(--radius-lg);
+  box-shadow: 0 18px 44px -18px rgba(6,8,15,.55);
 }
-.focus-lesson-select:hover { border-color: var(--muted); }
-/* Pomodoro ring as an astrolabe: a graduated tick scale between two engraved
-   rims, a faint track, and a gold progress arc driven by --focus-progress
-   (0..1, set one line in app.js render()). pathLength normalises the geometry
-   so the arc math is just offset = 1 - progress. The "ticks" are dashed-circle
-   strokes: a dash a hair long tangentially but 13-21px deep radially reads as
-   a radial graduation mark — no 60-element markup needed. */
-.focus-ring { position: relative; width: 300px; height: 300px; display: grid; place-items: center; }
+.timer-drawer[hidden] { display: none; }
+.timer-head {
+  display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 12px;
+  border-bottom: 1px solid var(--border); background: var(--panel);
+}
+.timer-head-title { font-size: 13px; font-weight: 600; }
+.timer-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ghost); }
+.timer-drawer[data-state="running"] .timer-dot { background: var(--astral); box-shadow: 0 0 8px var(--glow); }
+.timer-drawer[data-state="paused"] .timer-dot { background: var(--faint); }
+.timer-head-clock { font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+.timer-head-clock[hidden] { display: none; }
+.timer-today { margin-left: auto; font-size: 12px; color: var(--faint); }
+.timer-btn {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border: none; border-radius: 6px;
+  background: none; color: var(--muted); cursor: pointer; font-size: 14px;
+}
+.timer-btn:hover { background: var(--hover); color: var(--text); }
+.timer-btn svg { width: 14px; height: 14px; }
+/* minimized keeps only the strip — a running timer must never be invisible */
+.timer-drawer.minimized .timer-body { display: none; }
+.timer-body { padding: 14px 14px 12px; display: flex; flex-direction: column; align-items: stretch; gap: 12px; }
+
+.timer-ring { position: relative; width: 180px; height: 180px; margin: 2px auto 0; display: grid; place-items: center; }
 .astrolabe { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .astro-rim { fill: none; stroke: var(--hairline); stroke-width: 1.2; }
 .astro-ticks { fill: none; stroke: var(--ghost); stroke-width: 13; stroke-dasharray: 0.1 0.9; }   /* 60 minute marks */
 .astro-ticks-major { stroke: var(--muted); stroke-width: 21; stroke-dasharray: 0.018 0.982; }     /* every 5th, longer + brighter */
 .astro-track { fill: none; stroke: var(--border-2); stroke-width: 2; }
+/* gold progress arc driven by --focus-progress (0..1, set in focus-timer.js).
+   pathLength normalises the geometry so the arc math is offset = 1 - progress. */
 .astro-progress {
   fill: none; stroke: var(--astral); stroke-width: 4.5; stroke-linecap: round;
   stroke-dasharray: 1px; stroke-dashoffset: calc((1 - var(--focus-progress, 0)) * 1px);
@@ -1529,26 +1543,87 @@ body {
   transform-box: view-box; transform-origin: 50% 50%;
   opacity: calc(0.4 + var(--focus-progress, 0) * 0.6);
 }
-.focus-time { font-family: var(--font-mono); font-size: 52px; font-weight: 400; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
-.focus-controls { margin-top: 36px; display: flex; align-items: center; gap: 12px; }
-.focus-start { height: 44px; padding: 0 48px; border-radius: 999px; border: none; background: var(--primary); color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; }
-.focus-start:hover { background: var(--primary-hover); box-shadow: 0 6px 22px -6px var(--primary); }
-.focus-end { height: 44px; padding: 0 28px; border-radius: 999px; border: 1px solid var(--border-2); background: var(--bg); color: var(--muted); font-size: 15px; font-weight: 600; cursor: pointer; }
-.focus-end:hover { border-color: var(--faint); color: var(--text); }
-.focus-end[hidden] { display: none; }
-.focus-side { flex: 0 0 360px; width: 360px; border-left: 1px solid var(--border); padding: 18px 22px; background: var(--panel); }
-.focus-side h2 { font-size: 16px; font-weight: 600; margin: 0 0 14px; }
-.focus-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.focus-rec-head { display: flex; align-items: center; justify-content: space-between; margin-top: 24px; }
-.focus-rec-head h2 { margin: 0; }
-.focus-rec-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; }
-.focus-rec-row { display: flex; align-items: center; gap: 12px; padding: 10px 4px; border-bottom: 1px solid var(--border); }
-.fr-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--primary); }
-.fr-dot.fr-stopwatch { background: var(--faint); }
-.fr-main { flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.fr-dur { font-size: 14px; font-weight: 600; color: var(--text); }
-.fr-sub { font-size: 12px; color: var(--faint); }
-.fr-time { flex: none; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.timer-time { font-family: var(--font-mono); font-size: 34px; font-weight: 400; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.timer-on { position: absolute; bottom: 34px; max-width: 130px; text-align: center; font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.timer-setup { display: flex; flex-direction: column; gap: 8px; }
+.timer-setup[hidden] { display: none; }
+.timer-mode { align-self: center; }
+.timer-mode button { padding: 5px 12px; font-size: 12px; }
+.timer-lengths { display: flex; align-items: center; gap: 4px; }
+.timer-lengths[hidden] { display: none; }
+.timer-lengths button {
+  flex: 1 1 auto; height: 28px; border: 1px solid var(--border); border-radius: 7px;
+  background: var(--bg); color: var(--muted); font-size: 12px; cursor: pointer;
+}
+.timer-lengths button.on { border-color: var(--astral); color: var(--text); background: var(--hover); }
+.timer-custom {
+  flex: 0 0 46px; width: 46px; height: 28px; border: 1px solid var(--border);
+  border-radius: 7px; background: var(--bg); color: var(--text); font: inherit;
+  font-size: 12px; text-align: center;
+  /* the spinner arrows steal half the field at this size */
+  -moz-appearance: textfield; appearance: textfield;
+}
+.timer-custom::-webkit-outer-spin-button,
+.timer-custom::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.timer-field { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--faint); }
+.timer-target, .timer-note {
+  flex: 1 1 auto; min-width: 0; height: 28px; border: 1px solid var(--border);
+  border-radius: 7px; background: var(--bg); color: var(--text); font: inherit;
+  font-size: 12px; padding: 0 8px;
+}
+.timer-note::placeholder { color: var(--faint); }
+
+.timer-controls { display: flex; align-items: center; gap: 8px; }
+.timer-go, .timer-stop {
+  flex: 1 1 auto; height: 34px; border-radius: 999px; border: none;
+  background: var(--primary); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.timer-go:hover, .timer-stop:hover { background: var(--primary-hover); box-shadow: 0 6px 22px -8px var(--primary); }
+.timer-go[hidden], .timer-stop[hidden], .timer-drop[hidden] { display: none; }
+.timer-go { background: var(--bg); color: var(--text); border: 1px solid var(--border-2); }
+.timer-go:hover { background: var(--hover); box-shadow: none; }
+.timer-drawer[data-state="idle"] .timer-go { background: var(--primary); color: #fff; border: none; }
+.timer-drawer[data-state="idle"] .timer-go:hover { background: var(--primary-hover); }
+.timer-drop {
+  flex: none; height: 34px; padding: 0 10px; border: none; border-radius: 999px;
+  background: none; color: var(--faint); font-size: 12px; cursor: pointer;
+}
+.timer-drop:hover { color: var(--warn); }
+.timer-error { margin: 0; font-size: 12px; color: var(--warn); }
+.timer-error[hidden] { display: none; }
+
+.timer-recent { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; max-height: 132px; overflow-y: auto; }
+.timer-recent:empty { display: none; }
+.timer-rec { display: flex; align-items: baseline; gap: 8px; padding: 5px 0; border-top: 1px solid var(--border); font-size: 12px; }
+.tr-dur { font-weight: 600; font-variant-numeric: tabular-nums; }
+.tr-sub { flex: 1 1 auto; min-width: 0; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr-at { color: var(--faint); font-variant-numeric: tabular-nums; }
+
+/* the rail/nav toggle carries the only always-visible sign of a running timer */
+.timer-toggle { position: relative; background: none; border: none; cursor: pointer; }
+.timer-pip { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--astral); box-shadow: 0 0 6px var(--glow); opacity: 0; transition: opacity .2s ease; }
+.timer-toggle.timer-running .timer-pip { opacity: 1; animation: timer-pulse 2s ease-in-out infinite; }
+.timer-toggle.timer-paused .timer-pip { opacity: .55; background: var(--faint); box-shadow: none; }
+@keyframes timer-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+/* a per-target "start the timer on this" affordance (habit row, lesson head) */
+.timer-here {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  height: 26px; padding: 0 9px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg); color: var(--muted); font-size: 12px; cursor: pointer;
+}
+.timer-here:hover { border-color: var(--astral); color: var(--text); }
+.timer-here svg { width: 13px; height: 13px; }
+/* on a habit row the affordance is icon-only and stays quiet until hover */
+.hl-timer { flex: none; width: 26px; padding: 0; opacity: 0; transition: opacity .15s ease; }
+.habit-row:hover .hl-timer, .hl-timer:focus-visible { opacity: 1; }
+@media (max-width: 860px) { .hl-timer { opacity: 1; } }
+
+/* the fortnight chart the retired Focus page left behind (#75) */
+.retro-focus { margin-bottom: 18px; padding: 12px 14px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; }
+.retro-focus-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.retro-focus-sum { font-size: 12px; color: var(--faint); }
 
 /* ===== manage / items =================================================== */
 .items-list { display: flex; flex-direction: column; }
@@ -1740,9 +1815,9 @@ body {
   .content.habit-page .content-inner { max-width: 620px; margin: 0 auto; padding: 14px 16px 84px; }
   .detail.detail-empty, .detail.detail-illus { display: none; }
   .detail:not(.detail-empty) { position: fixed; inset: 0; z-index: 100; width: auto; height: auto; flex: none; border: none; }
-  .stat-grid, .focus-stat-grid { grid-template-columns: 1fr 1fr; }
-  .focus-layout { flex-direction: column; }
-  .focus-side { flex: none; width: auto; height: auto; border-left: none; border-top: 1px solid var(--border); }
+  .stat-grid { grid-template-columns: 1fr 1fr; }
+  /* the timer clears the bottom nav rather than hiding behind it */
+  .timer-drawer { left: 10px; right: 10px; width: auto; bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
   .cal-month { min-height: 0; }
   .cm-cell { min-height: 64px; }
   /* Week grid is dense; let it scroll horizontally rather than crush 7 columns. */

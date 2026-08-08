@@ -687,84 +687,161 @@ def test_core_surfaces(client, suite_state):
         "cross-origin POST /habits -> 403" + "  -- " + (str(r.status_code))
     )
 
-    # --- Focus sessions: persisted Pomodoro / Stopwatch stats (M5) ------------
-    r = c.get("/focus")
-    assert 'id="st-today-pomo">0<' in r.text, "focus starts at zero stats"
-    assert "No focus record yet" in r.text, "focus shows empty record state"
+    # --- Focus: one server-owned timer, no page (#75, #20) -------------------
+    # The drawer rides on every surface, so the shell is what carries it now.
+    shell = c.get("/today").text
+    assert 'id="timer-drawer"' in shell, "the timer drawer ships with the shell"
+    assert c.get("/focus").status_code == 404, "the Focus page is gone, not redirected"
+
+    state = c.get("/focus/timer").json()
+    assert state["run"] is None and state["overview"]["today_seconds"] == 0, (
+        "no timer running, nothing focused yet"
+    )
 
     nf_before = len(events_of("focus_session_recorded"))
-    r = c.post(
-        "/focus/session",
-        data={"mode": "pomo", "seconds": 1500},
-        headers={"X-Partial": "1"},
+    r = c.post("/focus/timer/start",
+               data={"token": "tok-a", "mode": "countdown", "target_seconds": 1500},
+               headers={"X-Partial": "1"})
+    assert r.status_code == 200 and r.json()["ok"] is True, "timer start JSON ok"
+    run = r.json()["run"]
+    assert run["mode"] == "countdown" and run["target_seconds"] == 1500, (
+        "the run carries the length the user chose" + "  -- " + str(run)
     )
-    assert r.status_code == 200 and r.json()["ok"] is True, "focus session JSON ok"
-    body = r.json()
-    assert body["overview"]["today_pomo"] == 1, (
-        "focus overview today_pomo=1" + "  -- " + (str(body["overview"]))
+    assert run["elapsed"] < 5, "a fresh run has barely elapsed"
+
+    # the token is the idempotency key: a retried start must not open a second
+    # timer, and a DIFFERENT token while one runs is a mistake, not a second run
+    same = c.post("/focus/timer/start",
+                  data={"token": "tok-a", "mode": "countdown", "target_seconds": 1500},
+                  headers={"X-Partial": "1"}).json()
+    assert same["run"]["id"] == run["id"], "retrying a start reuses the run"
+    second = c.post("/focus/timer/start",
+                    data={"token": "tok-b", "mode": "open"},
+                    headers={"X-Partial": "1"})
+    assert second.status_code == 422 and "already running" in second.json()["error"], (
+        "a second concurrent timer is refused"
     )
-    assert (
-        body["overview"]["today_focus"]["value"] == 25
-        and body["overview"]["today_focus"]["unit"] == "m"
-    ), "focus overview today_focus 25m"
-    assert body["overview"]["total_pomo"] == 1, "focus overview total_pomo=1"
-    assert (
-        body["record"]["mode"] == "pomo" and body["record"]["duration_label"] == "25m"
-    ), "focus record returned (25m pomo)"
+
+    # pause/resume is server state too, so it survives the page load that the
+    # drawer is designed to outlive
+    paused = c.post("/focus/timer/pause", data={"token": "tok-a", "paused": 1},
+                    headers={"X-Partial": "1"}).json()
+    assert paused["run"]["paused"] is True, "the run reports itself paused"
+    resumed = c.post("/focus/timer/pause", data={"token": "tok-a", "paused": 0},
+                     headers={"X-Partial": "1"}).json()
+    assert resumed["run"]["paused"] is False, "resume clears the pause"
+
+    def _backdate(token, seconds):
+        """Move a run's start into the past — the only way to make the SERVER's
+        clock produce a duration inside a test, which is the point: nothing in
+        the request can set one."""
+        from datetime import datetime as _dtm, timedelta as _td
+
+        from app.db import now_iso as _ni
+        started = (_dtm.fromisoformat(_ni())
+                   - _td(seconds=seconds)).isoformat(timespec="seconds")
+        cx = get_conn()
+        try:
+            with cx:
+                cx.execute("UPDATE focus_runs SET started_at = ?, paused_seconds = 0, "
+                           "paused_at = NULL WHERE client_token = ?", (started, token))
+        finally:
+            cx.close()
+
+    # a countdown left running past its length records the length, not the wait
+    _backdate("tok-a", 40 * 60)
+    done = c.post("/focus/timer/finish", data={"token": "tok-a"},
+                  headers={"X-Partial": "1"})
+    assert done.status_code == 200, "finish accepted"
+    body = done.json()
+    assert body["run"] is None, "finishing clears the running timer"
+    assert body["recorded"]["seconds"] == 1500, (
+        "a 25m countdown records 25m however long the tab stayed open"
+        + "  -- " + str(body["recorded"])
+    )
+    assert body["recorded"]["duration_label"] == "25m", "record row reads 25m"
+    assert body["overview"]["today_focus"]["value"] == 25, "today's focus is 25m"
     assert len(events_of("focus_session_recorded")) == nf_before + 1, (
         "focus_session_recorded event appended"
     )
 
-    # stopwatch adds focus duration but NOT a pomo
-    r = c.post(
-        "/focus/session",
-        data={"mode": "stopwatch", "seconds": 600},
-        headers={"X-Partial": "1"},
-    )
-    ov = r.json()["overview"]
-    assert ov["total_pomo"] == 1 and ov["today_focus"]["value"] == 35, (
-        "stopwatch adds focus, not pomo"
+    # a retried finish returns the same session instead of counting it twice
+    again = c.post("/focus/timer/finish", data={"token": "tok-a"},
+                   headers={"X-Partial": "1"}).json()
+    assert again["recorded"]["id"] == body["recorded"]["id"], "finish is idempotent"
+    assert len(events_of("focus_session_recorded")) == nf_before + 1, (
+        "the retried finish appends no second event"
     )
 
-    # invalid durations / modes rejected (Mode B 422)
-    r = c.post(
-        "/focus/session",
-        data={"mode": "pomo", "seconds": 0},
-        headers={"X-Partial": "1"},
+    # open-ended tracking: no target length, duration is whatever elapsed
+    c.post("/focus/timer/start", data={"token": "tok-c", "mode": "open"},
+           headers={"X-Partial": "1"})
+    _backdate("tok-c", 35 * 60)
+    open_done = c.post("/focus/timer/finish", data={"token": "tok-c"},
+                       headers={"X-Partial": "1"}).json()
+    assert 2100 <= open_done["recorded"]["seconds"] <= 2105, (
+        "open tracking records the elapsed wall time"
+        + "  -- " + str(open_done["recorded"]["seconds"])
     )
-    assert r.status_code == 422 and r.json()["ok"] is False, (
-        "focus zero duration -> 422"
-    )
-    r = c.post(
-        "/focus/session",
-        data={"mode": "nope", "seconds": 60},
-        headers={"X-Partial": "1"},
-    )
-    assert r.status_code == 422, "focus bad mode -> 422"
-
-    # Mode A (no-JS) records the session and 303-redirects back to /focus
-    r = c.post(
-        "/focus/session",
-        data={"mode": "pomo", "seconds": 1500, "return_to": "/focus"},
-        follow_redirects=False,
-    )
-    assert r.status_code == 303 and r.headers.get("location") == "/focus", (
-        "focus Mode A 303 -> /focus"
+    ov = open_done["overview"]
+    assert ov["today_focus"]["value"] == 1 and ov["today_focus"]["unit"] == "h", (
+        "an hour focused today, spelled in hours" + "  -- " + str(ov["today_focus"])
     )
 
-    # persisted rows now surface on the page (record row + updated total)
-    r = c.get("/focus")
-    assert 'class="focus-rec-row"' in r.text and "25m" in r.text, (
-        "focus page shows a record row"
+    # a mis-start is not focused time: discard leaves no session behind
+    c.post("/focus/timer/start", data={"token": "tok-d", "mode": "open"},
+           headers={"X-Partial": "1"})
+    dropped = c.post("/focus/timer/discard", data={"token": "tok-d"},
+                     headers={"X-Partial": "1"}).json()
+    assert dropped["run"] is None, "discard stops the timer"
+    assert dropped["overview"]["today_seconds"] == open_done["overview"]["today_seconds"], (
+        "a discarded timer records nothing"
     )
-    assert 'id="st-total-pomo">2<' in r.text, "focus page total pomo = 2"
+    assert len(events_of("focus_session_recorded")) == nf_before + 2, (
+        "exactly two spans were recorded"
+    )
+
+    # rejected shapes (Mode B 422)
+    assert c.post("/focus/timer/start", data={"token": "tok-e", "mode": "nope"},
+                  headers={"X-Partial": "1"}).status_code == 422, "bad mode -> 422"
+    assert c.post("/focus/timer/start",
+                  data={"token": "tok-e", "mode": "countdown", "target_seconds": 5},
+                  headers={"X-Partial": "1"}).status_code == 422, "5s countdown -> 422"
+    assert c.post("/focus/timer/finish", data={"token": "tok-unknown"},
+                  headers={"X-Partial": "1"}).status_code == 422, (
+        "finishing a timer that never ran -> 422"
+    )
+
+    # the picker offers live targets only
+    targets = c.get("/focus/timer/targets").json()["targets"]
+    assert set(targets) == {"lesson", "habit", "task"}, "picker covers all three kinds"
+    assert any(t["title"] for t in targets["habit"]), "habits are pickable targets"
+
+    # a habit target lands the time on the habit, where the stats now live
+    hid = targets["habit"][0]["id"]
+    c.post("/focus/timer/start",
+           data={"token": "tok-h", "mode": "open", "habit_id": str(hid)},
+           headers={"X-Partial": "1"})
+    _backdate("tok-h", 600)
+    hrec = c.post("/focus/timer/finish", data={"token": "tok-h"},
+                  headers={"X-Partial": "1"}).json()["recorded"]
+    assert hrec["target"]["kind"] == "habit" and hrec["target"]["id"] == hid, (
+        "the session names the habit it was spent on"
+    )
+    hpage = c.get(f"/habit/{hid}").text
+    assert "focused" in hpage and 'data-timer-target="habit:' in hpage, (
+        "the habit page shows its focused time and can start the timer"
+    )
 
     # --- statistics & charts (M2): the recorded sessions feed the charts ------
     from app.services import focus as _focus, stats as _stats  # noqa: E402
 
-    assert 'class="ec-bars"' in r.text and "Last 14 days" in r.text, (
-        "/focus renders the 14-day bar chart"
+    # the fortnight chart moved to Retro with the Focus page's retirement (#75)
+    retro = c.get("/retro").text
+    assert 'class="ec-bars"' in retro and "Last 14 days" in retro, (
+        "/retro renders the 14-day focus chart"
     )
+    assert "all time" in retro, "/retro carries the focus totals line"
     cx = get_conn()
     try:
         daily = _focus.daily_totals(cx)
@@ -773,10 +850,9 @@ def test_core_surfaces(client, suite_state):
     finally:
         cx.close()
     assert len(daily) == 14, "daily_totals spans 14 days" + "  -- " + (str(len(daily)))
-    assert daily[-1]["minutes"] == 60 and daily[-1]["pomos"] == 2, (
-        "daily_totals reflects today's sessions (60m / 2 pomo)"
-        + "  -- "
-        + (f"{daily[-1]['minutes']}m/{daily[-1]['pomos']}p")
+    assert daily[-1]["minutes"] == 70, (
+        "daily_totals reflects today's sessions (25m + 35m + 10m)"
+        + "  -- " + f"{daily[-1]['minutes']}m"
     )
     assert _focus.focus_day_streak(daily) >= 1, "focus_day_streak counts today"
     assert len(ym) == 52 and all(len(col) == 7 for col in ym), (
@@ -785,8 +861,8 @@ def test_core_surfaces(client, suite_state):
     assert sum(1 for col in ym for cell in col if cell["is_today"]) == 1, (
         "year_map marks exactly one 'today'"
     )
-    assert len(pulse) == 7 and pulse[-1]["focus_min"] == 60, (
-        "week_pulse spans 7 days; today reflects 60m focus"
+    assert len(pulse) == 7 and pulse[-1]["focus_min"] == 70, (
+        "week_pulse spans 7 days; today reflects 70m focus"
     )
     assert 'class="sky-strip"' in c.get("/today").text, (
         "/today carries the sky-strip constellation"
@@ -798,13 +874,13 @@ def test_core_surfaces(client, suite_state):
 
     # cross-origin focus POST rejected
     r = c.post(
-        "/focus/session",
-        data={"mode": "pomo", "seconds": 60},
+        "/focus/timer/start",
+        data={"token": "tok-evil", "mode": "open"},
         headers={"Origin": "http://evil.example", "Host": "testserver"},
         follow_redirects=False,
     )
     assert r.status_code == 403, (
-        "cross-origin POST /focus/session -> 403" + "  -- " + (str(r.status_code))
+        "cross-origin POST /focus/timer/start -> 403" + "  -- " + (str(r.status_code))
     )
 
     # --- Export: one-button JSONL backup of the event ledger (M4, sec18.1) -----
@@ -1610,59 +1686,78 @@ def test_core_surfaces(client, suite_state):
     # --- Focus ↔ Lesson link (schema v8): a session names the lesson studied
     from app.services import focus as _focus
 
-    rF = c.post(
-        "/focus/session",
-        data={"mode": "pomo", "seconds": "1500", "lesson_id": str(lid)},
-        follow_redirects=False,
-    )
-    assert rF.status_code == 303, (
-        "focus session with a lesson is accepted" + "  -- " + (str(rF.status_code))
-    )
+    def _run_span(token, seconds, **target):
+        """Start, backdate and finish one timer — the only way to record time
+        now that the duration is the server's to compute (#75)."""
+        data = {"token": token, "mode": "open"}
+        data.update(target)
+        started = c.post("/focus/timer/start", data=data, headers={"X-Partial": "1"})
+        assert started.status_code == 200, (
+            "timer start accepted" + "  -- " + str(started.status_code)
+        )
+        cx = get_conn()
+        try:
+            from datetime import datetime as _dtm, timedelta as _td
+
+            from app.db import now_iso as _ni
+            with cx:
+                cx.execute("UPDATE focus_runs SET started_at = ? WHERE client_token = ?",
+                           ((_dtm.fromisoformat(_ni()) - _td(seconds=seconds))
+                            .isoformat(timespec="seconds"), token))
+        finally:
+            cx.close()
+        return c.post("/focus/timer/finish", data={"token": token},
+                      headers={"X-Partial": "1"}).json()
+
+    lesson_span = _run_span("les-a", 1500, lesson_id=str(lid))
+    assert lesson_span["recorded"]["target"] == {
+        "kind": "lesson", "id": lid, "title": "Sparse Transformers Study"
+    }, "the session names the lesson studied" + "  -- " + str(lesson_span["recorded"])
     fconn = get_conn()
     try:
         stored = fconn.execute(
             "SELECT COUNT(*) AS n FROM focus_sessions WHERE lesson_id = ?", (lid,)
         ).fetchone()["n"]
         assert stored == 1, "focus session stores the lesson_id"
-        recs = _focus.recent_sessions(fconn)
-        assert any(r["lesson_title"] == "Sparse Transformers Study" for r in recs), (
-            "focus record surfaces the linked lesson title"
+        assert _focus.lesson_total(fconn, lid)["label"] == "25m", (
+            "the per-lesson total is where the lesson lives"
         )
     finally:
         fconn.close()
 
-    c.post(
-        "/focus/session",
-        data={"mode": "pomo", "seconds": "60", "lesson_id": "999999"},
-        follow_redirects=False,
-    )
-    c.post(
-        "/focus/session",
-        data={"mode": "pomo", "seconds": "60", "lesson_id": "junk"},
-        follow_redirects=False,
-    )
+    # a stale or junk picker value attaches the span to nothing rather than dangling
+    _run_span("les-bad", 60, lesson_id="999999")
+    _run_span("les-junk", 60, lesson_id="junk")
     fconn = get_conn()
     try:
         bad = fconn.execute(
             "SELECT COUNT(*) AS n FROM focus_sessions WHERE lesson_id = 999999"
         ).fetchone()["n"]
         assert bad == 0, "nonexistent lesson_id is nulled, not stored"
-        assert _focus.overview(fconn)["total_pomo"] >= 3, (
-            "a plain focus session (no lesson) still records"
+        assert _focus.overview(fconn)["today_sessions"] >= 3, (
+            "an unattached focus session still records"
         )
     finally:
         fconn.close()
+
+    # two targets at once would double-count the same attention
+    two = c.post("/focus/timer/start",
+                 data={"token": "les-two", "mode": "open", "lesson_id": str(lid),
+                       "habit_id": "1"},
+                 headers={"X-Partial": "1"})
+    assert two.status_code == 422 and "one target" in two.json()["error"], (
+        "a timer attaches to one target at most" + "  -- " + str(two.status_code)
+    )
 
     assert any(
         x["type"] == "focus_session_recorded" and x["payload"].get("lesson_id") == lid
         for x in [_json.loads(y) for y in c.post("/export/jsonl").text.splitlines()]
     ), "focus event payload carries lesson_id"
 
-    rfocus = c.get("/focus")
-    assert (
-        'id="focus-lesson"' in rfocus.text
-        and "Sparse Transformers Study" in rfocus.text
-    ), "focus page renders the lesson picker"
+    rlearn = c.get("/learn?lesson=%d" % lid)
+    assert 'data-timer-target="lesson:%d"' % lid in rlearn.text, (
+        "the lesson page starts the timer on itself"
+    )
 
     # --- Smart quick-add + command palette (M3) ---------------------------------
     from app.services import quickadd as _qa
@@ -1699,9 +1794,16 @@ def test_core_surfaces(client, suite_state):
     )
     from app.templating import TASKS_HOME
 
-    assert any(v["href"] == TASKS_HOME for v in _pj["views"]) and any(
-        v["href"] == "/focus" for v in _pj["views"]
-    ), "/palette.json views expose Tasks + Focus destinations"
+    assert any(v["href"] == TASKS_HOME for v in _pj["views"]), (
+        "/palette.json views expose the Tasks destination"
+    )
+    # Focus left the views list with its page (#75): it is an action now
+    assert not any(v["href"] == "/focus" for v in _pj["views"]), (
+        "no Focus destination survives in the palette"
+    )
+    assert any(a["shortcut"] == "f" for a in _pj["actions"]), (
+        "the palette can open the timer instead"
+    )
 
     assert 'name="smart" value="1"' in c.get("/today").text, (
         "quick-add form opts into smart parsing (smart=1)"

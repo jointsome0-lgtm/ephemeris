@@ -1,9 +1,28 @@
 {% extends "base.html" %}
+{% import "_charts.html" as ch %}
 {% block title %}Retro · Ephemeris{% endblock %}
 {% block content %}
 <header class="page-head"><h1>Retro</h1></header>
 
 {% if flash %}<p class="flash" role="status">{{ flash }}</p>{% endif %}
+
+{# The one aggregate that survived the Focus page (#75): how the last fortnight
+   actually went. Everything per-target now lives on the target itself, and
+   looking back is exactly what this surface is for. `is defined` guards the
+   live process, which renders this template with the pre-#75 context. #}
+{% if focus_daily is defined %}
+<section class="retro-focus">
+  <div class="retro-focus-head">
+    <span class="section-title" style="margin:0">Focus</span>
+    <span class="retro-focus-sum">
+      {{ focus_ov.today_focus.value }}{{ focus_ov.today_focus.unit }} today ·
+      {{ focus_ov.total_focus.value }}{{ focus_ov.total_focus.unit }} all time
+      {%- if focus_streak %} · {{ focus_streak }}-day streak{% endif %}
+    </span>
+  </div>
+  {{ ch.bar_chart(focus_daily, label='Last 14 days') }}
+</section>
+{% endif %}
 
 {# Precision vocabulary + the period spelling each one expects. The option
    labels double as the format hints so the form needs no JS to explain

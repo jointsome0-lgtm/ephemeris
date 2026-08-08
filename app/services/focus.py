@@ -1,54 +1,345 @@
-"""Focus sessions — persisted Pomodoro / Stopwatch records (premium Focus view).
+"""Focus time — one timer, server-owned, attached to what it was spent on (#75).
 
-The Focus page timer is front-end JS; when a Pomodoro completes (or the user ends
-a stopwatch span) the browser POSTs the finished session here so the Overview
-stats (Today's/Total Pomo + Focus duration) and the Focus Record list stop being
-static 0s. A session is one finished span of focused time; `mode='pomo'` rows
-also count as one Pomodoro. Stats are READ-ONLY derived (sec14): we sum rows, we
-never recompute them elsewhere. Each write appends its event (sec14.1) in one txn.
+Two rows, two lifetimes. A **run** (`focus_runs`) is the timer that is going
+right now: at most one, created when the user starts it, holding nothing but
+`started_at` and how long it has been paused. A **session** (`focus_sessions`)
+is a finished span, and the only thing statistics ever read.
+
+The elapsed time is derived here from `started_at`, never sent by the browser
+(#20): the drawer lives on every page, so its clock cannot survive in a
+`setInterval` closure, and a client-supplied duration would be a number the
+server has no way to check. `client_token` makes both edges idempotent — a
+retried start reuses the run, a retried finish returns the session the first
+call recorded instead of counting the span twice.
+
+A session names at most one target — lesson, habit or task — so the time lands
+where it is already meaningful; there is no global Focus dashboard to feed.
+Stats stay READ-ONLY derived (sec14): we sum rows, never recompute them
+elsewhere, and each write appends its event in one txn (sec14.1).
 """
 from __future__ import annotations
 
 import sqlite3
-from datetime import date as _date, timedelta
+from datetime import date as _date, datetime, timedelta
 
 from .. import limits
 from ..db import append_event, now_iso, pretty_date, today_str
 
-MODES = ("pomo", "stopwatch")
-# A single session can't reasonably exceed a day; clamp bogus client values so a
-# fat-fingered/replayed POST can't poison the all-time totals.
+MODES = ("countdown", "open")
+"""'countdown' runs to a length the user chose; 'open' just tracks until stopped.
+
+The pre-#75 vocabulary was ('pomo','stopwatch') — a fixed 25-minute cycle and a
+free-running clock. Schema v19 converted those rows; historical
+`focus_session_recorded` payloads keep the old words, which is why nothing here
+may assume a stored event's mode is one of these two.
+"""
+
+# A single session can't reasonably exceed a day: clamp a run that was started
+# and forgotten (laptop closed on Friday, reopened on Monday) so it can't poison
+# the totals with a weekend of "focus".
 MAX_SECONDS = 24 * 60 * 60
+MIN_TARGET_SECONDS = 60
+MAX_TARGET_SECONDS = 8 * 60 * 60
+
+# target kind -> (table, id column on focus_sessions/focus_runs, liveness filter)
+_TARGETS = {
+    "lesson": ("lessons", "lesson_id", "archived_at IS NULL"),
+    "habit": ("routine_items", "habit_id", "active = 1"),
+    "task": ("tasks", "task_id", "completed_at IS NULL"),
+}
+TARGET_KINDS = tuple(_TARGETS)
 
 
 class FocusError(ValueError):
-    """A focus-session write was rejected (bad mode / non-positive duration)."""
+    """A focus write was rejected (bad mode/duration, or no such timer)."""
+
+
+# --- targets ---------------------------------------------------------------
+
+
+def _coerce_target(conn: sqlite3.Connection, kind: str, value) -> int | None:
+    """Accept only a positive id pointing at a real, live row of `kind`.
+
+    Anything else — blank, junk, deleted, archived, an already-finished task —
+    stores as NULL, so a stale picker value attaches the time to nothing rather
+    than dangling. Liveness is checked at write time only: a lesson archived
+    later keeps the sessions it earned.
+    """
+    table, _column, alive = _TARGETS[kind]
+    try:
+        target_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    if target_id <= 0:
+        return None
+    row = conn.execute(
+        f"SELECT 1 FROM {table} WHERE id = ? AND {alive}", (target_id,)
+    ).fetchone()
+    return target_id if row else None
+
+
+def _resolve_targets(conn: sqlite3.Connection, lesson_id=None, habit_id=None,
+                     task_id=None) -> dict:
+    """The three target columns for a write. At most one may survive coercion —
+    a span of attention is spent on one thing, and letting two through would
+    double-count it in every per-target total."""
+    resolved = {
+        "lesson_id": _coerce_target(conn, "lesson", lesson_id),
+        "habit_id": _coerce_target(conn, "habit", habit_id),
+        "task_id": _coerce_target(conn, "task", task_id),
+    }
+    if sum(1 for v in resolved.values() if v is not None) > 1:
+        raise FocusError("a timer attaches to one target at most")
+    return resolved
+
+
+def pickable_targets(conn: sqlite3.Connection) -> dict:
+    """What the drawer's target picker offers: live lessons, active habits, open
+    tasks. Fetched when the drawer opens rather than rendered into every page —
+    the timer is global, but the picker's contents are not worth three extra
+    queries on every request that only wanted a task list."""
+    def rows(sql: str) -> list[dict]:
+        return [{"id": r["id"], "title": r["title"]} for r in conn.execute(sql)]
+
+    return {
+        "lesson": rows(
+            "SELECT id, title FROM lessons WHERE archived_at IS NULL "
+            "ORDER BY (status = 'studying') DESC, title COLLATE NOCASE"
+        ),
+        "habit": rows(
+            "SELECT id, title FROM routine_items WHERE active = 1 "
+            "ORDER BY sort_order, id"
+        ),
+        "task": rows(
+            "SELECT id, title FROM tasks WHERE completed_at IS NULL "
+            "ORDER BY due_date IS NULL, due_date, sort_order, id LIMIT 100"
+        ),
+    }
+
+
+def _target_view(r: sqlite3.Row) -> dict | None:
+    """{'kind','id','title'} for whichever target a run/session row names."""
+    for kind, (_table, column, _alive) in _TARGETS.items():
+        if r[column] is not None:
+            return {"kind": kind, "id": r[column], "title": r[f"{kind}_title"]}
+    return None
+
+
+# The join that carries every possible target's title alongside the row, so one
+# view function can name what the time was spent on. LEFT JOINs keep unattached
+# rows, and the titles are read live — a renamed habit renames its history.
+_TARGET_JOIN = (
+    "LEFT JOIN lessons l ON l.id = fs.lesson_id "
+    "LEFT JOIN routine_items ri ON ri.id = fs.habit_id "
+    "LEFT JOIN tasks tk ON tk.id = fs.task_id "
+)
+_TARGET_TITLES = (
+    "l.title AS lesson_title, ri.title AS habit_title, tk.title AS task_title "
+)
+
+
+# --- the running timer -----------------------------------------------------
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value) if value else None
+    except ValueError:
+        return None
+
+
+def _elapsed_seconds(row: sqlite3.Row, at: datetime | None = None) -> int:
+    """Wall time since the run started, minus everything it spent paused.
+
+    The only clock that counts. `at` is injectable so a finish can price the
+    span with the same timestamp it stores.
+    """
+    started = _parse_iso(row["started_at"])
+    if started is None:
+        return 0
+    at = at or _parse_iso(now_iso()) or started
+    paused = int(row["paused_seconds"] or 0)
+    paused_at = _parse_iso(row["paused_at"])
+    if paused_at is not None:
+        paused += max(0, int((at - paused_at).total_seconds()))
+    return max(0, min(int((at - started).total_seconds()) - paused, MAX_SECONDS))
+
+
+def _run_view(row: sqlite3.Row | None, at: datetime | None = None) -> dict | None:
+    """The whole state the drawer needs to render itself after any page load."""
+    if row is None:
+        return None
+    elapsed = _elapsed_seconds(row, at)
+    target_seconds = row["target_seconds"]
+    return {
+        "id": row["id"],
+        "mode": row["mode"],
+        "token": row["client_token"],
+        "target_seconds": target_seconds,
+        "started_at": row["started_at"],
+        "paused": row["paused_at"] is not None,
+        "elapsed": elapsed,
+        "remaining": max(0, target_seconds - elapsed) if target_seconds else None,
+        "done": bool(target_seconds and elapsed >= target_seconds),
+        "note": row["note"],
+        "target": _target_view(row),
+    }
+
+
+_RUN_SELECT = (
+    "SELECT fs.*, " + _TARGET_TITLES + "FROM focus_runs fs " + _TARGET_JOIN
+)
+
+
+def active_run(conn: sqlite3.Connection) -> dict | None:
+    """The timer that is running (or paused), if any. At most one exists."""
+    row = conn.execute(_RUN_SELECT + "ORDER BY fs.id LIMIT 1").fetchone()
+    return _run_view(row)
+
+
+def _run_by_token(conn: sqlite3.Connection, token: str) -> sqlite3.Row | None:
+    return conn.execute(
+        _RUN_SELECT + "WHERE fs.client_token = ?", (token,)
+    ).fetchone()
+
+
+def _clean_token(token) -> str:
+    token = (token or "").strip()
+    if not token or len(token) > 64:
+        raise FocusError("invalid timer token")
+    return token
+
+
+def _clean_target_seconds(mode: str, value) -> int | None:
+    """A countdown's chosen length. Open-ended tracking has none — and a bogus
+    length is rejected rather than silently rounded, because that number is the
+    user's whole intent for the session."""
+    if mode == "open":
+        return None
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        raise FocusError("choose how long the timer should run")
+    if not (MIN_TARGET_SECONDS <= seconds <= MAX_TARGET_SECONDS):
+        raise FocusError("timer length must be between 1 minute and 8 hours")
+    return seconds
+
+
+def start_run(conn: sqlite3.Connection, mode: str, token: str, *,
+              target_seconds=None, note: str | None = None,
+              lesson_id=None, habit_id=None, task_id=None) -> dict:
+    """Open the timer. Returns the run view; the same token returns the same run.
+
+    Starting is not journaled: an unfinished run is an intention, not a fact
+    about the day. The event is appended when the span is recorded.
+    """
+    token = _clean_token(token)
+    existing = _run_by_token(conn, token)
+    if existing is not None:
+        return _run_view(existing)
+    if mode not in MODES:
+        raise FocusError("unknown timer mode")
+    target_seconds = _clean_target_seconds(mode, target_seconds)
+    note = (note or "").strip() or None
+    limits.check(note, limits.FOCUS_NOTE, "focus note", FocusError)
+    targets = _resolve_targets(conn, lesson_id, habit_id, task_id)
+    if conn.execute("SELECT 1 FROM focus_runs LIMIT 1").fetchone():
+        raise FocusError("a timer is already running")
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO focus_runs (mode, target_seconds, note, started_at, "
+            "lesson_id, habit_id, task_id, client_token) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (mode, target_seconds, note, now_iso(), targets["lesson_id"],
+             targets["habit_id"], targets["task_id"], token),
+        )
+        run_id = cur.lastrowid
+    row = conn.execute(_RUN_SELECT + "WHERE fs.id = ?", (run_id,)).fetchone()
+    return _run_view(row)
+
+
+def set_run_paused(conn: sqlite3.Connection, token: str, paused: bool) -> dict:
+    """Pause or resume the run. Pausing stamps `paused_at`; resuming folds that
+    interval into `paused_seconds`, so elapsed time stays a pure function of
+    stored timestamps and survives a reload taken mid-pause."""
+    token = _clean_token(token)
+    row = _run_by_token(conn, token)
+    if row is None:
+        raise FocusError("that timer is no longer running")
+    if (row["paused_at"] is not None) == paused:
+        return _run_view(row)
+    with conn:
+        if paused:
+            conn.execute("UPDATE focus_runs SET paused_at = ? WHERE id = ?",
+                         (now_iso(), row["id"]))
+        else:
+            gap = 0
+            paused_at = _parse_iso(row["paused_at"])
+            now = _parse_iso(now_iso())
+            if paused_at is not None and now is not None:
+                gap = max(0, int((now - paused_at).total_seconds()))
+            conn.execute(
+                "UPDATE focus_runs SET paused_at = NULL, paused_seconds = ? "
+                "WHERE id = ?",
+                (int(row["paused_seconds"] or 0) + gap, row["id"]),
+            )
+    return _run_view(
+        conn.execute(_RUN_SELECT + "WHERE fs.id = ?", (row["id"],)).fetchone()
+    )
+
+
+def discard_run(conn: sqlite3.Connection, token: str) -> bool:
+    """Throw the running timer away without recording anything. True if there was
+    one. Not journaled — nothing happened that the ledger should remember."""
+    token = _clean_token(token)
+    with conn:
+        cur = conn.execute("DELETE FROM focus_runs WHERE client_token = ?", (token,))
+    return cur.rowcount > 0
+
+
+def finish_run(conn: sqlite3.Connection, token: str) -> dict:
+    """Stop the timer and record the span. Idempotent by token.
+
+    The duration is computed here, from the run's own timestamps. A countdown is
+    capped at the length the user asked for: a tab left open into minute 30 of a
+    25-minute timer means 25 minutes of intent, not 30 of credit.
+    """
+    token = _clean_token(token)
+    row = _run_by_token(conn, token)
+    if row is None:
+        recorded = session_by_token(conn, token)
+        if recorded is not None:
+            return recorded
+        raise FocusError("that timer is no longer running")
+    seconds = _elapsed_seconds(row, _parse_iso(now_iso()))
+    if row["target_seconds"]:
+        seconds = min(seconds, int(row["target_seconds"]))
+    if seconds <= 0:
+        discard_run(conn, token)
+        raise FocusError("nothing to record yet")
+    session_id = record_session(
+        conn, row["mode"], seconds,
+        target_seconds=row["target_seconds"], note=row["note"],
+        started_at=row["started_at"], token=token,
+        lesson_id=row["lesson_id"], habit_id=row["habit_id"], task_id=row["task_id"],
+        run_id=row["id"],
+    )
+    return get_session_view(conn, session_id)
 
 
 # --- write -----------------------------------------------------------------
 
 
-def _coerce_lesson_id(conn: sqlite3.Connection, value) -> int | None:
-    """A focus session may name the lesson being studied. Accept only a positive id
-    that points at a real, non-archived lesson; anything else (blank, junk, deleted,
-    archived) stores as NULL so a bogus/stale value can't dangle."""
-    try:
-        lesson_id = int(value)
-    except (TypeError, ValueError):
-        return None
-    if lesson_id <= 0:
-        return None
-    row = conn.execute(
-        "SELECT 1 FROM lessons WHERE id = ? AND archived_at IS NULL", (lesson_id,)
-    ).fetchone()
-    return lesson_id if row else None
-
-
-def record_session(conn: sqlite3.Connection, mode: str, seconds, note: str | None = None,
-                   lesson_id=None) -> int:
-    """Persist one finished focus session; returns its id. Row + event in one txn."""
+def record_session(conn: sqlite3.Connection, mode: str, seconds, *,
+                   target_seconds=None, note: str | None = None,
+                   started_at: str | None = None, token: str | None = None,
+                   lesson_id=None, habit_id=None, task_id=None,
+                   run_id: int | None = None) -> int:
+    """Persist one finished span; returns its id. Row, run deletion and event in
+    one txn — the run must not outlive the session it became, and a session must
+    not exist without its ledger entry."""
     if mode not in MODES:
-        raise FocusError("unknown focus mode")
+        raise FocusError("unknown timer mode")
     try:
         seconds = int(seconds)
     except (TypeError, ValueError):
@@ -58,19 +349,22 @@ def record_session(conn: sqlite3.Connection, mode: str, seconds, note: str | Non
     seconds = min(seconds, MAX_SECONDS)
     note = (note or "").strip() or None
     limits.check(note, limits.FOCUS_NOTE, "focus note", FocusError)
-    lesson_id = _coerce_lesson_id(conn, lesson_id)
+    targets = _resolve_targets(conn, lesson_id, habit_id, task_id)
     ts = now_iso()
-    day = today_str()
     with conn:
         cur = conn.execute(
-            "INSERT INTO focus_sessions (mode, seconds, note, date, ended_at, created_at, lesson_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (mode, seconds, note, day, ts, ts, lesson_id),
+            "INSERT INTO focus_sessions (mode, seconds, target_seconds, note, date, "
+            "started_at, ended_at, created_at, lesson_id, habit_id, task_id, client_token) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (mode, seconds, target_seconds, note, today_str(), started_at, ts, ts,
+             targets["lesson_id"], targets["habit_id"], targets["task_id"], token),
         )
         session_id = cur.lastrowid
+        if run_id is not None:
+            conn.execute("DELETE FROM focus_runs WHERE id = ?", (run_id,))
         append_event(conn, "focus_session_recorded",
                      {"session_id": session_id, "mode": mode, "seconds": seconds,
-                      "lesson_id": lesson_id})
+                      "target_seconds": target_seconds, **targets})
     return session_id
 
 
@@ -111,32 +405,39 @@ def _time_label(iso: str | None) -> str:
 
 # --- reads -----------------------------------------------------------------
 
+# Pre-#75 rows keep their own words (schema v19 converted the table, but a
+# database restored from an older export can still surface them through the
+# audit stream), so the map answers for four modes and the lookup has a default.
+_MODE_LABELS = {"countdown": "Timer", "open": "Open",
+                "pomo": "Pomo", "stopwatch": "Stopwatch"}
+
 
 def overview(conn: sqlite3.Connection) -> dict:
-    """Today's + all-time Pomodoro count and focus duration (derived, sec14)."""
-    today = today_str()
+    """Today's and all-time focused time (derived, sec14).
+
+    The Pomodoro counts this used to headline are gone with the page that showed
+    them (#75): a count of 25-minute cycles measured the ritual, duration
+    measures the thing itself.
+    """
     row = conn.execute(
-        "SELECT "
-        "  COALESCE(SUM(CASE WHEN mode='pomo' AND date=? THEN 1 ELSE 0 END), 0) AS today_pomo, "
-        "  COALESCE(SUM(CASE WHEN date=? THEN seconds ELSE 0 END), 0)           AS today_sec, "
-        "  COALESCE(SUM(CASE WHEN mode='pomo' THEN 1 ELSE 0 END), 0)            AS total_pomo, "
-        "  COALESCE(SUM(seconds), 0)                                           AS total_sec "
-        "FROM focus_sessions",
-        (today, today),
+        "SELECT COALESCE(SUM(seconds), 0) AS today_sec, COUNT(*) AS today_n "
+        "FROM focus_sessions WHERE date = ?",
+        (today_str(),),
+    ).fetchone()
+    total = conn.execute(
+        "SELECT COALESCE(SUM(seconds), 0) AS sec FROM focus_sessions"
     ).fetchone()
     return {
-        "today_pomo": row["today_pomo"],
         "today_focus": _dur(row["today_sec"]),
-        "total_pomo": row["total_pomo"],
-        "total_focus": _dur(row["total_sec"]),
+        "today_seconds": row["today_sec"],
+        "today_sessions": row["today_n"],
+        "total_focus": _dur(total["sec"]),
+        "total_seconds": total["sec"],
     }
 
 
-# SELECT that carries the linked lesson's title alongside the session row, so a
-# record row can name what was studied. LEFT JOIN keeps unattached sessions.
 _RECORD_SELECT = (
-    "SELECT fs.*, l.title AS lesson_title "
-    "FROM focus_sessions fs LEFT JOIN lessons l ON l.id = fs.lesson_id "
+    "SELECT fs.*, " + _TARGET_TITLES + "FROM focus_sessions fs " + _TARGET_JOIN
 )
 
 
@@ -144,17 +445,17 @@ def _record_view(r: sqlite3.Row) -> dict:
     return {
         "id": r["id"],
         "mode": r["mode"],
-        "mode_label": "Pomo" if r["mode"] == "pomo" else "Stopwatch",
+        "mode_label": _MODE_LABELS.get(r["mode"], "Focus"),
         "duration_label": _dur_label(r["seconds"]),
+        "seconds": r["seconds"],
         "time_label": _time_label(r["ended_at"]),
         "date": r["date"],
-        "lesson_id": r["lesson_id"],
-        "lesson_title": r["lesson_title"],
+        "target": _target_view(r),
     }
 
 
-def recent_sessions(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
-    """Most-recent finished sessions, newest first — the Focus Record list."""
+def recent_sessions(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
+    """Most-recent finished spans, newest first — what the drawer lists."""
     rows = conn.execute(
         _RECORD_SELECT + "ORDER BY fs.ended_at DESC, fs.id DESC LIMIT ?",
         (limit,),
@@ -163,22 +464,23 @@ def recent_sessions(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
 
 
 def get_session_view(conn: sqlite3.Connection, session_id: int) -> dict | None:
-    """One session as a record-row dict (for the Mode-B live prepend)."""
+    """One session as a record-row dict (what a finish returns to the drawer)."""
     r = conn.execute(_RECORD_SELECT + "WHERE fs.id = ?", (session_id,)).fetchone()
     return _record_view(r) if r else None
 
 
-# --- daily aggregates (Focus charts) ---------------------------------------
+def session_by_token(conn: sqlite3.Connection, token: str) -> dict | None:
+    """The session a given timer already recorded, if the finish was retried."""
+    r = conn.execute(_RECORD_SELECT + "WHERE fs.client_token = ?", (token,)).fetchone()
+    return _record_view(r) if r else None
 
 
-def _daily_title(d: _date, minutes: int, pomos: int) -> str:
+# --- daily aggregates (the Retro focus block) ------------------------------
+
+
+def _daily_title(d: _date, minutes: int) -> str:
     md = pretty_date(d, weekday=True)
-    if not minutes and not pomos:
-        return f"{md} · no focus"
-    bits = [f"{minutes}m"]
-    if pomos:
-        bits.append(f"{pomos} pomo" + ("s" if pomos != 1 else ""))
-    return md + " · " + " · ".join(bits)
+    return f"{md} · no focus" if not minutes else f"{md} · {minutes}m"
 
 
 def daily_totals(conn: sqlite3.Connection, days: int = 14) -> list[dict]:
@@ -188,22 +490,21 @@ def daily_totals(conn: sqlite3.Connection, days: int = 14) -> list[dict]:
     today = _date.fromisoformat(today_str())
     start = today - timedelta(days=days - 1)
     rows = conn.execute(
-        "SELECT date, COALESCE(SUM(seconds),0) AS sec, "
-        "COALESCE(SUM(CASE WHEN mode='pomo' THEN 1 ELSE 0 END),0) AS pomos "
+        "SELECT date, COALESCE(SUM(seconds),0) AS sec "
         "FROM focus_sessions WHERE date >= ? GROUP BY date",
         (start.isoformat(),),
     ).fetchall()
-    by_date = {r["date"]: (r["sec"], r["pomos"]) for r in rows}
+    by_date = {r["date"]: r["sec"] for r in rows}
     out = []
     for i in range(days):
         d = start + timedelta(days=i)
-        sec, pomos = by_date.get(d.isoformat(), (0, 0))
+        sec = by_date.get(d.isoformat(), 0)
         minutes = sec // 60
         out.append({
             "iso": d.isoformat(), "dow": d.strftime("%a"), "day": d.day,
-            "seconds": sec, "minutes": minutes, "pomos": pomos,
+            "seconds": sec, "minutes": minutes,
             "is_today": d == today, "value": minutes,
-            "title": _daily_title(d, minutes, pomos),
+            "title": _daily_title(d, minutes),
         })
     return out
 
@@ -220,35 +521,60 @@ def lesson_totals(conn: sqlite3.Connection, days: int | None = None,
         params.append(start)
     rows = conn.execute(
         "SELECT l.id AS lesson_id, l.title AS title, "
-        "COALESCE(SUM(fs.seconds),0) AS sec, "
-        "COALESCE(SUM(CASE WHEN fs.mode='pomo' THEN 1 ELSE 0 END),0) AS pomos "
+        "COALESCE(SUM(fs.seconds),0) AS sec "
         "FROM focus_sessions fs JOIN lessons l ON l.id = fs.lesson_id "
         + where + "GROUP BY l.id ORDER BY sec DESC, l.id LIMIT ?",
         (*params, limit),
     ).fetchall()
     return [{
         "lesson_id": r["lesson_id"], "title": r["title"],
-        "seconds": r["sec"], "minutes": r["sec"] // 60, "pomos": r["pomos"],
+        "seconds": r["sec"], "minutes": r["sec"] // 60,
         "label": _dur_label(r["sec"]),
     } for r in rows]
 
 
-def lesson_total(conn: sqlite3.Connection, lesson_id: int) -> dict:
-    """All focused time recorded against ONE lesson (schema v8's
-    `focus_sessions.lesson_id`) — the Focus link the Learn record panel
-    surfaces read-only, without ranking the lesson against the others."""
+def _target_total(conn: sqlite3.Connection, column: str, target_id: int) -> dict:
     row = conn.execute(
-        "SELECT COALESCE(SUM(seconds),0) AS sec, COUNT(*) AS n "
-        "FROM focus_sessions WHERE lesson_id = ?",
-        (lesson_id,),
+        "SELECT COALESCE(SUM(seconds),0) AS sec, COUNT(*) AS n, "
+        "COALESCE(SUM(CASE WHEN date = ? THEN seconds ELSE 0 END),0) AS today_sec "
+        f"FROM focus_sessions WHERE {column} = ?",
+        (today_str(), target_id),
     ).fetchone()
-    seconds = row["sec"]
     return {
-        "seconds": seconds,
-        "minutes": seconds // 60,
+        "seconds": row["sec"],
+        "minutes": row["sec"] // 60,
         "sessions": row["n"],
-        "label": _dur_label(seconds),
+        "today_seconds": row["today_sec"],
+        "today_label": _dur_label(row["today_sec"]),
+        "label": _dur_label(row["sec"]),
     }
+
+
+def lesson_total(conn: sqlite3.Connection, lesson_id: int) -> dict:
+    """All focused time recorded against ONE lesson — the Focus link the Learn
+    record panel surfaces read-only, without ranking it against the others."""
+    return _target_total(conn, "lesson_id", lesson_id)
+
+
+def habit_total(conn: sqlite3.Connection, habit_id: int) -> dict:
+    """All focused time recorded against ONE habit, plus today's share — the
+    per-target stats that replaced the global Focus dashboard (#75)."""
+    return _target_total(conn, "habit_id", habit_id)
+
+
+def habit_totals(conn: sqlite3.Connection) -> dict[int, dict]:
+    """{habit_id: {'seconds','label','today_seconds','today_label'}} for every
+    habit that has recorded time — one query for a whole list of rows."""
+    rows = conn.execute(
+        "SELECT habit_id, COALESCE(SUM(seconds),0) AS sec, "
+        "COALESCE(SUM(CASE WHEN date = ? THEN seconds ELSE 0 END),0) AS today_sec "
+        "FROM focus_sessions WHERE habit_id IS NOT NULL GROUP BY habit_id",
+        (today_str(),),
+    ).fetchall()
+    return {r["habit_id"]: {
+        "seconds": r["sec"], "label": _dur_label(r["sec"]),
+        "today_seconds": r["today_sec"], "today_label": _dur_label(r["today_sec"]),
+    } for r in rows}
 
 
 def focus_day_streak(daily: list[dict]) -> int:
