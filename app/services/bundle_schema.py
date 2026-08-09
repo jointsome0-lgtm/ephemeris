@@ -50,6 +50,13 @@ MAX_LABEL_LEN = 200
 MAX_SLUG_LEN = 80
 MAX_URL_LEN = 1000
 MAX_REF_LEN = 200
+# §4.5 address grammar. A conforming writer keeps every `path` segment within
+# MAX_PATH_SEG_LEN and the address within MAX_PATH_DEPTH levels, which caps the
+# whole string at 6*30 + 5 = 185 — comfortably under MAX_REF_LEN, so a writer
+# obeying the grammar can never produce the `invalid-ref` that drops a lesson
+# out of its track. These bind writers only; the reader below stays permissive.
+MAX_PATH_SEG_LEN = 30
+MAX_PATH_DEPTH = 6
 MIN_STEP, MAX_STEP = 1, 10000
 
 # Bounded finding materialization: a hostile manifest must not turn one
@@ -258,6 +265,27 @@ def valid_opaque_ref(value: object) -> bool:
         and 1 <= len(value) <= MAX_REF_LEN
         and not _has_control_chars(value)
     )
+
+
+def split_path_ref(value: str | None) -> list[str]:
+    """§4.5: the `path` address split into its nesting segments.
+
+    `path` remains one opaque atom to Ephemeris — never resolved on disk,
+    never validated against Atlas, and handed to any adapter as the whole
+    string. `/` inside it is Ephemeris's own grouping grammar and nothing
+    more: this split feeds the Learn tree, and no other reading of the ref
+    changes because of it.
+
+    Deliberately permissive, unlike the writer-facing limits above. Empty
+    segments collapse (`a//b`, `a/b/` and `a/b` are one address), so a
+    hand-edited manifest cannot fork a track into two near-identical trees,
+    and an address that ignores the depth or segment limits still groups
+    rather than vanishing. An absent or all-separator ref has no segments and
+    therefore no track — the same answer as before this grammar existed.
+    """
+    if not value:
+        return []
+    return [segment for segment in value.split("/") if segment]
 
 
 def clean_v1_ref(value: object, *, html_only: bool = False) -> str | None:

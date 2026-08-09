@@ -190,12 +190,18 @@ def _lesson_groups(
     tracks: list[dict],
     selected: dict | None,
 ) -> tuple[list[dict], list[dict]]:
-    """Split the rendered list into one collapsible block per track, plus the rest.
+    """Split the rendered list into a tree of collapsible blocks, plus the rest.
 
     A course seeded as fourteen lessons buries every other lesson in a flat
     list, so a track renders as one group instead of fourteen rows. The split
     is presentational: `rows` is whatever the status/archived filter already
     chose, and grouping neither adds a row to it nor removes one.
+
+    Groups nest by the `path` address (§4.5): `codecrafters/concepts/…` renders
+    inside `codecrafters`, and a node keeps its own rows alongside its child
+    groups. Whole branches the filter emptied are dropped — an ancestor
+    survives on its descendants' rows alone, because folding a group away must
+    not be able to hide the only lesson that matched.
 
     The header keeps the whole-track numbers from `track_progress` (#81: they
     are the unfiltered list, so a status pill cannot make them jump) while the
@@ -214,26 +220,36 @@ def _lesson_groups(
     shown = {row["id"]: row for row in rows}
     selected_id = selected["id"] if selected else None
     grouped: set[int] = set()
-    groups = []
     for track in tracks:
         grouped.update(track["ids"])
-        members = [shown[lesson_id] for lesson_id in track["ids"] if lesson_id in shown]
-        if not members:
-            continue
-        groups.append({
-            **track,
+
+    def build(node: dict) -> dict | None:
+        children = [built for built in map(build, node["children"]) if built]
+        members = [
+            shown[lesson_id] for lesson_id in node["rows_ids"] if lesson_id in shown
+        ]
+        if not members and not children:
+            return None
+        return {
+            **node,
+            "children": children,
             "rows": members,
             # Integer percent for the bar's width; the readable count beside it
             # stays "N of M", which reads better than "0%" for an untouched
             # track. Rounds toward 0 so a bar only fills when the step is done.
-            "pct": track["studied"] * 100 // track["total"],
-            # Whether the lesson on screen is one of this track's. It is the
-            # server's default for "open" — a learner who navigated into a
-            # track should land with it unfolded — and it stays true after the
-            # stored preference overrides that default, so a group deliberately
-            # kept folded can still show that the current lesson is inside it.
-            "selected": selected_id in track["ids"],
-        })
+            "pct": node["studied"] * 100 // node["total"],
+            # Whether the lesson on screen is somewhere in this node's subtree.
+            # It is the server's default for "open" — a learner who navigated
+            # into a track should land with every ancestor of it unfolded — and
+            # it stays true after the stored preference overrides that default,
+            # so a group deliberately kept folded can still show that the
+            # current lesson is inside it.
+            "selected": selected_id in node["ids"],
+        }
+
+    groups = [
+        built for built in map(build, lessons.path_tree(tracks)) if built
+    ]
     return groups, [row for row in rows if row["id"] not in grouped]
 
 

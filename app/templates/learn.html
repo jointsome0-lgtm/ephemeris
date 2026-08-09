@@ -54,6 +54,36 @@
 </article>
 {%- endmacro %}
 
+{# One node of the track tree, rows then sub-groups. Recursive: a nested group
+   is the same shape as a top-level one, and the CSS indents it for free by
+   sitting inside the parent's rows box. `group.children` is guarded with
+   `or []` for the live pre-nesting backend, whose flat groups have no such
+   key — the page then renders exactly the single level it always did. #}
+{% macro lesson_group(group) -%}
+<section class="lesson-group{% if group.selected %} has-sel{% endif %}">
+  <details class="lesson-group-d" data-track="{{ group.path }}"{% if group.selected %} open{% endif %}>
+    <summary class="lesson-group-head">
+      <span class="lesson-group-name">{{ group.name or group.path }}</span>
+      <span class="lesson-group-count">{{ group.studied }} of {{ group.total }}</span>
+      {# The bar restates the count for the eye; the count is the text
+         an assistive reader gets, so the bar stays decorative. #}
+      <span class="lesson-group-bar" aria-hidden="true"><i style="width: {{ group.pct }}%"></i></span>
+    </summary>
+    <div class="lesson-group-rows">
+      {% for lesson in group.rows %}{{ lesson_row(lesson) }}{% endfor %}
+      {% for child in group.children or [] %}{{ lesson_group(child) }}{% endfor %}
+    </div>
+  </details>
+  {# Where a collapsed track is resumed from. Deliberately a sibling of
+     the <details>, not a child of the <summary>: a summary maps to a
+     button, and a link inside a button is not reachable as a link. It
+     hides once the group is open, where the rows say the same thing. #}
+  {% if group.next %}
+  <a class="lesson-group-next" href="{{ group.next.href }}" title="{{ group.next.title }}">Next: {{ group.next.title }}</a>
+  {% endif %}
+</section>
+{%- endmacro %}
+
 {% macro record_question(q) -%}
 {# #136: a row the LEARNER wrote into is not an answer to be judged — it is a
    question waiting for a reply, and the panel has to be readable as that at a
@@ -172,29 +202,7 @@
       {% if rows %}
       <div class="lesson-list">
         {% if grouped %}
-        {% for group in groups %}
-        <section class="lesson-group{% if group.selected %} has-sel{% endif %}">
-          <details class="lesson-group-d" data-track="{{ group.path }}"{% if group.selected %} open{% endif %}>
-            <summary class="lesson-group-head">
-              <span class="lesson-group-name">{{ group.path }}</span>
-              <span class="lesson-group-count">{{ group.studied }} of {{ group.total }}</span>
-              {# The bar restates the count for the eye; the count is the text
-                 an assistive reader gets, so the bar stays decorative. #}
-              <span class="lesson-group-bar" aria-hidden="true"><i style="width: {{ group.pct }}%"></i></span>
-            </summary>
-            <div class="lesson-group-rows">
-              {% for lesson in group.rows %}{{ lesson_row(lesson) }}{% endfor %}
-            </div>
-          </details>
-          {# Where a collapsed track is resumed from. Deliberately a sibling of
-             the <details>, not a child of the <summary>: a summary maps to a
-             button, and a link inside a button is not reachable as a link. It
-             hides once the group is open, where the rows say the same thing. #}
-          {% if group.next %}
-          <a class="lesson-group-next" href="{{ group.next.href }}" title="{{ group.next.title }}">Next: {{ group.next.title }}</a>
-          {% endif %}
-        </section>
-        {% endfor %}
+        {% for group in groups %}{{ lesson_group(group) }}{% endfor %}
         {% endif %}
         {% for lesson in flat_rows %}{{ lesson_row(lesson) }}{% endfor %}
       </div>
