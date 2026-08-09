@@ -929,6 +929,12 @@ async def _spawn_on_pty(
                 # accepts one: this is what makes a reopened lesson terminal
                 # resumable (`claude --continue`) instead of amnesiac.
                 agent_home=workspace.get("agent_home") if workspace else None,
+                # Same shape, same reason: only the agent role installs
+                # packages, and they are bound over `<bundle>/node_modules`
+                # rather than living in the bundle.
+                build_workspace=(
+                    workspace.get("build_workspace") if workspace else None
+                ),
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,

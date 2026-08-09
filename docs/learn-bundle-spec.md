@@ -59,7 +59,19 @@ data/lessons/<slug>/
 
 Reserved names, which no page, block file, or artifact root may claim:
 `lesson.json`, `attempts.jsonl`, `assessments.jsonl`, `runs.jsonl`,
-`AGENTS.md`, `CLAUDE.md`, `.claude`.
+`AGENTS.md`, `CLAUDE.md`, `.claude`, `node_modules`.
+
+`node_modules` is a mount point, not bundle content. The packages an agent
+installs live outside the bundle, in that lesson's build workspace
+(`DATA_DIR/lesson-builds/<slug>/node_modules`), and the lesson-agent sandbox
+binds them over this name so the agent works in an ordinary project layout.
+The bind exists only in that mount namespace, so what a reader finds on disk
+is an empty directory — the app creates it deliberately rather than letting
+bwrap create it as a side effect of the bind. Packages are kept out of the
+bundle because a bundle is writable from inside its own session and bun
+populates `node_modules` with hardlinks into one shared cache: a real
+directory here would put every other lesson's packages behind a shared inode.
+(2026-08-09, issue #161.)
 
 `AGENTS.md`, `CLAUDE.md` and everything the app writes under `.claude/` are
 regenerated, never authored: the app rewrites them on every lesson-agent
@@ -815,7 +827,19 @@ The second deliberate v1 behavior change is the `.claude` reservation (§2,
 2026-07-29, [#84](https://github.com/jointsome0-lgtm/ephemeris/issues/84)):
 the v1 preview surface serves any non-reserved bundle-relative file, so a
 file under `.claude/` that a v1 bundle previously served is no longer
-servable. Everything else about what a v1 bundle renders is unchanged.
+servable.
+
+The third is the `node_modules` reservation (§2, 2026-08-09,
+[#161](https://github.com/jointsome0-lgtm/ephemeris/issues/161)), which works
+exactly the same way and for the same reason: the app owns the name, so a
+file under `node_modules/` that a v1 bundle previously served is no longer
+servable, and a v1 `entry` or `related[]` entry pointing there still reads
+but no longer renders. No bundle is migrated. The name only became reachable
+in practice when a lesson could install packages at all, which is what #161
+introduces; no bundle on the instance this was landed against referenced it
+(15 bundles, none carrying a `node_modules` or a `package.json`).
+
+Everything else about what a v1 bundle renders is unchanged.
 
 ### 9.3 Unknown fields
 
@@ -828,20 +852,25 @@ re-dumping cannot provide it. Additive evolution inside v2 means new
 OPTIONAL fields; any change to the meaning of an existing field requires
 v3.
 
-One named exception, taken deliberately rather than through v3: adding
+Two named exceptions, taken deliberately rather than through v3. Adding
 `.claude` to the §2 reserved names (2026-07-29,
 [#84](https://github.com/jointsome0-lgtm/ephemeris/issues/84)) narrows what
 `entry`, `pages[].path`, `blocks[].file` and `artifact_roots[]` accept
 without a version bump. A v2 manifest declaring a path whose first segment is
 `.claude` was valid before that date and now takes `invalid-path` (or
 `invalid-entry`), and a manifest whose only page was such a path becomes
-rejected with `no-pages`. The reason a v3 would not serve the purpose: the
-app writes `.claude/settings.json` into every bundle it prepares, so the
-directory cannot stay author-addressable in any version a current reader
-opens. The app never destroys what it finds there — a foreign node at an
-app-owned name is moved aside as `<name>.collision-<hex>` (§6.5's rule,
-applied to this name too), so a bundle carrying the older shape loses a
-manifest binding, never its bytes.
+rejected with `no-pages`. Adding `node_modules` (2026-08-09,
+[#161](https://github.com/jointsome0-lgtm/ephemeris/issues/161)) narrows the
+same four fields the same way.
+
+The reason a v3 would not serve either purpose: the app writes
+`.claude/settings.json` into every bundle it prepares, and the lesson-agent
+sandbox binds a build workspace over `<bundle>/node_modules`, so neither
+directory can stay author-addressable in any version a current reader opens.
+The app never destroys what it finds there — a foreign node at an app-owned
+name is moved aside as `<name>.collision-<hex>` (§6.5's rule, applied to both
+names), so a bundle carrying the older shape loses a manifest binding, never
+its bytes.
 
 Canonical serialization, exactly: Python's
 `json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"`, UTF-8 — the

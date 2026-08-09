@@ -37,6 +37,7 @@ def test_sandbox_learning(client, suite_state):
     ws_info = suite_state["ws_info"]
     # --- E1: pure sandbox profiles + cached probe + no-fallback spawn seam ----
     from app import sandbox as _sandbox
+    from app.services import bundle_schema as _bundle_schema
     from unittest import mock as _sandbox_mock
 
     # sandbox.py imports `resource` at the point of use (issue #25), so the rlimit
@@ -173,6 +174,65 @@ def test_sandbox_learning(client, suite_state):
         else:
             raise AssertionError(
                 f"E1 argv: {_sb_other} must refuse a persistent agent home")
+
+    # The build workspace: packages the agent installs, bound over a name
+    # INSIDE the bundle so the agent works in an ordinary project layout while
+    # the bundle on disk stays empty of them (#161).
+    _sb_build = "/tmp/lesson-builds/some-lesson"
+    _sb_agent_build = _sandbox.build_sandbox_argv(
+        "lesson-agent", _sb_bundle, bundle_root=_sb_root,
+        private_root="/tmp", build_workspace=_sb_build)
+    _sb_mount = _sandbox.BUILD_WORKSPACE_MOUNT
+    assert (
+        set(_sb_mounts(_sb_agent_build, "--bind")) == {
+          (_sb_bundle, _sb_bundle),
+          (f"{_sb_build}/{_sb_mount}", f"{_sb_bundle}/{_sb_mount}"),
+        }
+        # After the bundle bind, or the bundle would shadow it; before the
+        # --chdir that ends the prefix.
+        and _sb_agent_build.index(f"{_sb_build}/{_sb_mount}")
+        > _sb_agent_build.index(_sb_bundle)
+        and _sb_agent_build[-2:] == ["--chdir", _sb_bundle]
+        # A place for packages is not a package cache. Nothing here makes one
+        # writable: a shared cache with a hardlinking backend would let an edit
+        # in one lesson reach every other, which the mount cannot prevent and
+        # must not be read as preventing. That arrives with the build step.
+        and f"{_sandbox.USER_HOME}/.bun" not in _sb_agent_build
+    ), "E1 argv: the build workspace lands under the bundle, after it"
+    assert not any(_sb_mount in arg for arg in _sb_agent), (
+        "E1 argv: no build workspace, no mount — the bundle keeps its own name"
+    )
+    assert _sb_mount in _bundle_schema.RESERVED_NAMES, (
+        "E1 argv: the mount point must be reserved, or a page could claim it"
+    )
+    for _sb_bad_build, _sb_bad_private, _sb_bad_why in (
+        (_sb_build, None, "no private root to answer to"),
+        ("relative/build", "/tmp", "not absolute"),
+        ("/tmp/../etc", "/tmp", "escapes via '..'"),
+        ("/tmp", "/tmp", "is the private root itself"),
+        ("/var/elsewhere", "/tmp", "outside the private root"),
+        (f"{_sb_bundle}/build", "/tmp", "inside the writable bundle root"),
+    ):
+        try:
+            _sandbox.build_sandbox_argv(
+                "lesson-agent", _sb_bundle, bundle_root=_sb_root,
+                private_root=_sb_bad_private, build_workspace=_sb_bad_build)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                f"E1 argv: build workspace {_sb_bad_why} must be refused")
+    for _sb_other in ("lesson-learner", "lesson-runner"):
+        try:
+            _sandbox.build_sandbox_argv(
+                _sb_other, _sb_bundle, bundle_root=_sb_root,
+                private_root="/tmp", build_workspace=_sb_build,
+                **({"module_cache_fd": 7} if _sb_other == "lesson-runner" else {}))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                f"E1 argv: {_sb_other} must refuse a build workspace")
     assert (
         set(_sb_mounts(_sb_learner, "--ro-bind")) == {
           ("/", "/"),
