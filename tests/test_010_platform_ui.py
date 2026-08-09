@@ -1286,13 +1286,15 @@ def test_002_ui_and_workspace(client, suite_state):
     ), "terminal child env is allowlisted, not the full service environment"
     # A lesson shell has no ~/.bashrc under its blanked home, so /etc/bash.bashrc
     # sets the prompt and an inherited PS1 would lose to it. PROMPT_COMMAND runs
-    # after the startup files, which is why the short prompt travels there.
+    # after the startup files, which is why the short prompt travels there — and
+    # both are bash's, so a `lesson-agent` following a non-bash SHELL gets neither.
     assert (
         "PROMPT_COMMAND" not in _child_env
         and _term._child_env("lesson-agent").get("PROMPT_COMMAND")
         == "PS1='agent $ '"
         and _term._child_env("lesson-learner").get("PROMPT_COMMAND")
         == r"PS1='\W $ '"
+        and "PROMPT_COMMAND" not in _term._child_env("lesson-agent", "/usr/bin/zsh")
     ), "lesson shells carry a short role-shaped prompt; the plain shell keeps its own"
     assert (
         _term._redact_userinfo("http://user:secret@127.0.0.1:10809")

@@ -25,11 +25,13 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 ## Pending
 
 - [ ] 2026-08-09 — `4f3762b` (branch `term-quiet-prompt`, PR #172) —
-  `app/terminal.py`, `tests/test_010_platform_ui.py` — `_child_env` adds
-  one variable, `PROMPT_COMMAND`, for the two lesson roles and for no
-  other role. Its value is one of two constants chosen by the role
-  (`PS1='agent $ '`, `PS1='\W $ '`); nothing else is interpolated into
-  it, and the rest of the allowlist is unchanged. Separately, the two
+  `app/terminal.py`, `tests/test_010_platform_ui.py` — `_child_env` takes
+  the child shell as a second argument and adds one variable,
+  `PROMPT_COMMAND`, for the two lesson roles when that shell's basename
+  is `bash` — for no other role and no other shell. Its value is one of
+  two constants chosen by the role (`PS1='agent $ '`, `PS1='\W $ '`);
+  nothing else is interpolated into it, and the rest of the allowlist is
+  unchanged. Separately, the two
   banner writes in `_spawn_on_pty` become one write assembled from the
   same pieces: the role, the already-redacted proxy URL, and the
   `AGENTS.md` note. The workspace path is no longer printed, so the
