@@ -68,10 +68,29 @@ binds them over this name so the agent works in an ordinary project layout.
 The bind exists only in that mount namespace, so what a reader finds on disk
 is an empty directory — the app creates it deliberately rather than letting
 bwrap create it as a side effect of the bind. Packages are kept out of the
-bundle because a bundle is writable from inside its own session and bun
-populates `node_modules` with hardlinks into one shared cache: a real
-directory here would put every other lesson's packages behind a shared inode.
+bundle because a bundle is served, walked by the manifest reader, and writable
+from inside its own session, and installed packages want none of those three.
 (2026-08-09, issue #161.)
+
+Moving them out was not by itself enough to keep one lesson's packages out of
+another's. bun's default backend hardlinks out of a single shared cache, which
+makes an installed file and its cache entry one inode wherever `node_modules`
+sits — measured, an append through one lesson's copy was handed to the next
+install elsewhere. What separates them is `--backend=copyfile` on the install
+command line, which is one of the reasons the app runs the package manager
+rather than the agent; the other is the 30-day release quarantine, likewise a
+command-line flag. See `app/services/lesson_build.py`.
+
+**The built artifact is ordinary bundle content.** The build step compiles a
+source in the bundle against those packages and writes one self-contained
+classic script (an IIFE) back into the bundle, at a normal `.js` path the page
+loads with a plain relative `<script src>`. It is not reserved, not special-
+cased by any reader, and carries no marker: a bundle that was built and one
+that was hand-written are the same shape. The format is not a preference —
+a lesson renders on an opaque origin, where an external *module* script, an
+import map, a dynamic `import()` and a web font are fetched in cors mode and
+refused, while a classic script is not. Emitting one IIFE means the files
+route needs no `Access-Control-Allow-Origin` to make a page work.
 
 `AGENTS.md`, `CLAUDE.md` and everything the app writes under `.claude/` are
 regenerated, never authored: the app rewrites them on every lesson-agent

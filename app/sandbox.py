@@ -45,6 +45,56 @@ RUNNER_SCOPE_PREFIX = (
     "--property=KillMode=control-group",
 )
 
+# A build step is not user code from a stranger, but `bun build` executes an
+# agent-authored macro, and a wall-clock timeout is no help against a macro
+# that allocates or forks in a loop: the host is out of memory long before the
+# timer fires, and the one worker serving this app dies with it. Same scope
+# mechanism as the runner, sized for a toolchain rather than for one exercise —
+# a real `bun install` of a large tree peaks well under this.
+BUILD_MEMORY_MAX = "2G"
+BUILD_TASKS_MAX = 512
+BUILD_MAX_WALL_SECONDS = 600
+BUILD_SCOPE_GRACE_SECONDS = 15
+# Bounded for the same reason the runner's are: an unbounded tmpfs is host
+# memory that a loop can claim without ever allocating it in a process.
+BUILD_SCRATCH_BYTES = 512 * 1024 * 1024
+BUILD_HOME_BYTES = 64 * 1024 * 1024
+
+# The render gate loads the artifact the build just produced, so the page runs
+# code from the same author as the macro — in a browser, which is a process
+# tree rather than a process. Roomier than the build's: headless Chrome is a
+# handful of processes and a few hundred threads before a page has done
+# anything, and a cap that only a real browser trips would refuse every build.
+RENDER_MEMORY_MAX = "2G"
+RENDER_TASKS_MAX = 1024
+RENDER_MAX_WALL_SECONDS = 600
+RENDER_SCOPE_GRACE_SECONDS = 30
+
+
+def _resource_scope_prefix(
+    *, tasks_max: int, memory_max: str, wall_seconds: int, grace: int, ceiling: int
+) -> tuple[str, ...]:
+    """A transient user scope with the limits a whole process tree shares.
+
+    `RuntimeMaxSec` is a backstop under the caller's own timeout, not a
+    replacement for it: the caller kills the process it started, and this kills
+    the cgroup if that process is gone or wedged. `KillMode=control-group` is
+    what makes that reach the children — a browser's renderers, a macro's
+    forks — rather than only the leader.
+    """
+    if not 1 <= wall_seconds <= ceiling:
+        raise ValueError("a resource scope requires a bounded wall limit")
+    return (
+        SYSTEMD_RUN, "--user", "--scope", "--collect", "--quiet",
+        f"--property=TasksMax={tasks_max}",
+        f"--property=MemoryMax={memory_max}",
+        "--property=MemorySwapMax=0",
+        "--property=KillMode=control-group",
+        *_systemd_no_expand_option(),
+        f"--property=RuntimeMaxSec={wall_seconds + grace}s",
+        "--",
+    )
+
 
 @cache
 def _systemd_no_expand_option() -> tuple[str, ...]:
@@ -87,6 +137,29 @@ def runner_scope_prefix(
         "--",
     ])
     return tuple(argv)
+
+
+def build_scope_prefix(wall_seconds: int) -> tuple[str, ...]:
+    """The resource scope one build step runs inside.
+
+    The grace is wider than the runner's because a build step's own timeout is
+    minutes, not seconds, and a scope that expired first would turn a slow but
+    honest install into a build failure.
+    """
+    return _resource_scope_prefix(
+        tasks_max=BUILD_TASKS_MAX, memory_max=BUILD_MEMORY_MAX,
+        wall_seconds=wall_seconds, grace=BUILD_SCOPE_GRACE_SECONDS,
+        ceiling=BUILD_MAX_WALL_SECONDS,
+    )
+
+
+def render_scope_prefix(wall_seconds: int) -> tuple[str, ...]:
+    """The resource scope the render gate's browser runs inside."""
+    return _resource_scope_prefix(
+        tasks_max=RENDER_TASKS_MAX, memory_max=RENDER_MEMORY_MAX,
+        wall_seconds=wall_seconds, grace=RENDER_SCOPE_GRACE_SECONDS,
+        ceiling=RENDER_MAX_WALL_SECONDS,
+    )
 
 
 class SandboxError(RuntimeError):
@@ -162,6 +235,32 @@ AGENT_STATE_SUBDIRS = {
 # resolution only looks for this name, so naming it once keeps the mount and
 # the bundle spec's reserved entry from drifting apart.
 BUILD_WORKSPACE_MOUNT = "node_modules"
+
+# The package manager the build step drives, addressed by absolute path because
+# the view below hands it no PATH worth searching. `~/.bun` is deliberately NOT
+# on the terminal profiles' mount list: an agent that could run `bun` itself
+# would own the install command line, and with it the 30-day quarantine and the
+# copying backend that keeps one lesson out of another's cache entry. The app
+# runs the package manager; the agent asks it to (`app/services/lesson_build.py`).
+# The only writable place in the `bundle` step's view. A build-time macro runs
+# agent-authored code, and everything bun reads configuration from — the
+# workspace `bunfig.toml`, `package.json` and lockfile — has to stay out of its
+# reach, or the next install inherits whatever it wrote.
+BUILD_OUTPUT_DIR = "out"
+BUN_BINARY = f"{USER_HOME}/.bun/bin/bun"
+BUN_CACHE_DIR = f"{USER_HOME}/.bun/install/cache"
+
+BuildStep = Literal["install", "bundle"]
+_BUILD_STEPS: tuple[BuildStep, ...] = ("install", "bundle")
+
+# What the two build steps get for an environment. `--clearenv` first, so the
+# app process's own environment — proxy variables, tokens, whatever systemd
+# handed it — is not what resolves a package name.
+_BUILD_STEP_ENV: Mapping[str, str] = {
+    "PATH": "/usr/bin:/bin",
+    "HOME": USER_HOME,
+    "TMPDIR": "/tmp",
+}
 
 
 def _agent_home_mounts(agent_home: str | None) -> tuple[_HomeMount, ...]:
@@ -496,6 +595,127 @@ def build_sandbox_argv(
     return argv
 
 
+def build_step_argv(
+    step: BuildStep,
+    *,
+    build_workspace: str | os.PathLike[str],
+    bundle_root: str | os.PathLike[str],
+    private_root: str | os.PathLike[str] | None = None,
+    bundle_dir: str | os.PathLike[str] | None = None,
+    command: Sequence[str],
+) -> list[str]:
+    """Purely build the bubblewrap argv for one app-owned build step.
+
+    Deliberately a sibling of :func:`build_sandbox_argv` rather than a fourth
+    profile inside it: the terminal and runner profiles exist to confine a
+    shell somebody else drives, and their argv is reviewed as one shape. These
+    two steps run a command *this app wrote*, with no interactive tenant, and
+    they need a different view — no bundle for ``install``, no network for
+    ``bundle``. Folding that into the profile builder would put two unrelated
+    contracts behind one set of arguments.
+
+    What the view is for, in order of how easy each is to get wrong:
+
+    1. **Module resolution.** bun resolves a bare specifier by walking up from
+       the importer file, not from cwd, and the packages live outside the
+       bundle (#164). So the ``bundle`` step re-creates the one bind the
+       agent's terminal already has — ``<workspace>/node_modules`` at
+       ``<bundle>/node_modules`` — and resolution is then the ordinary
+       filesystem walk, byte-identical to building inside the workspace.
+       ``NODE_PATH`` resolves too, but silently skips the package ``exports``
+       map: measured, katex fell back from its ESM entry to its legacy CJS
+       ``main``, and a package that declares only ``exports`` does not resolve
+       at all. That is not a base to hand an agent free package choice on.
+    2. **Reading no more than the agent can.** The entry is an agent-authored
+       file. A plain subprocess of the app would compile it against the real
+       ``$HOME``, where ``import s from "../../../secret" with {type:"text"}``
+       or a tsconfig ``paths`` mapping inlines an owner-readable file into an
+       artifact this app then serves. Keeping the terminal's blank ``$HOME``
+       means the build reads what the agent already reads and nothing more.
+    3. **cwd.** ``bunfig.toml`` carries ``preload``, which executes a script,
+       and bun reads it from cwd. cwd is the app-owned workspace for both
+       steps; the entry travels as an absolute path. The bundle — writable
+       from inside the agent's own session — is never cwd, and for ``bundle``
+       it is bound read-only: the artifact is placed by the app afterwards,
+       once the size and render gates have passed.
+
+    4. **What each step may write.** ``install`` fills the workspace, so it has
+       it writable. ``bundle`` does not: ``bun build`` executes an
+       ``with {type: "macro"}`` import at build time, so agent-authored code
+       *does* run in that view, and a writable workspace would let it leave a
+       ``bunfig.toml``, a ``package.json`` or a lockfile behind for the next
+       install to read — in the one view that has the network and a writable
+       shared package cache. Rewriting a dependency to a tarball URL, which has
+       no release age at all, would walk straight through the 30-day quarantine
+       this whole mechanism exists to enforce. So ``bundle`` gets the workspace
+       read-only with exactly one writable hole, ``<workspace>/out``, which
+       holds the artifact and nothing bun ever reads configuration from.
+
+    It is not a confinement boundary for package code, which neither step
+    executes: bun runs no dependency lifecycle script without an explicit
+    ``trustedDependencies`` entry, and ``package.json`` lives in the workspace,
+    which no session can reach and the bundle step cannot write.
+    ``--ignore-scripts`` on the install argv says so a second time.
+    """
+    if step not in _BUILD_STEPS:
+        raise ValueError(f"unknown build step: {step}")
+    if not command:
+        raise ValueError("build step command must not be empty")
+    private = (
+        _pure_private_root(private_root, bundle_root)
+        if private_root is not None else None
+    )
+    workspace = _pure_build_workspace(build_workspace, private, bundle_root)
+    if (bundle_dir is None) != (step == "install"):
+        raise ValueError("the bundle step needs a bundle dir and install must not have one")
+    bundle = (
+        _pure_bundle_path(bundle_dir, bundle_root)
+        if bundle_dir is not None else None
+    )
+
+    argv = [BWRAP, "--unshare-all"]
+    if step == "install":
+        # The only step that talks to a registry.
+        argv.append("--share-net")
+    argv.extend([
+        "--die-with-parent",
+        "--ro-bind", "/", "/",
+        "--proc", "/proc",
+        "--dev", "/dev",
+        "--size", str(BUILD_SCRATCH_BYTES), "--tmpfs", "/tmp",
+        "--size", str(BUILD_HOME_BYTES), "--tmpfs", USER_HOME,
+        "--ro-bind", BUN_BINARY, BUN_BINARY,
+    ])
+    if step == "install":
+        # Writable because this is the step that fills it. Shared between
+        # lessons on purpose — it is why the second lesson to want d3 costs
+        # nothing — which is exactly why the install argv forces a copying
+        # backend: a hardlinked node_modules entry IS the cache entry, and one
+        # lesson's session could edit what every later install receives.
+        argv.extend(["--bind", BUN_CACHE_DIR, BUN_CACHE_DIR])
+    if bundle is None:
+        # `install` is the step that fills the workspace.
+        argv.extend(["--bind", workspace, workspace])
+    else:
+        # `bundle` runs agent-authored code (a build-time macro) and must not
+        # be able to leave install configuration behind for the next install to
+        # read. Read-only everywhere, with one writable hole for the artifact —
+        # a later bind wins over the earlier one covering it.
+        argv.extend([
+            "--ro-bind", workspace, workspace,
+            "--bind", f"{workspace}/{BUILD_OUTPUT_DIR}",
+            f"{workspace}/{BUILD_OUTPUT_DIR}",
+            "--ro-bind", bundle, bundle,
+            "--ro-bind", f"{workspace}/{BUILD_WORKSPACE_MOUNT}",
+            f"{bundle}/{BUILD_WORKSPACE_MOUNT}",
+        ])
+    argv.extend(["--chdir", workspace, "--clearenv"])
+    for name, value in _BUILD_STEP_ENV.items():
+        argv.extend(["--setenv", name, value])
+    argv.extend(["--", *command])
+    return argv
+
+
 @dataclass(frozen=True)
 class _ProbeResult:
     available: bool
@@ -503,7 +723,7 @@ class _ProbeResult:
 
 
 @cache
-def _cached_runner_scope_probe() -> _ProbeResult:
+def _cached_user_scope_probe() -> _ProbeResult:
     """Verify limits and literal argv delivery through the user scope."""
     literal = "$EPHEMERIS_SCOPE_LITERAL"
     prefix = list(runner_scope_prefix(5))
@@ -526,8 +746,8 @@ def _cached_runner_scope_probe() -> _ProbeResult:
     return _ProbeResult(False, detail[:500] or f"exit {result.returncode}")
 
 
-def require_runner_scope_runtime() -> None:
-    result = _cached_runner_scope_probe()
+def require_user_scope_runtime() -> None:
+    result = _cached_user_scope_probe()
     if not result.available:
         raise SandboxUnavailableError(
             f"systemd user scope probe failed: {result.detail}"
@@ -747,7 +967,7 @@ async def spawn_sandboxed(
         raise ValueError("runner-only spawn arguments used for a terminal profile")
     require_sandbox_runtime()
     if profile == "lesson-runner":
-        require_runner_scope_runtime()
+        require_user_scope_runtime()
     snapshot_fd: int | None = None
     module_cache_fd: int | None = None
     try:

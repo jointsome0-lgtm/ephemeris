@@ -66,6 +66,187 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `None` for it. `node_modules` is added to
   `bundle_schema.RESERVED_NAMES` and to §2 of the bundle spec.
 
+- [ ] 2026-08-09 — `<pending squash>` (branch `feat/161-build-step`, PR #165) —
+  `app/sandbox.py`, `app/services/lesson_build.py`,
+  `app/services/render_check.py`, `app/services/lessons.py`,
+  `app/routers/learn.py`, `app/terminal.py`, `docs/learn-bundle-spec.md`,
+  `docs/reviews/QUEUE.md`, `tests/test_230_lesson_build.py` —
+  the app runs a package manager and a bundler for a lesson, and loads the
+  result in a browser.
+  New `sandbox.build_step_argv(step, ...)`, a sibling of
+  `build_sandbox_argv` that the terminal and runner paths do not call; it
+  returns a bubblewrap argv for `step` in `("install", "bundle")`. Both
+  steps: `--unshare-all`, `--die-with-parent`, `--ro-bind / /`, `--proc`,
+  `--dev`, `--size 536870912 --tmpfs /tmp`, `--size 67108864 --tmpfs $HOME`
+  (measured 2026-08-09 inside the bundle view: `df` reports exactly those
+  two sizes), `--ro-bind` of
+  `$HOME/.bun/bin/bun`, `--chdir` to the build workspace, `--clearenv`,
+  then `--setenv` for `PATH`, `HOME` and `TMPDIR` only. `install`
+  additionally gets `--share-net`, a `--bind` of `$HOME/.bun/install/cache`
+  and a `--bind` of the build workspace. `bundle` gets neither the network
+  nor the cache, and instead a `--ro-bind` of the build workspace followed
+  by a `--bind` of `<workspace>/out` (later, so it wins over the read-only
+  cover), a `--ro-bind` of the bundle and a `--ro-bind` of
+  `<workspace>/node_modules` at `<bundle>/node_modules`. Measured
+  2026-08-09 in that view: writes to the workspace root, to
+  `<workspace>/node_modules` and to the bundle are refused, and a write to
+  `<workspace>/out` persists. The
+  workspace is validated by the existing `_pure_build_workspace`, the
+  bundle by `_pure_bundle_path`; a bundle dir is required for `bundle` and
+  rejected for `install`. New `sandbox.BUILD_OUTPUT_DIR = "out"`.
+  New `sandbox._resource_scope_prefix(...)` returns
+  `systemd-run --user --scope --collect --quiet` with `TasksMax`,
+  `MemoryMax`, `MemorySwapMax=0`, `KillMode=control-group`, the same
+  `--expand-environment=no` probe the runner prefix uses, and
+  `RuntimeMaxSec=<wall_seconds + grace>s`; it raises outside its
+  ceiling. Two callers: `build_scope_prefix` (512 tasks, 2G, 15 s grace,
+  600 s ceiling) and `render_scope_prefix` (1024 tasks, 2G, 30 s grace,
+  600 s ceiling). Measured 2026-08-09: a process allocating 6.4 GiB
+  inside the bundle view under the build prefix exits 137 after 1.4 s; the
+  render scope reports `memory.max` 2147483648, `pids.max` 1024,
+  `memory.swap.max` 0, an idle headless Chrome sits at 74 tasks and
+  138 MiB inside it, and the scope is gone with no stray browser process
+  after `_Browser.close()`.
+  `sandbox.require_runner_scope_runtime` and
+  `sandbox._cached_runner_scope_probe` are renamed to
+  `require_user_scope_runtime` / `_cached_user_scope_probe` with no change
+  of behaviour; `app/runner.py` and `tests/test_060_role_runner.py` follow
+  the rename.
+  New `app/services/lesson_build.py` runs the two steps as
+  `asyncio.create_subprocess_exec` of `build_scope_prefix(int(timeout))`
+  followed by the bubblewrap argv, with an environment of only
+  `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` (both dropped again by
+  bwrap's `--clearenv`), reading the merged stdout/stderr pipe
+  incrementally and keeping only its last 8 KiB, with 300 s / 120 s
+  timeouts. A timeout and any other exception out of the wait — including
+  cancellation — both `SIGKILL` the subprocess, close its transport and
+  await it before propagating, so no step outlives the request holding the
+  per-slug lock. The steps run after checking bubblewrap, the systemd user
+  scope, that
+  `sandbox.BUN_BINARY` is
+  executable, and that `sandbox.BUN_CACHE_DIR` exists or can be created
+  `0o700`. The bundler writes into `<workspace>/out/`, which is removed
+  with `shutil.rmtree(ignore_errors=True)` and recreated with
+  `mkdir(mode=0o700, exist_ok=True)` before each run, so a directory left
+  there is cleared the same way a file is; a failure to recreate it is
+  `workspace-unavailable` 503. Install argv: `bun add|install --backend=copyfile
+  --minimum-release-age=2592000 --ignore-scripts --no-progress
+  --no-summary [-- <packages>]`. Bundle argv: `bun build <entry>
+  --target=browser --format=iife --production --keep-names
+  --outdir=<workspace>/out --entry-naming=artifact.[ext]
+  --metafile=<workspace>/out/graph.json`. That report is read on an
+  `O_NOFOLLOW` descriptor, required to be a regular file of at most
+  32 MiB, unlinked, and parsed; its `inputs` keys and each
+  `imports[].path` are joined to the workspace (the bundler's cwd) and
+  normalised. When `<bundle>/<out>` is among them the build is refused
+  with `out-is-source` 409 before anything is placed, and an unreadable
+  or unparsable report refuses the build too.
+  `--outdir` rather than `--outfile` because a `.css` import anywhere in
+  the graph gives bun a second output: measured on bun 1.3.11, an entry
+  with `import "./style.css"` and `--outfile` exits with "Multiple files
+  share the same output path" and writes nothing. When
+  `out/artifact.css` exists its bytes are JSON-encoded into a prologue
+  that creates a `<style>` element and appends it to
+  `document.head || document.documentElement`, prepended to
+  `out/artifact.js`; the 1 MiB ceiling applies to the combined bytes. Any
+  other name in `out/` after the bundle step refuses the build with
+  `split-artifact` 422 (first ten named). Measured on bun 1.3.11: the
+  stock `katex/dist/katex.min.css` and a CSS `url()` to a local PNG both
+  come back inlined as `data:` URLs, so `out/` holds exactly the two
+  names; the katex case then exceeds the 1 MiB ceiling
+  (`artifact.js` 0.27 MB + `artifact.css` 1.46 MB) and is refused as
+  `artifact-too-large`. The
+  `_AGENTS_TEMPLATE` brief documents that stylesheet imports work and
+  that there is no second file to link. Package specs are matched against an anchored npm
+  name/range regex, at most 32 per request; `entry` and `out` go through
+  `lessons.clean_bundle_ref` — which now also refuses a value that cannot
+  be encoded as UTF-8, such as a lone surrogate from a JSON body — and are
+  refused when equal; `out` is also
+  refused unless it is under `assets/` and outside
+  `assets/libs/` (`lessons.LESSON_LIBS_BUNDLE_DIR`, which
+  `seed_lesson_libs` rewrites on terminal open), and `entry` is refused when
+  `bundle_schema.path_has_symlink` reports a symlink on its path, checked
+  before the path is resolved. After the install step and before the
+  bundle step the bundle directory is walked with
+  `os.walk(followlinks=False)`, skipping the `node_modules` mount point;
+  any symlink found — up to the first ten, named in the message — refuses
+  the build with `linked-source` 409. The artifact is opened with
+  `O_RDONLY | O_NOFOLLOW`, refused unless `fstat` reports a regular file,
+  refused over 1 MiB by that same `fstat`, and then read through a `dup`
+  of that descriptor with a cap of 1 MiB + 1 byte; the stylesheet is read
+  against what the script already weighs and the refusal reports the two
+  together. It is
+  placed in the bundle through a descriptor chain opened component by
+  component with `O_NOFOLLOW` and `os.replace`. Whatever was at the output
+  name is refused with `invalid-out` 409 when `os.stat(..., dir_fd=…,
+  follow_symlinks=False)` reports anything but a regular file, then
+  renamed aside to `.<name>.<12 hex chars>.previous` through
+  the same descriptor, and the new bytes land on
+  `.<name>.<12 hex chars>.new` before being renamed into place; the aside
+  copy is renamed back if the render gate fails or cannot run;
+  on a pass the aside copy is unlinked and the rendered page's mtime is
+  moved forward with `os.utime(..., dir_fd=…, follow_symlinks=False)`, which
+  is what `lessons.lesson_file_info`'s `version` token is derived from. An
+  `OSError` from the placement itself is converted to `invalid-out` 409.
+  Builds are serialised per lesson
+  slug by an in-process `asyncio.Lock`. A `package.json` is seeded in the
+  workspace on first use; no `bunfig.toml` is written.
+  New `app/services/render_check.py` starts headless Chrome under
+  `sandbox.render_scope_prefix(60)` with a
+  disposable profile on `--remote-debugging-port=0`, connects over CDP,
+  enables `Page`/`Runtime`/`Log`/`Network`/`Debugger`, navigates to a caller-supplied
+  URL, waits for `Page.loadEventFired` or `Page.frameStoppedLoading`
+  before starting the settle interval, and
+  collects `Runtime.exceptionThrown`, `Runtime.consoleAPICalled` of type
+  error/assert, and `Log.entryAdded` at level error (dropping
+  `/favicon.ico` entries and the exact text `Unrecognized
+  Content-Security-Policy directive 'webrtc'.`). A caller-supplied
+  `expect_url` must appear among the `Debugger.scriptParsed` URLs,
+  compared on scheme, authority and unquoted path; the
+  `Network.responseReceived` URLs with a status under 400 are used only to
+  word the refusal. The build route passes the artifact's own files URL.
+  Notifications are routed as they arrive rather than kept whole: load
+  flags, up to 2000 fetched URLs and up to 2000 executed script URLs as
+  sets, and a list capped at 500 with the overflow reported as a count
+  holding only what a shared `_is_diagnostic(method, params)` predicate
+  accepts — `Runtime.exceptionThrown`, `Runtime.consoleAPICalled` of type
+  error/assert, `Log.entryAdded` at level error. The same predicate gates
+  the collection and the report, so nothing counted toward the cap is
+  discarded afterwards. A diagnostic event whose text comes out empty —
+  `console.error("")`, an exception with no description — is reported
+  with a fixed stand-in description rather than dropped. Measured
+  2026-08-09 under the lesson response headers: `console.error()` with no
+  arguments produces no `Runtime.consoleAPICalled` at all;
+  `new Worker('worker.js')` throws `SecurityError` naming origin `null`,
+  and a blob worker is refused by `script-src` through the `worker-src`
+  fallback, both on channels already collected. Under the
+  `legacy-display` policy, which allows `blob:` scripts, the same blob
+  worker starts; measured there, its `console.error` and its uncaught
+  exception both arrive as `Log.entryAdded` on the page target, carrying
+  the worker's `blob:` URL. The check attaches to no worker session. The load flag is reset at each
+  `Page.navigate` and `Page.frameStoppedLoading` is only accepted for the
+  frame that navigation returned.
+  Sandbox-runtime, bundle-path and entry-path failures inside
+  `lesson_build` are converted to typed `BuildError`s
+  (`build-unavailable` 503, `invalid-out` 409, `no-entry` 404), and the
+  route refuses a `page` that is present and not a string with
+  `invalid-request` 400, and otherwise passes it through a new
+  `lessons.selected_page_ref(lesson, entry)` inside its existing
+  `LessonError` conversion — which raises on a malformed name (400) and
+  otherwise returns the raw string for a v2 bundle and
+  `_clean_html_ref(entry)` for a v1 one — then refuses with `no-page` 404
+  unless `lessons.lesson_file_info` returns exactly that as its entry. It raises rather
+  than returning a pass when no browser is found, when the browser stops
+  answering, when the page does not finish loading or the whole-check
+  deadline passes, or when `window.origin` is not `"null"` after the load.
+  New route `POST /learn/lessons/{lesson_id}/build`, no capability token,
+  `application/json` only, body capped at 16 KiB. The URL handed to the
+  browser is built from the ASGI scope's `server` and never from the Host
+  header. New `EPHEMERIS_BUILD_URL` in the `lesson-agent` child
+  environment, set beside the existing assessment pair. The
+  `_AGENTS_TEMPLATE` brief documents the endpoint. `~/.bun` is not added
+  to any terminal profile's mount list.
+
 ## Done
 
 - [x] 2026-08-08 — `8483d68` (squash of `agent-home-persist`, PR #158) —

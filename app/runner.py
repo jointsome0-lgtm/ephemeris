@@ -200,7 +200,7 @@ def _cached_runner_health_unlocked() -> RunnerHealth:
         return RunnerHealth(False, f"--ro-bind-data probe failed: {detail}")
 
     try:
-        sandbox.require_runner_scope_runtime()
+        sandbox.require_user_scope_runtime()
     except sandbox.SandboxError as exc:
         return RunnerHealth(False, str(exc))
 

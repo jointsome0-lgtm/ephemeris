@@ -366,6 +366,13 @@ def _detect_proxy_env(role: TerminalRole) -> dict[str, str]:
 _ASSESS_URL_ENV = "EPHEMERIS_ASSESS_URL"
 _ASSESS_TOKEN_ENV = "EPHEMERIS_ASSESS_TOKEN"
 _ASSESS_CAPABILITIES: dict[str, dict] = {}
+# The build step's endpoint (#161), on the same "the brief is a constant, the
+# instance data is an environment variable" footing as the pair above.
+_BUILD_URL_ENV = "EPHEMERIS_BUILD_URL"
+
+
+def _build_url(lesson_id: int, base_url: str) -> str:
+    return f"{base_url}/learn/lessons/{int(lesson_id)}/build"
 
 
 def _app_base_url(ws: WebSocket) -> str | None:
@@ -881,11 +888,19 @@ async def _create_session(
             capability = _mint_assessment_capability(
                 sid, workspace["id"], workspace.get("uid"), base_url,
             )
-            # Exactly these two names, only on this role — no broad EPHEMERIS_
+            # Exactly these names, only on this role — no broad EPHEMERIS_
             # prefix joins the child allowlist (the learner and runner profiles
             # have no network and are given nothing).
             env[_ASSESS_URL_ENV] = capability["url"]
             env[_ASSESS_TOKEN_ENV] = capability["token"]
+            # The build step (#161). A URL and no token, unlike the pair above:
+            # a verdict write needs the server's own answer to "which sitting
+            # is this", while a build names its lesson in the path and claims
+            # nothing about who asked. The agent has no package manager of its
+            # own — `~/.bun` is not on this profile's mount list — because the
+            # 30-day quarantine and the copying cache backend live on a command
+            # line only the app writes.
+            env[_BUILD_URL_ENV] = _build_url(workspace["id"], base_url)
             # Published BEFORE the spawn: the child can reach the endpoint from a
             # shell startup file, before this coroutine is resumed at all, and a
             # refusal there would tell the agent its capability is dead when it is

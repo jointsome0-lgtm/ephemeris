@@ -543,7 +543,7 @@ def test_role_runner(client, suite_state):
             return _types.SimpleNamespace(pid=999, stdout=None, stderr=None)
 
         with _sandbox_mock.patch.object(_sandbox, "require_sandbox_runtime"), \
-                _sandbox_mock.patch.object(_sandbox, "require_runner_scope_runtime"), \
+                _sandbox_mock.patch.object(_sandbox, "require_user_scope_runtime"), \
                 _sandbox_mock.patch.object(
                     _sandbox, "open_runner_module_cache_fd",
                     side_effect=invented_module_cache_fd,
@@ -581,7 +581,7 @@ def test_role_runner(client, suite_state):
             raise OSError("invented spawn refusal")
 
         with _sandbox_mock.patch.object(_sandbox, "require_sandbox_runtime"), \
-                _sandbox_mock.patch.object(_sandbox, "require_runner_scope_runtime"), \
+                _sandbox_mock.patch.object(_sandbox, "require_user_scope_runtime"), \
                 _sandbox_mock.patch.object(
                     _sandbox, "open_runner_module_cache_fd",
                     side_effect=invented_module_cache_fd,
@@ -623,7 +623,7 @@ def test_role_runner(client, suite_state):
             lexical.symlink_to(physical, target_is_directory=True)
             with _sandbox_mock.patch.object(_sandbox, "require_sandbox_runtime"), \
                     _sandbox_mock.patch.object(
-                        _sandbox, "require_runner_scope_runtime"
+                        _sandbox, "require_user_scope_runtime"
                     ), _sandbox_mock.patch.object(
                         _sandbox.asyncio, "create_subprocess_exec"
                     ) as spawn:
@@ -711,7 +711,7 @@ def test_role_runner(client, suite_state):
 
     _runner._cached_runner_health.cache_clear()
     with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
-            _sandbox_mock.patch.object(_runner.sandbox, "require_runner_scope_runtime") as _scopeprobe, \
+            _sandbox_mock.patch.object(_runner.sandbox, "require_user_scope_runtime") as _scopeprobe, \
             _sandbox_mock.patch.object(_runner, "_probe_ro_bind_data", return_value="") as _roprobe, \
             _sandbox_mock.patch.object(_runner, "_probe_go_module_cache", return_value="") as _cacheprobe, \
             _sandbox_mock.patch.object(_runner, "_probe_result", return_value="") as _allprobe:
@@ -742,7 +742,7 @@ def test_role_runner(client, suite_state):
         _f3_health_results.append(_runner.runner_health())
 
     with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
-            _sandbox_mock.patch.object(_runner.sandbox, "require_runner_scope_runtime"), \
+            _sandbox_mock.patch.object(_runner.sandbox, "require_user_scope_runtime"), \
             _sandbox_mock.patch.object(
                 _runner, "_probe_ro_bind_data", side_effect=_f3_blocking_ro_probe
             ), _sandbox_mock.patch.object(
@@ -775,7 +775,7 @@ def test_role_runner(client, suite_state):
     _runner._cached_runner_health.cache_clear()
     with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
             _sandbox_mock.patch.object(_runner, "_probe_ro_bind_data", return_value=""), \
-            _sandbox_mock.patch.object(_runner.sandbox, "require_runner_scope_runtime"), \
+            _sandbox_mock.patch.object(_runner.sandbox, "require_user_scope_runtime"), \
             _sandbox_mock.patch.object(_runner, "_probe_result", return_value=""), \
             _sandbox_mock.patch.object(
                 _runner, "_probe_go_module_cache", return_value="module cache absent"

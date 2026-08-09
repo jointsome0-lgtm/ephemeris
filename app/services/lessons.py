@@ -138,6 +138,15 @@ def _clean_bundle_ref(value: str | None, *, html_only: bool = False) -> str:
     value = (value or DEFAULT_ENTRY).strip()
     if not value or "\\" in value or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
         raise LessonError("invalid lesson entry")
+    # A name neither the filesystem nor a URL can carry is not a name in this
+    # bundle. A JSON body may hold a lone surrogate — `"assets/\ud800.js"` —
+    # which is a perfectly ordinary `str` here and then raises
+    # `UnicodeEncodeError` out of `os.open` or `urllib.parse.quote`, turning a
+    # bad request into an unstructured 500 several layers away.
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise LessonError("invalid lesson entry") from None
     ref = PurePosixPath(value)
     if ref.is_absolute() or ".." in ref.parts:
         raise LessonError("invalid lesson entry")
@@ -461,6 +470,28 @@ def _resolve_entry(lesson: dict, read: bundle_schema.ManifestRead, entry: str | 
             read.add("invalid-entry", f"selection {candidate!r} is not a declared page")
         return read.entry
     return _clean_html_ref(candidate or read.entry)
+
+
+def selected_page_ref(lesson: dict, entry: str) -> str:
+    """The spelling `entry` has to resolve to for the bundle to have accepted it.
+
+    `_resolve_entry` falls back to the manifest entry for a selection it will
+    not take, which is right for a preview and wrong for a caller that needs to
+    know whether it got the page it asked for. Comparing against the resolved
+    entry answers that — but only if the comparison uses the same spelling the
+    resolver would: v2 matches declared pages exactly (§4.1), while v1 keeps
+    its historical normalization, so `./index.html` is a fallback under one
+    version and a synonym under the other. Raises `LessonError` on a ref no
+    version would take.
+    """
+    read = _ensure_bundle_manifest(lesson)
+    if read.version != bundle_schema.SCHEMA_V2:
+        return _clean_html_ref(entry)
+    # Raised for its refusal, not its result: a malformed ref is a bad request
+    # under either version, and only the well-formed ones reach the exact
+    # comparison v2 requires.
+    _clean_bundle_ref(entry)
+    return entry
 
 
 def _file_info(
@@ -1252,6 +1283,7 @@ def _render_lesson_state(
         f"- Summary exists: {'yes' if state['summary'] else 'no'}",
         "- Assessment env names: `EPHEMERIS_ASSESS_URL`, "
         "`EPHEMERIS_ASSESS_TOKEN` (never print the token value)",
+        "- Build env name: `EPHEMERIS_BUILD_URL` (no token; the lesson is in the path)",
         "- Environment: Go on PATH (this agent shell)="
         f"{'yes' if _go_on_agent_path() else 'no'}",
         "",
@@ -1613,10 +1645,64 @@ reference is one level up — `../assets/libs/…`:
   a string are unavailable: `d3.csvParse` and friends throw here. Use
   `d3.csvParseRows`, or write the data as a JS literal — the page has no
   network to fetch it from anyway.
-- Anything not on the shelf still goes through the rule above: vendor a
-  pinned copy into `assets/` yourself.
+- Anything not on the shelf comes from the build step below — do not vendor
+  a copy by hand and do not reach for a CDN.
 - The shelf is app-managed: never edit, move or delete anything under
   `assets/libs/` — it is restored on the next terminal open anyway.
+
+## Any package you want, built into one script
+
+For anything the shelf does not cover, name the packages and the app installs
+and bundles them for you. Choose freely — there is no approved list, and a
+library nobody here has heard of is fine if it makes the page better.
+
+POST JSON to the URL in `$EPHEMERIS_BUILD_URL`:
+
+    {"add": ["d3"], "entry": "src/page.ts", "out": "assets/page.js"}
+
+- `add` — packages to install, npm names with an optional version range.
+  Omit it or send `[]` to rebuild with what is already installed.
+- `entry` — your source, inside this bundle: `.ts`, `.tsx`, `.js`, `.jsx`,
+  `.mjs` or `.mts`. Write ordinary imports (`import { select } from "d3"`).
+- `out` — where the built `.js` goes: under `assets/`, which with your
+  declared pages is the only part of a bundle this app serves, and not the
+  same path as `entry`. Reference it from the page with a plain relative
+  `<script src="…">` BEFORE you build: a page that does not run the built
+  file is not evidence that the built file works, and the build is refused
+  on those grounds. A `<link rel=preload>` does not count — it downloads
+  the file without running it.
+- `page` — optional, the page to render-check afterwards; the lesson's
+  current page by default.
+
+Rules the app enforces, so you do not have to think about them:
+
+- **No release younger than 30 days.** Ask for a version inside that window
+  and you get the newest one outside it instead. This is not negotiable from
+  in here, and a `bunfig.toml` you write will not change it.
+- **One classic script, never a module.** Pages render on an opaque origin,
+  where an external `<script type="module">`, an import map, a dynamic
+  `import()` and a `.woff2` web font are all blocked. The build emits a
+  single self-contained script so none of that comes up; keep the tag a
+  plain `<script src>`.
+- **Stylesheets ride along.** `import "katex/dist/katex.min.css"` works;
+  the styles end up inside the built script and are applied on load. Do
+  not add a `<link>` for them — there is no second file to link to, and
+  `node_modules` is not served.
+- **Under 1 MiB.** Import the names you use — `import { select } from "d3"`,
+  not the package default — or the build is refused. A default import of a
+  large library is the usual cause: measured, `import mermaid from "mermaid"`
+  is 3.3 MB against 0.30 MB for named imports of d3 and katex.
+- **It has to render.** The app loads the page in a real browser afterwards,
+  waits for it to finish, and refuses the build if the console reports
+  anything — or if the page never fetched the file that was just built. On a
+  refusal the previous build stays in place and the errors come back in the
+  response — fix them and ask again. Rebuilding is cheap: under a second,
+  warm.
+
+Where the packages live is not your problem: `node_modules/` here is app
+territory, it is never served, and nothing you install is part of the bundle.
+Write your sources under `src/` and let the built file be the only script the
+page loads.
 
 Both color schemes, with a toggle — the learner reads in the dark as often
 as in daylight:
@@ -2152,6 +2238,31 @@ def _ensure_build_workspace(slug: str, lesson_dir: Path) -> Path:
             if path.is_symlink() or not path.is_dir():
                 raise NotADirectoryError(f"{path.name} is not a directory")
     return workspace
+
+
+# The three seams the build step (`lesson_build.py`) needs, named rather than
+# reached for: where a lesson's bundle is, where its packages are, and how a
+# caller-supplied bundle-relative reference is vetted. Each is the public face
+# of a helper above; the rules stay in one place.
+
+def lesson_bundle_dir(slug: str) -> Path:
+    """This lesson's bundle directory (not created here)."""
+    return _lesson_dir(slug)
+
+
+def ensure_build_workspace(slug: str) -> Path:
+    """This lesson's build workspace, both sides of the bind created."""
+    return _ensure_build_workspace(slug, _lesson_dir(slug))
+
+
+def clean_bundle_ref(value: str | None) -> str:
+    """Normalize a bundle-relative reference or raise :class:`LessonError`."""
+    return _clean_bundle_ref(value)
+
+
+def bundle_ref_path(slug: str, ref: str) -> Path:
+    """Resolve a bundle-relative reference inside the bundle, or raise."""
+    return _bundle_path(slug, ref)
 
 
 # --- lesson-libs shelf (#146) ------------------------------------------------

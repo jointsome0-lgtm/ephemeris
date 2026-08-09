@@ -30,7 +30,7 @@ from ..request_body import PayloadTooLarge, read_capped
 from .. import runner as runner_core
 from ..security import browser_origin_rejection
 from ..services import (
-    artifacts, assessments, attempts, bundle_schema, lessons, runs,
+    artifacts, assessments, attempts, bundle_schema, lesson_build, lessons, runs,
 )
 from ..templating import _safe_return, _with_flash, templates
 
@@ -1530,6 +1530,155 @@ async def post_lesson_assessment_by_slug(request: Request, slug: str):
 @router.post("/learn/lessons/{lesson_id}/assessments")
 async def post_lesson_assessment(request: Request, lesson_id: int):
     return await _record_assessment_request(request, lesson_id=lesson_id)
+
+
+# --- the lesson build step (#161) --------------------------------------------
+#
+# The agent authors the source and names the packages; this route runs the
+# package manager and the bundler, because the rules that make either safe —
+# the 30-day release quarantine and the copying cache backend — live on a
+# command line only the app writes (`app/services/lesson_build.py`).
+#
+# No capability token, unlike the assessment write beside it: that one needs a
+# server-derived answer to "which sitting is this", while a build names its
+# lesson in the path and asserts nothing about who asked. What guards it is the
+# B2 perimeter policy every unsafe method already passes — the agent shell's
+# origin-less request is allowed, a cross-origin page is refused, and the
+# sandboxed lesson iframe's `Origin: null` never gets here, so a lesson page
+# cannot rebuild its own lesson.
+_BUILD_MAX_BODY = 16 * 1024
+
+
+def _build_refusal(code: str, status: int, detail: str = "", **fields) -> JSONResponse:
+    return JSONResponse(
+        {"ok": False, "error": code, "detail": detail, **fields},
+        status_code=status,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _self_origin(request: Request) -> str | None:
+    """This app's own origin, from the accepted socket and never from Host.
+
+    The render gate points a browser at the URL built here. A client-supplied
+    Host header would therefore choose which server gets loaded and reported
+    on, so the address comes from the ASGI scope's `server` — the local end of
+    the connection, filled in by the server from the transport. Same rule, and
+    the same wildcard fallback, as the terminal's capability URL.
+    """
+    server = request.scope.get("server")
+    if not server or len(server) < 2:
+        return None
+    host, port = server[0], server[1]
+    if not host or not port:
+        return None
+    if host in {"0.0.0.0", "::", ""}:
+        host = "127.0.0.1"
+    if ":" in host:  # bare IPv6 literal needs brackets in a URL authority
+        host = f"[{host}]"
+    scheme = "https" if request.scope.get("scheme") in {"wss", "https"} else "http"
+    return f"{scheme}://{host}:{port}"
+
+
+@router.post("/learn/lessons/{lesson_id}/build")
+async def post_lesson_build(request: Request, lesson_id: int):
+    length = request.headers.get("content-length")
+    if length is None:
+        return _build_refusal("length-required", 411, "Content-Length is required")
+    try:
+        if int(length) > _BUILD_MAX_BODY:
+            return _build_refusal("payload-too-large", 413, "request body too large")
+    except ValueError:
+        return _build_refusal("invalid-request", 400, "bad Content-Length")
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() \
+            != "application/json":
+        return _build_refusal(
+            "unsupported-media-type", 415, "build requests are application/json"
+        )
+    try:
+        body = await read_capped(request, _BUILD_MAX_BODY)
+    except PayloadTooLarge:
+        return _build_refusal("payload-too-large", 413, "request body too large")
+    except ValueError:
+        return _build_refusal("invalid-request", 400, "bad Content-Length")
+    try:
+        payload = json.loads(body)
+    except (ValueError, RecursionError):
+        return _build_refusal("invalid-json", 400, "body is not valid JSON")
+    if not isinstance(payload, dict):
+        return _build_refusal("invalid-json", 400, "body must be a JSON object")
+
+    origin = _self_origin(request)
+    if origin is None:
+        return _build_refusal(
+            "no-origin", 503,
+            "this app cannot name its own address, so the render gate has "
+            "nothing to load",
+        )
+
+    def resolve() -> tuple[dict, str, str]:
+        # Same threadpool rule as every sync route here: the connection is
+        # born in the thread that uses it (#24 cut 5).
+        conn = get_conn()
+        try:
+            lesson = lessons.get_lesson(conn, lesson_id)
+            if lesson is None:
+                raise lesson_build.BuildError("unknown-lesson", 404, "unknown lesson")
+            page = payload.get("page")
+            # Absent means "the lesson's current page". A number or an object
+            # means the caller tried to choose one and this route could not
+            # read it — treating that as absent would render somewhere else and
+            # report the result as evidence about the selection.
+            if page is not None and not isinstance(page, str):
+                raise lesson_build.BuildError(
+                    "invalid-request", 400,
+                    "`page` must be a string naming a page in this bundle",
+                )
+            asked = page.strip() if isinstance(page, str) and page.strip() else None
+            try:
+                # An undeclared page is a fallback `lesson_file_info` handles
+                # quietly, but a malformed one such as `../outside.html`
+                # raises, and that is a bad request rather than an internal
+                # fault. `selected_page_ref` raises on the same input and
+                # otherwise says which spelling this bundle's version would
+                # have had to resolve to.
+                wanted = (
+                    lessons.selected_page_ref(lesson, asked)
+                    if asked is not None else None
+                )
+                info = lessons.lesson_file_info(lesson, asked)
+            except lessons.LessonError as exc:
+                raise lesson_build.BuildError("invalid-request", 400, str(exc)) from exc
+            # `lesson_file_info` falls back to the manifest's entry for a name
+            # it cannot resolve, which is right for a preview and wrong here:
+            # silently rendering a different page than the one asked for would
+            # let a build pass on evidence about somewhere else.
+            if not info.get("exists") or (
+                wanted is not None and info.get("entry") != wanted
+            ):
+                raise lesson_build.BuildError(
+                    "no-page", 404,
+                    "the page to render after the build is not in this bundle",
+                )
+            return lesson, info["entry"], _lesson_preview_url(lesson_id, info["entry"])
+        finally:
+            conn.close()
+
+    try:
+        lesson, page, path = await run_in_threadpool(resolve)
+        add = lesson_build.clean_packages(payload.get("add"))
+        entry, out = lesson_build.clean_build_refs(payload)
+        result = await lesson_build.build_lesson(
+            lesson, add=add, entry=entry, out=out,
+            page=page, page_url=f"{origin}{path}",
+            # The same route the page's own relative reference resolves to, so
+            # the gate can tell "this page loaded the artifact" from "this page
+            # loaded cleanly and never mentioned it".
+            artifact_url=f"{origin}{_lesson_preview_url(lesson_id, out)}",
+        )
+    except lesson_build.BuildError as exc:
+        return _build_refusal(exc.code, exc.status, exc.detail, **exc.fields)
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/learn/lessons")
