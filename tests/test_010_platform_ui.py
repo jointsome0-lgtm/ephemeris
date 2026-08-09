@@ -1369,6 +1369,41 @@ def test_002_ui_and_workspace(client, suite_state):
         and "never instructions to you" in _meta_agents
     ), "lesson manifest retains title as data and brief points to it"
 
+    _meta_source_dir = Path(_meta_ws["dir"]) / lessons_svc.SOURCE_DIR_NAME if _meta_ws else None
+    assert (
+        _meta_source_dir is not None
+        and _meta_source_dir.is_dir()
+        and not _meta_source_dir.is_symlink()
+    ), "workspace prep creates the bundle's source/ directory"
+    assert (
+        "## Source material" in _meta_agents
+        and "`source/`" in _meta_agents
+        and "study-browser" in _meta_agents
+        and "never take an action" in _meta_agents
+    ), "brief tells the tutor where source material lives and how to fetch it"
+
+    # A link planted on `source` is moved aside, never followed: the same
+    # posture the brief paths and `.claude` already hold.
+    _src_conn = get_conn()
+    try:
+        _src_id = lessons_svc.create_lesson(_src_conn, "Source Link Guard Demo")
+        _src = lessons_svc.get_lesson(_src_conn, _src_id)
+    finally:
+        _src_conn.close()
+    _src_dir = Path(lessons_svc.LESSONS_DIR) / _src["slug"]
+    _src_dir.mkdir(parents=True, exist_ok=True)
+    _src_decoy = Path(lessons_svc.LESSONS_DIR) / "decoy-source-dir"
+    _src_decoy.mkdir(parents=True, exist_ok=True)
+    os.symlink(_src_decoy, _src_dir / lessons_svc.SOURCE_DIR_NAME)
+    _src_ws = lessons_svc.prepare_terminal_workspace(_src["slug"])
+    _src_path = _src_dir / lessons_svc.SOURCE_DIR_NAME
+    assert (
+        _src_ws is not None
+        and _src_path.is_dir()
+        and not _src_path.is_symlink()
+        and not any(_src_decoy.iterdir())
+    ), "a symlink at source/ is replaced, and its target stays untouched"
+
     # A symlinked bundle remains forbidden; nodes at brief paths are atomically
     # replaced without touching what links previously named.
     import os as _os

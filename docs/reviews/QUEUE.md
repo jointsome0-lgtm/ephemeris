@@ -24,7 +24,18 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
+- [ ] 2026-08-09 — `feat/study-browser` (PR pending) —
+  `app/services/lessons.py`, `docs/reviews/QUEUE.md` —
+  lesson workspace prep now also creates a `source/` directory in the bundle
+  (`_ensure_source_dir`, same `_preserve_foreign` posture as the `.claude`
+  directory), and the agent brief gains a "Source material" section.
+  Host-side, outside this repository: a `@playwright/mcp` server listens on
+  `127.0.0.1:9223` with a persistent Chrome profile at
+  `~/.local/share/playwright-mcp/lesson-profile`, and is registered as the
+  user-scope MCP server `study-browser` in `~/.claude.json`. The
+  `lesson-agent` sandbox profile runs with `--share-net` and bind-mounts
+  `~/.claude.json` read-only, so that server is reachable and configured
+  inside lesson-agent sessions without a repository change.
 
 ## Done
 
