@@ -23,6 +23,14 @@ one still open.
 The existing special review rules for `app/terminal.py`, `app/agent/`, and
 listening surfaces remain binding.
 
+## Stack
+
+Python (backend, via `uv`) and TypeScript (browser, `app/static/src/*.ts` →
+`bun run build` → committed JS). Anything else needs a reason in the PR.
+
+The loose `app/static/*.js` files predate the toolchain; a new browser module
+starts as `.ts`.
+
 ## Public Data Boundary
 
 Treat this repository as public by default.
