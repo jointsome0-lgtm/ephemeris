@@ -1733,3 +1733,152 @@ def test_a_sandboxed_lesson_page_cannot_ask_for_its_own_rebuild(client, built_le
         headers={"Origin": "null"},
     )
     assert response.status_code == 403
+
+
+def _replace_output_mid_check(path: Path, body: bytes, errors=()):
+    """A `console_errors` stand-in that writes the bundle while the gate runs.
+
+    The gate is where the build releases the event loop for seconds, and the
+    lesson-agent session owns this directory: it can replace the page it is
+    working on at any moment, and the request holding the lesson lock cannot
+    stop it. Atomically, the way an editor or a `>` into a temporary saves.
+    """
+    def check(*args, **kwargs):
+        temporary = path.with_suffix(".invented-concurrent")
+        temporary.write_bytes(body)
+        os.replace(temporary, path)
+        return list(errors)
+    return check
+
+
+@needs_sandbox
+def test_a_page_replaced_during_the_gate_is_not_deleted_by_the_rollback(
+    built_lesson, monkeypatch
+):
+    """The refusal path used to unlink whatever the name held, sight unseen.
+
+    Sequence: the build sets the previous artifact aside, writes its own, and
+    the gate refuses it. The undo removed `assets/page.js` and moved the old
+    copy back — but if the agent had written that path while the gate ran, the
+    bytes removed were the agent's, and they were the newest thing there. The
+    build must leave a write it did not make alone, and say why it stopped.
+    """
+    import asyncio
+
+    lesson, bundle = built_lesson
+    # Its own source, with nothing to install: this test is about the placement
+    # window, and the fixture's entry imports d3.
+    (bundle / "src" / "page.ts").write_text(
+        'document.title = "invented";\n', encoding="utf-8"
+    )
+    (bundle / "assets").mkdir(exist_ok=True)
+    (bundle / "assets" / "page.js").write_bytes(b"//invented old artifact\n")
+    concurrent = b"//invented concurrent authored bytes\n"
+    monkeypatch.setattr(
+        render_check, "console_errors",
+        _replace_output_mid_check(
+            bundle / "assets" / "page.js", concurrent, errors=["invented failure"],
+        ),
+    )
+
+    # Snapshot first: other tests here share this bundle and leave decoy names
+    # behind deliberately, so what matters is that this build adds nothing.
+    before = set(os.listdir(bundle / "assets"))
+    with pytest.raises(lesson_build.BuildError) as caught:
+        asyncio.run(lesson_build.build_lesson(
+            lesson, add=[], entry="src/page.ts", out="assets/page.js",
+            page=None, page_url="http://127.0.0.1:1/unused",
+            artifact_url="http://127.0.0.1:1/unused.js",
+        ))
+
+    assert caught.value.code == "output-replaced" and caught.value.status == 409
+    assert (bundle / "assets" / "page.js").read_bytes() == concurrent, (
+        "the rollback destroyed a write this build never made"
+    )
+    assert set(os.listdir(bundle / "assets")) == before, (
+        "and left no hidden copy of the artifact it displaced"
+    )
+
+
+@needs_sandbox
+def test_a_page_replaced_during_the_gate_is_not_reported_as_rendered(
+    built_lesson, monkeypatch
+):
+    """The success path used to say `ok` about bytes the browser never saw.
+
+    Same window, clean verdict: the gate rendered the built artifact, the agent
+    replaced it before the response was written, and the build deleted the copy
+    it had set aside and answered `ok: true`. The lesson then served bytes no
+    gate ever passed, under a claim that one had.
+    """
+    import asyncio
+
+    lesson, bundle = built_lesson
+    # Its own source, with nothing to install: this test is about the placement
+    # window, and the fixture's entry imports d3.
+    (bundle / "src" / "page.ts").write_text(
+        'document.title = "invented";\n', encoding="utf-8"
+    )
+    (bundle / "assets").mkdir(exist_ok=True)
+    (bundle / "assets" / "page.js").write_bytes(b"//invented old artifact\n")
+    concurrent = b"//invented unrendered bytes\n"
+    monkeypatch.setattr(
+        render_check, "console_errors",
+        _replace_output_mid_check(bundle / "assets" / "page.js", concurrent),
+    )
+
+    with pytest.raises(lesson_build.BuildError) as caught:
+        asyncio.run(lesson_build.build_lesson(
+            lesson, add=[], entry="src/page.ts", out="assets/page.js",
+            page=None, page_url="http://127.0.0.1:1/unused",
+            artifact_url="http://127.0.0.1:1/unused.js",
+        ))
+
+    assert caught.value.code == "output-replaced"
+    assert (bundle / "assets" / "page.js").read_bytes() == concurrent
+
+
+@needs_sandbox
+def test_an_untouched_gate_still_rolls_back_and_still_commits(
+    built_lesson, monkeypatch
+):
+    """The check above must not have cost the ordinary two outcomes.
+
+    Nothing writes during the gate here. A refusal has to put the previous
+    artifact back, byte for byte, and a pass has to replace it and drop the
+    copy it set aside — the behaviour the replacement check is wrapped around,
+    pinned so a stricter identity cannot quietly turn every build into a
+    conflict.
+    """
+    import asyncio
+
+    lesson, bundle = built_lesson
+    # Its own source, with nothing to install: this test is about the placement
+    # window, and the fixture's entry imports d3.
+    (bundle / "src" / "page.ts").write_text(
+        'document.title = "invented";\n', encoding="utf-8"
+    )
+    (bundle / "assets").mkdir(exist_ok=True)
+    previous = b"//invented old artifact\n"
+    (bundle / "assets" / "page.js").write_bytes(previous)
+
+    _no_render_errors(monkeypatch, errors=["invented failure"])
+    with pytest.raises(lesson_build.BuildError) as caught:
+        asyncio.run(lesson_build.build_lesson(
+            lesson, add=[], entry="src/page.ts", out="assets/page.js",
+            page=None, page_url="http://127.0.0.1:1/unused",
+            artifact_url="http://127.0.0.1:1/unused.js",
+        ))
+    assert caught.value.code == "render-errors"
+    assert (bundle / "assets" / "page.js").read_bytes() == previous
+
+    _no_render_errors(monkeypatch)
+    before = set(os.listdir(bundle / "assets"))
+    result = asyncio.run(lesson_build.build_lesson(
+        lesson, add=[], entry="src/page.ts", out="assets/page.js",
+        page=None, page_url="http://127.0.0.1:1/unused",
+        artifact_url="http://127.0.0.1:1/unused.js",
+    ))
+    assert result["ok"]
+    assert (bundle / "assets" / "page.js").read_bytes() != previous
+    assert set(os.listdir(bundle / "assets")) == before

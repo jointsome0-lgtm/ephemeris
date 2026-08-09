@@ -33,12 +33,19 @@ The archive is defined by **exclusion**, not by a list of known directories.
 `course-raw/`, `agent-homes/` (each lesson's persistent agent memory — the
 transcripts `claude --continue` reads), projection caches, and whatever the
 next feature adds beside them. Enumerating those by name would mean a backup that is silently incomplete
-between edits, so two things are left out instead and the manifest names them
-under `excluded`:
+between edits, so what is left out is left out deliberately and the manifest
+names it under `excluded`:
 
 - `backups/` — this directory; including it would nest every set in the next.
 - `exports/` — JSONL exports are generated *from* the database that is already
   in the set, so they cost size and add no recoverable state.
+- `lesson-builds/` — the installed package trees a lesson build works in. This
+  is **derived state, declared reconstructible**: a build reinstalls it from the
+  lesson's own package specs. It is excluded rather than archived because the
+  archive carries no symlinks (below) and a package tree's internal links — the
+  `.bin/` shims and the like — are symlinks, so archiving it would produce a
+  restore that looks complete and does not run. After a restore, the next build
+  of a lesson reinstalls its workspace; nothing you authored lives here.
 - `*.pre-restore-*` — copies a forced restore preserved. They are scrap you
   delete once satisfied, not instance state, and archiving them would make every
   backup after a forced restore carry a second copy of the instance it replaced.
@@ -53,6 +60,13 @@ under `excluded`:
   is reserved either way, because that is the name a restore writes the snapshot
   to — so if you rename the database, the file it used to be is left out of the
   backup rather than restored over the snapshot that was verified.
+
+**Regular files only.** The archive carries no symlink, in any directory: a link
+is a target the walk has not proved is inside the instance, and following or
+recreating one on restore is how a backup writes outside the tree it is meant to
+restore. The rule is what makes `lesson-builds/` an exclusion above rather than a
+directory this set carries in half — anywhere else under the data directory, the
+instance's own state is regular files.
 
 **The manifest is written last, by rename.** That one rule is the durability
 contract: a manifest on disk is a promise that the two files it names are

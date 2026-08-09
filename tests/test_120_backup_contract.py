@@ -583,9 +583,50 @@ def test_the_archive_carries_every_directory_the_instance_grew(backup_db, instan
         "the snapshot is the consistent copy of the database and its sidecars"
     )
     assert manifest["excluded"] == [
-        "backups/", "exports/", "*.pre-restore-*", ".restore-tmp-*",
-        "activity.sqlite*",
+        "backups/", "exports/", "lesson-builds/", "*.pre-restore-*",
+        ".restore-tmp-*", "activity.sqlite*",
     ]
+
+
+def test_the_reconstructible_package_workspace_is_declared_not_half_archived(
+    backup_db, instance, tmp_path
+):
+    """A package tree is links as much as files, and this archive carries no link.
+
+    `lesson-builds/<slug>/node_modules` is where a lesson build installs its
+    packages. Carrying its regular files while dropping its `.bin/` shims — which
+    are symlinks, as internal package links normally are — restored a package set
+    that looked whole and did not run, and the manifest recorded the links
+    neither as archived nor as excluded, so verification passed against an
+    already incomplete list. The tree is derived state a build reinstalls, so it
+    is declared reconstructible instead: left out whole, named in `excluded`, and
+    not recreated by a restore.
+    """
+    tree = instance / "lesson-builds" / "invented-lesson" / "node_modules"
+    (tree / "demo-tool").mkdir(parents=True)
+    (tree / "demo-tool" / "index.js").write_text("//invented\n", encoding="utf-8")
+    (tree / ".bin").mkdir()
+    (tree / ".bin" / "demo-tool").symlink_to("../demo-tool/index.js")
+
+    manifest_path = backup_db.create_backup()
+    manifest = backup_db.verify(manifest_path)
+
+    assert not any(
+        name.startswith("lesson-builds/") for name in manifest["instance_files"]
+    ), "a package tree cannot be carried faithfully, so it is not carried in half"
+    assert "lesson-builds/" in manifest["excluded"]
+    assert "lessons/demo-slug/lesson.json" in manifest["instance_files"], (
+        "and the rest of the instance is archived exactly as before"
+    )
+
+    target = tmp_path / "recovered"
+    result = backup_db.restore(manifest_path, target)
+
+    assert "lesson-builds" not in result["restored"]
+    assert not (target / "lesson-builds").exists(), (
+        "the next build of a lesson reinstalls its workspace; a restore that "
+        "made the directory would be claiming it had recovered one"
+    )
 
 
 def test_a_restore_rebuilds_every_directory_it_carried(backup_db, instance, tmp_path):
@@ -984,8 +1025,8 @@ def test_a_renamed_database_is_still_excluded_from_the_archive(
         name.startswith("ledger.sqlite") for name in manifest["instance_files"]
     ), "the snapshot is the consistent copy; the raw file must not ride along"
     assert manifest["excluded"] == [
-        "backups/", "exports/", "*.pre-restore-*", ".restore-tmp-*",
-        "activity.sqlite*", "ledger.sqlite*",
+        "backups/", "exports/", "lesson-builds/", "*.pre-restore-*",
+        ".restore-tmp-*", "activity.sqlite*", "ledger.sqlite*",
     ], (
         "and the manifest names the file it actually left out"
     )
@@ -1020,8 +1061,8 @@ def test_a_relative_data_dir_still_excludes_its_own_backups(
         name.startswith("activity.sqlite") for name in manifest["instance_files"]
     )
     assert manifest["excluded"] == [
-        "backups/", "exports/", "*.pre-restore-*", ".restore-tmp-*",
-        "activity.sqlite*",
+        "backups/", "exports/", "lesson-builds/", "*.pre-restore-*",
+        ".restore-tmp-*", "activity.sqlite*",
     ]
 
 

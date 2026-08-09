@@ -84,13 +84,21 @@ archives or displaces it either: it is not instance state."""
 STAGED = ".staged-"
 """Prefix of a backup's in-progress files inside `backups/`."""
 
-EXCLUDED_DIRS = ("backups", "exports")
+EXCLUDED_DIRS = ("backups", "exports", "lesson-builds")
 """Top-level directories that are neither archived nor replaced by a restore.
 
 `backups/` would nest every set inside the next one; `exports/` is generated
-FROM the database that is already in the set. Everything else under the data
-directory is instance state and belongs to both halves of this contract — the
-archive puts it in, and a forced restore moves it aside."""
+FROM the database that is already in the set. `lesson-builds/` holds installed
+package trees (`app.services.lessons.BUILD_WORKSPACES_DIR`) — derived state that
+a build reinstalls from the lesson's own package specs, and the one place under
+the data directory where the archive could not be faithful even if it tried: a
+package tree's internal links (`.bin/` shims and the like) are symlinks, and the
+walk below carries no symlink. Archiving the regular files alone would restore
+a package set that looks complete and does not run, so this directory is
+declared reconstructible and left out of both halves instead — see
+`docs/backup-restore.md`. Everything else under the data directory is instance
+state and belongs to both halves of this contract — the archive puts it in, and
+a forced restore moves it aside."""
 
 MANIFEST_VERSION = 1
 """Bumped when the manifest's shape changes. A reader that meets a version it
@@ -365,12 +373,17 @@ def instance_files() -> list[str]:
     input `migrate_bundles --rollback` accepts), `lessons-attic/`, `course-raw/`
     and whatever the next feature adds beside them — and a backup that has to be
     edited every time one appears is a backup that is silently incomplete
-    between edits. Two things are left out, both on purpose:
+    between edits. What is left out is left out on purpose:
 
     - `backups/` — this directory. Including it would nest every set inside the
       next one.
     - `exports/` — JSONL exports are generated FROM the database that is already
       in the set, so they cost size and add no recoverable state.
+    - `lesson-builds/` — installed package trees, reinstallable from the lesson's
+      own package specs. This walk carries no symlink (see below), and package
+      trees are full of them, so including this one would archive a tree that
+      restores looking whole and does not run. Declared reconstructible in
+      `EXCLUDED_DIRS` rather than half-archived.
     - `*.pre-restore-*` — what a forced restore preserved. A restore leaves
       those alone (`restore_owned`), so archiving them would make every backup
       after a forced restore carry a second copy of the instance it replaced,
@@ -393,6 +406,12 @@ def instance_files() -> list[str]:
     # `backups/` entirely rather than walking it and discarding the results —
     # the archive is being written in there as this runs. It also never follows
     # a directory symlink, so a link pointing at an ancestor cannot loop.
+    #
+    # No symlink is archived, in either loop below. That is deliberate — a link
+    # is a target this walk did not prove is inside the instance — and it is
+    # exactly why a directory whose contents are normally linked cannot be in
+    # this set at all rather than in it by halves; `EXCLUDED_DIRS` names the one
+    # that is.
     for dirpath, dirnames, filenames in os.walk(root):
         here = Path(dirpath)
         top = here == root

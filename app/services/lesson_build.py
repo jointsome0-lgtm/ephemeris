@@ -555,6 +555,31 @@ def _write_through(fd: int, name: str, data: bytes) -> None:
     os.replace(temporary, name, src_dir_fd=fd, dst_dir_fd=fd)
 
 
+def _identity(fd: int, name: str) -> tuple | None:
+    """What is at `name` right now, closely enough to notice it being replaced.
+
+    Read AFTER the rename, never from the descriptor that was renamed: the
+    rename itself changes the inode's ctime, so an identity taken before it
+    would never match again.
+
+    Inode is not enough on its own. It catches an atomic replacement — the
+    rename an editor or a script's `>` into a temporary makes — but a plain
+    `echo … > assets/page.js` truncates the existing inode in place and keeps
+    the number. Size and both timestamps move for that one, so the pair is what
+    is compared. `None` means nothing is there at all.
+    """
+    try:
+        info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError:  # pragma: no cover - the descriptor walk already proved it
+        return None
+    return (
+        info.st_dev, info.st_ino, info.st_size,
+        info.st_mtime_ns, info.st_ctime_ns,
+    )
+
+
 def _read_artifact(
     outfile: Path, steps: list[dict], *, committed: int = 0,
     optional: bool = False,
@@ -814,6 +839,11 @@ async def build_lesson(
     way to render the built page without the built file being in place — and
     put back the way it was if the gate fails. A lesson is never left carrying
     an artifact this function knows to be broken.
+
+    The lock below serialises builds, and cannot serialise the agent session
+    that owns the same bundle by hand. So the output is checked, after the
+    gate, for still being the file this build placed: a page the agent replaced
+    mid-check is neither deleted by the undo nor reported as rendered.
     """
     async with _lesson_lock(lesson["slug"]):
         return await _build_locked(
@@ -946,12 +976,12 @@ async def _build_locked(
         ) from exc
     async def place() -> None:
         aside = None
-        placed = False
+        placed: tuple | None = None
         try:
             _reject_irregular_output(fd, name, out, steps)
             aside = _set_aside(fd, name)
             _write_through(fd, name, artifact)
-            placed = True
+            placed = _identity(fd, name)
             try:
                 errors = await asyncio.to_thread(
                     render_check.console_errors, page_url, expect_url=artifact_url,
@@ -964,6 +994,21 @@ async def _build_locked(
                 raise BuildError(
                     "render-check-unavailable", 503, str(exc), steps=steps
                 ) from exc
+            # Before the verdict is used for anything: is it a verdict about a
+            # file that is still there? The gate read the bundle over seconds of
+            # released event loop, and the lesson-agent session writes into this
+            # same bundle. If the path changed hands in that window, the render
+            # says nothing about what a reader would now get, so neither
+            # outcome — pass or fail — is one this build may act on.
+            if _identity(fd, name) != placed:
+                raise BuildError(
+                    "output-replaced", 409,
+                    f"{out} was written by something else while the built page "
+                    "was being checked, so what the check saw is not what is "
+                    "there now; that write is left alone and this build was "
+                    "not applied",
+                    steps=steps, page=page, page_url=page_url,
+                )
             if errors:
                 raise BuildError(
                     "render-errors", 422,
@@ -972,11 +1017,27 @@ async def _build_locked(
                     steps=steps, errors=errors, page=page, page_url=page_url,
                 )
         except BaseException:
-            # Every path out of here that is not a pass puts the bundle back
-            # the way it was found. A lesson never keeps an artifact this
-            # function knows to be broken, and never loses the one that worked.
-            if placed:
+            # Every path out of here that is not a pass puts the bundle back the
+            # way it was found: a lesson never keeps an artifact this function
+            # knows to be broken, and never loses the one that worked. What the
+            # undo may NOT do is reach over bytes this build did not write — the
+            # agent session owns these files too, and unlinking the output would
+            # then destroy its work and restoring the aside would bury it. So
+            # the undo is decided by what the path holds now.
+            current = _identity(fd, name) if placed is not None else None
+            if current is not None and current == placed:
+                # Ours, untouched: remove it and put back what it displaced.
                 _remove_through(fd, name)
+            elif current is not None:
+                # A newcomer holds the path. It is newer than the copy set aside
+                # and it is not this build's to overwrite, so the copy goes and
+                # the newcomer stays, exactly as it was written.
+                if aside is not None:
+                    _remove_through(fd, aside)
+                    aside = None
+            # `current is None` — nothing there, either because the write never
+            # landed or because something removed it. Restoring the aside is
+            # then the whole undo, and it destroys nothing.
             if aside is not None:
                 try:
                     os.rename(aside, name, src_dir_fd=fd, dst_dir_fd=fd)
