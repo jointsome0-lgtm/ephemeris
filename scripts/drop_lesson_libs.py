@@ -16,26 +16,44 @@ quietly go on referencing a library the app stopped standing behind.
 
 ## What makes this safe to delete
 
-`assets/libs/SHASUMS256` is the seeder's ownership stamp, and it is also the
-inventory of exactly what the seeder wrote. So this tool never guesses:
+What may be deleted is decided HERE, by `SHELF_CONTENTS` below — four paths
+and four digests, the shelf's complete and final inventory. The bundle's own
+`assets/libs/SHASUMS256` is only consulted for the one thing it can still be
+trusted to say: that the app once owned this directory. It cannot be trusted
+for what to delete, because it lives inside a directory a lesson session can
+write — a session could append a line naming a file it authored, with that
+file's real digest, and a tool that read its inventory from there would
+hash-match and delete the author's work.
+
+So, in order:
 
 - The stamp must be present and begin with the seeder's marker. Without it the
   directory predates the shelf or belongs to the agent; it is left untouched.
-- Each file is removed only when its sha256 still matches the digest the stamp
-  recorded. A file the agent edited no longer matches and stays, along with
-  everything else the stamp does not name.
-- Directories are removed only when they are already empty afterwards, and
-  never `assets/` itself.
-- Nothing is reached through a symlink, and a symlink is never what gets
-  removed in place of the file it names.
+- A file is removed only when it is one of the four AND its sha256 still
+  matches. An edited copy no longer matches and stays.
+- Anything else under the shelf — a file the pinned inventory does not name, a
+  symlink, a directory that will not empty — hands the whole directory back:
+  the stamp stays too, so a rerun still sees what is owed.
+- Directories are removed only when they are already empty, and never
+  `assets/` itself.
+- Nothing is reached through a symlink at any path component, nothing
+  non-regular is read, and the inode that was hashed is the inode unlinked.
 
-A bundle where anything was kept keeps its `assets/libs/` and its stamp, so a
-rerun re-examines it rather than assuming the last run finished the job.
+## Run it with the service stopped
+
+Bundles are writable from inside a live lesson session, and no POSIX call
+deletes a verified inode by identity — `unlink` takes a name. This tool
+re-checks that the name still holds the inode it hashed, immediately before
+removing it, which leaves a window measured in microseconds rather than in
+the seconds a hash of a 3 MB file takes. Closing it entirely is the operator's
+half: stop the service first. There is no hurry — the bytes have been sitting
+there since #146.
 
 Usage:
+    systemctl --user stop ephemeris
     ACTIVITY_DATA_DIR=... python -m scripts.drop_lesson_libs --dry-run
     ACTIVITY_DATA_DIR=... python -m scripts.drop_lesson_libs
-    ACTIVITY_DATA_DIR=... python -m scripts.drop_lesson_libs --slug thank-go-1-2
+    ACTIVITY_DATA_DIR=... python -m scripts.drop_lesson_libs --slug demo-lesson-1
 
 Idempotent: a bundle with no seeded shelf is a no-op, so a rerun reports
 nothing to do. Exit code 0 = nothing failed; 1 otherwise.
@@ -45,7 +63,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
-import re
 import stat as stat_module
 import sys
 from pathlib import Path, PurePosixPath
@@ -59,10 +76,30 @@ from app.services.lessons import LESSONS_DIR  # noqa: E402
 STAMP_MARKER = "# ephemeris lesson-libs"
 SHELF_DIR = "assets/libs"
 STAMP_NAME = "SHASUMS256"
-# sha256sum's own output format: digest, two spaces, path relative to the shelf.
-_LINE = re.compile(r"^([0-9a-f]{64}) {2}(\S.*)$")
-# The stamp is four comment lines and a handful of digests; anything larger is
-# not the file this tool knows how to read.
+
+# The shelf's complete and final inventory, bundle-relative — the paths as the
+# seeder flattened them (`d3/7.9.0/d3.min.js` → `d3/d3.min.js`).
+#
+# Pinned here, in a file only the repository can change, rather than parsed out
+# of each bundle's own stamp: see the module docstring. This is the whole of
+# what this tool will ever delete.
+#
+# One set for the shelf's entire life. `vendor/lesson-libs/SHASUMS256` was
+# added by #146 (1a2c26b) and removed by #161, with no commit in between — so
+# no bundle anywhere can hold a seeded copy at some other version.
+SHELF_CONTENTS = {
+    "d3/d3.min.js":
+        "f2094bbf6141b359722c4fe454eb6c4b0f0e42cc10cc7af921fc158fceb86539",
+    "katex/katex.min.css":
+        "3124b9fb2162a8591273f05c41f84c9a8a96629d769e6cd6a8f3ba26983b931f",
+    "katex/katex.min.js":
+        "45fbe318fea878fdc0a111913dc1f87894b2c439360d0228c086ef313f213efc",
+    "mermaid/mermaid.min.js":
+        "74d7c46dabca328c2294733910a8aa1ed0c37451776e8d5295da38a2b758fb9b",
+}
+
+# The stamp is four comment lines and four digests; anything larger is not the
+# file this tool knows how to read.
 _STAMP_MAX_BYTES = 64 * 1024
 # The biggest thing the shelf ever held was mermaid at 3.4 MB. Generous enough
 # never to refuse an honest seeded copy, bounded so a file swapped for
@@ -120,14 +157,18 @@ def _descend(shelf: Path, relative: str) -> tuple[int, str] | None:
     return fd, parts[-1]
 
 
-def _read_at(dir_fd: int, name: str, limit: int) -> bytes | None:
-    """The bytes of a regular file opened relative to `dir_fd`, or None when
-    nothing is there. Raises :class:`Unverifiable` for anything else.
+def _read_at(dir_fd: int, name: str, limit: int) -> tuple[bytes, tuple[int, int]] | None:
+    """The bytes of a regular file opened relative to `dir_fd`, with the
+    identity of the inode they came from. None when nothing is there; raises
+    :class:`Unverifiable` for anything else.
 
     `O_NONBLOCK` is not decoration: without it a FIFO planted at one of these
     names parks the `open` on a writer that never comes, and the `fstat` that
     would reject it as non-regular never runs. This tool is meant to be run by
     hand on a live instance and must not be something a lesson can hang.
+
+    The returned `(st_dev, st_ino)` is what :func:`_unlink_verified` re-checks
+    the name against, so the file that gets deleted is the file that was read.
     """
     try:
         fd = os.open(
@@ -148,47 +189,62 @@ def _read_at(dir_fd: int, name: str, limit: int) -> bytes | None:
         if info.st_size > limit:
             raise Unverifiable(f"{info.st_size} bytes, past what this tool reads")
         with os.fdopen(os.dup(fd), "rb") as handle:
-            return handle.read(limit)
+            return handle.read(limit), (info.st_dev, info.st_ino)
     except OSError as exc:
         raise Unverifiable(exc.strerror or str(exc)) from exc
     finally:
         os.close(fd)
 
 
-def _inventory(shelf: Path) -> dict[str, str] | None:
-    """The stamp's `{relative path: sha256}`, or None when it is not ours."""
+def _unlink_verified(dir_fd: int, name: str, identity: tuple[int, int]) -> None:
+    """Remove `name`, but only while it still holds the inode that was hashed.
+
+    `unlink` takes a name and POSIX offers no way to remove a verified inode by
+    identity, so a lesson session writing this bundle could in principle
+    replace the file between the hash and the removal — and the replacement,
+    whose bytes nobody checked, is what would go. Re-stating the identity here
+    shrinks that window from "however long hashing 3 MB takes" to the gap
+    between these two calls. The operator closes the rest by stopping the
+    service; the module docstring says so.
+    """
+    try:
+        now = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return  # somebody else removed it, which is the wanted state
+    if (now.st_dev, now.st_ino) != identity:
+        raise Unverifiable(
+            "it was replaced while this run was reading it; nothing was removed"
+        )
+    os.unlink(name, dir_fd=dir_fd)
+
+
+def _is_app_stamped(shelf: Path) -> bool:
+    """Whether the shelf still carries the seeder's ownership stamp.
+
+    This is the ONLY question the bundle's own `SHASUMS256` is asked. Its
+    digest lines are not read: the file sits in a directory a lesson session
+    can write, so a session could append a line naming a file it authored and
+    a tool that believed it would delete the author's work. What may be
+    deleted is `SHELF_CONTENTS`, which lives in the repository.
+    """
     try:
         found = _descend(shelf, STAMP_NAME)
         if found is None:
-            return None
+            return False
         fd, name = found
         try:
-            raw = _read_at(fd, name, _STAMP_MAX_BYTES)
+            read = _read_at(fd, name, _STAMP_MAX_BYTES)
         finally:
             os.close(fd)
     except Unverifiable:
-        return None
-    if raw is None:
-        return None
+        return False
+    if read is None:
+        return False
+    raw, _identity = read
     try:
-        text = raw.decode("utf-8")
+        return raw.decode("utf-8").startswith(STAMP_MARKER)
     except UnicodeDecodeError:
-        return None
-    if not text.startswith(STAMP_MARKER):
-        return None
-    entries: dict[str, str] = {}
-    for line in text.splitlines():
-        if line.startswith("#") or not line.strip():
-            continue
-        matched = _LINE.match(line)
-        if not matched:
-            return None  # a stamp this tool cannot read in full is not acted on
-        digest, relative = matched.group(1), matched.group(2)
-        segments = relative.split("/")
-        if any(seg in ("", ".", "..") for seg in segments) or "\\" in relative:
-            return None
-        entries[relative] = digest
-    return entries
+        return False
 
 
 def _prune_empty(shelf: Path) -> None:
@@ -219,27 +275,29 @@ def retire(bundle: Path, *, apply: bool) -> tuple[int, int, list[str]]:
     shelf = bundle / SHELF_DIR
     if not shelf.is_dir() or shelf.is_symlink():
         return 0, 0, []
-    inventory = _inventory(shelf)
-    if inventory is None:
+    if not _is_app_stamped(shelf):
         return 0, 0, [f"{SHELF_DIR}/{STAMP_NAME} is absent or not the app's stamp"]
 
     removed = freed = 0
     kept: list[str] = []
-    for relative, digest in sorted(inventory.items()):
+    for relative, digest in sorted(SHELF_CONTENTS.items()):
         try:
             found = _descend(shelf, relative)
             if found is None:
                 continue  # already gone — nothing owed
             fd, name = found
             try:
-                data = _read_at(fd, name, _LIBRARY_MAX_BYTES)
-                if data is None:
+                read = _read_at(fd, name, _LIBRARY_MAX_BYTES)
+                if read is None:
                     continue
+                data, identity = read
                 if hashlib.sha256(data).hexdigest() != digest:
-                    kept.append(f"{relative} no longer matches the stamp; left in place")
+                    kept.append(
+                        f"{relative} is not the copy the shelf published; left in place"
+                    )
                     continue
                 if apply:
-                    os.unlink(name, dir_fd=fd)
+                    _unlink_verified(fd, name, identity)
                 removed += 1
                 freed += len(data)
             finally:
@@ -268,7 +326,7 @@ def retire(bundle: Path, *, apply: bool) -> tuple[int, int, list[str]]:
         # node as a stray file is.
         for name in files + [d for d in dirs if os.path.islink(os.path.join(parent, d))]
         if (relative := (Path(parent) / name).relative_to(shelf).as_posix())
-        not in inventory and relative != STAMP_NAME
+        not in SHELF_CONTENTS and relative != STAMP_NAME
     )
     if strays:
         kept.append(

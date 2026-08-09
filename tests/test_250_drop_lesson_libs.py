@@ -45,10 +45,50 @@ def _seed(bundle: Path, files: dict[str, bytes] = FILES) -> Path:
 
 @pytest.fixture
 def root(tmp_path, monkeypatch) -> Path:
+    """A lessons root of this test's own, with a pretend shelf pinned.
+
+    `SHELF_CONTENTS` ships the four real digests, whose 4.4 MB of bytes left
+    the repository with the shelf. What is under test is the tool's judgement
+    about the pinned set, not the set itself — that is
+    `test_the_pinned_inventory_is_the_one_the_shelf_published` below.
+    """
     lessons = tmp_path / "lessons"
     lessons.mkdir()
     monkeypatch.setattr(drop_lesson_libs, "LESSONS_DIR", str(lessons))
+    monkeypatch.setattr(
+        drop_lesson_libs, "SHELF_CONTENTS",
+        {rel: hashlib.sha256(data).hexdigest() for rel, data in FILES.items()},
+    )
     return lessons
+
+
+def test_the_pinned_inventory_is_the_one_the_shelf_published():
+    """The digests this tool deletes by are the seeder's, checked against the
+    commit that introduced them rather than against itself.
+
+    `vendor/lesson-libs/SHASUMS256` was added by #146 and removed by #161 with
+    no commit in between, so that one blob is the shelf's whole history. Its
+    paths carry the version directory the seeder flattened away.
+    """
+    import subprocess
+
+    try:
+        published = subprocess.run(
+            ["git", "show", "1a2c26b:vendor/lesson-libs/SHASUMS256"],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover
+        pytest.skip(f"git history unavailable here: {exc}")
+    if published.returncode != 0:  # pragma: no cover - shallow clone
+        pytest.skip("the #146 blob is not in this clone")
+
+    flattened = {}
+    for line in published.stdout.splitlines():
+        digest, _, shelf_relative = line.partition("  ")
+        name, _version, *rest = shelf_relative.split("/")
+        flattened["/".join([name, *rest])] = digest
+    assert drop_lesson_libs.SHELF_CONTENTS == flattened
 
 
 def _bundle(root: Path, slug: str) -> Path:
@@ -112,7 +152,37 @@ def test_an_edited_copy_keeps_itself_and_the_stamp(root, capsys):
     # The matching ones still went; only the changed file was owed nothing.
     assert not (shelf / "katex/katex.min.js").exists()
     out = capsys.readouterr().out
-    assert "d3/d3.min.js no longer matches the stamp" in out
+    assert "d3/d3.min.js is not the copy the shelf published" in out
+
+
+def test_a_stamp_the_session_extended_cannot_widen_what_is_deleted(root, capsys):
+    """The stamp lives where a lesson session can write it.
+
+    So it says only "the app owned this directory". A session that appends its
+    own file and that file's real digest would, if the stamp were believed,
+    have talked this tool into deleting the author's work. The list of what may
+    go is in the repository, and an unlisted file is a stray — which hands the
+    whole shelf back rather than taking anything.
+    """
+    bundle = _bundle(root, "extended-stamp")
+    shelf = _seed(bundle)
+    authored = shelf / "my-chart.js"
+    authored.write_bytes(b"// months of work\n")
+    stamp = shelf / drop_lesson_libs.STAMP_NAME
+    stamp.write_text(
+        stamp.read_text(encoding="utf-8")
+        + f"{hashlib.sha256(authored.read_bytes()).hexdigest()}  my-chart.js\n",
+        encoding="utf-8",
+    )
+
+    assert drop_lesson_libs.main([]) == 1
+    assert authored.read_bytes() == b"// months of work\n"
+    # The four the repository vouches for still go — they are provably the
+    # app's copies. What the stray costs is the directory and the stamp, which
+    # stay because the space is somebody else's now.
+    assert not (shelf / "d3/d3.min.js").exists()
+    assert (shelf / drop_lesson_libs.STAMP_NAME).is_file()
+    assert "the stamp never named" in capsys.readouterr().out
 
 
 def test_a_file_the_stamp_never_named_hands_the_shelf_back(root, capsys):
