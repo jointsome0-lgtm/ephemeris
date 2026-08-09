@@ -205,6 +205,11 @@ def test_a_cancelled_step_does_not_leave_a_package_manager_running(monkeypatch):
         sandbox, "build_step_argv",
         lambda *a, **k: ["/bin/sh", "-c", f"# {marker}\nsleep 30"],
     )
+    # And the scope around it: this test is about what `_run_step` does with a
+    # process it started, and CI has no systemd user session — `systemd-run
+    # --user` there exits with "Failed to connect to bus" before the probe can
+    # run, and the failure would read as a lifecycle bug that is not there.
+    monkeypatch.setattr(sandbox, "build_scope_prefix", lambda *a, **k: ())
 
     async def scenario():
         task = asyncio.ensure_future(lesson_build._run_step(
@@ -451,6 +456,20 @@ _PAGES = {
         b"new Worker(URL.createObjectURL(b))}"
         b"catch(e){console.error('CTOR '+e.name+': '+e.message)}"
     ),
+    # A worker that starts, says something is wrong, and is never asked.
+    "/w-live.html": b"<!doctype html><meta charset=utf-8><script src='w-live.js'></script>",
+    "/w-live.js": (
+        b"var b=new Blob([\"console.error('FROM WORKER');postMessage('up')\"],"
+        b"{type:'text/javascript'});"
+        b"var w=new Worker(URL.createObjectURL(b));"
+        b"w.onmessage=function(){document.title='worker up'};"
+    ),
+    # …and one that throws instead, with nothing on the page listening.
+    "/w-throw.html": b"<!doctype html><meta charset=utf-8><script src='w-throw.js'></script>",
+    "/w-throw.js": (
+        b"var b=new Blob([\"null.f();\"],{type:'text/javascript'});"
+        b"new Worker(URL.createObjectURL(b));"
+    ),
     # Says something is wrong without saying what.
     "/wordless.html": b"<!doctype html><meta charset=utf-8><script src='wordless.js'></script>",
     "/wordless.js": b"console.error('');",
@@ -527,6 +546,15 @@ def lesson_csp() -> str:
     return _LESSON_PREVIEW_CSP_INTERACTIVE
 
 
+@pytest.fixture(scope="module")
+def legacy_csp() -> str:
+    """The historical permissive policy a v1 bundle still renders under, and
+    the build route still accepts v1 bundles."""
+    from app.routers.learn import _LESSON_PREVIEW_CSP_LEGACY
+
+    return _LESSON_PREVIEW_CSP_LEGACY
+
+
 @needs_browser
 def test_the_render_gate_reads_a_page_under_the_real_lesson_policy(lesson_csp):
     """One browser, four pages: what passes, and the three ways to fail."""
@@ -583,8 +611,9 @@ def test_a_worker_cannot_start_here_and_says_so_where_the_gate_listens(lesson_cs
     Both refusals land on channels the gate already reads, so a worker's own
     console is unreachable rather than unwatched.
 
-    This is a tripwire as much as a record: give the policy a `worker-src` and
-    this test stops passing, which is the moment to attach to those sessions.
+    Where a worker DOES run — the legacy policy, below — its diagnostics are
+    forwarded to the page target the check is attached to, so nothing is
+    missed there either.
     """
     site = _Site(lesson_csp)
     try:
@@ -595,6 +624,32 @@ def test_a_worker_cannot_start_here_and_says_so_where_the_gate_listens(lesson_cs
         blob = render_check.console_errors(f"{site.base}/w-blob.html")
         assert any(e["source"] == "browser" for e in blob), blob
         assert any("worker" in e["text"].lower() for e in blob), blob
+    finally:
+        site.close()
+
+
+@needs_browser
+def test_a_worker_that_does_run_is_still_heard(legacy_csp):
+    """A v1 bundle renders under the permissive policy, which allows `blob:`
+    scripts — so there a worker really does start, and the check is attached to
+    the page target only.
+
+    Measured on this host rather than assumed: Chrome forwards a worker's
+    console errors and its uncaught exceptions to the page's `Log` domain, with
+    the worker's own `blob:` URL in the text. Both fail the gate without the
+    check attaching to worker sessions at all.
+    """
+    site = _Site(legacy_csp)
+    try:
+        live = render_check.console_errors(f"{site.base}/w-live.html")
+        assert any("FROM WORKER" in e["text"] for e in live), live
+        assert any("blob:" in e["text"] for e in live), (
+            "the worker, not the page, is what said it", live
+        )
+
+        threw = render_check.console_errors(f"{site.base}/w-throw.html")
+        assert any("TypeError" in e["text"] for e in threw), threw
+        assert any("blob:" in e["text"] for e in threw), threw
     finally:
         site.close()
 

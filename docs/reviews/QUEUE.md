@@ -205,7 +205,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   arguments produces no `Runtime.consoleAPICalled` at all;
   `new Worker('worker.js')` throws `SecurityError` naming origin `null`,
   and a blob worker is refused by `script-src` through the `worker-src`
-  fallback, both on channels already collected. The load flag is reset at each
+  fallback, both on channels already collected. Under the
+  `legacy-display` policy, which allows `blob:` scripts, the same blob
+  worker starts; measured there, its `console.error` and its uncaught
+  exception both arrive as `Log.entryAdded` on the page target, carrying
+  the worker's `blob:` URL. The check attaches to no worker session. The load flag is reset at each
   `Page.navigate` and `Page.frameStoppedLoading` is only accepted for the
   frame that navigation returned.
   Sandbox-runtime, bundle-path and entry-path failures inside
