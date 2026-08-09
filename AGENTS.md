@@ -28,8 +28,8 @@ listening surfaces remain binding.
 Python (backend, via `uv`) and TypeScript (browser, `app/static/src/*.ts` →
 `bun run build` → committed JS). Anything else needs a reason in the PR.
 
-The loose `app/static/*.js` files predate the toolchain; a new browser module
-starts as `.ts`.
+The hand-written `app/static/*.js` files are on their way out, converted one
+file per PR. New browser modules start as `.ts`.
 
 ## Public Data Boundary
 
