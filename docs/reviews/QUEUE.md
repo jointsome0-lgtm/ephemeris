@@ -66,7 +66,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `None` for it. `node_modules` is added to
   `bundle_schema.RESERVED_NAMES` and to §2 of the bundle spec.
 
-- [ ] 2026-08-09 — `<pending squash>` (branch `feat/161-build-step`, PR #165) —
+- [ ] 2026-08-09 — `8a4e3ee` (squash of `feat/161-build-step`, PR #165) —
   `app/sandbox.py`, `app/services/lesson_build.py`,
   `app/services/render_check.py`, `app/services/lessons.py`,
   `app/routers/learn.py`, `app/terminal.py`, `docs/learn-bundle-spec.md`,
