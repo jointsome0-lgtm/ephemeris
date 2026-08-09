@@ -59,19 +59,27 @@
    sitting inside the parent's rows box. `group.children` is guarded with
    `or []` for the live pre-nesting backend, whose flat groups have no such
    key — the page then renders exactly the single level it always did. #}
-{% macro lesson_group(group) -%}
+{% macro lesson_group(group, shoot=0) -%}
 <section class="lesson-group{% if group.selected %} has-sel{% endif %}">
   <details class="lesson-group-d" data-track="{{ group.path }}"{% if group.selected %} open{% endif %}>
     <summary class="lesson-group-head">
       <span class="lesson-group-name">{{ group.name or group.path }}</span>
-      <span class="lesson-group-count">{{ group.studied }} of {{ group.total }}</span>
       {# The bar restates the count for the eye; the count is the text
-         an assistive reader gets, so the bar stays decorative. #}
-      <span class="lesson-group-bar" aria-hidden="true"><i style="width: {{ group.pct }}%"></i></span>
+         an assistive reader gets, so the bar stays decorative. `data-pct`
+         is what the hover readout prints — the exact share, which neither
+         the bar's width nor the vine's fill can be read off precisely. #}
+      <span class="lesson-group-bar" aria-hidden="true" data-pct="{{ group.pct }}"><i style="width: {{ group.pct }}%"></i></span>
+      <span class="lesson-group-count">{{ group.studied }} of {{ group.total }}</span>
     </summary>
-    <div class="lesson-group-rows">
+    {# The vine: one shape stretched down the whole branch, always drawn
+       whole — what progress moves is how far the starlight has filled it,
+       not how far it grew. `--pct` is the fill stop; `shoot` picks which of
+       the four curls this branch takes, so sibling branches do not trace
+       the same line. Decoration over data the head already states. #}
+    <div class="lesson-group-rows" style="--pct: {{ group.pct }}%">
+      <span class="lesson-vine vine-{{ shoot % 4 }}" aria-hidden="true"></span>
       {% for lesson in group.rows %}{{ lesson_row(lesson) }}{% endfor %}
-      {% for child in group.children or [] %}{{ lesson_group(child) }}{% endfor %}
+      {% for child in group.children or [] %}{{ lesson_group(child, loop.index0) }}{% endfor %}
     </div>
   </details>
   {# Where a collapsed track is resumed from. Deliberately a sibling of
@@ -202,7 +210,7 @@
       {% if rows %}
       <div class="lesson-list">
         {% if grouped %}
-        {% for group in groups %}{{ lesson_group(group) }}{% endfor %}
+        {% for group in groups %}{{ lesson_group(group, loop.index0) }}{% endfor %}
         {% endif %}
         {% for lesson in flat_rows %}{{ lesson_row(lesson) }}{% endfor %}
       </div>

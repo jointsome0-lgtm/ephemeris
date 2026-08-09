@@ -77,6 +77,7 @@ html[data-theme="light"] {
 
   --astral:   #b8892f;   /* celestial gold: check-ins, streaks, stars, focus ring */
   --glow:     rgba(184,137,47,0.24);   /* gold focus bloom (quick-add, focus-visible) */
+  --vine-dim: rgba(184,137,47,0.30);   /* the unlit stretch of a Learn branch */
   --hairline: rgba(35,40,56,0.11);     /* engraved instrument rules */
 
   --font-display: "Cormorant Garamond", Georgia, "Times New Roman", serif;
@@ -157,6 +158,7 @@ html[data-theme="dark"] {
 
   --astral:   #d4a95c;   /* celestial gold, brighter against the night */
   --glow:     rgba(212,169,92,0.30);
+  --vine-dim: rgba(212,169,92,0.18);
   --hairline: rgba(230,228,218,0.10);
 
   --full:  #2f9e86;  --full-ink:  #ffffff;
@@ -572,20 +574,12 @@ body {
    its own track and the one below and belongs to neither. */
 .lesson-group { display: flex; flex-direction: column; gap: 3px; }
 .lesson-group-head {
+  position: relative;
   display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px;
   padding: 7px 10px; border-radius: 8px; cursor: pointer; list-style: none;
   border: 1px solid transparent;
 }
 .lesson-group-head::-webkit-details-marker { display: none; }
-/* Leading caret, drawn the way every other disclosure here draws one
-   (.rec-chip-head), but before the name: this one heads a list of rows, and a
-   tree is read from its left edge. */
-.lesson-group-head::before {
-  content: ""; flex: 0 0 auto; width: 5px; height: 5px; margin: 0 3px 0 1px;
-  border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted);
-  transform: rotate(-45deg); transition: transform .15s ease;
-}
-.lesson-group-d[open] > .lesson-group-head::before { transform: translateY(-1px) rotate(45deg); }
 .lesson-group-head:hover { background: var(--hover); }
 .lesson-group-head:focus-visible { border-color: var(--primary); outline: none; }
 /* A group the learner folded away can still be the one holding the lesson on
@@ -604,17 +598,150 @@ body {
    where it sits, so the only extra cue is one step down in weight — enough to
    keep the top-level course names reading as the anchors of the list. */
 .lesson-group-rows .lesson-group-name { font-weight: 500; }
-.lesson-group-count { flex: 0 0 auto; color: var(--faint); font-size: 12px; }
-/* The bar takes the row it wrapped onto whole: at the widths this panel is
-   dragged to, a bar sharing a line with the name would be a few pixels long. */
-.lesson-group-bar {
-  flex: 1 0 100%; height: 3px; border-radius: 2px; background: var(--border);
-  overflow: hidden;
+.lesson-group-count {
+  flex: 0 0 auto; color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums;
 }
-.lesson-group-bar i { display: block; height: 100%; background: var(--gold); }
+/* A short bright thread beside the name rather than a full-width bar: the vine
+   below already carries the share at branch scale, and this is the handle you
+   point at when you want the number instead of the impression. */
+.lesson-group-bar {
+  position: relative; flex: 0 0 auto; width: 44px; height: 3px;
+  border-radius: 2px; background: var(--vine-dim); cursor: help;
+}
+.lesson-group-bar i {
+  display: block; height: 100%; border-radius: 2px;
+  background: var(--astral); box-shadow: 0 0 6px var(--glow);
+}
+/* The exact share, printed only on demand. Neither the thread nor the vine can
+   be read off to the percent, and rounding both onto the head permanently
+   would put three numbers on one line. */
+.lesson-group-bar::after {
+  content: attr(data-pct) "%"; position: absolute; right: 0; bottom: 11px;
+  padding: 2px 6px; border-radius: 5px;
+  background: var(--card-bg); border: 1px solid var(--border-2); color: var(--astral);
+  font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap;
+  opacity: 0; transform: translateY(3px); transition: opacity .15s ease, transform .15s ease;
+  pointer-events: none;
+}
+.lesson-group-head:hover .lesson-group-bar::after,
+.lesson-group-head:focus-visible .lesson-group-bar::after { opacity: 1; transform: translateY(0); }
+
+/* --- the vine ------------------------------------------------------------
+   A branch is drawn as one winding shoot down the left of its rows, and the
+   lessons hang off it on tendrils. The shoot is always whole — progress is
+   how far the starlight has filled it, not how far it grew, so a barely
+   started track still shows the size of what it is asking for.
+
+   Mechanically it is a gradient wearing the shoot as a mask: the fill stop is
+   the `--pct` the head sets, and the mask carries the shape. That keeps the
+   percentage in CSS, where it can soften across the boundary, instead of in a
+   per-branch SVG the template would have to mint an id for. */
+/* `--vine-w` is the channel the shoot runs in, and every offset below is
+   measured off it. It narrows past the first level on purpose: the indent is
+   paid per level out of a panel that starts at 260px, and a six-deep address
+   drawn at full width leaves a lesson title with nothing to be read in. */
 .lesson-group-rows {
-  display: flex; flex-direction: column; gap: 8px;
-  margin: 8px 0 0 5px; padding-left: 9px; border-left: 1px solid var(--border);
+  --vine-w: 20px;
+  position: relative;
+  display: flex; flex-direction: column; gap: 6px;
+  margin: 6px 0 0 5px; padding-left: calc(var(--vine-w) + 5px);
+}
+.lesson-group-rows .lesson-group-rows { --vine-w: 15px; }
+.lesson-group-rows .lesson-group-rows .lesson-group-rows { --vine-w: 12px; }
+.lesson-vine {
+  position: absolute; left: 0; top: 2px; bottom: 2px; width: var(--vine-w);
+  pointer-events: none;
+  /* The boundary is soft in the middle and sharp at both ends: the band
+     shrinks with whichever side is closer, so an untouched branch carries no
+     stray gold at its head and a finished one keeps its light all the way to
+     the tip — the two readings that have to be unambiguous. */
+  --vine-fade: calc(min(var(--pct, 0%), 100% - var(--pct, 0%)) * 0.24);
+  background: linear-gradient(to bottom,
+    var(--astral) 0,
+    var(--astral) calc(var(--pct, 0%) - var(--vine-fade)),
+    var(--vine-dim) calc(var(--pct, 0%) + var(--vine-fade)),
+    var(--vine-dim) 100%);
+  filter: drop-shadow(0 0 3px var(--glow));
+  -webkit-mask: var(--vine-shape) no-repeat center / 100% 100%;
+  mask: var(--vine-shape) no-repeat center / 100% 100%;
+}
+/* Four curls, dealt out by sibling order, so two branches in the same box
+   never trace the same line — a hedge, not a hierarchy. The shoot is stretched
+   to whatever height its branch happens to be, which is why the stroke is
+   pinned: without `non-scaling-stroke` a tall branch draws a fat one. */
+.vine-0 { --vine-shape: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 100' preserveAspectRatio='none'%3E%3Cpath d='M11,0 C1,16 21,32 11,50 C1,68 21,84 11,100' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E"); }
+.vine-1 { --vine-shape: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 100' preserveAspectRatio='none'%3E%3Cpath d='M11,0 C19,14 3,30 11,48 C19,66 5,82 11,100' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E"); }
+.vine-2 { --vine-shape: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 100' preserveAspectRatio='none'%3E%3Cpath d='M11,0 C4,20 18,38 11,56 C4,74 16,88 11,100' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E"); }
+.vine-3 { --vine-shape: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 100' preserveAspectRatio='none'%3E%3Cpath d='M11,0 C17,18 5,34 11,52 C18,70 7,86 11,100' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E"); }
+
+/* Where the vine reaches a sub-branch it swells into a bud, and the sub-branch
+   head starts from it. A bud on a folded branch wears a ring: that is the only
+   thing left saying there is something inside, now that the caret is gone. */
+.lesson-group-rows > .lesson-group > .lesson-group-d > .lesson-group-head {
+  padding-left: 4px;
+}
+.lesson-group-rows > .lesson-group > .lesson-group-d > .lesson-group-head::before {
+  content: ""; position: absolute; left: calc(-1 * var(--vine-w) + 2px); top: 50%; margin-top: -3px;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--astral); box-shadow: 0 0 6px 1px var(--glow);
+}
+.lesson-group-rows > .lesson-group > .lesson-group-d:not([open]) > .lesson-group-head::before {
+  background: transparent; box-shadow: inset 0 0 0 1px var(--astral);
+}
+
+/* A lesson is the end of a tendril, not a card in a stack: inside a branch the
+   row drops its box and keeps only what marks it — the title, and the fill
+   that says which one is open. */
+.lesson-group-rows > .lesson-row {
+  position: relative; min-height: 0; padding: 6px 10px;
+  background: transparent; border-color: transparent;
+}
+.lesson-group-rows > .lesson-row:hover { background: var(--hover); }
+.lesson-group-rows > .lesson-row.sel { background: var(--primary-soft); border-color: var(--primary); }
+.lesson-group-rows > .lesson-row::before {
+  content: ""; position: absolute; top: 50%; margin-top: -14px; height: 28px;
+  left: calc(-1 * var(--vine-w) - 4px); width: calc(var(--vine-w) + 6px);
+  pointer-events: none;
+  background: var(--vine-dim);
+  --tendril: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 28'%3E%3Cpath d='M7,0 C7,8 6,14 14,14 C20,14 22,10 24,14' fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E");
+  -webkit-mask: var(--tendril) no-repeat center / 100% 100%;
+  mask: var(--tendril) no-repeat center / 100% 100%;
+}
+/* A finished lesson lights its own tendril. `studied` is the one status the
+   branch counts, so it is the one the shoot answers to. */
+.lesson-group-rows > .lesson-row:has(.st-studied)::before {
+  background: var(--astral); filter: drop-shadow(0 0 3px var(--glow));
+}
+.lesson-group-rows > .lesson-row::after {
+  content: ""; position: absolute; left: 0; top: 50%; margin-top: -2.5px;
+  width: 5px; height: 5px; border-radius: 50% 0 50% 0; transform: rotate(-20deg);
+  background: var(--vine-dim); pointer-events: none;
+}
+.lesson-group-rows > .lesson-row:has(.st-studied)::after {
+  background: var(--astral); box-shadow: 0 0 5px var(--glow);
+}
+/* Without a box around it a row cannot hold a permanent tray of buttons and
+   still read as a leaf, so the tray lifts out of the flow and waits for the
+   pointer — or for the keyboard, which reaches it through focus and must not
+   aim at nothing. Out of the flow is the point: left in it, the tray's
+   reserved height doubled every row and stretched the branch to twice the
+   height of what hangs on it.
+
+   The whole treatment is a pointer-device affordance, so it lives behind a
+   hover-capability query the way the board's card-move arrows do. A touch
+   device has no hover to reveal the tray with and cannot focus into a tray
+   that is not hit-testable, so it keeps the tray in the flow and visible —
+   these forms are the only way to restatus or archive a lesson, and a taller
+   row is a far smaller cost than an unreachable one. */
+@media (hover: hover) {
+  .lesson-group-rows > .lesson-row .lesson-actions {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    padding: 2px 4px; border-radius: 8px;
+    background: var(--card-bg); box-shadow: var(--shadow);
+    opacity: 0; pointer-events: none; transition: opacity .15s ease;
+  }
+  .lesson-group-rows > .lesson-row:hover .lesson-actions,
+  .lesson-group-rows > .lesson-row:focus-within .lesson-actions { opacity: 1; pointer-events: auto; }
 }
 .lesson-group-next {
   margin-left: 12px; min-width: 0; color: var(--primary); font-size: 13px;

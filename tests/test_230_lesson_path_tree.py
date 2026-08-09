@@ -232,9 +232,52 @@ def test_nested_tracks(client, suite_state):
         and len(_row_ids(_flat)) == len(_live_rows)
     ), "a pre-nesting backend's flat groups render, headed by the full address"
 
+    # --- the vine ------------------------------------------------------------
+    # Each branch carries one shoot, filled to the same share its head counts.
+    # The fill is a CSS gradient stop, so `--pct` on the rows box is the whole
+    # contract between the numbers and the drawing: without it the shoot is
+    # unlit everywhere and a finished track looks untouched.
+    _vines = re.findall(
+        r'<div class="lesson-group-rows" style="--pct: (\d+)%">\s*'
+        r'<span class="lesson-vine vine-(\d)"',
+        r.text,
+    )
+    assert _vines, "every branch draws a shoot, filled from its own `--pct`"
+    assert (
+        all(0 <= int(pct) <= 100 for pct, _ in _vines)
+        and {shape for _, shape in _vines} <= {"0", "1", "2", "3"}
+    ), "the fill is a percentage and the curl is one of the four shapes"
+    # zt-cc is 1 of 4 studied; its head and its shoot must not disagree.
+    _cc_rows = r.text.split('data-track="zt-cc"')[1]
+    assert (
+        '<div class="lesson-group-rows" style="--pct: 25%">' in _cc_rows.split("</details>")[0]
+    ), "the shoot is filled to the rolled-up share its head prints"
+    assert (
+        'data-pct="25"' in _cc_rows.split("<div class=")[0]
+    ), "the head carries the exact share for the hover readout"
+
     _css = (ROOT / "app" / "static" / "style.css").read_text(encoding="utf-8")
     assert (
         ".lesson-group-rows .lesson-group-name {" in _css
     ), "a nested group head is styled a step down from its parent"
+    assert (
+        ".lesson-vine {" in _css
+        and ".vine-0 {" in _css and ".vine-3 {" in _css
+        and 'content: attr(data-pct) "%"' in _css
+    ), "the shoot, its four curls and the hover readout have their styles"
+    # Both ends have to be unambiguous, and only a fade band that shrinks
+    # toward them delivers that — a fixed band leaves a finished branch dimming
+    # at the tip and an untouched one lit at the head.
+    assert (
+        "min(var(--pct, 0%), 100% - var(--pct, 0%))" in _css
+    ), "the fill's soft edge collapses at 0% and at 100%"
+    # A tray revealed by hover is a tray a touch device cannot reach: it has no
+    # hover, and `pointer-events: none` denies it the tap that would focus into
+    # it. These forms are the only way to restatus or archive a lesson, so the
+    # whole treatment stays behind a hover-capability query.
+    _tray = _css.split(".lesson-group-rows > .lesson-row .lesson-actions {")[0]
+    assert (
+        _tray.rstrip().endswith("@media (hover: hover) {")
+    ), "the hover-only action tray is gated on the device having hover"
 
     suite_state["path_tree"] = sorted(tree)
