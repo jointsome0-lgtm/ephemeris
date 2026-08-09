@@ -23,7 +23,7 @@ Guarantees (§10 invariants + C4 requirements):
 Usage:
     ACTIVITY_DATA_DIR=... python -m scripts.migrate_bundles --dry-run
     ACTIVITY_DATA_DIR=... python -m scripts.migrate_bundles
-    ACTIVITY_DATA_DIR=... python -m scripts.migrate_bundles --slug thank-go-1-2
+    ACTIVITY_DATA_DIR=... python -m scripts.migrate_bundles --slug demo-lesson-1
     ACTIVITY_DATA_DIR=... python -m scripts.migrate_bundles \
         --rollback data/migrations/v1v2-20260719-120000
 

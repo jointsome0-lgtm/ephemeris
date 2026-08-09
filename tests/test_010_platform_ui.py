@@ -947,10 +947,17 @@ def test_002_ui_and_workspace(client, suite_state):
         and "artifact_roots" in agents_text
         and "never absolute" in agents_text
     ), "lesson AGENTS.md cites the frozen v2 identity + attempts conventions"
+    # Until #161 this asked for a PINNED copy vendored into `assets/` by hand,
+    # off a shelf the app seeded. There is no shelf and no approved list now:
+    # the agent names any package it likes, the app installs it behind the
+    # 30-day quarantine and compiles it into the page. The ban on remote loads
+    # is the half that did not change.
     assert (
-        "CDN" in agents_text and "pinned" in agents_text
-        and "assets/" in agents_text
-    ), "lesson AGENTS.md requires pinned libraries in assets/, bans CDN"
+        "CDN" in agents_text and "assets/" in agents_text
+        and "no approved list, no curated shelf, and no starter set" in agents_text
+        and "No release younger than 30 days" in agents_text
+        and "Do not vendor a copy of a library by hand" in agents_text
+    ), "lesson AGENTS.md offers any package via the build step, bans CDN"
     assert (
         "lesson-bridge" in agents_text
         and "to the bridge port only" in agents_text

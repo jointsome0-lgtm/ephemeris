@@ -1,11 +1,15 @@
 # Supply-chain quarantine: never resolve a release younger than 30 days.
 #
-# The lesson-libs shelf (vendor/lesson-libs/README.md) has carried this rule as
-# prose since #146 — "only take releases >= 30 days old" — which meant somebody
-# comparing publish dates by hand. The package manager can enforce it: with
-# `minimumReleaseAge` set, resolution skips a version published inside the
-# window and picks the newest one outside it instead. Age is the filter; the
-# lockfile and the shelf's recorded sha256 remain the control.
+# With `minimumReleaseAge` set, resolution skips a version published inside the
+# window and picks the newest one outside it instead. Age is the filter, not the
+# control: the lockfile is what pins what actually gets installed.
+#
+# Scope, since it is narrower than it looks. This file governs the REPOSITORY's
+# own installs — the dev-only TypeScript toolchain in package.json. It does not
+# govern a lesson build: the agent can write a `bunfig.toml` inside its own
+# session, so the lesson path carries the same 30 days as an argv flag instead
+# (`app/services/lesson_build.py`), where only the app is the author. Two
+# mechanisms, one number; `tests/test_230_lesson_build.py` asserts they agree.
 #
 # The value is in SECONDS, unlike npm's `min-release-age`, which counted days.
 # 2592000 = 30 * 24 * 60 * 60.
@@ -19,9 +23,20 @@
 # npm ignored `min-release-age` — so the setting is not self-enforcing and
 # `engines.bun` in package.json records the version it was verified against
 # (1.3.11). A *misspelled* key is likewise ignored without a word; a wrongly
-# typed value is the only mistake bun refuses outright. The place the gate must
-# be proven live is the shelf refresh — vendor/lesson-libs/README.md step 1
-# checks it there, before resolving anything.
+# typed value is the only mistake bun refuses outright. So the file is not
+# self-enforcing: proving the gate live means watching the resolver refuse a
+# too-fresh pin, in a scratch directory this file has been copied into —
+#
+#   scratch=$(mktemp -d) && cp bunfig.toml "$scratch"/ && cd "$scratch"
+#   echo '{"name":"scratch","private":true}' > package.json
+#   bun add "<name>@$(bun info <name> version)"   # a live gate REFUSES this
+#
+# The `cp` is load-bearing: bun reads a project `bunfig.toml` from the directory
+# it runs in, so a bare `mktemp -d` leaves the gate behind here and the resolver
+# hands back a release published yesterday. Two ways the gate weakens that this
+# check would still catch, because it exercises the real resolver:
+# `minimumReleaseAgeExcludes` exempts named packages, and a `~/.bunfig.toml`
+# merges in underneath the project file. Neither exists on this machine today.
 #
 # No credentials belong in this file (AGENTS.md, public data boundary).
 [install]

@@ -92,6 +92,19 @@ import map, a dynamic `import()` and a web font are fetched in cors mode and
 refused, while a classic script is not. Emitting one IIFE means the files
 route needs no `Access-Control-Allow-Origin` to make a page work.
 
+**`assets/` is wholly the author's.** Between #146 and #161 the app kept a
+vendored library shelf (d3, KaTeX, mermaid) in the repository and seeded a copy
+into `<bundle>/assets/libs/` on every lesson-terminal open, stamped with its
+own `SHASUMS256`, because a lesson had no way to install anything. Now it has:
+the shelf, its seeder and its stamp are gone (2026-08-09,
+[#161](https://github.com/jointsome0-lgtm/ephemeris/issues/161)), and no path
+under `assets/` is app-written or app-restored. This narrows nothing and
+reserves nothing — `assets/libs/` was never a reserved name and no manifest
+field's grammar changes — so it is not a §9.2/§9.3 compatibility break. What it
+does change is ownership of bytes already on disk: bundles seeded before the
+change keep their copies as ordinary, now-unmanaged content, retired by
+`scripts/drop_lesson_libs.py` rather than by any reader.
+
 `AGENTS.md`, `CLAUDE.md` and everything the app writes under `.claude/` are
 regenerated, never authored: the app rewrites them on every lesson-agent
 terminal open and an edit to them does not survive. `.claude/settings.json`
@@ -380,8 +393,9 @@ D1 (landed) pins the enforcement:
   affordances — those flags come from the manifest read, not the CSP.
 - `interactive-local-v1` is local-only: `sandbox allow-scripts`;
   `default-src 'none'`; `script-src`/`style-src` `'self' 'unsafe-inline'`
-  (pages are self-contained, pinned libraries under `assets/` are
-  same-origin); `img-src`/`media-src` `'self' data: blob:`;
+  (pages are self-contained, and the libraries a page uses are compiled
+  into a built script under `assets/`, i.e. same-origin);
+  `img-src`/`media-src` `'self' data: blob:`;
   `font-src 'self' data:`; `connect-src 'none'` (the D2 bridge is
   postMessage, not fetch); `webrtc 'block'` (WebRTC is not governed by
   `connect-src`; the CSP3 directive closes the RTCPeerConnection/STUN
