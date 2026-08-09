@@ -39,6 +39,8 @@
   let appliedSeq = 0;      // the ticket of the state currently on screen
   let pendingTarget = null;  // a target picked from a row before the list loaded
 
+  const RETRY_MS = 3000;   // second look after a write whose answer never came
+
   const toast = (msg) => (window.alUI && window.alUI.toast
     ? window.alUI.toast(msg) : undefined);
 
@@ -67,6 +69,13 @@
       // A pre-#75 process still serving these pages has no /focus/timer route;
       // say so once instead of failing silently.
       showError("timer unavailable — is the app up to date?");
+      // An answer that never arrives says nothing about the server: the write
+      // may well have committed just before the connection dropped. Ask what is
+      // actually running — now, and once more shortly in case the connection is
+      // still coming back — or the drawer sits idle over a timer that is
+      // running, with no periodic poll to notice.
+      refused = true;
+      setTimeout(() => sync(true), RETRY_MS);
       return null;
     } finally {
       busy = false;

@@ -14,7 +14,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from ..db import get_db
+from ..db import get_db, snapshot
 from ..services import focus, retro
 from ..templating import _wants_json, _with_flash, templates
 
@@ -38,7 +38,13 @@ def get_retro(request: Request, archived: int = 0, edit: int | None = None,
     # The 14-day focus chart landed here when the Focus page was retired (#75):
     # the only Focus number that was not about one habit or lesson is the shape
     # of the fortnight, and this is the surface for looking back at one.
-    daily = focus.daily_totals(conn)
+    # One snapshot for the three: a timer finishing in another tab between them
+    # would otherwise print "25m today" over a chart whose today bar is still
+    # empty, and the page would be arguing with itself.
+    with snapshot(conn):
+        daily = focus.daily_totals(conn)
+        focus_streak = focus.focus_day_streak(daily)
+        focus_ov = focus.overview(conn)
     return templates.TemplateResponse(request, "retro.html", {
         "request": request,
         "rail": "retro",
@@ -49,8 +55,8 @@ def get_retro(request: Request, archived: int = 0, edit: int | None = None,
         "confidences": retro.CONFIDENCES,
         "flash": flash,
         "focus_daily": daily,
-        "focus_streak": focus.focus_day_streak(daily),
-        "focus_ov": focus.overview(conn),
+        "focus_streak": focus_streak,
+        "focus_ov": focus_ov,
     })
 
 

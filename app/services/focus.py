@@ -308,26 +308,29 @@ def start_run(conn: sqlite3.Connection, mode: str, token: str, *,
     about the day. The event is appended when the span is recorded.
     """
     token = _clean_token(token)
-    existing = _run_by_token(conn, token)
-    if existing is not None:
-        return _run_view(existing)
-    if session_by_token(conn, token) is not None:
-        # The token is spent: it already became a session. Opening a second run
-        # on it would create a timer that can never be recorded — the session's
-        # unique token would reject the finish, and the run would sit in the
-        # singleton slot blocking every later start.
-        raise FocusError("that timer already finished")
-    if mode not in MODES:
-        raise FocusError("unknown timer mode")
-    target_seconds = _clean_target_seconds(mode, target_seconds)
-    note = (note or "").strip() or None
-    limits.check(note, limits.FOCUS_NOTE, "focus note", FocusError)
-    targets = _picked_targets(conn, lesson_id, habit_id, task_id)
-    # The `slot` column is a UNIQUE singleton, so the "only one timer" rule is
-    # the database's to enforce: two tabs starting at once would both clear a
-    # SELECT-then-INSERT check, and only one of them can win this INSERT.
+    # The whole decision runs under the writer lock. The token is unique in two
+    # tables with two lifetimes — a run's, then the session it becomes — so a
+    # retried start reading outside the lock could pass both checks and then
+    # insert a run whose token had meanwhile been spent by the original request.
+    # That run can never be recorded (the session's unique token rejects the
+    # finish) and holds the singleton slot until someone discards it by hand.
     try:
-        with conn:
+        with immediate(conn):
+            existing = _run_by_token(conn, token)
+            if existing is not None:
+                return _run_view(existing)
+            if session_by_token(conn, token) is not None:
+                # The token is spent: it already became a session. Opening a
+                # second run on it would create exactly the stuck timer above.
+                raise FocusError("that timer already finished")
+            if mode not in MODES:
+                raise FocusError("unknown timer mode")
+            target_seconds = _clean_target_seconds(mode, target_seconds)
+            note = (note or "").strip() or None
+            limits.check(note, limits.FOCUS_NOTE, "focus note", FocusError)
+            targets = _picked_targets(conn, lesson_id, habit_id, task_id)
+            # The `slot` column is a UNIQUE singleton, so "only one timer" is
+            # the database's rule to enforce and not a check anyone can skip.
             cur = conn.execute(
                 "INSERT INTO focus_runs (mode, target_seconds, note, started_at, "
                 "lesson_id, habit_id, task_id, client_token) "
@@ -337,8 +340,10 @@ def start_run(conn: sqlite3.Connection, mode: str, token: str, *,
             )
             run_id = cur.lastrowid
     except sqlite3.IntegrityError:
-        # Same race, seen from the other side: two clicks of the same button
-        # share a token, so the loser is a repeat of a start that succeeded.
+        # The lock makes this hard to reach from another request, but a caller
+        # can still hand us a token or target that the constraints reject, so
+        # the answer stays specific: a repeat of a start that succeeded is that
+        # start, not an error.
         raced = _run_by_token(conn, token)
         if raced is not None:
             return _run_view(raced)
