@@ -2901,9 +2901,16 @@ def track_progress(
         # strength of another lesson's file.
         if read.rejected or read.lesson_uid != row["uid"]:
             continue
-        if not read.path_ref:
+        # The address in normalized form (§4.5): membership is by the segments
+        # the tree groups on, so a stray doubled or trailing slash cannot file
+        # a lesson under an address that renders identically to its neighbour's
+        # yet counts separately.
+        segments = bundle_schema.split_path_ref(read.path_ref)
+        if not segments:
             continue
-        by_path.setdefault(read.path_ref, []).append({"row": row, "step": read.step})
+        by_path.setdefault("/".join(segments), []).append(
+            {"row": row, "step": read.step}
+        )
     tracks = []
     for path in sorted(by_path):
         # An absent step sorts last: a declared member never displaces one that
@@ -2921,6 +2928,72 @@ def track_progress(
             "ids": [m["row"]["id"] for m in members],
         })
     return tracks
+
+
+def path_tree(tracks: list[dict]) -> list[dict]:
+    """`track_progress` output nested by address segment, counts rolled up.
+
+    One address per node, so `codecrafters/concepts/network-protocols` yields
+    three: the leaf carries the lessons, and its two ancestors exist purely to
+    hold it. An ancestor may also be a track in its own right — a lesson whose
+    path is exactly `codecrafters` sits directly in that node — so every node
+    can have both `rows_ids` of its own and `children`.
+
+    `studied`/`total`/`ids`/`next` are the whole SUBTREE's, which is the only
+    reading that makes a folded ancestor honest: "2 of 9" over a collapsed
+    `codecrafters` has to count what unfolding it would reveal. `track_progress`
+    keeps the per-address numbers unrolled, and nothing here re-derives
+    membership — the ancestor's total is its descendants' totals summed, never
+    a second pass over the rows.
+
+    Traversal order is own rows first (already in step order), then children by
+    address. `next` follows it, so the resume link of an ancestor is the first
+    unstudied lesson a reader walking the subtree top-down would reach.
+    """
+    by_address = {track["path"]: track for track in tracks}
+    nodes: dict[str, dict] = {}
+
+    def ensure(address: str) -> dict:
+        node = nodes.get(address)
+        if node is not None:
+            return node
+        segments = address.split("/")
+        node = {
+            "path": address,
+            # What the header shows. The full address is the identity (and the
+            # localStorage key); repeating every ancestor's name inside a tree
+            # that already indents them would be noise.
+            "name": segments[-1],
+            "depth": len(segments) - 1,
+            "children": [],
+        }
+        nodes[address] = node
+        if len(segments) > 1:
+            ensure("/".join(segments[:-1]))["children"].append(node)
+        return node
+
+    for track in tracks:
+        ensure(track["path"])
+
+    def finish(node: dict) -> None:
+        node["children"].sort(key=lambda child: child["path"])
+        own = by_address.get(node["path"])
+        node["rows_ids"] = list(own["ids"]) if own else []
+        node["studied"] = own["studied"] if own else 0
+        node["total"] = own["total"] if own else 0
+        node["ids"] = list(node["rows_ids"])
+        node["next"] = own["next"] if own else None
+        for child in node["children"]:
+            finish(child)
+            node["studied"] += child["studied"]
+            node["total"] += child["total"]
+            node["ids"] += child["ids"]
+            node["next"] = node["next"] or child["next"]
+
+    roots = [node for address, node in nodes.items() if "/" not in address]
+    for node in roots:
+        finish(node)
+    return sorted(roots, key=lambda node: node["path"])
 
 
 def counts(conn: sqlite3.Connection) -> dict:

@@ -600,6 +600,10 @@ body {
   flex: 1 1 auto; min-width: 0; color: var(--text); font-size: 13px; font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* A nested group heads a branch, not the whole tree. The indent already says
+   where it sits, so the only extra cue is one step down in weight — enough to
+   keep the top-level course names reading as the anchors of the list. */
+.lesson-group-rows .lesson-group-name { font-weight: 500; }
 .lesson-group-count { flex: 0 0 auto; color: var(--faint); font-size: 12px; }
 /* The bar takes the row it wrapped onto whole: at the widths this panel is
    dragged to, a bar sharing a line with the name would be a few pixels long. */

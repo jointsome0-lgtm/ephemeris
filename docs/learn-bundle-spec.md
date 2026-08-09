@@ -308,6 +308,23 @@ rejects writes for undeclared `question_id`s (D4/D5).
 - `path` + `step` place the lesson on one learning path; `step` without
   `path`, a non-integer `step`, or a `step` outside 1–10000 is dropped
   (`invalid-ref`; `path` alone stays valid).
+- **`path` is an address.** `/` inside it separates nesting levels, so
+  `codecrafters/concepts/network-protocols` places the lesson three levels
+  deep and Learn renders the branch as nested groups. This is Ephemeris's
+  own grouping grammar over its own field: the ref is still never resolved
+  on disk, never validated against Atlas, and reaches any adapter as the
+  whole undivided string, which stays free to mean nothing there.
+  - Writers: each segment ≤ 30 characters, at most 6 levels. Those bounds
+    keep the address ≤ 185 characters, so a conforming writer cannot reach
+    the 200-character limit — where the ref would be dropped and the lesson
+    would silently leave its track.
+  - Readers group permissively: empty segments collapse (`a//b`, `a/b/` and
+    `a/b` are one address), and an address exceeding the writer bounds still
+    groups rather than vanishing. A ref of only separators has no segments
+    and places the lesson on no path.
+  - Segments SHOULD follow the slug grammar (`^[a-z0-9]+(-[a-z0-9]+)*$`) so
+    an address reads the same everywhere it appears; a segment that does not
+    is displayed as written.
 - `concepts` is ordered and deduplicated by exact string match; duplicates
   are deduped (first occurrence wins) with an informational
   `duplicate-concept` finding.
