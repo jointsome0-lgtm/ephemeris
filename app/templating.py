@@ -10,6 +10,7 @@ for the same reason as the rest — the redirect tails of the write contract
 """
 from __future__ import annotations
 
+import math
 from datetime import date as _date, timedelta
 from pathlib import Path
 from urllib.parse import quote
@@ -287,9 +288,52 @@ def due_label(date_str: str | None, today: str | None = None) -> str:
 TASKS_HOME = "/board"
 
 
+# A node of the Learn tree is a cluster of material — clusters inside clusters,
+# down to a course, its lessons and their components — and everything hanging
+# under it is its mass: the rolled-up lesson count #166 already computes. Mass
+# picks the spectral class, so a cluster you have barely opened still announces
+# how big it is.
+#
+# The thresholds are deliberately far apart (owner, 2026-08-09): a platform
+# root like `stepik` sums every course under it, so the ladder is meant to be
+# climbed over years, not reached by adding a second lesson. Everything on a
+# small install reads as a red dwarf, and that is the intended starting point.
+STAR_BODIES: tuple[tuple[int, str, str], ...] = (
+    (20, "star-m", "red dwarf"),
+    (50, "star-k", "orange dwarf"),
+    (110, "star-g", "yellow dwarf"),
+    (230, "star-f", "white star"),
+    (999, "star-b", "blue giant"),
+)
+# Past this a cluster is no longer a star. Growth beyond it is logarithmic —
+# +3px per doubling of mass — because a body this size does not visibly swell
+# when you add another course to it, and a linear rule would have the disc
+# eating the panel by the second thousand.
+BLACK_HOLE_MASS = 1000
+BLACK_HOLE_MIN_PX, BLACK_HOLE_MAX_PX, BLACK_HOLE_PER_DOUBLING = 12, 30, 3
+
+
+def star_body(total: int | None) -> dict:
+    """The celestial body a cluster of `total` lessons renders as.
+
+    `size` is None for a star — those take their size from their class — and a
+    pixel diameter for a black hole, which keeps growing after the ladder ends.
+    """
+    mass = max(0, int(total or 0))
+    if mass < BLACK_HOLE_MASS:
+        for limit, cls, label in STAR_BODIES:
+            if mass <= limit:
+                return {"cls": cls, "label": label, "size": None}
+        return {"cls": STAR_BODIES[-1][1], "label": STAR_BODIES[-1][2], "size": None}
+    doublings = math.log2(mass / BLACK_HOLE_MASS)
+    px = min(BLACK_HOLE_MAX_PX, BLACK_HOLE_MIN_PX + BLACK_HOLE_PER_DOUBLING * doublings)
+    return {"cls": "star-bh", "label": "black hole", "size": round(px, 1)}
+
+
 templates.env.globals.update(
     static_url=static_url,
     tasks_home=TASKS_HOME,
+    star_body=star_body,
     avatar=item_avatar,
     status_glyph=status_glyph,
     status_desc=status_desc,

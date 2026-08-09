@@ -80,6 +80,17 @@ html[data-theme="light"] {
   --vine-dim: rgba(184,137,47,0.30);   /* the unlit stretch of a Learn branch */
   --hairline: rgba(35,40,56,0.11);     /* engraved instrument rules */
 
+  /* Learn's spectral ladder: a cluster's colour is how much material is under
+     it. The real hues of the ladder run to white and pale blue, which on paper
+     are invisible — the hottest two are darkened here to keep the ranking
+     legible, so what survives the theme is the ORDER, not the astronomy. */
+  --star-m:  #c0523a;   /* red dwarf */
+  --star-k:  #b06520;   /* orange dwarf */
+  --star-g:  #b8892f;   /* yellow dwarf */
+  --star-f:  #7c8492;   /* white star */
+  --star-b:  #3d6cbb;   /* blue giant */
+  --star-bh: #b5651d;   /* accretion disc */
+
   --font-display: "Cormorant Garamond", Georgia, "Times New Roman", serif;
   --font-mono:    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
@@ -160,6 +171,14 @@ html[data-theme="dark"] {
   --glow:     rgba(212,169,92,0.30);
   --vine-dim: rgba(212,169,92,0.18);
   --hairline: rgba(230,228,218,0.10);
+
+  /* Against the night the ladder can be its true colours. */
+  --star-m:  #e0664a;
+  --star-k:  #e08a45;
+  --star-g:  #d4a95c;
+  --star-f:  #eae6d8;
+  --star-b:  #a9c9f5;
+  --star-bh: #ffc98a;
 
   --full:  #2f9e86;  --full-ink:  #ffffff;
   --light: #2f9ec4;  --light-ink: #ffffff;
@@ -596,8 +615,66 @@ body {
 }
 /* A nested group heads a branch, not the whole tree. The indent already says
    where it sits, so the only extra cue is one step down in weight — enough to
-   keep the top-level course names reading as the anchors of the list. */
+   keep the top-level cluster names reading as the anchors of the list. */
 .lesson-group-rows .lesson-group-name { font-weight: 500; }
+
+/* --- spectral class ------------------------------------------------------
+   A branch is a cluster of material — clusters inside clusters, down to a
+   course, its lessons, and their components — and the material it holds is its
+   mass. Mass sets the colour of everything that branch draws with. `--star` is
+   declared on the branch itself, which is why one line here repaints its vine,
+   thread, star, tendrils and leaves at once, and why a nested cluster of a
+   different class simply overrides its parent's for its own subtree.
+
+   The default is the gold every branch used to be: the class comes from a
+   Jinja global (`star_body`), and the live process serves this stylesheet
+   before it has that global. Falling back to gold is what keeps that window
+   from being a page of colourless branches.
+
+   Thresholds live in app/templating.py, deliberately far apart — the ladder is
+   climbed over years, and a small install is all red dwarfs on purpose. */
+.lesson-group-d { --star: var(--astral); }
+.lesson-group-d.star-m { --star: var(--star-m); }   /* red dwarf      ≤ 20 */
+.lesson-group-d.star-k { --star: var(--star-k); }   /* orange dwarf   ≤ 50 */
+.lesson-group-d.star-g { --star: var(--star-g); }   /* yellow, our sun ≤ 110 */
+.lesson-group-d.star-f { --star: var(--star-f); }   /* white star     ≤ 230 */
+.lesson-group-d.star-b { --star: var(--star-b); }   /* blue giant     ≤ 999 */
+/* A black hole emits nothing. What is drawn in `--star` is the accretion
+   disc — the light of what is falling in — and the body itself is the dark
+   core the marker below paints. */
+.lesson-group-d.star-bh { --star: var(--star-bh); }
+/* The unlit stretch is the same light, nearly out. Deriving it from `--star`
+   is what keeps a blue branch from fading through gold. */
+.lesson-group-d { --vine-dim: color-mix(in srgb, var(--star) 26%, transparent); }
+.lesson-group-d { --glow: color-mix(in srgb, var(--star) 30%, transparent); }
+
+/* The body itself, at the head of its branch. A top-level one sits inline
+   before the name; a nested one is lifted out onto the parent's vine below,
+   where it reads as the bud this branch grows from. Size follows class — mass
+   is the one thing a star wears where you can see it. */
+.lesson-body {
+  flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--star); box-shadow: 0 0 6px 1px var(--glow);
+}
+.star-m > .lesson-group-head > .lesson-body { width: 5px; height: 5px; }
+.star-k > .lesson-group-head > .lesson-body { width: 6px; height: 6px; }
+.star-f > .lesson-group-head > .lesson-body { width: 8px; height: 8px; }
+.star-b > .lesson-group-head > .lesson-body { width: 10px; height: 10px; }
+/* Dark core, bright rim: the one body on the ladder read by what it is not.
+   `--bh` is a diameter the template computed logarithmically, so doubling the
+   material behind it adds a few pixels, not double the disc — a black hole
+   that swallowed twice as much is barely wider. What is lit is the accretion
+   disc around it; the hole gives back nothing. */
+.star-bh > .lesson-group-head > .lesson-body {
+  width: var(--bh, 12px); height: var(--bh, 12px);
+  background: #05070a;
+  /* Bright rim, faint outer disc, wide halo — three rings so it cannot be
+     mistaken for the hollow ring a merely folded star wears. */
+  box-shadow:
+    0 0 0 1.5px var(--star),
+    0 0 0 4px color-mix(in srgb, var(--star) 22%, transparent),
+    0 0 18px 5px var(--glow);
+}
 .lesson-group-count {
   flex: 0 0 auto; color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums;
 }
@@ -610,15 +687,17 @@ body {
 }
 .lesson-group-bar i {
   display: block; height: 100%; border-radius: 2px;
-  background: var(--astral); box-shadow: 0 0 6px var(--glow);
+  background: var(--star); box-shadow: 0 0 6px var(--glow);
 }
-/* The exact share, printed only on demand. Neither the thread nor the vine can
-   be read off to the percent, and rounding both onto the head permanently
-   would put three numbers on one line. */
+/* The exact share, printed only on demand, together with the two things that
+   colour is standing in for: how much material is here and what that makes the
+   cluster. Neither the thread nor the vine can be read off to the percent, and
+   rounding all of it onto the head permanently would put three numbers and a
+   noun on one line. */
 .lesson-group-bar::after {
-  content: attr(data-pct) "%"; position: absolute; right: 0; bottom: 11px;
+  content: attr(data-readout); position: absolute; right: 0; bottom: 11px;
   padding: 2px 6px; border-radius: 5px;
-  background: var(--card-bg); border: 1px solid var(--border-2); color: var(--astral);
+  background: var(--card-bg); border: 1px solid var(--border-2); color: var(--star);
   font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap;
   opacity: 0; transform: translateY(3px); transition: opacity .15s ease, transform .15s ease;
   pointer-events: none;
@@ -657,8 +736,8 @@ body {
      the tip — the two readings that have to be unambiguous. */
   --vine-fade: calc(min(var(--pct, 0%), 100% - var(--pct, 0%)) * 0.24);
   background: linear-gradient(to bottom,
-    var(--astral) 0,
-    var(--astral) calc(var(--pct, 0%) - var(--vine-fade)),
+    var(--star) 0,
+    var(--star) calc(var(--pct, 0%) - var(--vine-fade)),
     var(--vine-dim) calc(var(--pct, 0%) + var(--vine-fade)),
     var(--vine-dim) 100%);
   filter: drop-shadow(0 0 3px var(--glow));
@@ -674,19 +753,52 @@ body {
 .vine-2 { --vine-shape: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 100' preserveAspectRatio='none'%3E%3Cpath d='M11,0 C4,20 18,38 11,56 C4,74 16,88 11,100' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E"); }
 .vine-3 { --vine-shape: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 100' preserveAspectRatio='none'%3E%3Cpath d='M11,0 C17,18 5,34 11,52 C18,70 7,86 11,100' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E"); }
 
-/* Where the vine reaches a sub-branch it swells into a bud, and the sub-branch
-   head starts from it. A bud on a folded branch wears a ring: that is the only
-   thing left saying there is something inside, now that the caret is gone. */
+/* Starlight running down the shoot. The mask on the vine clips its children
+   too, so a plain moving band inside it comes out shaped like the vine without
+   a second copy of the path. It is drawn in the branch's own light, above the
+   fill, and it is deliberately faint: the point is that the tree is alive, not
+   that something needs attention.
+
+   The delay is dealt out by shape class — the same sibling order that picked
+   the curl — so neighbouring branches never pulse together. Held behind a
+   reduced-motion query: a permanently animating list is exactly what that
+   setting exists to stop. */
+@media (prefers-reduced-motion: no-preference) {
+  .lesson-vine::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(to bottom,
+      transparent 0%, color-mix(in srgb, var(--star) 65%, #fff) 50%, transparent 100%);
+    background-size: 100% 34%; background-repeat: no-repeat;
+    opacity: .45;
+    animation: vine-light 7s linear infinite;
+  }
+  .vine-1::after { animation-delay: -1.75s; }
+  .vine-2::after { animation-delay: -3.5s; }
+  .vine-3::after { animation-delay: -5.25s; }
+}
+@keyframes vine-light {
+  from { background-position: 0 -40%; }
+  to   { background-position: 0 140%; }
+}
+
+/* Where the vine reaches a sub-cluster, the sub-cluster's own body sits on it:
+   the star is lifted out of the head and dropped onto the parent's shoot, so
+   the point the branch grows from and the thing it grew into are one mark.
+   Out of the flow, it also stops shifting the name by whatever its class made
+   it wide. */
 .lesson-group-rows > .lesson-group > .lesson-group-d > .lesson-group-head {
   padding-left: 4px;
 }
-.lesson-group-rows > .lesson-group > .lesson-group-d > .lesson-group-head::before {
-  content: ""; position: absolute; left: calc(-1 * var(--vine-w) + 2px); top: 50%; margin-top: -3px;
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--astral); box-shadow: 0 0 6px 1px var(--glow);
+.lesson-group-rows > .lesson-group > .lesson-group-d > .lesson-group-head > .lesson-body {
+  position: absolute; left: calc(-1 * var(--vine-w) + 5px); top: 50%;
+  transform: translate(-50%, -50%);
 }
-.lesson-group-rows > .lesson-group > .lesson-group-d:not([open]) > .lesson-group-head::before {
-  background: transparent; box-shadow: inset 0 0 0 1px var(--astral);
+/* Folded, a star is drawn as an outline. With the caret gone that ring is the
+   only thing left saying there is something inside — and a hollow body reads
+   as "not opened" without inventing a second symbol. A black hole keeps its
+   dark core: it is already an outline around nothing. */
+.lesson-group-rows > .lesson-group > .lesson-group-d:not([open]):not(.star-bh) > .lesson-group-head > .lesson-body {
+  background: transparent; box-shadow: inset 0 0 0 1px var(--star);
 }
 
 /* A lesson is the end of a tendril, not a card in a stack: inside a branch the
@@ -710,7 +822,7 @@ body {
 /* A finished lesson lights its own tendril. `studied` is the one status the
    branch counts, so it is the one the shoot answers to. */
 .lesson-group-rows > .lesson-row:has(.st-studied)::before {
-  background: var(--astral); filter: drop-shadow(0 0 3px var(--glow));
+  background: var(--star); filter: drop-shadow(0 0 3px var(--glow));
 }
 .lesson-group-rows > .lesson-row::after {
   content: ""; position: absolute; left: 0; top: 50%; margin-top: -2.5px;
@@ -718,7 +830,7 @@ body {
   background: var(--vine-dim); pointer-events: none;
 }
 .lesson-group-rows > .lesson-row:has(.st-studied)::after {
-  background: var(--astral); box-shadow: 0 0 5px var(--glow);
+  background: var(--star); box-shadow: 0 0 5px var(--glow);
 }
 /* Without a box around it a row cannot hold a permanent tray of buttons and
    still read as a leaf, so the tray lifts out of the flow and waits for the
