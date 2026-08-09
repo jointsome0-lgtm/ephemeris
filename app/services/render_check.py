@@ -361,9 +361,13 @@ def _errors_from(events: list[dict]) -> list[RenderError]:
     found: list[RenderError] = []
     seen: set[tuple[str, str]] = set()
 
-    def add(source: str, text: str) -> None:
-        text = _truncate(text)
-        if not text or (source, text) in seen:
+    def add(source: str, text: str, *, wordless: str) -> None:
+        # An error the page could not put into words is still an error. A bare
+        # `console.error()` reaches here with nothing to say, and dropping it
+        # for being empty would let the zero-error gate pass a page that told
+        # the browser something was wrong.
+        text = _truncate(text) or wordless
+        if (source, text) in seen:
             return
         seen.add((source, text))
         found.append(RenderError(source, text))
@@ -378,7 +382,8 @@ def _errors_from(events: list[dict]) -> list[RenderError]:
         if method == "Runtime.exceptionThrown":
             details = params.get("exceptionDetails") or {}
             exception = details.get("exception") or {}
-            add("exception", exception.get("description") or details.get("text") or "")
+            add("exception", exception.get("description") or details.get("text") or "",
+                wordless="an exception the browser could not describe")
         elif method == "Runtime.consoleAPICalled":
             parts = []
             for argument in params.get("args") or []:
@@ -386,7 +391,9 @@ def _errors_from(events: list[dict]) -> list[RenderError]:
                     parts.append(str(argument["value"]))
                 else:
                     parts.append(str(argument.get("description") or argument.get("type") or ""))
-            add("console", " ".join(part for part in parts if part))
+            call = params.get("type") or "error"
+            add("console", " ".join(part for part in parts if part),
+                wordless=f"console.{call}() with no message")
         elif method == "Log.entryAdded":
             entry = params.get("entry") or {}
             url = entry.get("url") or ""
@@ -398,7 +405,8 @@ def _errors_from(events: list[dict]) -> list[RenderError]:
             # This channel is where a CSP refusal and a blocked subresource
             # land; neither reaches the console API, and both are exactly the
             # opaque-origin failures the IIFE build exists to prevent.
-            add("browser", f"{text} ({url})" if url and url not in text else text)
+            add("browser", f"{text} ({url})" if url and url not in text else text,
+                wordless="an error the browser logged without a message")
     return found[:MAX_ERRORS]
 
 

@@ -1592,6 +1592,15 @@ async def post_lesson_build(request: Request, lesson_id: int):
             if lesson is None:
                 raise lesson_build.BuildError("unknown-lesson", 404, "unknown lesson")
             page = payload.get("page")
+            # Absent means "the lesson's current page". A number or an object
+            # means the caller tried to choose one and this route could not
+            # read it — treating that as absent would render somewhere else and
+            # report the result as evidence about the selection.
+            if page is not None and not isinstance(page, str):
+                raise lesson_build.BuildError(
+                    "invalid-request", 400,
+                    "`page` must be a string naming a page in this bundle",
+                )
             asked = page.strip() if isinstance(page, str) and page.strip() else None
             try:
                 # An undeclared page is a fallback `lesson_file_info` handles

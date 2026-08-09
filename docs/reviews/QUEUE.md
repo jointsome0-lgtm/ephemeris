@@ -111,9 +111,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   scope, that
   `sandbox.BUN_BINARY` is
   executable, and that `sandbox.BUN_CACHE_DIR` exists or can be created
-  `0o700`. The bundler writes into `<workspace>/out/`, whose entries are
-  unlinked (non-recursively, `dir_fd`-relative, no directory removed)
-  before each run. Install argv: `bun add|install --backend=copyfile
+  `0o700`. The bundler writes into `<workspace>/out/`, which is removed
+  with `shutil.rmtree(ignore_errors=True)` and recreated with
+  `mkdir(mode=0o700, exist_ok=True)` before each run, so a directory left
+  there is cleared the same way a file is; a failure to recreate it is
+  `workspace-unavailable` 503. Install argv: `bun add|install --backend=copyfile
   --minimum-release-age=2592000 --ignore-scripts --no-progress
   --no-summary [-- <packages>]`. Bundle argv: `bun build <entry>
   --target=browser --format=iife --production --keep-names
@@ -185,13 +187,21 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   accepts — `Runtime.exceptionThrown`, `Runtime.consoleAPICalled` of type
   error/assert, `Log.entryAdded` at level error. The same predicate gates
   the collection and the report, so nothing counted toward the cap is
-  discarded afterwards. The load flag is reset at each
+  discarded afterwards. A diagnostic event whose text comes out empty —
+  `console.error("")`, an exception with no description — is reported
+  with a fixed stand-in description rather than dropped. Measured
+  2026-08-09 under the lesson response headers: `console.error()` with no
+  arguments produces no `Runtime.consoleAPICalled` at all;
+  `new Worker('worker.js')` throws `SecurityError` naming origin `null`,
+  and a blob worker is refused by `script-src` through the `worker-src`
+  fallback, both on channels already collected. The load flag is reset at each
   `Page.navigate` and `Page.frameStoppedLoading` is only accepted for the
   frame that navigation returned.
   Sandbox-runtime, bundle-path and entry-path failures inside
   `lesson_build` are converted to typed `BuildError`s
   (`build-unavailable` 503, `invalid-out` 409, `no-entry` 404), and the
-  route passes the requested `page` through a new
+  route refuses a `page` that is present and not a string with
+  `invalid-request` 400, and otherwise passes it through a new
   `lessons.selected_page_ref(lesson, entry)` inside its existing
   `LessonError` conversion — which raises on a malformed name (400) and
   otherwise returns the raw string for a v2 bundle and

@@ -161,6 +161,30 @@ def test_a_third_output_is_refused_rather_than_quietly_dropped(tmp_path):
     assert b"document.createElement('style')" in combined
 
 
+def test_a_directory_left_in_the_scratch_does_not_wedge_the_lesson(tmp_path):
+    """A macro can make one, and nothing else can ever remove it.
+
+    The scratch is inside the private workspace, so no session reaches it; if
+    it were only emptied of files, `_compose_artifact` would report the leftover
+    directory as a stray output and refuse every future build of that lesson —
+    including after the macro that made it is gone.
+    """
+    outdir = tmp_path / "out"
+    (outdir / "junk" / "deeper").mkdir(parents=True)
+    (outdir / "junk" / "deeper" / "f.txt").write_text("x", encoding="utf-8")
+    (outdir / "artifact.js").write_text("old", encoding="utf-8")
+    # A link out of the scratch: removed as a link, never followed.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("authored", encoding="utf-8")
+    (outdir / "junk" / "escape").symlink_to(outside)
+
+    lesson_build._empty_outdir(outdir, [])
+    assert outdir.is_dir() and list(outdir.iterdir()) == []
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "authored"
+    assert oct(outdir.stat().st_mode)[-3:] == "700"
+
+
 def test_a_cancelled_step_does_not_leave_a_package_manager_running(monkeypatch):
     """`wait_for` cancels the wait, not the process.
 
@@ -410,6 +434,22 @@ _PAGES = {
     "/logged.html": b"<!doctype html><meta charset=utf-8><script src='cerr.js'></script>",
     # Nothing on it references the artifact the gate is asked about.
     "/bare.html": b"<!doctype html><meta charset=utf-8><p>no script here",
+    # Both ways to start a worker, on the origin and policy a lesson gets.
+    "/w-file.html": b"<!doctype html><meta charset=utf-8><script src='w-file.js'></script>",
+    "/w-file.js": (
+        b"try{new Worker('worker.js')}"
+        b"catch(e){console.error('CTOR '+e.name+': '+e.message)}"
+    ),
+    "/worker.js": b"null.f();",
+    "/w-blob.html": b"<!doctype html><meta charset=utf-8><script src='w-blob.js'></script>",
+    "/w-blob.js": (
+        b"try{var b=new Blob(['null.f();'],{type:'text/javascript'});"
+        b"new Worker(URL.createObjectURL(b))}"
+        b"catch(e){console.error('CTOR '+e.name+': '+e.message)}"
+    ),
+    # Says something is wrong without saying what.
+    "/wordless.html": b"<!doctype html><meta charset=utf-8><script src='wordless.js'></script>",
+    "/wordless.js": b"console.error('');",
     # Fetches the file and never runs it: a download is not a run.
     "/preload.html": (
         b"<!doctype html><meta charset=utf-8>"
@@ -506,6 +546,51 @@ def test_the_render_gate_reads_a_page_under_the_real_lesson_policy(lesson_csp):
         module = render_check.console_errors(f"{site.base}/module.html")
         assert any(e["source"] == "browser" for e in module), module
         assert any("ok.js" in e["text"] for e in module), module
+    finally:
+        site.close()
+
+
+@needs_browser
+def test_an_error_with_nothing_to_say_is_still_an_error(lesson_csp):
+    """`console.error("")` has no text and every bit as much meaning: the page
+    told the browser something went wrong.
+
+    Measured while writing this: a bare `console.error()` with no arguments at
+    all never reaches the wire — Chrome emits no `consoleAPICalled` for it — but
+    an empty string does, and dropping it for having nothing to read would let
+    the zero-console-error gate accept the page that raised it.
+    """
+    site = _Site(lesson_csp)
+    try:
+        errors = render_check.console_errors(f"{site.base}/wordless.html")
+        assert errors, "the zero-console-error gate cannot pass this page"
+        assert any(e["source"] == "console" and e["text"] for e in errors), errors
+    finally:
+        site.close()
+
+
+@needs_browser
+def test_a_worker_cannot_start_here_and_says_so_where_the_gate_listens(lesson_csp):
+    """Why the check does not attach to worker targets: there are none.
+
+    Measured on this host, under the real lesson response. A classic worker is
+    a `SecurityError` — the script cannot be reached from origin `null` — and a
+    blob worker is refused by `script-src`, which `worker-src` falls back to.
+    Both refusals land on channels the gate already reads, so a worker's own
+    console is unreachable rather than unwatched.
+
+    This is a tripwire as much as a record: give the policy a `worker-src` and
+    this test stops passing, which is the moment to attach to those sessions.
+    """
+    site = _Site(lesson_csp)
+    try:
+        classic = render_check.console_errors(f"{site.base}/w-file.html")
+        assert any("SecurityError" in e["text"] for e in classic), classic
+        assert any("origin 'null'" in e["text"] for e in classic), classic
+
+        blob = render_check.console_errors(f"{site.base}/w-blob.html")
+        assert any(e["source"] == "browser" for e in blob), blob
+        assert any("worker" in e["text"].lower() for e in blob), blob
     finally:
         site.close()
 
@@ -1352,6 +1437,25 @@ def test_the_page_to_render_is_the_page_asked_for_and_not_a_near_spelling(
     )
     assert response.status_code == 404
     assert response.json()["error"] == "no-page"
+
+
+def test_a_page_that_is_not_a_name_is_refused_rather_than_ignored(
+    client, built_lesson
+):
+    """Asking for a page and getting a different one is the failure here.
+
+    `page` is the evidence the build is accepted on. A number or a list is not a
+    page name, and treating it like an absent field would render the bundle's
+    default page and report that render as proof for the request — so the
+    request is refused instead.
+    """
+    lesson, _bundle = built_lesson
+    url = f"/learn/lessons/{lesson['id']}/build"
+    body = {"entry": "src/page.ts", "out": "assets/page.js"}
+    for page in (7, ["index.html"], {"ref": "index.html"}, True):
+        response = client.post(url, json={**body, "page": page})
+        assert response.status_code == 400, (page, response.json())
+        assert response.json()["error"] == "invalid-request", (page, response.json())
 
 
 def test_a_v1_bundle_keeps_the_spelling_it_always_accepted(client, built_lesson):

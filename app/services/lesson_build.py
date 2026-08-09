@@ -32,6 +32,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import stat
 import time
 from pathlib import Path, PurePosixPath
@@ -613,26 +614,29 @@ def _outdir_names(outdir: Path) -> list[str]:
         return []
 
 
-def _empty_outdir(outdir: Path) -> None:
-    """Unlink the previous run's outputs without following anything.
+def _empty_outdir(outdir: Path, steps: list[dict]) -> None:
+    """Replace the scratch directory with an empty one of the same name.
 
-    The directory is the bundle step's one writable place, so its contents are
-    agent-reachable. Nothing here needs to recurse: bun writes files, and a
-    directory a macro left behind is not something to delete blindly — it stays,
-    and the read that follows refuses it for not being a regular file.
+    The whole tree, not just the files: the bundle step runs agent-authored
+    code with this as its one writable place, and a macro that leaves a
+    directory behind would otherwise stay forever. Nothing in the app can reach
+    into the private workspace to remove it, `_compose_artifact` reports it as a
+    stray output, and the lesson is unbuildable from then on — including after
+    the macro is fixed.
+
+    Removed rather than emptied in place because `shutil.rmtree` refuses to
+    descend through a symlink, and recreating the name afterwards costs one
+    syscall. Nothing is mounted here between steps; bwrap makes the bind each
+    time it starts one.
     """
+    shutil.rmtree(outdir, ignore_errors=True)
     try:
-        fd = os.open(outdir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    except OSError:
-        return
-    try:
-        for name in os.listdir(fd):
-            try:
-                os.unlink(name, dir_fd=fd)
-            except OSError:
-                _log.warning("lesson build: could not clear %s in %s", name, outdir)
-    finally:
-        os.close(fd)
+        outdir.mkdir(mode=0o700, exist_ok=True)
+    except OSError as exc:
+        raise BuildError(
+            "workspace-unavailable", 503,
+            f"the build has nowhere to write: {exc.strerror or exc}", steps=steps,
+        ) from exc
 
 
 def _compose_artifact(outdir: Path, steps: list[dict]) -> bytes:
@@ -822,7 +826,7 @@ async def _build_locked(
     # Cleared first, so a bundler that exits 0 without writing cannot get the
     # previous run's bytes accepted as this run's result — and so a stylesheet
     # from a graph that no longer imports one cannot be carried forward.
-    _empty_outdir(outdir)
+    _empty_outdir(outdir, steps)
     started = time.monotonic()
     code, output = await _run_step(
         "bundle", workspace=workspace, bundle_dir=lesson_dir,
