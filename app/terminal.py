@@ -434,14 +434,33 @@ _ENV_ALLOWLIST = frozenset({
 _ENV_ALLOW_PREFIXES = ("LC_",)
 
 
-def _child_env(role: TerminalRole = "plain") -> dict[str, str]:
-    """Allowlisted base environment for the child shell (proxy vars are layered
+def _child_env(
+    role: TerminalRole = "plain", shell: str = "/bin/bash",
+) -> dict[str, str]:
+    """Allowlisted base environment for the child `shell` (proxy vars are layered
     on top by the caller from _detect_proxy_env)."""
     env = {
         k: v for k, v in os.environ.items()
         if k in _ENV_ALLOWLIST or k.startswith(_ENV_ALLOW_PREFIXES)
     }
     env["TERM"] = "xterm-256color"
+    if role != "plain" and os.path.basename(shell) == "bash":
+        # A lesson shell lives in a blanked home, so its own ~/.bashrc is not
+        # there and /etc/bash.bashrc wins with `\u@\h:\w\$` — a full hostname
+        # and the whole sandbox path on every line, in a drawer that is mostly
+        # one screen tall. PS1 from the environment would be overwritten by
+        # that same file; PROMPT_COMMAND runs after it, so this is where the
+        # last word on the prompt is. Both are bash's, which is why only bash
+        # is handed this: `lesson-agent` follows the service account's SHELL,
+        # and another shell neither reads that file nor obeys this variable.
+        #
+        # The two roles want different words. Nobody navigates the agent shell
+        # by hand — the agent works there — so it names itself and nothing
+        # else. The learner shell is walked with `cd`, so it keeps the current
+        # directory, as one component (`\W`) rather than the sandbox path.
+        env["PROMPT_COMMAND"] = (
+            "PS1='agent $ '" if role == "lesson-agent" else r"PS1='\W $ '"
+        )
     if role == "lesson-learner":
         # Network namespaces don't isolate AF_UNIX, and the service may have
         # external HOME/XDG/PATH values. Give learner commands only normalized
@@ -841,7 +860,7 @@ async def _create_session(
             "/bin/bash" if role == "lesson-learner"
             else (os.environ.get("SHELL") or "/bin/bash")
         )
-        env = _child_env(role)
+        env = _child_env(role, shell)
         private_masks = (
             await asyncio.to_thread(_learner_private_mask_spellings)
             if role == "lesson-learner" else ()
@@ -977,22 +996,23 @@ async def _spawn_on_pty(
     # The session now owns the capability published before the spawn: its
     # close() is what revokes it from here on.
     _SESSIONS[sess.sid] = sess
-    if proxy.get("HTTP_PROXY"):  # informational banner, replayed with the scrollback
+    # One informational line, replayed with the scrollback. It costs screen in a
+    # drawer that is mostly one screen tall, so it carries only what the session
+    # cannot show otherwise: the sandbox is invisible, the proxy is invisible,
+    # and whether AGENTS.md was just rewritten is invisible. The cwd is not on
+    # it — the prompt and `pwd` both answer that.
+    facts: list[str] = []
+    if workspace is not None:
+        facts.append(f"{role} sandbox")
+    if proxy.get("HTTP_PROXY"):
         # Redact credentials, then defang control bytes.
         shown = "".join(c for c in _redact_userinfo(proxy["HTTP_PROXY"]) if c.isprintable())
+        facts.append(f"proxy {shown}")
+    if workspace is not None and role == "lesson-agent":
+        facts.append("AGENTS.md refreshed")
+    if facts:
         sess.remember(
-            (f"\x1b[2m· terminal egress via proxy {shown} — agents bypass geo-blocks; "
-             f"localhost direct (EPHEMERIS_TERM_PROXY=off to disable).\x1b[0m\r\n").encode()
-        )
-    if workspace is not None:  # informational banner, replayed with the scrollback
-        where = "".join(c for c in workspace["dir"] if c.isprintable())  # defang control bytes
-        detail = (
-            "AGENTS.md refreshed" if role == "lesson-agent"
-            else "briefs left unchanged"
-        )
-        sess.remember(
-            (f"\x1b[2m· {role} sandbox — cwd {where}; "
-             f"{detail}.\x1b[0m\r\n").encode()
+            ("\x1b[2m· " + " · ".join(facts) + "\x1b[0m\r\n").encode()
         )
     sess.start()
     return sess
