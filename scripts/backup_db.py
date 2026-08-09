@@ -84,21 +84,36 @@ archives or displaces it either: it is not instance state."""
 STAGED = ".staged-"
 """Prefix of a backup's in-progress files inside `backups/`."""
 
-EXCLUDED_DIRS = ("backups", "exports", "lesson-builds")
+EXCLUDED_DIRS = ("backups", "exports")
 """Top-level directories that are neither archived nor replaced by a restore.
 
 `backups/` would nest every set inside the next one; `exports/` is generated
-FROM the database that is already in the set. `lesson-builds/` holds installed
-package trees (`app.services.lessons.BUILD_WORKSPACES_DIR`) — derived state that
-a build reinstalls from the lesson's own package specs, and the one place under
-the data directory where the archive could not be faithful even if it tried: a
-package tree's internal links (`.bin/` shims and the like) are symlinks, and the
-walk below carries no symlink. Archiving the regular files alone would restore
-a package set that looks complete and does not run, so this directory is
-declared reconstructible and left out of both halves instead — see
-`docs/backup-restore.md`. Everything else under the data directory is instance
-state and belongs to both halves of this contract — the archive puts it in, and
-a forced restore moves it aside."""
+FROM the database that is already in the set. Everything else under the data
+directory is instance state and belongs to both halves of this contract — the
+archive puts it in, and a forced restore moves it aside."""
+
+EXCLUDED_SUBTREE = "node_modules"
+EXCLUDED_SUBTREE_UNDER = "lesson-builds"
+"""The installed package tree, and the only directory the archive skips inside.
+
+`lesson-builds/<slug>/` is a lesson's build workspace
+(`app.services.lessons.BUILD_WORKSPACES_DIR`). Its `package.json` and lockfile
+are the record of what the lesson added and are archived like any other file —
+they are the input a rebuild needs, and dropping them would leave a restored
+lesson unable to reinstall the packages its own sources import.
+
+`node_modules` under it is the installed copy of those packages: derived state a
+build reinstalls, and the one place under the data directory the archive could
+not carry faithfully even if it tried. A package tree's internal links — `.bin/`
+shims and the like — are symlinks, and the walk below carries no symlink, so
+archiving it would restore a package set that looks complete and does not run.
+It is skipped whole and named in the manifest instead of being carried in half;
+see `docs/backup-restore.md`.
+
+Unlike `EXCLUDED_DIRS` this is not part of the restore contract: the workspace
+directory itself IS archived and restored, so `restore_owned` displaces it like
+any other instance directory. Only its package tree is missing afterwards, and
+the next build of that lesson installs one from the manifest beside it."""
 
 MANIFEST_VERSION = 1
 """Bumped when the manifest's shape changes. A reader that meets a version it
@@ -379,11 +394,12 @@ def instance_files() -> list[str]:
       next one.
     - `exports/` — JSONL exports are generated FROM the database that is already
       in the set, so they cost size and add no recoverable state.
-    - `lesson-builds/` — installed package trees, reinstallable from the lesson's
-      own package specs. This walk carries no symlink (see below), and package
-      trees are full of them, so including this one would archive a tree that
-      restores looking whole and does not run. Declared reconstructible in
-      `EXCLUDED_DIRS` rather than half-archived.
+    - `lesson-builds/*/node_modules/` — the installed copy of a lesson's
+      packages, and only that. This walk carries no symlink (see below), and a
+      package tree is full of them, so archiving one would restore a set that
+      looks whole and does not run. The `package.json` and lockfile beside it
+      ARE archived: they are the record of what the lesson added, and the input
+      the reinstall needs. See `EXCLUDED_SUBTREE`.
     - `*.pre-restore-*` — what a forced restore preserved. A restore leaves
       those alone (`restore_owned`), so archiving them would make every backup
       after a forced restore carry a second copy of the instance it replaced,
@@ -410,8 +426,8 @@ def instance_files() -> list[str]:
     # No symlink is archived, in either loop below. That is deliberate — a link
     # is a target this walk did not prove is inside the instance — and it is
     # exactly why a directory whose contents are normally linked cannot be in
-    # this set at all rather than in it by halves; `EXCLUDED_DIRS` names the one
-    # that is.
+    # this set at all rather than in it by halves; `EXCLUDED_SUBTREE` names the
+    # one that is.
     for dirpath, dirnames, filenames in os.walk(root):
         here = Path(dirpath)
         top = here == root
@@ -419,6 +435,7 @@ def instance_files() -> list[str]:
             name for name in dirnames
             if (here / name).resolve() not in skip_dirs
             and not (top and _restore_keeps(name))
+            and not _is_package_tree(root, here, name)
             and not (here / name).is_symlink()
         ]
         for name in filenames:
@@ -432,6 +449,24 @@ def instance_files() -> list[str]:
                 continue
             found.append(relative)
     return sorted(found)
+
+
+def _is_package_tree(root: Path, here: Path, name: str) -> bool:
+    """Is `here/name` a lesson workspace's installed package tree?
+
+    Matched by shape rather than by a resolved path so it is one comparison per
+    walked directory: exactly `<root>/lesson-builds/<slug>/node_modules`, at that
+    depth and nowhere else. A `node_modules` anywhere else under the data
+    directory — inside a lesson bundle, say — is ordinary instance state and
+    stays in the archive.
+    """
+    if name != EXCLUDED_SUBTREE:
+        return False
+    try:
+        parts = here.relative_to(root).parts
+    except ValueError:  # pragma: no cover - os.walk yields nothing outside root
+        return False
+    return len(parts) == 2 and parts[0] == EXCLUDED_SUBTREE_UNDER
 
 
 def _restore_keeps(name: str) -> bool:
@@ -511,6 +546,7 @@ def excluded_summary() -> list[str]:
         pass
     return (
         [f"{name}/" for name in EXCLUDED_DIRS]
+        + [f"{EXCLUDED_SUBTREE_UNDER}/*/{EXCLUDED_SUBTREE}/"]
         + [f"*{ASIDE_MARK}*", f"{RESTORE_TMP}*"]
         + [f"{name}*" for name in sorted(databases)]
     )

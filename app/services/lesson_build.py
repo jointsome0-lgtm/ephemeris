@@ -1025,19 +1025,31 @@ async def _build_locked(
             # then destroy its work and restoring the aside would bury it. So
             # the undo is decided by what the path holds now.
             current = _identity(fd, name) if placed is not None else None
-            if current is not None and current == placed:
-                # Ours, untouched: remove it and put back what it displaced.
-                _remove_through(fd, name)
-            elif current is not None:
+            if current is not None and current != placed:
                 # A newcomer holds the path. It is newer than the copy set aside
                 # and it is not this build's to overwrite, so the copy goes and
                 # the newcomer stays, exactly as it was written.
                 if aside is not None:
                     _remove_through(fd, aside)
                     aside = None
-            # `current is None` — nothing there, either because the write never
-            # landed or because something removed it. Restoring the aside is
-            # then the whole undo, and it destroys nothing.
+            elif aside is None:
+                # Ours, and nothing to put back: removing it IS the undo. Only
+                # reached when the output name was free before this build.
+                if current is not None:
+                    _remove_through(fd, name)
+            # Otherwise the path holds our artifact, or nothing because the
+            # write never landed, and there is a copy to put back. The rename
+            # below replaces whatever is at the name, so neither case needs an
+            # unlink first: one destructive syscall, with nothing observable
+            # in between.
+            #
+            # That rename is still by name. POSIX has no "replace this path
+            # only while it is still inode N", so a write landing between the
+            # sample above and the rename is overwritten. The window this
+            # repair is about — the render gate, seconds of released event loop
+            # with a browser in it — is closed; what is left is two adjacent
+            # syscalls, and closing that needs a guarantee the filesystem
+            # interface does not offer.
             if aside is not None:
                 try:
                     os.rename(aside, name, src_dir_fd=fd, dst_dir_fd=fd)

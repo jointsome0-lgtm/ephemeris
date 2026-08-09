@@ -583,12 +583,12 @@ def test_the_archive_carries_every_directory_the_instance_grew(backup_db, instan
         "the snapshot is the consistent copy of the database and its sidecars"
     )
     assert manifest["excluded"] == [
-        "backups/", "exports/", "lesson-builds/", "*.pre-restore-*",
-        ".restore-tmp-*", "activity.sqlite*",
+        "backups/", "exports/", "lesson-builds/*/node_modules/",
+        "*.pre-restore-*", ".restore-tmp-*", "activity.sqlite*",
     ]
 
 
-def test_the_reconstructible_package_workspace_is_declared_not_half_archived(
+def test_the_installed_packages_are_skipped_and_their_manifest_is_not(
     backup_db, instance, tmp_path
 ):
     """A package tree is links as much as files, and this archive carries no link.
@@ -598,34 +598,58 @@ def test_the_reconstructible_package_workspace_is_declared_not_half_archived(
     are symlinks, as internal package links normally are — restored a package set
     that looked whole and did not run, and the manifest recorded the links
     neither as archived nor as excluded, so verification passed against an
-    already incomplete list. The tree is derived state a build reinstalls, so it
-    is declared reconstructible instead: left out whole, named in `excluded`, and
-    not recreated by a restore.
+    already incomplete list.
+
+    So the installed copy is skipped and said out loud. Only the installed copy:
+    the `package.json` and lockfile beside it are the record of what the lesson
+    added and the input `bun install` needs, and a restore that dropped them
+    would leave the rebuild with nothing to reinstall FROM — a restored lesson
+    whose own sources import a package it can no longer name.
     """
-    tree = instance / "lesson-builds" / "invented-lesson" / "node_modules"
+    workspace = instance / "lesson-builds" / "invented-lesson"
+    tree = workspace / "node_modules"
     (tree / "demo-tool").mkdir(parents=True)
     (tree / "demo-tool" / "index.js").write_text("//invented\n", encoding="utf-8")
     (tree / ".bin").mkdir()
     (tree / ".bin" / "demo-tool").symlink_to("../demo-tool/index.js")
+    (workspace / "package.json").write_text(
+        json.dumps({"name": "lesson-invented", "dependencies": {"demo-tool": "1.0.0"}}),
+        encoding="utf-8",
+    )
+    (workspace / "bun.lock").write_text("//invented lockfile\n", encoding="utf-8")
+    # The name is only skipped at its one shape. A bundle that happens to hold
+    # one is ordinary instance state.
+    decoy = instance / "lessons" / "demo-slug" / "node_modules"
+    decoy.mkdir()
+    (decoy / "kept.txt").write_text("authored\n", encoding="utf-8")
 
     manifest_path = backup_db.create_backup()
     manifest = backup_db.verify(manifest_path)
+    archived = set(manifest["instance_files"])
 
     assert not any(
-        name.startswith("lesson-builds/") for name in manifest["instance_files"]
+        name.startswith("lesson-builds/invented-lesson/node_modules/")
+        for name in archived
     ), "a package tree cannot be carried faithfully, so it is not carried in half"
-    assert "lesson-builds/" in manifest["excluded"]
-    assert "lessons/demo-slug/lesson.json" in manifest["instance_files"], (
-        "and the rest of the instance is archived exactly as before"
+    assert "lesson-builds/*/node_modules/" in manifest["excluded"]
+    assert "lesson-builds/invented-lesson/package.json" in archived, (
+        "the record of what this lesson added is what a rebuild reinstalls from"
+    )
+    assert "lesson-builds/invented-lesson/bun.lock" in archived
+    assert "lessons/demo-slug/node_modules/kept.txt" in archived, (
+        "only the workspace's own tree is skipped, and only at that depth"
     )
 
     target = tmp_path / "recovered"
-    result = backup_db.restore(manifest_path, target)
+    backup_db.restore(manifest_path, target)
 
-    assert "lesson-builds" not in result["restored"]
-    assert not (target / "lesson-builds").exists(), (
-        "the next build of a lesson reinstalls its workspace; a restore that "
-        "made the directory would be claiming it had recovered one"
+    restored = target / "lesson-builds" / "invented-lesson"
+    assert json.loads((restored / "package.json").read_text(encoding="utf-8"))[
+        "dependencies"
+    ] == {"demo-tool": "1.0.0"}
+    assert not (restored / "node_modules").exists(), (
+        "the next build installs one; a restore that made the directory would "
+        "be claiming it had recovered a package tree"
     )
 
 
@@ -1025,8 +1049,9 @@ def test_a_renamed_database_is_still_excluded_from_the_archive(
         name.startswith("ledger.sqlite") for name in manifest["instance_files"]
     ), "the snapshot is the consistent copy; the raw file must not ride along"
     assert manifest["excluded"] == [
-        "backups/", "exports/", "lesson-builds/", "*.pre-restore-*",
-        ".restore-tmp-*", "activity.sqlite*", "ledger.sqlite*",
+        "backups/", "exports/", "lesson-builds/*/node_modules/",
+        "*.pre-restore-*", ".restore-tmp-*", "activity.sqlite*",
+        "ledger.sqlite*",
     ], (
         "and the manifest names the file it actually left out"
     )
@@ -1061,8 +1086,8 @@ def test_a_relative_data_dir_still_excludes_its_own_backups(
         name.startswith("activity.sqlite") for name in manifest["instance_files"]
     )
     assert manifest["excluded"] == [
-        "backups/", "exports/", "lesson-builds/", "*.pre-restore-*",
-        ".restore-tmp-*", "activity.sqlite*",
+        "backups/", "exports/", "lesson-builds/*/node_modules/",
+        "*.pre-restore-*", ".restore-tmp-*", "activity.sqlite*",
     ]
 
 

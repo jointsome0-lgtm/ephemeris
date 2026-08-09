@@ -1882,3 +1882,34 @@ def test_an_untouched_gate_still_rolls_back_and_still_commits(
     assert result["ok"]
     assert (bundle / "assets" / "page.js").read_bytes() != previous
     assert set(os.listdir(bundle / "assets")) == before
+
+
+@needs_sandbox
+def test_a_refused_first_build_leaves_no_artifact_behind(built_lesson, monkeypatch):
+    """The undo's other branch: there was nothing at the output name to restore.
+
+    With a previous artifact, the rollback is one rename of the copy set aside,
+    which replaces the build's own file in the same syscall. With none, the
+    removal IS the whole undo — and skipping it would leave a lesson serving a
+    page the gate had just refused.
+    """
+    import asyncio
+
+    lesson, bundle = built_lesson
+    (bundle / "src" / "page.ts").write_text(
+        'document.title = "invented";\n', encoding="utf-8"
+    )
+    (bundle / "assets").mkdir(exist_ok=True)
+    fresh = bundle / "assets" / "never-built-before.js"
+    assert not fresh.exists()
+
+    _no_render_errors(monkeypatch, errors=["invented failure"])
+    with pytest.raises(lesson_build.BuildError) as caught:
+        asyncio.run(lesson_build.build_lesson(
+            lesson, add=[], entry="src/page.ts", out="assets/never-built-before.js",
+            page=None, page_url="http://127.0.0.1:1/unused",
+            artifact_url="http://127.0.0.1:1/unused.js",
+        ))
+
+    assert caught.value.code == "render-errors"
+    assert not fresh.exists(), "the refused artifact stayed in the bundle"
