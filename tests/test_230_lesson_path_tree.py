@@ -232,11 +232,9 @@ def test_nested_tracks(client, suite_state):
         and len(_row_ids(_flat)) == len(_live_rows)
     ), "a pre-nesting backend's flat groups render, headed by the full address"
 
-    # The spectral class comes from a Jinja global, and the live process has the
-    # globals it booted with — a merged template calling `star_body()` there is
-    # an UndefinedError on the Learn page, not a missing colour. The `is
-    # defined` guard is the whole protection, so it is tested with the global
-    # actually absent.
+    # The live process has the globals it booted with, so a merged template
+    # calling `star_body()` there is an UndefinedError, not a missing colour.
+    # The `is defined` guard is tested with the global actually absent.
     _saved = _tpl.env.globals.pop("star_body")
     try:
         _preglobal = _tpl.get_template("learn.html").render(
@@ -307,10 +305,8 @@ def test_nested_tracks(client, suite_state):
     ), "the hover-only action tray is gated on the device having hover"
 
     # --- spectral class ------------------------------------------------------
-    # One class on the branch is what repaints all of it, so the colour has to
-    # reach the drawing through `--star`, not through a second copy of the
-    # palette per part. And every part that used to be hard-coded gold must
-    # actually read it, or a blue giant grows gold tendrils.
+    # Every part that used to be hard-coded gold has to read `--star` instead,
+    # or a blue giant grows gold tendrils.
     assert (
         ".lesson-group-d { --star: var(--astral); }" in _css
         and all(f".lesson-group-d.{c} {{ --star:" in _css
@@ -324,6 +320,13 @@ def test_nested_tracks(client, suite_state):
         ".star-bh > .lesson-group-head > .lesson-body {" in _css
         and "var(--bh, 12px)" in _css
     ), "the black hole takes its diameter from the template, with a floor"
+    # #169 dropped the caret, so the body is the only thing left that can say a
+    # branch is folded — at every level, and for a black hole too, which is
+    # already dark-cored and cannot answer by going hollow.
+    assert (
+        ".lesson-group-d:not([open]):not(.star-bh) > .lesson-group-head > .lesson-body {" in _css
+        and ".lesson-group-d:not([open]).star-bh > .lesson-group-head > .lesson-body {" in _css
+    ), "a folded cluster is marked at every level, black holes included"
 
     suite_state["path_tree"] = sorted(tree)
 

@@ -288,16 +288,11 @@ def due_label(date_str: str | None, today: str | None = None) -> str:
 TASKS_HOME = "/board"
 
 
-# A node of the Learn tree is a cluster of material — clusters inside clusters,
-# down to a course, its lessons and their components — and everything hanging
-# under it is its mass: the rolled-up lesson count #166 already computes. Mass
-# picks the spectral class, so a cluster you have barely opened still announces
-# how big it is.
-#
-# The thresholds are deliberately far apart (owner, 2026-08-09): a platform
-# root like `stepik` sums every course under it, so the ladder is meant to be
-# climbed over years, not reached by adding a second lesson. Everything on a
-# small install reads as a red dwarf, and that is the intended starting point.
+# The mass of a Learn cluster is the rolled-up lesson count #166 computes, and
+# it picks the spectral class its branch is drawn in. The thresholds are far
+# apart deliberately (owner, 2026-08-09): a platform root sums every course
+# under it, so the ladder is climbed over years and a small install is all red
+# dwarfs on purpose.
 STAR_BODIES: tuple[tuple[int, str, str], ...] = (
     (20, "star-m", "red dwarf"),
     (50, "star-k", "orange dwarf"),
@@ -305,10 +300,9 @@ STAR_BODIES: tuple[tuple[int, str, str], ...] = (
     (230, "star-f", "white star"),
     (999, "star-b", "blue giant"),
 )
-# Past this a cluster is no longer a star. Growth beyond it is logarithmic —
-# +3px per doubling of mass — because a body this size does not visibly swell
-# when you add another course to it, and a linear rule would have the disc
-# eating the panel by the second thousand.
+# Past this a cluster is a black hole, and grows logarithmically: a body that
+# size does not visibly swell when you add a course, and a linear rule would
+# have the disc eating the panel by the second thousand.
 BLACK_HOLE_MASS = 1000
 BLACK_HOLE_MIN_PX, BLACK_HOLE_MAX_PX, BLACK_HOLE_PER_DOUBLING = 12, 30, 3
 

@@ -60,23 +60,17 @@
    `or []` for the live pre-nesting backend, whose flat groups have no such
    key — the page then renders exactly the single level it always did. #}
 {% macro lesson_group(group, shoot=0) -%}
-{# The branch's celestial body, from the mass of material under it. Read
-   through `is defined` because the live process serves this template while
-   still running the routers and globals of the previous commit: without the
-   global the branch simply keeps the one gold it had. #}
+{# `is defined` because the live process serves this template with the globals
+   of the previous commit; without it the branch keeps the one gold it had. #}
 {% set body = star_body(group.total) if star_body is defined else none %}
 <section class="lesson-group{% if group.selected %} has-sel{% endif %}">
   <details class="lesson-group-d{% if body %} {{ body.cls }}{% endif %}" data-track="{{ group.path }}"{% if group.selected %} open{% endif %}>
     <summary class="lesson-group-head">
-      {# The star itself. On a nested head the CSS moves it out onto the
-         parent's vine, where it reads as the bud the branch grows from. #}
       <span class="lesson-body" aria-hidden="true"{% if body and body.size %} style="--bh: {{ body.size }}px"{% endif %}></span>
       <span class="lesson-group-name">{{ group.name or group.path }}</span>
       {# The bar restates the count for the eye; the count is the text an
          assistive reader gets, so the bar stays decorative. `data-readout`
-         is what hovering prints: the exact share, the mass behind it, and
-         what that mass makes the branch — none of which the bar's width,
-         the vine's fill or the star's colour can be read off precisely. #}
+         is what hovering prints. #}
       <span class="lesson-group-bar" aria-hidden="true" data-pct="{{ group.pct }}"
             data-readout="{{ group.pct }}% · {{ group.total }} lesson{{ '' if group.total == 1 else 's' }}{% if body %} · {{ body.label }}{% endif %}"><i style="width: {{ group.pct }}%"></i></span>
       <span class="lesson-group-count">{{ group.studied }} of {{ group.total }}</span>
