@@ -271,5 +271,13 @@ def test_nested_tracks(client, suite_state):
     assert (
         "min(var(--pct, 0%), 100% - var(--pct, 0%))" in _css
     ), "the fill's soft edge collapses at 0% and at 100%"
+    # A tray revealed by hover is a tray a touch device cannot reach: it has no
+    # hover, and `pointer-events: none` denies it the tap that would focus into
+    # it. These forms are the only way to restatus or archive a lesson, so the
+    # whole treatment stays behind a hover-capability query.
+    _tray = _css.split(".lesson-group-rows > .lesson-row .lesson-actions {")[0]
+    assert (
+        _tray.rstrip().endswith("@media (hover: hover) {")
+    ), "the hover-only action tray is gated on the device having hover"
 
     suite_state["path_tree"] = sorted(tree)

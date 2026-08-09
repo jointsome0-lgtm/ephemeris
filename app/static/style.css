@@ -725,15 +725,24 @@ body {
    pointer — or for the keyboard, which reaches it through focus and must not
    aim at nothing. Out of the flow is the point: left in it, the tray's
    reserved height doubled every row and stretched the branch to twice the
-   height of what hangs on it. */
-.lesson-group-rows > .lesson-row .lesson-actions {
-  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
-  padding: 2px 4px; border-radius: 8px;
-  background: var(--card-bg); box-shadow: var(--shadow);
-  opacity: 0; pointer-events: none; transition: opacity .15s ease;
+   height of what hangs on it.
+
+   The whole treatment is a pointer-device affordance, so it lives behind a
+   hover-capability query the way the board's card-move arrows do. A touch
+   device has no hover to reveal the tray with and cannot focus into a tray
+   that is not hit-testable, so it keeps the tray in the flow and visible —
+   these forms are the only way to restatus or archive a lesson, and a taller
+   row is a far smaller cost than an unreachable one. */
+@media (hover: hover) {
+  .lesson-group-rows > .lesson-row .lesson-actions {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    padding: 2px 4px; border-radius: 8px;
+    background: var(--card-bg); box-shadow: var(--shadow);
+    opacity: 0; pointer-events: none; transition: opacity .15s ease;
+  }
+  .lesson-group-rows > .lesson-row:hover .lesson-actions,
+  .lesson-group-rows > .lesson-row:focus-within .lesson-actions { opacity: 1; pointer-events: auto; }
 }
-.lesson-group-rows > .lesson-row:hover .lesson-actions,
-.lesson-group-rows > .lesson-row:focus-within .lesson-actions { opacity: 1; pointer-events: auto; }
 .lesson-group-next {
   margin-left: 12px; min-width: 0; color: var(--primary); font-size: 13px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
