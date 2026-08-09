@@ -380,7 +380,10 @@ def finish_run(conn: sqlite3.Connection, token: str) -> dict:
     now = _parse_iso(now_iso())
     seconds = _elapsed_seconds(row, now)
     target = int(row["target_seconds"] or 0)
-    ended_at = None
+    # A paused clock stopped counting when it was paused, so that is when the
+    # span ended — Stop pressed the next morning writes down last night's work,
+    # not a session that shows a time nothing was worked at.
+    ended_at = row["paused_at"]
     if target and seconds >= target:
         # The countdown ended when it ran out, not when the user came back to a
         # sleeping laptop. Stamping the return time would credit yesterday's

@@ -978,6 +978,33 @@ def test_core_surfaces(client, suite_state):
         "and it still records the minute it asked for" + "  -- " + str(lp)
     )
 
+    # Paused last night, stopped this morning: the span belongs to the evening
+    # it was worked in. Dating it from the click would credit it to the wrong
+    # Retro bar and print a time at which nothing happened.
+    from datetime import datetime as _dtm2, timedelta as _td2
+
+    from app.db import now_iso as _ni2
+    c.post("/focus/timer/start", data={"token": "tok-n", "mode": "open"},
+           headers={"X-Partial": "1"})
+    _stop = (_dtm2.fromisoformat(_ni2()) - _td2(hours=9)).isoformat(timespec="seconds")
+    _go = (_dtm2.fromisoformat(_ni2()) - _td2(hours=10)).isoformat(timespec="seconds")
+    cn = get_conn()
+    try:
+        with cn:
+            cn.execute("UPDATE focus_runs SET started_at = ?, paused_at = ?, "
+                       "paused_seconds = 0 WHERE client_token = 'tok-n'", (_go, _stop))
+    finally:
+        cn.close()
+    nrec = c.post("/focus/timer/finish", data={"token": "tok-n"},
+                  headers={"X-Partial": "1"}).json()["recorded"]
+    assert nrec["seconds"] == 3600, (
+        "the pause is not counted as focus" + "  -- " + str(nrec)
+    )
+    assert nrec["date"] == _stop[:10] and nrec["time_label"] == _stop[11:16], (
+        "and the span is dated from the pause, not from the stop"
+        + "  -- " + str(nrec) + " vs " + _stop
+    )
+
     # The pre-#75 write still answers, for a Focus tab left open across the
     # restart: its app.js posts here when a Pomodoro completes, and a 404 would
     # drop a span the user really did spend. The old words convert on the way in
