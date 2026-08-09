@@ -37,6 +37,10 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `AGENTS.md` note. The workspace path is no longer printed, so the
   `isprintable()` filter that defanged it is gone with it; the proxy
   URL keeps both `_redact_userinfo` and its filter.
+  Reviewed 2026-08-09 →
+  `docs/reviews/2026-08-09-terminal-prompt-and-lesson-build-review.md`:
+  0 Critical, 0 High, 0 Medium, 2 Low, 0 Info in the combined Pending
+  batch; both entries remain Pending for a separate repair and fresh drain.
 
 - [ ] 2026-08-09 — `8a4e3ee` (squash of `feat/161-build-step`, PR #165) —
   `app/sandbox.py`, `app/services/lesson_build.py`,
@@ -218,6 +222,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   environment, set beside the existing assessment pair. The
   `_AGENTS_TEMPLATE` brief documents the endpoint. `~/.bun` is not added
   to any terminal profile's mount list.
+  Reviewed 2026-08-09 →
+  `docs/reviews/2026-08-09-terminal-prompt-and-lesson-build-review.md`:
+  0 Critical, 0 High, 0 Medium, 2 Low, 0 Info. A concurrent output
+  replacement can be deleted or accepted unrendered, and full backups still
+  omit package-tree symlinks; this entry remains Pending for repair and a
+  fresh drain.
 
 ## Done
 
