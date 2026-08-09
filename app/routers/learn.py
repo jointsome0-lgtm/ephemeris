@@ -1594,6 +1594,11 @@ async def post_lesson_build(request: Request, lesson_id: int):
             page = payload.get("page")
             asked = page.strip() if isinstance(page, str) and page.strip() else None
             try:
+                # Normalized up front, inside the conversion: an undeclared
+                # page is a fallback `lesson_file_info` handles quietly, but a
+                # malformed one such as `../outside.html` raises, and that is
+                # a bad request rather than an internal fault.
+                wanted = lessons.clean_bundle_ref(asked) if asked is not None else None
                 info = lessons.lesson_file_info(lesson, asked)
             except lessons.LessonError as exc:
                 raise lesson_build.BuildError("invalid-request", 400, str(exc)) from exc
@@ -1602,7 +1607,7 @@ async def post_lesson_build(request: Request, lesson_id: int):
             # silently rendering a different page than the one asked for would
             # let a build pass on evidence about somewhere else.
             if not info.get("exists") or (
-                asked is not None and info.get("entry") != lessons.clean_bundle_ref(asked)
+                wanted is not None and info.get("entry") != wanted
             ):
                 raise lesson_build.BuildError(
                     "no-page", 404,

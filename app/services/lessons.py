@@ -1632,11 +1632,13 @@ POST JSON to the URL in `$EPHEMERIS_BUILD_URL`:
   Omit it or send `[]` to rebuild with what is already installed.
 - `entry` — your source, inside this bundle: `.ts`, `.tsx`, `.js`, `.jsx`,
   `.mjs` or `.mts`. Write ordinary imports (`import { select } from "d3"`).
-- `out` — where the built `.js` goes in this bundle, and it may not be the
+- `out` — where the built `.js` goes: under `assets/`, which with your
+  declared pages is the only part of a bundle this app serves, and not the
   same path as `entry`. Reference it from the page with a plain relative
-  `<script src="…">` BEFORE you build: a page that does not load the built
+  `<script src="…">` BEFORE you build: a page that does not run the built
   file is not evidence that the built file works, and the build is refused
-  on those grounds.
+  on those grounds. A `<link rel=preload>` does not count — it downloads
+  the file without running it.
 - `page` — optional, the page to render-check afterwards; the lesson's
   current page by default.
 

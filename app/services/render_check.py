@@ -149,9 +149,12 @@ class _Browser:
             self.call("Page.enable", deadline)
             self.call("Runtime.enable", deadline)
             self.call("Log.enable", deadline)
-            # Not for errors — for evidence that the page actually fetched the
-            # artifact it is being judged on. See `console_errors`.
+            # Neither of these is for errors. `Debugger.scriptParsed` is the
+            # evidence that the artifact was compiled and run, and the network
+            # log is what tells a failed build which of the two ways it failed.
+            # See `console_errors`.
             self.call("Network.enable", deadline)
+            self.call("Debugger.enable", deadline)
         except BaseException:
             self.close()
             raise
@@ -353,6 +356,24 @@ def _fetched_urls(events: list[dict]) -> set[str]:
     return fetched
 
 
+def _executed_urls(events: list[dict]) -> set[str]:
+    """Every URL whose script the engine actually compiled.
+
+    A download is not a run. `<link rel="preload" as="script">` fetches the
+    file and never executes it, and a page that only preloads the artifact
+    would satisfy a network-only check while proving nothing about the code —
+    which is the whole thing the gate exists to establish. V8 reports
+    `Debugger.scriptParsed` when it compiles a script, so a file that was
+    fetched but never reached the engine is absent here.
+    """
+    return {
+        _url_key(url)
+        for event in events
+        if event.get("method") == "Debugger.scriptParsed"
+        and (url := ((event.get("params") or {}).get("url") or ""))
+    }
+
+
 def console_errors(
     url: str,
     *,
@@ -405,15 +426,20 @@ def console_errors(
                     "so this run would not see an opaque-origin failure"
                 )
         errors = _errors_from(browser.events)
-        if expect_url is not None and _url_key(expect_url) not in _fetched_urls(
-            browser.events
-        ):
-            errors.insert(0, RenderError(
-                "artifact",
-                f"the page never loaded {expect_url}, so nothing here is "
-                "evidence about the built script; reference it from the page "
-                'with a classic <script src="…"></script> tag',
-            ))
+        if expect_url is not None:
+            wanted = _url_key(expect_url)
+            if wanted not in _executed_urls(browser.events):
+                fetched = wanted in _fetched_urls(browser.events)
+                errors.insert(0, RenderError("artifact", (
+                    f"the page fetched {expect_url} but never ran it, so "
+                    "nothing here is evidence about the built script; a "
+                    "preload is not a load — reference it with a classic "
+                    '<script src="…"></script> tag'
+                ) if fetched else (
+                    f"the page never loaded {expect_url}, so nothing here is "
+                    "evidence about the built script; reference it from the "
+                    'page with a classic <script src="…"></script> tag'
+                )))
         return [error.as_dict() for error in errors[:MAX_ERRORS]]
     except TimeoutError as exc:
         # `_read` raises this when the whole-check budget runs out. It is a

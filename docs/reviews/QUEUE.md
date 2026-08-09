@@ -81,28 +81,35 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   --target=browser --format=iife --production --keep-names --outfile=…`
   into the workspace. Package specs are matched against an anchored npm
   name/range regex, at most 32 per request; `entry` and `out` go through
-  `lessons.clean_bundle_ref` and are refused when equal. The artifact's
-  size is taken with `stat` and refused over 1 MiB before it is read. It is
+  `lessons.clean_bundle_ref` and are refused when equal; `out` is also
+  refused unless it is under `assets/`. The artifact's size is taken with
+  `stat` and refused over 1 MiB before it is read. It is
   placed in the bundle through a descriptor chain opened component by
   component with `O_NOFOLLOW` and `os.replace`. Whatever was at the output
-  name is first renamed aside to `.<name>.previous` through the same
-  descriptor and renamed back if the render gate fails or cannot run;
+  name is first renamed aside to `.<name>.<12 hex chars>.previous` through
+  the same descriptor and renamed back if the render gate fails or cannot run;
   on a pass the aside copy is unlinked. Builds are serialised per lesson
   slug by an in-process `asyncio.Lock`, and the workspace artifact path is
   unlinked before each bundle run. A `package.json` is seeded in the
   workspace on first use; no `bunfig.toml` is written.
   New `app/services/render_check.py` starts headless Chrome with a
   disposable profile on `--remote-debugging-port=0`, connects over CDP,
-  enables `Page`/`Runtime`/`Log`/`Network`, navigates to a caller-supplied
+  enables `Page`/`Runtime`/`Log`/`Network`/`Debugger`, navigates to a caller-supplied
   URL, waits for `Page.loadEventFired` or the main frame's
   `Page.frameStoppedLoading` before starting the settle interval, and
   collects `Runtime.exceptionThrown`, `Runtime.consoleAPICalled` of type
   error/assert, and `Log.entryAdded` at level error (dropping
   `/favicon.ico` entries and the exact text `Unrecognized
   Content-Security-Policy directive 'webrtc'.`). A caller-supplied
-  `expect_url` must appear among the `Network.responseReceived` URLs with
-  a status under 400, compared on scheme, authority and unquoted path;
-  the build route passes the artifact's own files URL. It raises rather
+  `expect_url` must appear among the `Debugger.scriptParsed` URLs,
+  compared on scheme, authority and unquoted path; the
+  `Network.responseReceived` URLs with a status under 400 are used only to
+  word the refusal. The build route passes the artifact's own files URL.
+  Sandbox-runtime, bundle-path and entry-path failures inside
+  `lesson_build` are converted to typed `BuildError`s
+  (`build-unavailable` 503, `invalid-out` 409, `no-entry` 404), and the
+  route normalises the requested `page` inside its existing
+  `LessonError` conversion. It raises rather
   than returning a pass when no browser is found, when the browser stops
   answering, when the page does not finish loading or the whole-check
   deadline passes, or when `window.origin` is not `"null"` after the load.

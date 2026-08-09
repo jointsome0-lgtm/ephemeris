@@ -95,6 +95,20 @@ def test_the_output_must_be_a_script_inside_the_bundle():
     for bad in ("../outside.js", "/etc/passwd", "assets/page.html", ""):
         with pytest.raises(lesson_build.BuildError):
             lesson_build.clean_source_ref(bad, "out")
+
+
+def test_the_output_must_land_where_the_lesson_route_will_serve_it():
+    """A v2 bundle serves declared pages and `assets/`, and nothing else.
+
+    An artifact anywhere else 404s for the page that references it, so every
+    build of that lesson would be refused by the render gate — truthfully, and
+    for a reason that explains nothing. Say it at the door instead.
+    """
+    for outside in ("page.js", "dist/page.js", "src/built.js"):
+        with pytest.raises(lesson_build.BuildError) as caught:
+            lesson_build.clean_source_ref(outside, "out")
+        assert "assets/" in caught.value.detail
+    assert lesson_build.clean_source_ref("assets/deep/page.js", "out")
     for bad in ("../outside.ts", "page.html", "page.css"):
         with pytest.raises(lesson_build.BuildError):
             lesson_build.clean_source_ref(bad, "entry")
@@ -108,7 +122,9 @@ def test_a_build_may_not_write_its_artifact_over_its_own_source():
     back `ok: true` having thrown away the file it was given.
     """
     with pytest.raises(lesson_build.BuildError) as caught:
-        lesson_build.clean_build_refs({"entry": "src/page.js", "out": "src/page.js"})
+        lesson_build.clean_build_refs(
+            {"entry": "assets/page.js", "out": "assets/page.js"}
+        )
     assert caught.value.status == 400
     assert "same file" in caught.value.detail
     # A different name for the same kind of file is ordinary and stays allowed.
@@ -209,6 +225,11 @@ _PAGES = {
     "/logged.html": b"<!doctype html><meta charset=utf-8><script src='cerr.js'></script>",
     # Nothing on it references the artifact the gate is asked about.
     "/bare.html": b"<!doctype html><meta charset=utf-8><p>no script here",
+    # Fetches the file and never runs it: a download is not a run.
+    "/preload.html": (
+        b"<!doctype html><meta charset=utf-8>"
+        b"<link rel=preload as=script href='ok.js'><p>preloaded only"
+    ),
     # `slow.js` is answered late, so the document is still loading well past the
     # settle interval; the throw only happens once it arrives.
     "/slow.html": b"<!doctype html><meta charset=utf-8><script src='slow.js'></script>",
@@ -327,6 +348,14 @@ def test_a_page_that_never_loads_the_artifact_is_no_evidence_about_it(lesson_csp
         )
         assert any(e["source"] == "artifact" for e in missed), missed
 
+        # Fetched and never executed is the same emptiness with a nicer
+        # network log; a preload proves nothing about the code.
+        preloaded = render_check.console_errors(
+            f"{site.base}/preload.html", expect_url=f"{site.base}/ok.js"
+        )
+        assert any(e["source"] == "artifact" for e in preloaded), preloaded
+        assert any("never ran it" in e["text"] for e in preloaded), preloaded
+
         loaded = render_check.console_errors(
             f"{site.base}/clean.html", expect_url=f"{site.base}/ok.js"
         )
@@ -422,6 +451,12 @@ def built_lesson(client):
         conn.close()
     bundle = lessons.lesson_bundle_dir(lesson["slug"])
     (bundle / "src").mkdir(exist_ok=True)
+    # The ordinary source every test here builds unless it brings its own.
+    (bundle / "src" / "page.ts").write_text(
+        'import { select } from "d3";\n'
+        'select(document.body).append("p").text("built");\n',
+        encoding="utf-8",
+    )
     (bundle / lessons.DEFAULT_ENTRY).write_text(
         "<!doctype html><html><head><meta charset='utf-8'><title>t</title></head>"
         "<body><script src='assets/page.js'></script></body></html>",
@@ -570,6 +605,100 @@ def test_a_bunfig_the_agent_writes_into_the_bundle_is_not_read(
         marker.unlink(missing_ok=True)
         (bundle / "bunfig.toml").unlink(missing_ok=True)
         (bundle / "evil.js").unlink(missing_ok=True)
+
+
+@needs_sandbox
+def test_an_authored_file_at_the_backup_name_survives_a_build(
+    built_lesson, monkeypatch
+):
+    """`os.rename` replaces its target, so the set-aside name cannot be guessable.
+
+    A bundle holding its own `assets/.page.js.previous` would otherwise lose it
+    to every build of `assets/page.js` — including the ones that succeed, where
+    the aside copy is deleted at the end.
+    """
+    import asyncio
+
+    lesson, bundle = built_lesson
+    decoy = bundle / "assets" / ".page.js.previous"
+    decoy.write_text("authored, not a backup\n", encoding="utf-8")
+    _no_render_errors(monkeypatch)
+    result = asyncio.run(lesson_build.build_lesson(
+        lesson, add=[], entry="src/page.ts", out="assets/page.js",
+        page=None, page_url="http://127.0.0.1:1/unused",
+        artifact_url="http://127.0.0.1:1/unused.js",
+    ))
+    assert result["ok"]
+    assert decoy.read_text(encoding="utf-8") == "authored, not a backup\n"
+    assert sorted(p.name for p in (bundle / "assets").iterdir()) == [
+        ".page.js.previous", "page.js"
+    ], "no leftovers from the set-aside dance"
+
+
+@needs_sandbox
+def test_a_bundle_that_cannot_hold_the_artifact_is_a_refusal_not_a_fault(
+    built_lesson, monkeypatch
+):
+    """A symlinked parent on the output path is something the agent can make."""
+    import asyncio
+
+    lesson, bundle = built_lesson
+    (bundle / "assets").mkdir(exist_ok=True)
+    link = bundle / "assets" / "elsewhere"
+    link.symlink_to("/tmp")
+    try:
+        _no_render_errors(monkeypatch)
+        with pytest.raises(lesson_build.BuildError) as caught:
+            asyncio.run(lesson_build.build_lesson(
+                lesson, add=[], entry="src/page.ts",
+                out="assets/elsewhere/page.js",
+                page=None, page_url="http://127.0.0.1:1/unused",
+                artifact_url="http://127.0.0.1:1/unused.js",
+            ))
+        assert caught.value.code == "invalid-out" and caught.value.status == 409
+        assert not Path("/tmp/page.js").exists(), "the walk never left the bundle"
+    finally:
+        link.unlink()
+
+
+def test_a_symlinked_entry_is_missing_rather_than_a_fault(built_lesson, monkeypatch):
+    """An agent can make a symlink; bundle readers treat one as not there."""
+    import asyncio
+
+    lesson, bundle = built_lesson
+    link = bundle / "src" / "linked.ts"
+    link.symlink_to("/etc/hostname")
+    try:
+        with pytest.raises(lesson_build.BuildError) as caught:
+            asyncio.run(lesson_build.build_lesson(
+                lesson, add=[], entry="src/linked.ts", out="assets/linked.js",
+                page=None, page_url="http://127.0.0.1:1/unused",
+                artifact_url="http://127.0.0.1:1/unused.js",
+            ))
+        assert caught.value.code == "no-entry" and caught.value.status == 404
+    finally:
+        link.unlink()
+
+
+def test_a_host_that_cannot_sandbox_refuses_in_the_documented_shape(
+    built_lesson, monkeypatch
+):
+    """No bubblewrap is a 503 the agent can read, not a 500 it cannot."""
+    import asyncio
+
+    lesson, _bundle = built_lesson
+
+    def no_runtime() -> None:
+        raise sandbox.SandboxUnavailableError("invented: no user namespaces here")
+
+    monkeypatch.setattr(sandbox, "require_sandbox_runtime", no_runtime)
+    with pytest.raises(lesson_build.BuildError) as caught:
+        asyncio.run(lesson_build.build_lesson(
+            lesson, add=[], entry="src/page.ts", out="assets/page.js",
+            page=None, page_url="http://127.0.0.1:1/unused",
+            artifact_url="http://127.0.0.1:1/unused.js",
+        ))
+    assert caught.value.code == "build-unavailable" and caught.value.status == 503
 
 
 # --- the route ---------------------------------------------------------------

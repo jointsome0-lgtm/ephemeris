@@ -75,6 +75,10 @@ _PACKAGE_RE = re.compile(
 )
 # What the bundler will read as an entry point.
 _ENTRY_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts")
+# The one directory a v2 bundle serves besides its declared pages
+# (`lessons.bundle_resource_info`), and therefore the only place an artifact
+# a page can load is allowed to go.
+_ARTIFACT_DIR = "assets"
 
 
 class BuildError(Exception):
@@ -120,8 +124,21 @@ def clean_source_ref(raw, field: str) -> str:
             "invalid-request", 400,
             "`entry` must be a script source " + "/".join(_ENTRY_SUFFIXES),
         )
-    if field == "out" and PurePosixPath(ref).suffix.lower() != ".js":
-        raise BuildError("invalid-request", 400, "`out` must end in .js")
+    if field == "out":
+        if PurePosixPath(ref).suffix.lower() != ".js":
+            raise BuildError("invalid-request", 400, "`out` must end in .js")
+        # Where the artifact may land is decided by what the files route will
+        # hand back, not by taste. A v2 bundle's preview surface is a positive
+        # allowlist — declared pages plus `assets/` — so an artifact at
+        # `dist/page.js` would 404 for the page that references it, and every
+        # build of that lesson would be refused by the render gate for a
+        # reason that says nothing about the reason. Better to say it here.
+        if not ref.startswith(f"{_ARTIFACT_DIR}/"):
+            raise BuildError(
+                "invalid-request", 400,
+                f"`out` must be under `{_ARTIFACT_DIR}/`, the only place in a "
+                "bundle besides its declared pages that the lesson route serves",
+            )
     return ref
 
 
@@ -188,7 +205,13 @@ async def _run_step(
     timeout: float,
 ) -> tuple[int, str]:
     """Run one step in its mount view; return its exit status and output tail."""
-    sandbox.require_sandbox_runtime()
+    try:
+        sandbox.require_sandbox_runtime()
+    except sandbox.SandboxUnavailableError as exc:
+        # A host without working unprivileged namespaces cannot build, and the
+        # agent asking is entitled to be told that in the same shape as every
+        # other refusal rather than through a 500.
+        raise BuildError("build-unavailable", 503, str(exc)) from exc
     try:
         argv = sandbox.build_step_argv(
             step,
@@ -308,8 +331,13 @@ def _set_aside(fd: int, name: str) -> str | None:
     whatever the agent last put at this path, which is not necessarily a small
     file this module wrote — reading it into memory to put it back would need a
     cap, and a cap would silently truncate what it was supposed to preserve.
+
+    The destination carries random bytes because `os.rename` replaces its
+    target without asking: a predictable `.page.js.previous` would destroy an
+    authored file of that name, and destroy it on the *successful* path too,
+    where this function's whole job is that nothing is lost.
     """
-    aside = f".{name}.previous"
+    aside = f".{name}.{os.urandom(6).hex()}.previous"
     try:
         os.rename(name, aside, src_dir_fd=fd, dst_dir_fd=fd)
     except OSError:
@@ -398,8 +426,16 @@ async def _build_locked(
         workspace = lessons.ensure_build_workspace(slug)
     except (OSError, lessons.LessonError) as exc:
         raise BuildError("workspace-unavailable", 503, str(exc)) from exc
-    entry_path = lessons.bundle_ref_path(slug, entry)
-    if not entry_path.is_file():
+    # A symlink anywhere along the entry is refused by `bundle_ref_path`, the
+    # same way every other bundle reader here treats one — and an agent can
+    # make a symlink, so this is an ordinary request to refuse, not an internal
+    # fault. Both outcomes read as "that source is not in this bundle".
+    try:
+        entry_path = lessons.bundle_ref_path(slug, entry)
+        readable = entry_path.is_file()
+    except lessons.LessonError:
+        readable = False
+    if not readable:
         raise BuildError("no-entry", 404, f"no such source in the bundle: {entry}")
 
     steps: list[dict] = []
@@ -455,7 +491,18 @@ async def _build_locked(
         raise BuildError("bundle-failed", 422, f"the bundler wrote nothing: {exc}",
                          steps=steps) from exc
 
-    fd, name = _bundle_fd(lesson_dir, out)
+    # The descriptor walk refuses a symlinked or non-directory parent, which is
+    # a thing the agent can create in its own bundle and therefore a request to
+    # refuse in the response, not a fault to raise through it.
+    try:
+        fd, name = _bundle_fd(lesson_dir, out)
+    except OSError as exc:
+        raise BuildError(
+            "invalid-out", 409,
+            f"the bundle cannot hold an artifact at {out}: {exc.strerror or exc}; "
+            "a directory on that path is a symlink or not a directory",
+            steps=steps,
+        ) from exc
     aside = None
     placed = False
     try:
