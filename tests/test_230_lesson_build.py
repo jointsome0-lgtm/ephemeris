@@ -1913,3 +1913,87 @@ def test_a_refused_first_build_leaves_no_artifact_behind(built_lesson, monkeypat
 
     assert caught.value.code == "render-errors"
     assert not fresh.exists(), "the refused artifact stayed in the bundle"
+
+
+@needs_sandbox
+def test_a_page_deleted_during_the_gate_is_not_resurrected(built_lesson, monkeypatch):
+    """Removed and replaced are the same answer: the agent spoke about that path.
+
+    The undo used to treat an absent output as "the write never landed" and
+    rename the copy it had set aside back onto it — bringing back a page the
+    agent had just deleted on purpose. Once the artifact is placed, the path is
+    no longer this build's to restore.
+    """
+    import asyncio
+
+    lesson, bundle = built_lesson
+    (bundle / "src" / "page.ts").write_text(
+        'document.title = "invented";\n', encoding="utf-8"
+    )
+    (bundle / "assets").mkdir(exist_ok=True)
+    output = bundle / "assets" / "page.js"
+    output.write_bytes(b"//invented old artifact\n")
+
+    def delete_mid_check(*args, **kwargs):
+        output.unlink()
+        return []
+
+    monkeypatch.setattr(render_check, "console_errors", delete_mid_check)
+    before = set(os.listdir(bundle / "assets"))
+
+    with pytest.raises(lesson_build.BuildError) as caught:
+        asyncio.run(lesson_build.build_lesson(
+            lesson, add=[], entry="src/page.ts", out="assets/page.js",
+            page=None, page_url="http://127.0.0.1:1/unused",
+            artifact_url="http://127.0.0.1:1/unused.js",
+        ))
+
+    assert caught.value.code == "output-replaced"
+    assert not output.exists(), "the rollback brought back a deleted page"
+    assert set(os.listdir(bundle / "assets")) == before - {"page.js"}, (
+        "and left no hidden copy of it behind either"
+    )
+
+
+def test_the_placed_identity_is_read_through_the_descriptor(tmp_path):
+    """Not through a second look at the path — that is its own race.
+
+    Between the rename that publishes the artifact and a path-based `stat`, the
+    agent session can replace the output. A stat would then record ITS inode as
+    this build's own, the final check would compare the replacement against
+    itself, and the build would answer `ok` for bytes it never produced. The
+    identity comes from `fstat` on the descriptor the artifact was written to,
+    held open across the rename, so there is no window to lose.
+    """
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        placed = lesson_build._write_through(fd, "page.js", b"//invented built\n")
+        assert (tmp_path / "page.js").read_bytes() == b"//invented built\n"
+        assert placed == lesson_build._identity(fd, "page.js"), (
+            "an untouched file still answers with the identity it was given"
+        )
+
+        (tmp_path / "authored").write_bytes(b"//invented agent bytes\n")
+        os.replace(tmp_path / "authored", tmp_path / "page.js")
+        assert lesson_build._identity(fd, "page.js") != placed
+
+        (tmp_path / "page.js").unlink()
+        assert lesson_build._identity(fd, "page.js") is None
+    finally:
+        os.close(fd)
+
+
+def test_an_in_place_overwrite_is_not_mistaken_for_the_same_file(tmp_path):
+    """`echo … > assets/page.js` keeps the inode, so the inode alone is no answer."""
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        placed = lesson_build._write_through(fd, "page.js", b"//invented built\n")
+        inode = os.stat(tmp_path / "page.js").st_ino
+        (tmp_path / "page.js").write_bytes(b"//invented agent bytes, in place\n")
+
+        assert os.stat(tmp_path / "page.js").st_ino == inode, (
+            "the probe is only meaningful while the truncation keeps the inode"
+        )
+        assert lesson_build._identity(fd, "page.js") != placed
+    finally:
+        os.close(fd)

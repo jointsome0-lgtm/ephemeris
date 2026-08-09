@@ -535,7 +535,17 @@ def _reject_irregular_output(fd: int, name: str, out: str, steps: list[dict]) ->
         )
 
 
-def _write_through(fd: int, name: str, data: bytes) -> None:
+def _write_through(fd: int, name: str, data: bytes) -> tuple:
+    """Place `data` at `name`; return the identity of the file placed there.
+
+    The identity comes from `fstat` on the descriptor this function wrote, held
+    open across the rename, and never from a second look at the path. The agent
+    session can replace `name` the instant the rename returns, and a path-based
+    stat would then record ITS inode as this build's own — and vouch for those
+    bytes at the end, which is the failure this whole check exists to stop.
+
+    Read after the rename, because the rename moves the inode's ctime.
+    """
     # Random, for the reason `_set_aside` is: this name is opened `O_TRUNC` and
     # then renamed over `name`, so a predictable one would destroy an authored
     # `.page.js.new` and then present it as the build's output.
@@ -545,39 +555,45 @@ def _write_through(fd: int, name: str, data: bytes) -> None:
         0o644, dir_fd=fd,
     )
     try:
-        with os.fdopen(handle, "wb") as stream:
+        # `closefd=False`: the descriptor outlives the stream, because the
+        # identity below is read through it after the rename.
+        with os.fdopen(handle, "wb", closefd=False) as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+        os.replace(temporary, name, src_dir_fd=fd, dst_dir_fd=fd)
+        return _identity_of(os.fstat(handle))
     except BaseException:
-        os.unlink(temporary, dir_fd=fd)
+        _remove_through(fd, temporary)
         raise
-    os.replace(temporary, name, src_dir_fd=fd, dst_dir_fd=fd)
+    finally:
+        os.close(handle)
 
 
-def _identity(fd: int, name: str) -> tuple | None:
-    """What is at `name` right now, closely enough to notice it being replaced.
-
-    Read AFTER the rename, never from the descriptor that was renamed: the
-    rename itself changes the inode's ctime, so an identity taken before it
-    would never match again.
+def _identity_of(info: os.stat_result) -> tuple:
+    """A file's identity, closely enough to notice it being replaced.
 
     Inode is not enough on its own. It catches an atomic replacement — the
     rename an editor or a script's `>` into a temporary makes — but a plain
     `echo … > assets/page.js` truncates the existing inode in place and keeps
-    the number. Size and both timestamps move for that one, so the pair is what
-    is compared. `None` means nothing is there at all.
+    the number. Size and both timestamps move for that one, so all of it is
+    compared.
     """
+    return (
+        info.st_dev, info.st_ino, info.st_size,
+        info.st_mtime_ns, info.st_ctime_ns,
+    )
+
+
+def _identity(fd: int, name: str) -> tuple | None:
+    """What is at `name` right now, or `None` if nothing is."""
     try:
         info = os.stat(name, dir_fd=fd, follow_symlinks=False)
     except FileNotFoundError:
         return None
     except OSError:  # pragma: no cover - the descriptor walk already proved it
         return None
-    return (
-        info.st_dev, info.st_ino, info.st_size,
-        info.st_mtime_ns, info.st_ctime_ns,
-    )
+    return _identity_of(info)
 
 
 def _read_artifact(
@@ -980,8 +996,7 @@ async def _build_locked(
         try:
             _reject_irregular_output(fd, name, out, steps)
             aside = _set_aside(fd, name)
-            _write_through(fd, name, artifact)
-            placed = _identity(fd, name)
+            placed = _write_through(fd, name, artifact)
             try:
                 errors = await asyncio.to_thread(
                     render_check.console_errors, page_url, expect_url=artifact_url,
@@ -1003,10 +1018,10 @@ async def _build_locked(
             if _identity(fd, name) != placed:
                 raise BuildError(
                     "output-replaced", 409,
-                    f"{out} was written by something else while the built page "
-                    "was being checked, so what the check saw is not what is "
-                    "there now; that write is left alone and this build was "
-                    "not applied",
+                    f"{out} was written or removed by something else while the "
+                    "built page was being checked, so what the check saw is not "
+                    "what is there now; that change is left alone and this build "
+                    "was not applied",
                     steps=steps, page=page, page_url=page_url,
                 )
             if errors:
@@ -1020,39 +1035,39 @@ async def _build_locked(
             # Every path out of here that is not a pass puts the bundle back the
             # way it was found: a lesson never keeps an artifact this function
             # knows to be broken, and never loses the one that worked. What the
-            # undo may NOT do is reach over bytes this build did not write — the
-            # agent session owns these files too, and unlinking the output would
-            # then destroy its work and restoring the aside would bury it. So
-            # the undo is decided by what the path holds now.
-            current = _identity(fd, name) if placed is not None else None
-            if current is not None and current != placed:
-                # A newcomer holds the path. It is newer than the copy set aside
-                # and it is not this build's to overwrite, so the copy goes and
-                # the newcomer stays, exactly as it was written.
+            # undo may NOT do is reach over a change this build did not make —
+            # the agent session owns these files too.
+            #
+            # So once the artifact was placed, the path stops being this
+            # function's to undo the moment it stops being the file it placed.
+            # Replaced and removed are the same answer: the agent said something
+            # about that path, and neither an unlink nor a restore of the aside
+            # may argue with it. Resurrecting a page the agent deleted is as
+            # wrong as burying one it wrote.
+            restore = aside
+            if placed is not None and _identity(fd, name) != placed:
                 if aside is not None:
                     _remove_through(fd, aside)
-                    aside = None
-            elif aside is None:
+                restore = None
+            elif placed is not None and aside is None:
                 # Ours, and nothing to put back: removing it IS the undo. Only
                 # reached when the output name was free before this build.
-                if current is not None:
-                    _remove_through(fd, name)
-            # Otherwise the path holds our artifact, or nothing because the
-            # write never landed, and there is a copy to put back. The rename
-            # below replaces whatever is at the name, so neither case needs an
-            # unlink first: one destructive syscall, with nothing observable
-            # in between.
+                _remove_through(fd, name)
+            # What is left restores the aside — over our own artifact, or onto a
+            # path the write never reached. A rename replaces its target, so
+            # neither needs an unlink first: one destructive syscall, with
+            # nothing observable in between.
             #
-            # That rename is still by name. POSIX has no "replace this path
-            # only while it is still inode N", so a write landing between the
-            # sample above and the rename is overwritten. The window this
-            # repair is about — the render gate, seconds of released event loop
-            # with a browser in it — is closed; what is left is two adjacent
-            # syscalls, and closing that needs a guarantee the filesystem
-            # interface does not offer.
-            if aside is not None:
+            # That rename is still by name. POSIX has no "replace this path only
+            # while it is still inode N", so a write landing between the check
+            # above and the rename is overwritten. The window this repair is
+            # about — the render gate, seconds of released event loop with a
+            # browser in it — is closed; what is left is two adjacent syscalls,
+            # and closing that needs a guarantee the filesystem interface does
+            # not offer.
+            if restore is not None:
                 try:
-                    os.rename(aside, name, src_dir_fd=fd, dst_dir_fd=fd)
+                    os.rename(restore, name, src_dir_fd=fd, dst_dir_fd=fd)
                 except OSError:  # pragma: no cover - nothing better to try
                     _log.warning(
                         "lesson build: could not restore %s in %s", name, lesson_dir
