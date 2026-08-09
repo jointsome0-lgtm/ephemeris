@@ -29,6 +29,7 @@
       {% if lesson.archived %}<span>Archived</span>{% endif %}
     </div>
   </a>
+  <span class="lesson-actions-edge" aria-hidden="true"></span>
   <div class="lesson-actions">
     {% if not lesson.archived %}
       {% for tab in status_tabs %}
