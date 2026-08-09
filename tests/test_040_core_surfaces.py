@@ -959,6 +959,23 @@ def test_core_surfaces(client, suite_state):
         "the task pane shows its focused time and can start the timer"
     )
 
+    # An open drawer's picker goes stale when the board behind it moves. Naming
+    # a target that is no longer live is refused, not quietly dropped: starting
+    # anyway would attach the time to nothing while the picker still shows it.
+    c.post(f"/tasks/{tid}/complete", data={"return_to": "/today"},
+           headers={"X-Partial": "1"})
+    stale_t = c.post("/focus/timer/start",
+                     data={"token": "tok-s", "mode": "open", "task_id": str(tid)},
+                     headers={"X-Partial": "1"})
+    assert stale_t.status_code == 422 and "no longer available" in stale_t.json()["error"], (
+        "a completed task is refused as a target" + "  -- " + stale_t.text
+    )
+    assert c.get("/focus/timer", headers={"X-Partial": "1"}).json()["run"] is None, (
+        "and no timer starts behind the refusal"
+    )
+    c.post(f"/tasks/{tid}/complete", data={"return_to": "/today"},
+           headers={"X-Partial": "1"})
+
     # A countdown that already ran out cannot be paused. Pausing it would fold
     # the idle time between "ran out" and "resumed" into paused_seconds, and the
     # recorded span would then be dated after it truly ended — far enough, on an
@@ -1896,16 +1913,26 @@ def test_core_surfaces(client, suite_state):
     finally:
         fconn.close()
 
-    # a stale or junk picker value attaches the span to nothing rather than dangling
-    _run_span("les-bad", 60, lesson_id="999999")
-    _run_span("les-junk", 60, lesson_id="junk")
+    # A picker value that names nothing real is refused at the start, where the
+    # user is still standing in front of the picker — not accepted and silently
+    # unattached, which would promise attribution and then drop it.
+    for bad_id in ("999999", "junk"):
+        bad = c.post("/focus/timer/start",
+                     data={"token": "les-" + bad_id, "mode": "open",
+                           "lesson_id": bad_id},
+                     headers={"X-Partial": "1"})
+        assert bad.status_code == 422 and "no longer available" in bad.json()["error"], (
+            "a lesson_id of " + bad_id + " is refused" + "  -- " + bad.text
+        )
+    # …while a span aimed at nothing in particular is ordinary and records.
+    _run_span("les-none", 60)
     fconn = get_conn()
     try:
-        bad = fconn.execute(
+        dangling = fconn.execute(
             "SELECT COUNT(*) AS n FROM focus_sessions WHERE lesson_id = 999999"
         ).fetchone()["n"]
-        assert bad == 0, "nonexistent lesson_id is nulled, not stored"
-        assert _focus.overview(fconn)["today_sessions"] >= 3, (
+        assert dangling == 0, "and nothing dangling was stored"
+        assert _focus.overview(fconn)["today_sessions"] >= 2, (
             "an unattached focus session still records"
         )
     finally:

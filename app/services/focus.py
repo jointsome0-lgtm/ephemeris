@@ -99,6 +99,24 @@ def _resolve_targets(conn: sqlite3.Connection, lesson_id=None, habit_id=None,
     })
 
 
+def _picked_targets(conn: sqlite3.Connection, lesson_id, habit_id, task_id) -> dict:
+    """The targets for a STARTING timer, where a named id must still be real.
+
+    The difference from `_resolve_targets` is who chose: this id came from a
+    picker the user was just looking at, and the list can go stale under an open
+    drawer — a task completed on the board behind it, a habit archived in
+    another tab. Silently storing NULL would start a timer whose attribution the
+    picker still shows; refusing says so, and the drawer reloads its options.
+    """
+    named = {k: v for k, v in (("lesson", lesson_id), ("habit", habit_id),
+                               ("task", task_id))
+             if str(v or "").strip()}
+    resolved = _resolve_targets(conn, lesson_id, habit_id, task_id)
+    if any(resolved[f"{kind}_id"] is None for kind in named):
+        raise FocusError("that target is no longer available — pick another")
+    return resolved
+
+
 def _stored_targets(row: sqlite3.Row) -> dict:
     """The targets a RUNNING timer already carries, taken as given.
 
@@ -291,7 +309,7 @@ def start_run(conn: sqlite3.Connection, mode: str, token: str, *,
     target_seconds = _clean_target_seconds(mode, target_seconds)
     note = (note or "").strip() or None
     limits.check(note, limits.FOCUS_NOTE, "focus note", FocusError)
-    targets = _resolve_targets(conn, lesson_id, habit_id, task_id)
+    targets = _picked_targets(conn, lesson_id, habit_id, task_id)
     # The `slot` column is a UNIQUE singleton, so the "only one timer" rule is
     # the database's to enforce: two tabs starting at once would both clear a
     # SELECT-then-INSERT check, and only one of them can win this INSERT.
@@ -326,8 +344,14 @@ def set_run_paused(conn: sqlite3.Connection, token: str, paused: bool) -> dict:
         raise FocusError("that timer is no longer running")
     if (row["paused_at"] is not None) == paused:
         return _run_view(row)
+    # One timestamp for the decision and for what gets written. Reading the
+    # clock twice leaves the countdown's last second between them: the check
+    # could see "not finished yet" and the UPDATE still stamp `paused_at` at or
+    # after the target, which is exactly the case the refusal exists to prevent.
+    stamp = now_iso()
+    at = _parse_iso(stamp)
     target = int(row["target_seconds"] or 0)
-    if paused and target and _elapsed_seconds(row) >= target:
+    if paused and target and _elapsed_seconds(row, at) >= target:
         # A countdown that already ran out has nothing left to pause. Allowing it
         # would fold the idle time between "ran out" and "resumed" into
         # `paused_seconds`, and `_countdown_end` would then date the span from
@@ -337,13 +361,12 @@ def set_run_paused(conn: sqlite3.Connection, token: str, paused: bool) -> dict:
     with conn:
         if paused:
             conn.execute("UPDATE focus_runs SET paused_at = ? WHERE id = ?",
-                         (now_iso(), row["id"]))
+                         (stamp, row["id"]))
         else:
             gap = 0
             paused_at = _parse_iso(row["paused_at"])
-            now = _parse_iso(now_iso())
-            if paused_at is not None and now is not None:
-                gap = max(0, int((now - paused_at).total_seconds()))
+            if paused_at is not None and at is not None:
+                gap = max(0, int((at - paused_at).total_seconds()))
             conn.execute(
                 "UPDATE focus_runs SET paused_at = NULL, paused_seconds = ? "
                 "WHERE id = ?",

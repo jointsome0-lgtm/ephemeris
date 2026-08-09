@@ -282,6 +282,11 @@
     if (els.note.value.trim()) params.note = els.note.value.trim();
     const data = await call("/focus/timer/start", params);
     if (data) els.note.value = "";
+    // The drawer can stay open for hours while the board behind it moves, so
+    // the target it offers may have been completed or archived since. The
+    // server refuses rather than silently dropping the attribution; reloading
+    // makes the picker tell the same story as the refusal.
+    else if (picked) loadTargets();
   }
 
   async function autoFinish() {
