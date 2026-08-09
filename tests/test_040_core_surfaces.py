@@ -2478,3 +2478,27 @@ def test_the_v19_rebuild_keeps_the_focus_session_id_counter(tmp_path):
         ).fetchone()[0] == 501, "the next session lands past the retained ids"
     finally:
         conn.close()
+
+
+def test_a_countdown_across_a_dst_change_ends_in_the_ledger_zone():
+    """A stored stamp keeps the offset it was written with, and adding the
+    target length to it keeps that offset too. Spring forward, and the countdown
+    would be filed at an hour the clocks skipped — the wrong time on the row,
+    and the wrong Retro day for a zone that turns over at midnight."""
+    import app.db as _db
+    from app.services import focus as _focus
+    from app.settings import load as _load
+
+    zoned = _load({"ACTIVITY_DATA_DIR": str(_db.settings.data_dir),
+                   "APP_TIMEZONE": "Europe/Berlin"})
+    original = _db.settings
+    _db.settings = zoned  # rebind, not mutate: Settings is frozen by design
+    try:
+        row = {"started_at": "2026-03-29T01:30:00+01:00", "paused_at": None,
+               "paused_seconds": 0}
+        ended = _focus._countdown_end(row, 2 * 3600, None)
+    finally:
+        _db.settings = original
+    assert ended == "2026-03-29T04:30:00+02:00", (
+        "the end is spelled in the zone the ledger keeps" + "  -- " + str(ended)
+    )

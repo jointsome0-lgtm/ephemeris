@@ -295,19 +295,23 @@
     if (done && done.recorded) toast("Focus recorded · " + done.recorded.duration_label);
   }
 
+  // Every write waits its turn, the way Start does. Two clicks that overlap are
+  // not two decisions: the second reads a screen the first has not answered
+  // yet, so a doubled Pause could be followed by a Resume that overtakes it and
+  // leaves the drawer showing "paused" while the server keeps counting.
   async function stopTimer() {
-    if (!run) return;
+    if (busy || !run) return;
     const done = await call("/focus/timer/finish", { token: run.token });
     if (done && done.recorded) toast("Focus recorded · " + done.recorded.duration_label);
   }
 
   async function togglePause() {
-    if (!run) return;
+    if (busy || !run) return;
     await call("/focus/timer/pause", { token: run.token, paused: run.paused ? 0 : 1 });
   }
 
   async function discardTimer() {
-    if (!run) return;
+    if (busy || !run) return;
     await call("/focus/timer/discard", { token: run.token });
   }
 

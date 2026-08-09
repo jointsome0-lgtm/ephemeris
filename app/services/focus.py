@@ -23,7 +23,7 @@ import sqlite3
 from datetime import date as _date, datetime, timedelta
 
 from .. import limits
-from ..db import append_event, now_iso, pretty_date, today_str
+from ..db import app_tz, append_event, now_iso, pretty_date, today_str
 
 MODES = ("countdown", "open")
 """'countdown' runs to a length the user chose; 'open' just tracks until stopped.
@@ -189,6 +189,19 @@ def _parse_iso(value: str | None) -> datetime | None:
         return None
 
 
+def _in_ledger_zone(moment: datetime) -> datetime:
+    """The same instant, spelled in the ledger's zone (sec13.3).
+
+    A stored stamp carries the fixed offset that was in force when it was
+    written. Adding a duration to it keeps that offset, so a countdown started
+    before a daylight-saving change would end at '03:30+01:00' where the zone
+    says '04:30+02:00' — the wrong hour on the row, and, for a zone whose
+    transition sits at midnight, the wrong day in Retro.
+    """
+    tz = app_tz()
+    return moment.astimezone(tz) if tz is not None else moment.astimezone()
+
+
 def _elapsed_seconds(row: sqlite3.Row, at: datetime | None = None) -> int:
     """Wall time since the run started, minus everything it spent paused.
 
@@ -223,7 +236,7 @@ def _countdown_end(row: sqlite3.Row, target: int, now: datetime | None) -> str |
     ceiling = _parse_iso(row["paused_at"]) or now
     if ceiling is not None and ended > ceiling:
         ended = ceiling
-    return ended.isoformat(timespec="seconds")
+    return _in_ledger_zone(ended).isoformat(timespec="seconds")
 
 
 def _run_view(row: sqlite3.Row | None, at: datetime | None = None) -> dict | None:
