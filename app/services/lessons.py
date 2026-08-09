@@ -2132,10 +2132,19 @@ def _ensure_build_workspace(slug: str, lesson_dir: Path) -> Path:
         # exists() follows links, so a dangling one reads as absent here; the
         # is_symlink() term is what catches it.
         foreign = path.is_symlink() or (path.exists() and not path.is_dir())
+        populated = False
         if not foreign and not keep_contents and path.is_dir():
-            foreign = any(path.iterdir())
+            populated = foreign = any(path.iterdir())
         if foreign:
             _preserve_foreign(path)
+            if populated:
+                # Recoverable — the aside copy keeps the bytes and a reinstall
+                # rebuilds the tree — but not something to discover by noticing
+                # a directory is empty.
+                _log.warning(
+                    "moved a populated %s aside in %s; reinstall to restore it",
+                    path.name, path.parent,
+                )
         try:
             os.mkdir(path, 0o700)
         except FileExistsError:
