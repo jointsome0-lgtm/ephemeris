@@ -379,10 +379,29 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             frame.setAttribute("sandbox", tokens);
         }
     };
+    const applyNoFile = (meta) => {
+        /* `no-file` marks the placeholder case, and only there may the frame's
+         * canvas follow the reader's colour scheme (style.css): a real bundle's
+         * HTML is arbitrary and may set no background of its own, so a dark canvas
+         * under it would leave default black text unreadable. Live reload swaps the
+         * document without re-rendering the template, so the class has to move with
+         * it — a file appearing drops the dark canvas before the bundle paints, a
+         * file deleted restores it. Only a real boolean speaks; anything else (a
+         * pre-D2 backend) leaves the server-rendered class as it is, like
+         * `applySandbox` above. */
+        if (typeof meta.exists !== "boolean")
+            return;
+        frame.closest(".lesson-frame-wrap")?.classList.toggle("no-file", !meta.exists);
+    };
+    /* Whether what the frame holds is the generated placeholder rather than a
+     * lesson. The class is the single answer, kept current by `applyNoFile` on
+     * every navigation, so nothing here has to re-derive it from metadata. */
+    const isPlaceholder = () => frame.closest(".lesson-frame-wrap")?.classList.contains("no-file") === true;
     const navigate = (meta) => {
         teardown();
         expectedVersion = String(meta.version ?? "0");
         applySandbox(meta); // before src: sandbox is read at navigation time
+        applyNoFile(meta); // before src: the canvas must suit the incoming document
         const src = (typeof meta.preview_url === "string" && meta.preview_url)
             || (meta.exists ? frame.dataset["src"] : fallbackSrc)
             || fallbackSrc;
@@ -1560,6 +1579,13 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     });
     /* ---- live-reload poll (the pre-D2 app.js block, now owning binding) ---- */
     let inFlight = false;
+    /* Set when the theme moved under a placeholder and cleared only once the
+     * reload has actually been issued. It is a flag rather than a one-shot fetch
+     * because the metadata read can fail — the local server restarting under an
+     * open /learn is the ordinary case — and nothing else would ever repair it:
+     * the version has not changed, so later polls would only re-arm, leaving the
+     * old palette until the next flip, edit or reload. */
+    let themeReload = false;
     const tick = async () => {
         if (document.hidden || inFlight)
             return;
@@ -1567,6 +1593,18 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         try {
             const meta = await fetchMeta();
             if (meta !== null) {
+                if (themeReload) {
+                    /* Ahead of the version check: the bytes are unchanged, only the
+                     * scheme they were served in is stale. If the file arrived in the
+                     * meantime the case is gone — a real bundle owns its colours — and
+                     * the checks below handle that document as they always would. */
+                    if (isPlaceholder()) {
+                        themeReload = false;
+                        navigate(meta);
+                        return;
+                    }
+                    themeReload = false;
+                }
                 if (String(meta.version ?? "0") !== expectedVersion) {
                     navigate(meta);
                 }
@@ -1594,6 +1632,24 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     };
     setInterval(() => void tick(), POLL_MS);
     document.addEventListener("visibilitychange", () => void tick());
+    /* A theme flip has to reach the placeholder, and only a reload can carry it:
+     * that document was SERVED in whichever scheme was current (the `al-scheme`
+     * cookie `window.alTheme` writes), and a sandboxed document cannot be
+     * restyled from out here. Only the no-file case needs it — a real bundle owns
+     * its colours and must not be reloaded under the learner — and it goes
+     * through the ordinary poll→navigate path, so the version binding and the
+     * teardown stay exactly as any other reload would leave them. */
+    const root = document.documentElement;
+    let scheme = root.dataset["theme"];
+    new MutationObserver(() => {
+        if (root.dataset["theme"] === scheme)
+            return;
+        scheme = root.dataset["theme"];
+        if (!isPlaceholder())
+            return;
+        themeReload = true;
+        void tick();
+    }).observe(root, { attributes: true, attributeFilter: ["data-theme"] });
 }
 /* ---- record counts poll (#133 tier 1) ------------------------------------
  *
