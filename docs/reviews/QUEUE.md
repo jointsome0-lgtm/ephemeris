@@ -25,10 +25,13 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 ## Pending
 
 - [ ] 2026-08-09 — `feat/study-browser` (PR pending) —
-  `app/services/lessons.py`, `docs/reviews/QUEUE.md` —
+  `app/services/lessons.py`, `app/services/bundle_schema.py`,
+  `docs/learn-bundle-spec.md`, `docs/reviews/QUEUE.md` —
   lesson workspace prep now also creates a `source/` directory in the bundle
-  (`_ensure_source_dir`, same `_preserve_foreign` posture as the `.claude`
-  directory), and the agent brief gains a "Source material" section.
+  (`_ensure_source_dir`, which declines a taken name instead of relocating
+  what holds it, and does not follow a link on the name), `source` joins
+  `bundle_schema.RESERVED_NAMES` and spec §2, and the agent brief gains a
+  "Source material" section.
   Host-side, outside this repository: a `@playwright/mcp` server listens on
   `127.0.0.1:9223` with a persistent Chrome profile at
   `~/.local/share/playwright-mcp/lesson-profile`, and is registered as the

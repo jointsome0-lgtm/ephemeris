@@ -2163,24 +2163,27 @@ def _ensure_settings_dir(lesson_dir: Path) -> Path:
     return path
 
 
-def _ensure_source_dir(lesson_dir: Path) -> Path:
-    """Return the bundle's `source/` directory, creating it if needed.
+def _ensure_source_dir(lesson_dir: Path) -> Path | None:
+    """Return the bundle's `source/` directory, creating it if it is free.
 
     Where fetched source material lands, so that the raw input a lesson was
     built from is a file on disk with a provenance record beside it rather
-    than a claim in a transcript. Same posture as :func:`_ensure_settings_dir`
-    on the name: a link or special file is moved aside instead of followed,
-    and a real directory already there keeps its contents — the app owns the
-    directory's existence, never what the tutor puts in it.
+    than a claim in a transcript.
+
+    Unlike the brief paths and `.claude`, the app writes nothing here — the
+    tutor does — so a name already taken is left exactly as it is rather than
+    renamed aside: relocating it could only break a bundle that legitimately
+    put something there before the name was reserved. A link is not followed
+    for the same reason it is not moved: the directory is simply not offered,
+    and the tutor works without one.
     """
     path = lesson_dir / SOURCE_DIR_NAME
-    if path.is_symlink() or (path.exists() and not path.is_dir()):
-        _preserve_foreign(path)
+    if path.is_symlink():
+        return None
     try:
         os.mkdir(path, 0o700)
     except FileExistsError:
-        if path.is_symlink() or not path.is_dir():
-            raise NotADirectoryError(f"{SOURCE_DIR_NAME} is not a directory")
+        return path if path.is_dir() and not path.is_symlink() else None
     return path
 
 

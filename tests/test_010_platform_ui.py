@@ -1100,7 +1100,7 @@ def test_002_ui_and_workspace(client, suite_state):
     ), "the v1 preview surface serves an ordinary file but not .claude/"
     _spec_84 = (ROOT / "docs" / "learn-bundle-spec.md").read_text(encoding="utf-8")
     assert (
-        "`CLAUDE.md`, `.claude`, `node_modules`." in _spec_84
+        "`CLAUDE.md`, `.claude`, `node_modules`, `source`." in _spec_84
         and ".claude/         app-generated agent-harness config" in _spec_84
         and 'constant `{"outputStyle": "Learning"}`' in _spec_84
         and "regenerated, never authored: the app rewrites them" in _spec_84
@@ -1382,11 +1382,14 @@ def test_002_ui_and_workspace(client, suite_state):
         and "never take an action" in _meta_agents
     ), "brief tells the tutor where source material lives and how to fetch it"
 
-    # A link planted on `source` is moved aside, never followed: the same
-    # posture the brief paths and `.claude` already hold.
+    # `source` is reserved, but a bundle that claimed the name before the
+    # reservation keeps whatever is there: prep declines rather than relocates,
+    # and it never follows a link to create a directory outside the bundle.
+    from app.services import bundle_schema as _bschema_src
+    assert "source" in _bschema_src.RESERVED_NAMES, "source/ is a reserved bundle name"
     _src_conn = get_conn()
     try:
-        _src_id = lessons_svc.create_lesson(_src_conn, "Source Link Guard Demo")
+        _src_id = lessons_svc.create_lesson(_src_conn, "Source Name Taken Demo")
         _src = lessons_svc.get_lesson(_src_conn, _src_id)
     finally:
         _src_conn.close()
@@ -1394,15 +1397,32 @@ def test_002_ui_and_workspace(client, suite_state):
     _src_dir.mkdir(parents=True, exist_ok=True)
     _src_decoy = Path(lessons_svc.LESSONS_DIR) / "decoy-source-dir"
     _src_decoy.mkdir(parents=True, exist_ok=True)
-    os.symlink(_src_decoy, _src_dir / lessons_svc.SOURCE_DIR_NAME)
+    _src_link = _src_dir / lessons_svc.SOURCE_DIR_NAME
+    os.symlink(_src_decoy, _src_link)
     _src_ws = lessons_svc.prepare_terminal_workspace(_src["slug"])
-    _src_path = _src_dir / lessons_svc.SOURCE_DIR_NAME
     assert (
         _src_ws is not None
-        and _src_path.is_dir()
-        and not _src_path.is_symlink()
+        and _src_link.is_symlink()
         and not any(_src_decoy.iterdir())
-    ), "a symlink at source/ is replaced, and its target stays untouched"
+        and not list(_src_dir.glob("source.collision-*"))
+    ), "a link at source/ is left alone, unfollowed, and never relocated"
+    os.unlink(_src_link)
+
+    # A plain file on the name is kept as content, not renamed out of the way.
+    _src_file = _src_dir / lessons_svc.SOURCE_DIR_NAME
+    _src_file.write_text("v1 bundle content", encoding="utf-8")
+    assert lessons_svc.prepare_terminal_workspace(_src["slug"]) is not None and (
+        _src_file.is_file()
+        and _src_file.read_text(encoding="utf-8") == "v1 bundle content"
+    ), "a pre-existing file at source/ survives workspace prep untouched"
+    _src_file.unlink()
+
+    # With the name free, prep creates the directory.
+    _src_made = lessons_svc.prepare_terminal_workspace(_src["slug"])
+    assert (
+        _src_made is not None
+        and (_src_dir / lessons_svc.SOURCE_DIR_NAME).is_dir()
+    ), "workspace prep creates source/ when the name is free"
 
     # A symlinked bundle remains forbidden; nodes at brief paths are atomically
     # replaced without touching what links previously named.

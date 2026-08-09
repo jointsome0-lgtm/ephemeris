@@ -59,7 +59,15 @@ data/lessons/<slug>/
 
 Reserved names, which no page, block file, or artifact root may claim:
 `lesson.json`, `attempts.jsonl`, `assessments.jsonl`, `runs.jsonl`,
-`AGENTS.md`, `CLAUDE.md`, `.claude`, `node_modules`.
+`AGENTS.md`, `CLAUDE.md`, `.claude`, `node_modules`, `source`.
+
+`source/` holds the raw material a lesson was built from — fetched pages and
+a `_fetched.json` recording each one's url, date and sha256 — so provenance
+survives the session that gathered it. It is input to the tutor, never
+lesson content: nothing under it is served, walked as a page, or referenced
+from the manifest. Workspace prep creates it when the name is free and
+otherwise leaves whatever is there untouched, because the app writes nothing
+into it. (2026-08-09.)
 
 `node_modules` is a mount point, not bundle content. The packages an agent
 installs live outside the bundle, in that lesson's build workspace
@@ -888,6 +896,16 @@ but no longer renders. No bundle is migrated. The name only became reachable
 in practice when a lesson could install packages at all, which is what #161
 introduces; no bundle on the instance this was landed against referenced it
 (15 bundles, none carrying a `node_modules` or a `package.json`).
+
+The fourth is the `source` reservation (§2, 2026-08-09), on the same terms:
+a file under `source/` that a v1 bundle previously served is no longer
+servable, and a v1 `entry` or `related[]` entry pointing there still reads
+but no longer renders. No bundle is migrated, and unlike the three above,
+nothing on disk is moved either — workspace prep declines the name when it
+is taken rather than renaming what holds it. Surveyed on the instance this
+was landed against: 16 bundles, one already carrying a `source/` directory
+of fetched course steps (the convention this reservation formalizes), and
+no manifest referencing the name.
 
 Everything else about what a v1 bundle renders is unchanged.
 
