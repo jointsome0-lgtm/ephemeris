@@ -219,20 +219,21 @@ def _elapsed_seconds(row: sqlite3.Row, at: datetime | None = None) -> int:
     return max(0, min(int((at - started).total_seconds()) - paused, MAX_SECONDS))
 
 
-def _countdown_end(row: sqlite3.Row, target: int, now: datetime | None) -> str | None:
-    """When a finished countdown actually ran out, as an ISO stamp.
+def _capped_end(row: sqlite3.Row, credited: int, now: datetime | None) -> str | None:
+    """When a run that hit its cap actually reached it, as an ISO stamp.
 
     Only the totals are stored, not the pause history, so this reads as "the
-    moment `target` seconds of running time had passed". That is exact because
-    every stored pause provably started before the countdown ran out —
-    `set_run_paused` refuses to pause one that already reached its target — so
-    no post-completion idling can be added to the span. The ceiling is belt and
-    braces: the span never ends in the future, or after a pause in flight.
+    moment `credited` seconds of running time had passed" — the countdown's
+    length, or the day an open run is clamped to. That is exact for a countdown
+    because every stored pause provably started before it ran out
+    (`set_run_paused` refuses to pause one that already reached its target), so
+    no post-completion idling can be added. The ceiling is belt and braces: the
+    span never ends in the future, or after a pause in flight.
     """
     started = _parse_iso(row["started_at"])
     if started is None:
         return None
-    ended = started + timedelta(seconds=target + int(row["paused_seconds"] or 0))
+    ended = started + timedelta(seconds=credited + int(row["paused_seconds"] or 0))
     ceiling = _parse_iso(row["paused_at"]) or now
     if ceiling is not None and ended > ceiling:
         ended = ceiling
@@ -385,7 +386,7 @@ def set_run_paused(conn: sqlite3.Connection, token: str, paused: bool) -> dict:
         if paused and target and _elapsed_seconds(row, at) >= target:
             # A countdown that already ran out has nothing left to pause.
             # Allowing it would fold the idle time between "ran out" and
-            # "resumed" into `paused_seconds`, and `_countdown_end` would then
+            # "resumed" into `paused_seconds`, and `_capped_end` would then
             # date the span after it truly ended — enough to move an overnight
             # session onto the next day's Retro bar. The drawer resyncs on a
             # refusal and finishes it.
@@ -471,12 +472,15 @@ def _price_and_record(conn: sqlite3.Connection, token: str, *,
         # the span ended — Stop pressed the next morning writes down last
         # night's work, not a session that shows a time nothing was worked at.
         ended_at = row["paused_at"] or stamp
-        if target and seconds >= target:
-            # The countdown ended when it ran out, not when the user came back
-            # to a sleeping laptop. Stamping the return time would credit
-            # yesterday's session to today, on the wrong Retro bar.
-            seconds = target
-            ended_at = _countdown_end(row, target, now)
+        # Every run has a cap: the length a countdown was given, or a day for an
+        # open one (MAX_SECONDS). A span that reached its cap ended there, not
+        # when the user came back to a sleeping laptop — a Friday timer stopped
+        # on Monday is 24 hours of Friday, and stamping Monday would put a full
+        # day of focus on the wrong Retro bar.
+        cap = target or MAX_SECONDS
+        if seconds >= cap:
+            seconds = cap
+            ended_at = _capped_end(row, cap, now)
         if seconds <= 0:
             # Stop pressed inside the same second as Start. Nothing is written
             # and the rollback leaves the run alone: the drawer keeps its own

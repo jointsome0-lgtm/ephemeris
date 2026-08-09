@@ -995,6 +995,26 @@ def test_core_surfaces(client, suite_state):
         "and it still records the minute it asked for" + "  -- " + str(lp)
     )
 
+    # A timer started on Friday and stopped on Monday is a day of Friday, not a
+    # day of Monday: the credit is capped at 24h, and the span is dated where
+    # that credit ran out, or Retro shows a full day of focus on the return day.
+    c.post("/focus/timer/start", data={"token": "tok-w", "mode": "open"},
+           headers={"X-Partial": "1"})
+    _backdate("tok-w", 50 * 3600)
+    wrec = c.post("/focus/timer/finish", data={"token": "tok-w"},
+                  headers={"X-Partial": "1"}).json()["recorded"]
+    from datetime import datetime as _dtm3, timedelta as _td3
+
+    from app.db import now_iso as _ni3
+    _capped_day = (_dtm3.fromisoformat(_ni3()) - _td3(hours=26)).date().isoformat()
+    assert wrec["seconds"] == 24 * 3600, (
+        "a forgotten timer credits a day at most" + "  -- " + str(wrec)
+    )
+    assert wrec["date"] == _capped_day, (
+        "and lands on the day the credit ran out, not the day Stop was pressed"
+        + "  -- " + str(wrec["date"]) + " vs " + _capped_day
+    )
+
     # Paused last night, stopped this morning: the span belongs to the evening
     # it was worked in. Dating it from the click would credit it to the wrong
     # Retro bar and print a time at which nothing happened.
@@ -2502,7 +2522,7 @@ def test_a_countdown_across_a_dst_change_ends_in_the_ledger_zone():
     try:
         row = {"started_at": "2026-03-29T01:30:00+01:00", "paused_at": None,
                "paused_seconds": 0}
-        ended = _focus._countdown_end(row, 2 * 3600, None)
+        ended = _focus._capped_end(row, 2 * 3600, None)
     finally:
         _db.settings = original
     assert ended == "2026-03-29T04:30:00+02:00", (
