@@ -473,6 +473,12 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     frame.closest(".lesson-frame-wrap")?.classList.toggle("no-file", !meta.exists);
   };
 
+  /* Whether what the frame holds is the generated placeholder rather than a
+   * lesson. The class is the single answer, kept current by `applyNoFile` on
+   * every navigation, so nothing here has to re-derive it from metadata. */
+  const isPlaceholder = (): boolean =>
+    frame.closest(".lesson-frame-wrap")?.classList.contains("no-file") === true;
+
   const navigate = (meta: PreviewMeta): void => {
     teardown();
     expectedVersion = String(meta.version ?? "0");
@@ -1698,12 +1704,31 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
   /* ---- live-reload poll (the pre-D2 app.js block, now owning binding) ---- */
 
   let inFlight = false;
+  /* Set when the theme moved under a placeholder and cleared only once the
+   * reload has actually been issued. It is a flag rather than a one-shot fetch
+   * because the metadata read can fail — the local server restarting under an
+   * open /learn is the ordinary case — and nothing else would ever repair it:
+   * the version has not changed, so later polls would only re-arm, leaving the
+   * old palette until the next flip, edit or reload. */
+  let themeReload = false;
   const tick = async (): Promise<void> => {
     if (document.hidden || inFlight) return;
     inFlight = true;
     try {
       const meta = await fetchMeta();
       if (meta !== null) {
+        if (themeReload) {
+          /* Ahead of the version check: the bytes are unchanged, only the
+           * scheme they were served in is stale. If the file arrived in the
+           * meantime the case is gone — a real bundle owns its colours — and
+           * the checks below handle that document as they always would. */
+          if (isPlaceholder()) {
+            themeReload = false;
+            navigate(meta);
+            return;
+          }
+          themeReload = false;
+        }
         if (String(meta.version ?? "0") !== expectedVersion) {
           navigate(meta);
         } else if (!navPending) {
@@ -1734,15 +1759,16 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
    * cookie `window.alTheme` writes), and a sandboxed document cannot be
    * restyled from out here. Only the no-file case needs it — a real bundle owns
    * its colours and must not be reloaded under the learner — and it goes
-   * through the ordinary meta→navigate path, so the version binding and the
-   * teardown stay exactly as the poll would leave them. */
+   * through the ordinary poll→navigate path, so the version binding and the
+   * teardown stay exactly as any other reload would leave them. */
   const root = document.documentElement;
   let scheme = root.dataset["theme"];
   new MutationObserver(() => {
     if (root.dataset["theme"] === scheme) return;
     scheme = root.dataset["theme"];
-    if (!frame.closest(".lesson-frame-wrap")?.classList.contains("no-file")) return;
-    void fetchMeta().then((meta) => { if (meta !== null) navigate(meta); });
+    if (!isPlaceholder()) return;
+    themeReload = true;
+    void tick();
   }).observe(root, { attributes: true, attributeFilter: ["data-theme"] });
 }
 

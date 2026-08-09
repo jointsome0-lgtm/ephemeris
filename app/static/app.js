@@ -178,23 +178,31 @@
   // runs before us) — this block only drives the toggle through it.
   (() => {
     const btns = document.querySelectorAll(".theme-toggle");
-    const { ORDER, read, save, apply: applyScheme, mq } = window.alTheme;
+    const { KEY, ORDER, read, save, apply: applyScheme, mq } = window.alTheme;
     const LABEL = { system: "System", light: "Light", dark: "Dark" };
-    function apply(pref) {
+    function paint(pref) {
       applyScheme(pref);  // data-theme + the server-visible mirror, one owner
       btns.forEach((b) => {
         b.dataset.pref = pref;
         b.title = "Theme: " + LABEL[pref];
         b.setAttribute("aria-label", "Theme: " + LABEL[pref] + " — tap to change");
       });
-      save(pref);
     }
+    function apply(pref) { paint(pref); save(pref); }
     btns.forEach((b) => b.addEventListener("click", () =>
       apply(ORDER[(ORDER.indexOf(read()) + 1) % ORDER.length])));
     // live-react to OS theme changes while in "system" mode
     const onSystemChange = () => { if (read() === "system") apply("system"); };
     if (mq.addEventListener) mq.addEventListener("change", onSystemChange);
     else if (mq.addListener) mq.addListener(onSystemChange);
+    // Another tab moved the preference. Adopt it: the resolved scheme is also
+    // mirrored into an origin-wide cookie the server reads, so a tab left on
+    // the old theme would have its next lesson-preview request answered in the
+    // other tab's scheme. Paint without saving — the value is already stored,
+    // and writing it back could bounce the event between tabs.
+    window.addEventListener("storage", (e) => {
+      if (e.key === KEY) paint(read());
+    });
     apply(read());  // sync data-theme + button UI on load
   })();
 
