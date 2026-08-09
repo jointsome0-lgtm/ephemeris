@@ -28,9 +28,6 @@ listening surfaces remain binding.
 Python (backend, via `uv`) and TypeScript (browser, `app/static/src/*.ts` →
 `bun run build` → committed JS). Anything else needs a reason in the PR.
 
-The hand-written `app/static/*.js` files are on their way out, converted one
-file per PR. New browser modules start as `.ts`.
-
 ## Public Data Boundary
 
 Treat this repository as public by default.
