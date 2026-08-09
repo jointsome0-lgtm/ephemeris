@@ -818,9 +818,20 @@ body {
     background: var(--card-bg); box-shadow: var(--shadow);
     opacity: 0; pointer-events: none; transition: opacity .15s ease;
   }
-  .lesson-group-rows > .lesson-row:hover .lesson-actions,
+  /* Asking for the tray is the right edge's job, not the whole row's: the tray
+     is wider than the free space beside a title, so revealing it on row hover
+     put buttons over the link and the first click restatused the lesson
+     instead of opening it. Hovering the tray itself keeps it open, so the
+     pointer can travel from the strip onto the buttons. */
+  .lesson-group-rows > .lesson-row .lesson-actions-edge {
+    display: block; position: absolute; right: 0; top: 0; bottom: 0; width: 46px;
+  }
+  .lesson-group-rows > .lesson-row:has(.lesson-actions-edge:hover) .lesson-actions,
+  .lesson-group-rows > .lesson-row:has(.lesson-actions:hover) .lesson-actions,
   .lesson-group-rows > .lesson-row:focus-within .lesson-actions { opacity: 1; pointer-events: auto; }
 }
+/* Only the floating tray needs a handle; in the flow the buttons are just there. */
+.lesson-actions-edge { display: none; }
 .lesson-group-next {
   margin-left: 12px; min-width: 0; color: var(--primary); font-size: 13px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
