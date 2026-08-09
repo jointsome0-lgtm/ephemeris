@@ -43,6 +43,7 @@ import tempfile
 import time
 import urllib.request
 from dataclasses import dataclass
+from urllib.parse import unquote, urlsplit
 
 _log = logging.getLogger(__name__)
 
@@ -66,18 +67,19 @@ MAX_MESSAGE_CHARS = 500
 # give, so the 404 is the browser talking about itself, not about the lesson.
 _NOISE_URL_SUFFIXES = ("/favicon.ico",)
 
-# Two things the browser reports that are facts about the RESPONSE, not about
-# the page, and that therefore appear identically under every lesson:
+# The one thing the browser reports that is a fact about the RESPONSE rather
+# than about the page, and that therefore appears identically under every
+# lesson: `webrtc 'block'` is in `interactive-local-v1` on purpose, and Chrome
+# has not shipped the directive, so it complains once per load. Filtering the
+# complaint is right; dropping the directive to silence it would weaken the
+# policy for the browsers that do honour it.
 #
-# - `webrtc 'block'` is in `interactive-local-v1` on purpose, and Chrome does
-#   not implement the directive, so it says so once per load. Filtering the
-#   complaint is right; dropping the directive to silence it would weaken the
-#   policy for the browsers that do honour it.
-# - A missing favicon, above.
-#
-# Matched on a prefix rather than a substring: a lesson that logs the words
-# itself still gets reported.
-_NOISE_TEXT_PREFIXES = ("Unrecognized Content-Security-Policy directive",)
+# The whole message, not its prefix. `webrtc` is the only directive in
+# `interactive-local-v1` that Chrome does not recognise, so a second
+# "Unrecognized Content-Security-Policy directive" can only be about a policy
+# the PAGE wrote — a misspelled `script-src` in a `<meta>` tag is a real defect
+# and has to be reported, which a prefix match would have swallowed.
+_NOISE_TEXTS = frozenset({"Unrecognized Content-Security-Policy directive 'webrtc'."})
 
 
 class RenderCheckUnavailable(RuntimeError):
@@ -147,6 +149,9 @@ class _Browser:
             self.call("Page.enable", deadline)
             self.call("Runtime.enable", deadline)
             self.call("Log.enable", deadline)
+            # Not for errors — for evidence that the page actually fetched the
+            # artifact it is being judged on. See `console_errors`.
+            self.call("Network.enable", deadline)
         except BaseException:
             self.close()
             raise
@@ -211,6 +216,43 @@ class _Browser:
             self.events.append(message)
         return message
 
+    def wait_for_load(self, frame_id: str | None, deadline: float) -> None:
+        """Block until the main frame has finished loading.
+
+        `Page.navigate` returns as soon as the navigation has been *committed*,
+        which on anything but a trivial page is well before the document is
+        done. Settling from that moment would judge a page that is still
+        fetching: a stylesheet that takes three seconds pushes the script after
+        it past the settle window, and the check would call a page clean before
+        the code on it had run. So the settle interval starts here, after the
+        load, and this wait gets the whole remaining budget.
+        """
+        def finished(events: list[dict]) -> bool:
+            for event in events:
+                method = event.get("method")
+                if method == "Page.loadEventFired":
+                    return True
+                if method == "Page.frameStoppedLoading" and (
+                    frame_id is None
+                    or (event.get("params") or {}).get("frameId") == frame_id
+                ):
+                    return True
+            return False
+
+        if finished(self.events):
+            return
+        while time.monotonic() < deadline:
+            seen = len(self.events)
+            try:
+                self._read(deadline)
+            except TimeoutError:
+                break
+            if finished(self.events[seen:]):
+                return
+        raise RenderCheckUnavailable(
+            "the page never finished loading inside the check's time budget"
+        )
+
     def pump(self, until: float, deadline: float) -> None:
         """Collect events until `until`, never past the whole-check `deadline`."""
         while True:
@@ -274,7 +316,7 @@ def _errors_from(events: list[dict]) -> list[RenderError]:
             text = entry.get("text") or ""
             if any(url.endswith(suffix) for suffix in _NOISE_URL_SUFFIXES):
                 continue
-            if text.startswith(_NOISE_TEXT_PREFIXES):
+            if " ".join(text.split()) in _NOISE_TEXTS:
                 continue
             # This channel is where a CSP refusal and a blocked subresource
             # land; neither reaches the console API, and both are exactly the
@@ -283,9 +325,38 @@ def _errors_from(events: list[dict]) -> list[RenderError]:
     return found[:MAX_ERRORS]
 
 
+def _url_key(url: str) -> str:
+    """A URL reduced to what identifies a lesson file, for comparison.
+
+    Chrome reports the URL it resolved from the page's own relative reference,
+    which need not be byte-identical to the one this app composed: percent
+    encoding and a query string are both free to differ. Scheme, authority and
+    the decoded path are what actually name the file.
+    """
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}{unquote(parts.path)}"
+
+
+def _fetched_urls(events: list[dict]) -> set[str]:
+    """Every URL the page got a usable response for."""
+    fetched: set[str] = set()
+    for event in events:
+        if event.get("method") != "Network.responseReceived":
+            continue
+        response = (event.get("params") or {}).get("response") or {}
+        status = response.get("status")
+        if isinstance(status, int) and status >= 400:
+            continue
+        url = response.get("url")
+        if url:
+            fetched.add(_url_key(url))
+    return fetched
+
+
 def console_errors(
     url: str,
     *,
+    expect_url: str | None = None,
     settle: float = SETTLE_SECONDS,
     timeout: float = TIMEOUT_SECONDS,
     binary: str | None = None,
@@ -293,10 +364,17 @@ def console_errors(
 ) -> list[dict]:
     """Render `url` and return the errors it produced; empty means it passed.
 
+    `expect_url` is a file the page is required to have fetched — the built
+    artifact. Without it the gate is satisfied by any page that happens to load
+    cleanly, including one that does not reference the artifact at all, and a
+    source that throws on its first line would be accepted and reach the
+    learner the moment somebody added the `<script>` tag.
+
     Anything that stops the check from happening — no browser, a browser that
-    will not talk, a response that did not come back on an opaque origin —
-    raises :class:`RenderCheckUnavailable`, because "could not check" must
-    never read the same as "checked, and it was clean".
+    will not talk, a page that never finishes loading, a response that did not
+    come back on an opaque origin — raises :class:`RenderCheckUnavailable`,
+    because "could not check" must never read the same as "checked, and it was
+    clean".
     """
     binary = binary or chrome_binary()
     if binary is None:
@@ -311,15 +389,10 @@ def console_errors(
             raise RenderCheckUnavailable(
                 f"the browser could not load the page: {result['errorText']}"
             )
-        # Sit still for `settle` past the last frame that finished loading, so
-        # a page whose subresources arrive late is judged on its finished self.
-        quiet_until = time.monotonic() + settle
-        while time.monotonic() < min(quiet_until, deadline):
-            before = len(browser.events)
-            browser.pump(quiet_until, deadline)
-            if any(event.get("method") == "Page.frameStoppedLoading"
-                   for event in browser.events[before:]):
-                quiet_until = time.monotonic() + settle
+        browser.wait_for_load(result.get("frameId"), deadline)
+        # Then sit still: lesson pages draw on load, and a mermaid render or a
+        # d3 join throws well after the document is done.
+        browser.pump(time.monotonic() + settle, deadline)
         if require_opaque_origin:
             origin = browser.call(
                 "Runtime.evaluate", deadline,
@@ -331,6 +404,20 @@ def console_errors(
                     "its response is missing the sandbox CSP a learner would get, "
                     "so this run would not see an opaque-origin failure"
                 )
-        return [error.as_dict() for error in _errors_from(browser.events)]
+        errors = _errors_from(browser.events)
+        if expect_url is not None and _url_key(expect_url) not in _fetched_urls(
+            browser.events
+        ):
+            errors.insert(0, RenderError(
+                "artifact",
+                f"the page never loaded {expect_url}, so nothing here is "
+                "evidence about the built script; reference it from the page "
+                'with a classic <script src="…"></script> tag',
+            ))
+        return [error.as_dict() for error in errors[:MAX_ERRORS]]
+    except TimeoutError as exc:
+        # `_read` raises this when the whole-check budget runs out. It is a
+        # "could not check", and every one of those leaves here by one door.
+        raise RenderCheckUnavailable(f"the render check ran out of time: {exc}") from exc
     finally:
         browser.close()

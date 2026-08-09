@@ -1615,11 +1615,14 @@ async def post_lesson_build(request: Request, lesson_id: int):
     try:
         lesson, page, path = await run_in_threadpool(resolve)
         add = lesson_build.clean_packages(payload.get("add"))
-        entry = lesson_build.clean_source_ref(payload.get("entry"), "entry")
-        out = lesson_build.clean_source_ref(payload.get("out"), "out")
+        entry, out = lesson_build.clean_build_refs(payload)
         result = await lesson_build.build_lesson(
             lesson, add=add, entry=entry, out=out,
             page=page, page_url=f"{origin}{path}",
+            # The same route the page's own relative reference resolves to, so
+            # the gate can tell "this page loaded the artifact" from "this page
+            # loaded cleanly and never mentioned it".
+            artifact_url=f"{origin}{_lesson_preview_url(lesson_id, out)}",
         )
     except lesson_build.BuildError as exc:
         return _build_refusal(exc.code, exc.status, exc.detail, **exc.fields)

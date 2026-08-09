@@ -125,6 +125,26 @@ def clean_source_ref(raw, field: str) -> str:
     return ref
 
 
+def clean_build_refs(payload: dict) -> tuple[str, str]:
+    """The entry and the output name, checked together as well as apart.
+
+    They may not be the same file. The bundler reads the entry into the
+    workspace and the artifact is then written over `out`, so a request naming
+    one path twice would replace the agent's source with the generated IIFE and
+    then, on a passing render, delete the copy that was set aside — destroying
+    authored work to produce a page that still renders and reports `ok`.
+    """
+    entry = clean_source_ref(payload.get("entry"), "entry")
+    out = clean_source_ref(payload.get("out"), "out")
+    if entry == out:
+        raise BuildError(
+            "invalid-request", 400,
+            "`entry` and `out` name the same file; the build would overwrite "
+            "the source it just read",
+        )
+    return entry, out
+
+
 def _seed_workspace(workspace: Path, slug: str) -> None:
     """Give bun a project root to install into, once.
 
@@ -329,6 +349,7 @@ async def build_lesson(
     out: str,
     page: str | None,
     page_url: str,
+    artifact_url: str,
 ) -> dict:
     """Install, bundle, size-gate and render-gate one lesson page.
 
@@ -340,7 +361,8 @@ async def build_lesson(
     """
     async with _lesson_lock(lesson["slug"]):
         return await _build_locked(
-            lesson, add=add, entry=entry, out=out, page=page, page_url=page_url,
+            lesson, add=add, entry=entry, out=out, page=page,
+            page_url=page_url, artifact_url=artifact_url,
         )
 
 
@@ -366,6 +388,7 @@ async def _build_locked(
     out: str,
     page: str | None,
     page_url: str,
+    artifact_url: str,
 ) -> dict:
     slug = lesson["slug"]
     lesson_dir = lessons.lesson_bundle_dir(slug)
@@ -409,19 +432,28 @@ async def _build_locked(
                   "seconds": round(time.monotonic() - started, 2), "output": output})
     if code != 0:
         raise BuildError("bundle-failed", 422, "the bundle step failed", steps=steps)
+    # Measured before it is read: an entry that inlines a large local file can
+    # produce an artifact of any size at all, and `read_bytes` on that would
+    # spend the app's memory on bytes this function exists to refuse. The file
+    # is app-owned and inside the workspace, so its size cannot change under us.
+    try:
+        size = outfile.stat().st_size
+    except OSError as exc:
+        raise BuildError("bundle-failed", 422, f"the bundler wrote nothing: {exc}",
+                         steps=steps) from exc
+    if size > ARTIFACT_MAX_BYTES:
+        raise BuildError(
+            "artifact-too-large", 422,
+            f"the built page is {size} bytes, over the "
+            f"{ARTIFACT_MAX_BYTES}-byte ceiling; import the names you use "
+            "instead of the package default, or split the page",
+            steps=steps, bytes=size, limit=ARTIFACT_MAX_BYTES,
+        )
     try:
         artifact = outfile.read_bytes()
     except OSError as exc:
         raise BuildError("bundle-failed", 422, f"the bundler wrote nothing: {exc}",
                          steps=steps) from exc
-    if len(artifact) > ARTIFACT_MAX_BYTES:
-        raise BuildError(
-            "artifact-too-large", 422,
-            f"the built page is {len(artifact)} bytes, over the "
-            f"{ARTIFACT_MAX_BYTES}-byte ceiling; import the names you use "
-            "instead of the package default, or split the page",
-            steps=steps, bytes=len(artifact), limit=ARTIFACT_MAX_BYTES,
-        )
 
     fd, name = _bundle_fd(lesson_dir, out)
     aside = None
@@ -431,7 +463,9 @@ async def _build_locked(
         _write_through(fd, name, artifact)
         placed = True
         try:
-            errors = await asyncio.to_thread(render_check.console_errors, page_url)
+            errors = await asyncio.to_thread(
+                render_check.console_errors, page_url, expect_url=artifact_url,
+            )
         except render_check.RenderCheckUnavailable as exc:
             raise BuildError("render-check-unavailable", 503, str(exc), steps=steps) from exc
         except OSError as exc:  # pragma: no cover - browser died mid-check
@@ -439,8 +473,8 @@ async def _build_locked(
         if errors:
             raise BuildError(
                 "render-errors", 422,
-                f"the built page reported {len(errors)} console error(s); "
-                "the previous artifact is back in place",
+                f"the built page did not come back clean ({len(errors)} "
+                "problem(s)); the previous artifact is back in place",
                 steps=steps, errors=errors, page=page, page_url=page_url,
             )
     except BaseException:

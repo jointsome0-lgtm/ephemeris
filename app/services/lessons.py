@@ -1632,8 +1632,11 @@ POST JSON to the URL in `$EPHEMERIS_BUILD_URL`:
   Omit it or send `[]` to rebuild with what is already installed.
 - `entry` — your source, inside this bundle: `.ts`, `.tsx`, `.js`, `.jsx`,
   `.mjs` or `.mts`. Write ordinary imports (`import { select } from "d3"`).
-- `out` — where the built `.js` goes in this bundle. Reference it from the
-  page with a plain relative `<script src="…">`.
+- `out` — where the built `.js` goes in this bundle, and it may not be the
+  same path as `entry`. Reference it from the page with a plain relative
+  `<script src="…">` BEFORE you build: a page that does not load the built
+  file is not evidence that the built file works, and the build is refused
+  on those grounds.
 - `page` — optional, the page to render-check afterwards; the lesson's
   current page by default.
 
@@ -1651,10 +1654,12 @@ Rules the app enforces, so you do not have to think about them:
   not the package default — or the build is refused. A default import of a
   large library is the usual cause: measured, `import mermaid from "mermaid"`
   is 3.3 MB against 0.30 MB for named imports of d3 and katex.
-- **It has to render.** The app loads the page in a real browser afterwards
-  and refuses the build if the console reports anything. On a refusal the
-  previous build stays in place and the errors come back in the response —
-  fix them and ask again. Rebuilding is cheap: under a second, warm.
+- **It has to render.** The app loads the page in a real browser afterwards,
+  waits for it to finish, and refuses the build if the console reports
+  anything — or if the page never fetched the file that was just built. On a
+  refusal the previous build stays in place and the errors come back in the
+  response — fix them and ask again. Rebuilding is cheap: under a second,
+  warm.
 
 Where the packages live is not your problem: `node_modules/` here is app
 territory, it is never served, and nothing you install is part of the bundle.

@@ -81,7 +81,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   --target=browser --format=iife --production --keep-names --outfile=…`
   into the workspace. Package specs are matched against an anchored npm
   name/range regex, at most 32 per request; `entry` and `out` go through
-  `lessons.clean_bundle_ref`. The artifact is refused over 1 MiB. It is
+  `lessons.clean_bundle_ref` and are refused when equal. The artifact's
+  size is taken with `stat` and refused over 1 MiB before it is read. It is
   placed in the bundle through a descriptor chain opened component by
   component with `O_NOFOLLOW` and `os.replace`. Whatever was at the output
   name is first renamed aside to `.<name>.previous` through the same
@@ -92,13 +93,19 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   workspace on first use; no `bunfig.toml` is written.
   New `app/services/render_check.py` starts headless Chrome with a
   disposable profile on `--remote-debugging-port=0`, connects over CDP,
-  enables `Page`/`Runtime`/`Log`, navigates to a caller-supplied URL, and
+  enables `Page`/`Runtime`/`Log`/`Network`, navigates to a caller-supplied
+  URL, waits for `Page.loadEventFired` or the main frame's
+  `Page.frameStoppedLoading` before starting the settle interval, and
   collects `Runtime.exceptionThrown`, `Runtime.consoleAPICalled` of type
   error/assert, and `Log.entryAdded` at level error (dropping
-  `/favicon.ico` entries and `Unrecognized Content-Security-Policy
-  directive` texts). It raises rather than returning a pass when no
-  browser is found, when the browser stops answering, or when
-  `window.origin` is not `"null"` after the load.
+  `/favicon.ico` entries and the exact text `Unrecognized
+  Content-Security-Policy directive 'webrtc'.`). A caller-supplied
+  `expect_url` must appear among the `Network.responseReceived` URLs with
+  a status under 400, compared on scheme, authority and unquoted path;
+  the build route passes the artifact's own files URL. It raises rather
+  than returning a pass when no browser is found, when the browser stops
+  answering, when the page does not finish loading or the whole-check
+  deadline passes, or when `window.origin` is not `"null"` after the load.
   New route `POST /learn/lessons/{lesson_id}/build`, no capability token,
   `application/json` only, body capped at 16 KiB. The URL handed to the
   browser is built from the ASGI scope's `server` and never from the Host

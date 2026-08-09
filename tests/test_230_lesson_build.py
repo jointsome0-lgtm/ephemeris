@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import shutil
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -97,6 +98,23 @@ def test_the_output_must_be_a_script_inside_the_bundle():
     for bad in ("../outside.ts", "page.html", "page.css"):
         with pytest.raises(lesson_build.BuildError):
             lesson_build.clean_source_ref(bad, "entry")
+
+
+def test_a_build_may_not_write_its_artifact_over_its_own_source():
+    """`{"entry": "x.js", "out": "x.js"}` would destroy the authored source.
+
+    The bundler reads the entry, the artifact is written over `out`, and on a
+    passing render the copy set aside is deleted — so the request would come
+    back `ok: true` having thrown away the file it was given.
+    """
+    with pytest.raises(lesson_build.BuildError) as caught:
+        lesson_build.clean_build_refs({"entry": "src/page.js", "out": "src/page.js"})
+    assert caught.value.status == 400
+    assert "same file" in caught.value.detail
+    # A different name for the same kind of file is ordinary and stays allowed.
+    assert lesson_build.clean_build_refs(
+        {"entry": "src/page.js", "out": "assets/page.js"}
+    ) == ("src/page.js", "assets/page.js")
 
 
 # --- the mount views ---------------------------------------------------------
@@ -189,10 +207,19 @@ _PAGES = {
     "/throws.html": b"<!doctype html><meta charset=utf-8><script src='boom.js'></script>",
     "/module.html": b"<!doctype html><meta charset=utf-8><script type=module src='ok.js'></script>",
     "/logged.html": b"<!doctype html><meta charset=utf-8><script src='cerr.js'></script>",
+    # Nothing on it references the artifact the gate is asked about.
+    "/bare.html": b"<!doctype html><meta charset=utf-8><p>no script here",
+    # `slow.js` is answered late, so the document is still loading well past the
+    # settle interval; the throw only happens once it arrives.
+    "/slow.html": b"<!doctype html><meta charset=utf-8><script src='slow.js'></script>",
     "/ok.js": b"document.title = 'ok';",
     "/boom.js": b"null.f();",
     "/cerr.js": b"console.error('invented lesson failure');",
+    "/slow.js": b"null.f();",
 }
+# How long `/slow.js` is held back. Longer than the settle interval the test
+# passes in, so a check that started settling at navigation would miss it.
+_SLOW_SECONDS = 2.0
 
 
 class _Site:
@@ -207,6 +234,8 @@ class _Site:
 
             def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler API
                 body = _PAGES.get(self.path)
+                if self.path == "/slow.js":
+                    time.sleep(_SLOW_SECONDS)
                 if body is None:
                     self.send_response(404)
                     self.send_header("Content-Length", "0")
@@ -282,6 +311,64 @@ def test_the_gate_refuses_a_page_that_did_not_come_back_opaque():
         site.close()
 
 
+@needs_browser
+def test_a_page_that_never_loads_the_artifact_is_no_evidence_about_it(lesson_csp):
+    """The gate is about the built script, not about whatever page loads next.
+
+    A page that does not reference the artifact renders perfectly well, so
+    without this the acceptance gate would pass on a source that throws on its
+    first line — and the learner would meet it the day the `<script>` tag
+    arrived.
+    """
+    site = _Site(lesson_csp)
+    try:
+        missed = render_check.console_errors(
+            f"{site.base}/bare.html", expect_url=f"{site.base}/ok.js"
+        )
+        assert any(e["source"] == "artifact" for e in missed), missed
+
+        loaded = render_check.console_errors(
+            f"{site.base}/clean.html", expect_url=f"{site.base}/ok.js"
+        )
+        assert loaded == [], loaded
+        # The page's own relative reference and the URL the app composes need
+        # not be byte-identical; the file they name is what matters.
+        encoded = render_check.console_errors(
+            f"{site.base}/clean.html", expect_url=f"{site.base}/%6fk.js"
+        )
+        assert encoded == [], encoded
+    finally:
+        site.close()
+
+
+@needs_browser
+def test_the_gate_waits_for_the_page_to_finish_before_it_settles(lesson_csp):
+    """`Page.navigate` returns on commit, which is long before done.
+
+    Settling from that moment would judge a page that is still fetching: here
+    the throwing script is answered after the settle interval has expired.
+    """
+    site = _Site(lesson_csp)
+    try:
+        late = render_check.console_errors(
+            f"{site.base}/slow.html", settle=_SLOW_SECONDS / 4
+        )
+        assert any(e["source"] == "exception" for e in late), late
+    finally:
+        site.close()
+
+
+@needs_browser
+def test_running_out_of_time_is_a_refusal_and_never_a_pass(lesson_csp):
+    """A budget too small to finish must not read as "checked, and clean"."""
+    site = _Site(lesson_csp)
+    try:
+        with pytest.raises(render_check.RenderCheckUnavailable):
+            render_check.console_errors(f"{site.base}/slow.html", timeout=1.0)
+    finally:
+        site.close()
+
+
 def test_no_browser_is_a_refusal_and_never_a_pass(monkeypatch):
     monkeypatch.setattr(render_check, "chrome_binary", lambda: None)
     with pytest.raises(render_check.RenderCheckUnavailable):
@@ -305,6 +392,15 @@ def test_the_apps_own_csp_complaint_is_not_charged_to_the_lesson():
         "args": [{"value": "my Unrecognized Content-Security-Policy directive note"}],
     }}]
     assert len(render_check._errors_from(mine)) == 1
+    # And so is a policy the PAGE got wrong. `webrtc` is the only directive of
+    # `interactive-local-v1` Chrome does not know, so any other unrecognized
+    # one came from a `<meta>` tag the lesson wrote — a real defect that a
+    # prefix match would have swallowed along with the noise.
+    misspelled = [{"method": "Log.entryAdded", "params": {"entry": {
+        "level": "error", "url": "http://x/page.html",
+        "text": "Unrecognized Content-Security-Policy directive 'scrpit-src'.",
+    }}}]
+    assert len(render_check._errors_from(misspelled)) == 1
 
 
 # --- the whole step, on this host --------------------------------------------
@@ -357,6 +453,7 @@ def test_a_real_build_places_one_artifact_and_leaves_the_bundle_clean(
     result = asyncio.run(lesson_build.build_lesson(
         lesson, add=["d3"], entry="src/page.ts", out="assets/page.js",
         page=None, page_url="http://127.0.0.1:1/unused",
+            artifact_url="http://127.0.0.1:1/unused.js",
     ))
     assert result["ok"] and result["artifact"]["path"] == "assets/page.js"
     assert result["packages"].get("d3"), result["packages"]
@@ -389,6 +486,7 @@ def test_a_page_too_heavy_for_a_learner_is_refused(built_lesson, monkeypatch):
         asyncio.run(lesson_build.build_lesson(
             lesson, add=["mermaid"], entry="src/heavy.ts", out="assets/heavy.js",
             page=None, page_url="http://127.0.0.1:1/unused",
+            artifact_url="http://127.0.0.1:1/unused.js",
         ))
     assert caught.value.code == "artifact-too-large"
     assert caught.value.fields["bytes"] > lesson_build.ARTIFACT_MAX_BYTES
@@ -411,6 +509,7 @@ def test_a_page_that_fails_to_render_puts_the_last_good_artifact_back(
         asyncio.run(lesson_build.build_lesson(
             lesson, add=[], entry="src/broken.ts", out="assets/page.js",
             page=None, page_url="http://127.0.0.1:1/unused",
+            artifact_url="http://127.0.0.1:1/unused.js",
         ))
     assert caught.value.code == "render-errors"
     assert (bundle / "assets" / "page.js").read_bytes() == good, (
@@ -435,6 +534,7 @@ def test_the_bundler_reads_no_more_of_the_home_than_the_agent_does(built_lesson)
         asyncio.run(lesson_build.build_lesson(
             lesson, add=[], entry="src/leak.ts", out="assets/leak.js",
             page=None, page_url="http://127.0.0.1:1/unused",
+            artifact_url="http://127.0.0.1:1/unused.js",
         ))
     assert caught.value.code == "bundle-failed"
     assert "could not resolve" in json.dumps(caught.value.fields).lower()
@@ -462,6 +562,7 @@ def test_a_bunfig_the_agent_writes_into_the_bundle_is_not_read(
         result = asyncio.run(lesson_build.build_lesson(
             lesson, add=[], entry="src/page.ts", out="assets/page.js",
             page=None, page_url="http://127.0.0.1:1/unused",
+            artifact_url="http://127.0.0.1:1/unused.js",
         ))
         assert result["ok"]
         assert not marker.exists(), "cwd is the workspace, so that bunfig is not bun's"
