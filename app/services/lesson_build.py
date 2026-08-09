@@ -32,6 +32,7 @@ import json
 import logging
 import os
 import re
+import stat
 import time
 from pathlib import Path, PurePosixPath
 
@@ -378,6 +379,33 @@ def _bundle_fd(bundle_dir: Path, ref: str) -> tuple[int, str]:
         raise
 
 
+def _linked_paths(lesson_dir: Path) -> list[str]:
+    """Every symlink in the bundle, as bundle-relative paths.
+
+    Checking the entry alone is not enough. The entry may `import "./util.js"`
+    where `util.js` is a link, and the bundler resolves that import the way any
+    other reader would — it has no notion of §2, which says a symlinked path is
+    missing, full stop. So the target gets compiled into the artifact, and a
+    link pointing outside the bundle gets content the bundle never held.
+
+    The mount point is skipped: `node_modules` is not bundle content but this
+    app's own bind of the build workspace, and a package manager fills it with
+    links (`.bin` shims) by design.
+    """
+    found: list[str] = []
+    for parent, dirs, files in os.walk(lesson_dir, followlinks=False):
+        here = Path(parent)
+        if here == lesson_dir:
+            dirs[:] = [d for d in dirs if d != sandbox.BUILD_WORKSPACE_MOUNT]
+        for name in list(dirs) + files:
+            path = here / name
+            if path.is_symlink():
+                found.append(str(path.relative_to(lesson_dir)))
+                if len(found) >= 10:
+                    return found
+    return found
+
+
 def _set_aside(fd: int, name: str) -> str | None:
     """Move whatever is at `name` out of the way; return where it went.
 
@@ -399,6 +427,33 @@ def _set_aside(fd: int, name: str) -> str | None:
     return aside
 
 
+def _reject_irregular_output(fd: int, name: str, out: str, steps: list[dict]) -> None:
+    """Refuse an output name that is anything but a file, or absent.
+
+    A directory renames aside as happily as a file does, and then cannot be
+    unlinked at the end — the build would report success while an authored
+    `assets/page.js/` tree sat stranded under a random hidden name with every
+    URL under it broken. Nothing here is a repair the app should be inventing.
+    """
+    try:
+        info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise BuildError(
+            "invalid-out", 409,
+            f"the bundle would not let the artifact be placed at {out}: "
+            f"{exc.strerror or exc}", steps=steps,
+        ) from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise BuildError(
+            "invalid-out", 409,
+            f"{out} already exists and is not a regular file; the build will "
+            "not replace it",
+            steps=steps,
+        )
+
+
 def _write_through(fd: int, name: str, data: bytes) -> None:
     # Random, for the reason `_set_aside` is: this name is opened `O_TRUNC` and
     # then renamed over `name`, so a predictable one would destroy an authored
@@ -417,6 +472,55 @@ def _write_through(fd: int, name: str, data: bytes) -> None:
         os.unlink(temporary, dir_fd=fd)
         raise
     os.replace(temporary, name, src_dir_fd=fd, dst_dir_fd=fd)
+
+
+def _read_artifact(outfile: Path, steps: list[dict]) -> bytes:
+    """Read what the bundler produced, on one descriptor that followed no link.
+
+    `out/` is the bundle step's one writable directory, and that step runs
+    agent-authored code: a build-time macro can put a symlink at this name and
+    bun will write through it and still exit 0. Following it would be enough on
+    its own — a link to `/dev/zero` stats as a regular file of size 0, sails
+    past the ceiling, and then reads forever into the app's memory.
+
+    So: opened `O_NOFOLLOW`, required to be a regular file, measured through
+    the same descriptor it is read from, and read one byte past the ceiling so
+    a file that grows between the two calls is refused rather than trusted.
+    """
+    try:
+        fd = os.open(outfile, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as exc:
+        raise BuildError(
+            "bundle-failed", 422,
+            f"the bundler left no readable artifact: {exc.strerror or exc}",
+            steps=steps,
+        ) from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise BuildError(
+                "bundle-failed", 422,
+                "the bundler's output is not a regular file", steps=steps,
+            )
+        if info.st_size > ARTIFACT_MAX_BYTES:
+            raise BuildError(
+                "artifact-too-large", 422,
+                f"the built page is {info.st_size} bytes, over the "
+                f"{ARTIFACT_MAX_BYTES}-byte ceiling; import the names you use "
+                "instead of the package default, or split the page",
+                steps=steps, bytes=info.st_size, limit=ARTIFACT_MAX_BYTES,
+            )
+        with os.fdopen(os.dup(fd), "rb") as handle:
+            artifact = handle.read(ARTIFACT_MAX_BYTES + 1)
+    finally:
+        os.close(fd)
+    if len(artifact) > ARTIFACT_MAX_BYTES:
+        raise BuildError(
+            "artifact-too-large", 422,
+            f"the built page is over the {ARTIFACT_MAX_BYTES}-byte ceiling",
+            steps=steps, bytes=len(artifact), limit=ARTIFACT_MAX_BYTES,
+        )
+    return artifact
 
 
 def _touch_page(bundle_dir: Path, page: str | None) -> None:
@@ -532,6 +636,20 @@ async def _build_locked(
         raise BuildError("install-failed", 422, "the install step failed",
                          steps=steps)
 
+    # After the install, because that is when the bundle stops changing and the
+    # walk still costs nothing: the bundler is about to follow every local
+    # import, and a link anywhere along that graph would smuggle in content §2
+    # says is not here.
+    linked = _linked_paths(lesson_dir)
+    if linked:
+        raise BuildError(
+            "linked-source", 409,
+            "the bundler follows a symlink where the rest of this app treats "
+            "it as a missing file, so a bundle holding one cannot be built: "
+            + ", ".join(sorted(linked)),
+            steps=steps,
+        )
+
     # Straight into the workspace: the artifact is judged before the bundle is
     # allowed to see it, and `<workspace>` is the one directory in the view
     # that is writable and outside anything this app serves.
@@ -548,28 +666,7 @@ async def _build_locked(
                   "seconds": round(time.monotonic() - started, 2), "output": output})
     if code != 0:
         raise BuildError("bundle-failed", 422, "the bundle step failed", steps=steps)
-    # Measured before it is read: an entry that inlines a large local file can
-    # produce an artifact of any size at all, and `read_bytes` on that would
-    # spend the app's memory on bytes this function exists to refuse. The file
-    # is app-owned and inside the workspace, so its size cannot change under us.
-    try:
-        size = outfile.stat().st_size
-    except OSError as exc:
-        raise BuildError("bundle-failed", 422, f"the bundler wrote nothing: {exc}",
-                         steps=steps) from exc
-    if size > ARTIFACT_MAX_BYTES:
-        raise BuildError(
-            "artifact-too-large", 422,
-            f"the built page is {size} bytes, over the "
-            f"{ARTIFACT_MAX_BYTES}-byte ceiling; import the names you use "
-            "instead of the package default, or split the page",
-            steps=steps, bytes=size, limit=ARTIFACT_MAX_BYTES,
-        )
-    try:
-        artifact = outfile.read_bytes()
-    except OSError as exc:
-        raise BuildError("bundle-failed", 422, f"the bundler wrote nothing: {exc}",
-                         steps=steps) from exc
+    artifact = _read_artifact(outfile, steps)
 
     # The descriptor walk refuses a symlinked or non-directory parent, which is
     # a thing the agent can create in its own bundle and therefore a request to
@@ -587,6 +684,7 @@ async def _build_locked(
         aside = None
         placed = False
         try:
+            _reject_irregular_output(fd, name, out, steps)
             aside = _set_aside(fd, name)
             _write_through(fd, name, artifact)
             placed = True

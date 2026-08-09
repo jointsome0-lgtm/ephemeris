@@ -1594,20 +1594,24 @@ async def post_lesson_build(request: Request, lesson_id: int):
             page = payload.get("page")
             asked = page.strip() if isinstance(page, str) and page.strip() else None
             try:
-                # Normalized up front, inside the conversion: an undeclared
-                # page is a fallback `lesson_file_info` handles quietly, but a
-                # malformed one such as `../outside.html` raises, and that is
-                # a bad request rather than an internal fault.
-                wanted = lessons.clean_bundle_ref(asked) if asked is not None else None
+                # Normalized only to sort the failures: an undeclared page is a
+                # fallback `lesson_file_info` handles quietly, but a malformed
+                # one such as `../outside.html` raises, and that is a bad
+                # request rather than an internal fault.
+                lessons.clean_bundle_ref(asked)
                 info = lessons.lesson_file_info(lesson, asked)
             except lessons.LessonError as exc:
                 raise lesson_build.BuildError("invalid-request", 400, str(exc)) from exc
             # `lesson_file_info` falls back to the manifest's entry for a name
             # it cannot resolve, which is right for a preview and wrong here:
             # silently rendering a different page than the one asked for would
-            # let a build pass on evidence about somewhere else.
+            # let a build pass on evidence about somewhere else. Spelling
+            # included, not the normalized form: v2 compares declared pages
+            # exactly (§4.1), so `./index.html` is a *fallback* even when
+            # `index.html` is the entry, and treating the two as one name here
+            # would accept a page the bundle refused under the name asked for.
             if not info.get("exists") or (
-                wanted is not None and info.get("entry") != wanted
+                asked is not None and info.get("entry") != asked
             ):
                 raise lesson_build.BuildError(
                     "no-page", 404,

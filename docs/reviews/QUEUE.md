@@ -93,11 +93,19 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `lessons.clean_bundle_ref` and are refused when equal; `out` is also
   refused unless it is under `assets/`, and `entry` is refused when
   `bundle_schema.path_has_symlink` reports a symlink on its path, checked
-  before the path is resolved. The artifact's size is taken with
-  `stat` and refused over 1 MiB before it is read. It is
+  before the path is resolved. After the install step and before the
+  bundle step the bundle directory is walked with
+  `os.walk(followlinks=False)`, skipping the `node_modules` mount point;
+  any symlink found — up to the first ten, named in the message — refuses
+  the build with `linked-source` 409. The artifact is opened with
+  `O_RDONLY | O_NOFOLLOW`, refused unless `fstat` reports a regular file,
+  refused over 1 MiB by that same `fstat`, and then read through a `dup`
+  of that descriptor with a cap of 1 MiB + 1 byte. It is
   placed in the bundle through a descriptor chain opened component by
   component with `O_NOFOLLOW` and `os.replace`. Whatever was at the output
-  name is first renamed aside to `.<name>.<12 hex chars>.previous` through
+  name is refused with `invalid-out` 409 when `os.stat(..., dir_fd=…,
+  follow_symlinks=False)` reports anything but a regular file, then
+  renamed aside to `.<name>.<12 hex chars>.previous` through
   the same descriptor, and the new bytes land on
   `.<name>.<12 hex chars>.new` before being renamed into place; the aside
   copy is renamed back if the render gate fails or cannot run;
@@ -124,13 +132,19 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   word the refusal. The build route passes the artifact's own files URL.
   Notifications are routed as they arrive rather than kept whole: load
   flags, up to 2000 fetched URLs and up to 2000 executed script URLs as
-  sets, other diagnostics in a list capped at 500 with the overflow
-  reported as a count.
+  sets, the three diagnostic methods above in a list capped at 500 with
+  the overflow reported as a count, and every other method discarded
+  without being counted. The load flag is reset at each
+  `Page.navigate` and `Page.frameStoppedLoading` is only accepted for the
+  frame that navigation returned.
   Sandbox-runtime, bundle-path and entry-path failures inside
   `lesson_build` are converted to typed `BuildError`s
   (`build-unavailable` 503, `invalid-out` 409, `no-entry` 404), and the
-  route normalises the requested `page` inside its existing
-  `LessonError` conversion. It raises rather
+  route passes the requested `page` through `lessons.clean_bundle_ref`
+  inside its existing `LessonError` conversion to separate a malformed
+  name (400) from an unresolvable one, then refuses with `no-page` 404
+  unless `lessons.lesson_file_info` returns that exact string as its
+  entry. It raises rather
   than returning a pass when no browser is found, when the browser stops
   answering, when the page does not finish loading or the whole-check
   deadline passes, or when `window.origin` is not `"null"` after the load.

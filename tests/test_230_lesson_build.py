@@ -20,6 +20,7 @@ argv, where the app is the only author.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import threading
 import time
@@ -553,6 +554,24 @@ def test_the_events_kept_for_a_report_are_capped(monkeypatch):
     assert browser.executed == {"http://x/a.js"} and browser.fetched == {"http://x/a.js"}
 
 
+def test_a_page_with_many_assets_is_not_charged_with_errors_it_never_had():
+    """The cap must count diagnostics, not traffic.
+
+    Every subresource produces several `Network.*` notifications besides the
+    one the gate reads. Letting those into the capped channel would make a
+    lesson with a hundred honest images report "further errors were not
+    collected" — and be refused on every build, for rendering correctly.
+    """
+    browser = render_check._Browser.__new__(render_check._Browser)
+    browser.events, browser.dropped = [], 0
+    browser.fetched, browser.executed, browser.loaded = set(), set(), False
+    for i in range(render_check.MAX_EVENTS * 3):
+        for method in ("Network.requestWillBeSent", "Network.loadingFinished",
+                       "Network.dataReceived", "Runtime.executionContextCreated"):
+            browser._record({"method": method, "params": {"requestId": str(i)}})
+    assert browser.events == [] and browser.dropped == 0
+
+
 def test_no_browser_is_a_refusal_and_never_a_pass(monkeypatch):
     monkeypatch.setattr(render_check, "chrome_binary", lambda: None)
     with pytest.raises(render_check.RenderCheckUnavailable):
@@ -798,30 +817,30 @@ def test_an_authored_file_at_the_backup_name_survives_a_build(
     ], "no leftovers from the set-aside dance"
 
 
-@needs_sandbox
-def test_a_bundle_that_cannot_hold_the_artifact_is_a_refusal_not_a_fault(
-    built_lesson, monkeypatch
-):
-    """A symlinked parent on the output path is something the agent can make."""
-    import asyncio
+def test_the_walk_to_the_output_never_leaves_the_bundle(tmp_path):
+    """The last line of defence for the output path.
 
-    lesson, bundle = built_lesson
-    (bundle / "assets").mkdir(exist_ok=True)
-    link = bundle / "assets" / "elsewhere"
-    link.symlink_to("/tmp")
+    `_linked_paths` refuses a bundle holding a link before the build starts, so
+    end to end this never runs — but the two checks are seconds apart and the
+    lesson's own session keeps writing throughout. Whatever appears in between,
+    the descriptor chain still refuses to follow it.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    bundle = tmp_path / "bundle"
+    (bundle / "assets").mkdir(parents=True)
+    (bundle / "assets" / "elsewhere").symlink_to(outside)
+
+    with pytest.raises(OSError):
+        lesson_build._bundle_fd(bundle, "assets/elsewhere/page.js")
+    assert list(outside.iterdir()) == []
+
+    fd, name = lesson_build._bundle_fd(bundle, "assets/here/page.js")
     try:
-        _no_render_errors(monkeypatch)
-        with pytest.raises(lesson_build.BuildError) as caught:
-            asyncio.run(lesson_build.build_lesson(
-                lesson, add=[], entry="src/page.ts",
-                out="assets/elsewhere/page.js",
-                page=None, page_url="http://127.0.0.1:1/unused",
-                artifact_url="http://127.0.0.1:1/unused.js",
-            ))
-        assert caught.value.code == "invalid-out" and caught.value.status == 409
-        assert not Path("/tmp/page.js").exists(), "the walk never left the bundle"
+        assert name == "page.js"
+        assert os.path.samestat(os.fstat(fd), os.stat(bundle / "assets" / "here"))
     finally:
-        link.unlink()
+        os.close(fd)
 
 
 @pytest.mark.parametrize("target", ["/etc/hostname", "page.ts"])
@@ -849,6 +868,113 @@ def test_a_symlinked_entry_is_missing_rather_than_a_fault(
         assert caught.value.code == "no-entry" and caught.value.status == 404
     finally:
         link.unlink()
+
+
+@needs_sandbox
+def test_a_link_the_entry_could_import_stops_the_build(built_lesson, monkeypatch):
+    """§2 covers the whole bundle, and the bundler honours none of it.
+
+    The entry itself is checked, but the entry is only the first file read: an
+    `import "./helper.ts"` is resolved by the bundler exactly like any other
+    path, link and all. So the target of a link nobody serves would end up
+    compiled into a page this app does serve.
+    """
+    import asyncio
+
+    lesson, bundle = built_lesson
+    link = bundle / "src" / "helper.ts"
+    link.symlink_to("/etc/hostname")
+    try:
+        _no_render_errors(monkeypatch)
+        with pytest.raises(lesson_build.BuildError) as caught:
+            asyncio.run(lesson_build.build_lesson(
+                lesson, add=[], entry="src/page.ts", out="assets/page.js",
+                page=None, page_url="http://127.0.0.1:1/unused",
+                artifact_url="http://127.0.0.1:1/unused.js",
+            ))
+        assert caught.value.code == "linked-source" and caught.value.status == 409
+        assert "src/helper.ts" in caught.value.detail
+    finally:
+        link.unlink()
+
+
+def test_the_mount_this_app_makes_is_not_read_as_bundle_content(built_lesson):
+    """`node_modules` is a bind of the workspace, and a package manager fills
+    it with `.bin` links by design — refusing those would refuse every build."""
+    from app.services import lessons
+
+    lesson, bundle = built_lesson
+    mount = bundle / sandbox.BUILD_WORKSPACE_MOUNT
+    mount.mkdir(exist_ok=True)
+    (mount / ".bin").mkdir(exist_ok=True)
+    shim = mount / ".bin" / "invented-shim"
+    shim.symlink_to("../invented/cli.js")
+    try:
+        assert lesson_build._linked_paths(lessons.lesson_bundle_dir(lesson["slug"])) == []
+    finally:
+        shim.unlink()
+
+
+def test_an_artifact_the_bundler_did_not_write_is_never_read(tmp_path):
+    """A build-time macro can put a link where the bundle is about to appear.
+
+    Bun follows its own `--outfile` link and still exits 0. Pointed at
+    `/dev/zero` the file reports size zero and then reads forever, on the
+    thread the app answers requests with — so the size check has to happen on
+    a descriptor that followed no link, not on the name.
+    """
+    outfile = tmp_path / "artifact.js"
+    outfile.symlink_to("/dev/zero")
+    with pytest.raises(lesson_build.BuildError) as caught:
+        lesson_build._read_artifact(outfile, [])
+    assert caught.value.code == "bundle-failed" and caught.value.status == 422
+
+    outfile.unlink()
+    outfile.symlink_to(tmp_path)
+    with pytest.raises(lesson_build.BuildError) as caught:
+        lesson_build._read_artifact(outfile, [])
+    assert caught.value.code == "bundle-failed"
+
+    outfile.unlink()
+    outfile.write_bytes(b"ok()")
+    assert lesson_build._read_artifact(outfile, []) == b"ok()"
+
+
+@needs_sandbox
+def test_a_directory_standing_where_the_artifact_goes_is_a_refusal(
+    built_lesson, monkeypatch
+):
+    """`os.rename` would happily move an authored `assets/page.js/` tree aside.
+
+    The build would then report success while the tree sat under a random
+    hidden name and every URL under it 404'd — a silent loss, which is the one
+    outcome the set-aside dance exists to prevent.
+    """
+    import asyncio
+
+    lesson, bundle = built_lesson
+    # Its own source, importing nothing: this test is about the placement, and
+    # a bundle step that needs a package would only fail earlier and elsewhere.
+    (bundle / "src" / "plain.ts").write_text(
+        'document.title = "placed";\n', encoding="utf-8"
+    )
+    tree = bundle / "assets" / "tree.js"
+    tree.mkdir(parents=True, exist_ok=True)
+    (tree / "kept.txt").write_text("authored", encoding="utf-8")
+    try:
+        _no_render_errors(monkeypatch)
+        with pytest.raises(lesson_build.BuildError) as caught:
+            asyncio.run(lesson_build.build_lesson(
+                lesson, add=[], entry="src/plain.ts", out="assets/tree.js",
+                page=None, page_url="http://127.0.0.1:1/unused",
+                artifact_url="http://127.0.0.1:1/unused.js",
+            ))
+        assert caught.value.code == "invalid-out" and caught.value.status == 409
+        assert (tree / "kept.txt").read_text(encoding="utf-8") == "authored"
+        assert [p.name for p in tree.parent.iterdir()
+                if "tree.js" in p.name] == ["tree.js"], "nothing was moved aside"
+    finally:
+        shutil.rmtree(tree, ignore_errors=True)
 
 
 @needs_sandbox
@@ -1010,6 +1136,32 @@ def test_the_build_route_admits_only_a_bounded_json_object(client, built_lesson)
     assert client.post(url, json={"out": "assets/page.js"}).status_code == 400
     assert client.post(url, json={**body, "add": "d3"}).status_code == 400
     assert client.post(url, json={**body, "page": "no/such.html"}).status_code == 404
+
+
+def test_the_page_to_render_is_the_page_asked_for_and_not_a_near_spelling(
+    client, built_lesson
+):
+    """`./index.html` is a fallback, not a synonym.
+
+    A v2 bundle matches declared pages exactly (§4.1), so the resolver refuses
+    that spelling and quietly hands back the manifest entry instead. When the
+    entry happens to be `index.html` the two end up equal after normalization,
+    and comparing normalized names would let the build report a render of a
+    page the bundle declined to serve under the name in the request.
+    """
+    lesson, _bundle = built_lesson
+    from app.services import lessons
+
+    assert lessons.lesson_file_info(lesson, "./index.html")["entry"] == (
+        lessons.DEFAULT_ENTRY
+    ), "the fallback is what makes this worth guarding"
+    response = client.post(
+        f"/learn/lessons/{lesson['id']}/build",
+        json={"entry": "src/page.ts", "out": "assets/page.js",
+              "page": "./index.html"},
+    )
+    assert response.status_code == 404
+    assert response.json()["error"] == "no-page"
 
 
 def test_a_sandboxed_lesson_page_cannot_ask_for_its_own_rebuild(client, built_lesson):

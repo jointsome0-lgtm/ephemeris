@@ -90,6 +90,16 @@ _NOISE_URL_SUFFIXES = ("/favicon.ico",)
 # and has to be reported, which a prefix match would have swallowed.
 _NOISE_TEXTS = frozenset({"Unrecognized Content-Security-Policy directive 'webrtc'."})
 
+# The three notifications `_errors_from` reads. Everything else the enabled
+# domains emit — `Network.*` fires several times per subresource — is thrown
+# away where it arrives, so a lesson with a hundred honest images cannot fill
+# `MAX_EVENTS` and be told it produced errors nobody collected.
+_DIAGNOSTIC_METHODS = frozenset({
+    "Runtime.exceptionThrown",
+    "Runtime.consoleAPICalled",
+    "Log.entryAdded",
+})
+
 
 class RenderCheckUnavailable(RuntimeError):
     """The page could not be checked — which never counts as a clean page."""
@@ -260,6 +270,13 @@ class _Browser:
             url = params.get("url")
             if url and len(self.executed) < MAX_URLS:
                 self.executed.add(_url_key(url))
+            return
+        # Only what `_errors_from` will actually read. Everything else — and
+        # `Network.*` alone is several notifications per subresource — is
+        # dropped without being counted: an asset-heavy lesson that renders
+        # perfectly emits hundreds of them, and counting those as "further
+        # errors not collected" would refuse every build of it.
+        if method not in _DIAGNOSTIC_METHODS:
             return
         if len(self.events) < MAX_EVENTS:
             self.events.append(event)
