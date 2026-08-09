@@ -1044,6 +1044,12 @@ def test_core_surfaces(client, suite_state):
     assert lov["today_pomo"] < lov["today_sessions"], (
         "and count Pomodoros, not every span" + "  -- " + str(lov)
     )
+    nonsense = c.post("/focus/session", data={"mode": "nope", "seconds": 600},
+                      headers={"X-Partial": "1"})
+    assert nonsense.status_code == 422, (
+        "a word the old page never spoke is refused, not filed as an open span"
+        + "  -- " + nonsense.text
+    )
     lc = get_conn()
     try:
         assert lc.execute(

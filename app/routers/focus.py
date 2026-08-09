@@ -63,6 +63,12 @@ def post_focus_session_legacy(
     Deletable together with `app/templates/focus.html`, once no pre-#75 page can
     still be open — see docs/system-design.md sec34.
     """
+    # The old vocabulary had exactly two words. Translating anything else into
+    # `open` would let a malformed post write a durable session and a ledger
+    # event the pre-#75 route would have refused — compatibility means the old
+    # contract entire, not only the half that accepts.
+    if mode not in ("pomo", "stopwatch"):
+        return _rejected(focus.FocusError("unknown timer mode"))
     try:
         sid = focus.record_session(
             conn, "countdown" if mode == "pomo" else "open", seconds,

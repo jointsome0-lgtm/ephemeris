@@ -357,38 +357,37 @@ def set_run_paused(conn: sqlite3.Connection, token: str, paused: bool) -> dict:
     interval into `paused_seconds`, so elapsed time stays a pure function of
     stored timestamps and survives a reload taken mid-pause."""
     token = _clean_token(token)
-    row = _run_by_token(conn, token)
-    if row is None:
-        raise FocusError("that timer is no longer running")
-    if (row["paused_at"] is not None) == paused:
-        return _run_view(row)
-    # One timestamp for the decision and for what gets written. Reading the
-    # clock twice leaves the countdown's last second between them: the check
-    # could see "not finished yet" and the UPDATE still stamp `paused_at` at or
-    # after the target, which is exactly the case the refusal exists to prevent.
-    stamp = now_iso()
-    at = _parse_iso(stamp)
-    target = int(row["target_seconds"] or 0)
-    if paused and target and _elapsed_seconds(row, at) >= target:
-        # A countdown that already ran out has nothing left to pause. Allowing it
-        # would fold the idle time between "ran out" and "resumed" into
-        # `paused_seconds`, and `_countdown_end` would then date the span from
-        # after it truly ended — enough to move an overnight session onto the
-        # next day's Retro bar. The drawer resyncs on a refusal and finishes it.
-        raise FocusError("that countdown already finished — stop it to record it")
-    # Both writes carry the state they were decided on in their WHERE clause.
-    # Two tabs are two independent hands on the same timer: one can read the run
-    # and stall while the other pauses and resumes it, and an unconditional
-    # update would then apply a decision about a world that has moved on. A
-    # transition that no longer fits simply does not take, and the answer below
-    # is read fresh, so the caller is told what is actually true.
-    with conn:
+    # Read, decide and write under one writer lock. Two tabs are two independent
+    # hands on the same timer, and a condition on the row's own state cannot tell
+    # "unchanged" from "paused and resumed since I looked" — both leave
+    # `paused_at` NULL, and a stale pause landing after that cycle would pause a
+    # timer one tab still shows running and double-count the pause it recorded.
+    # Holding the lock across the read removes the window instead of testing for
+    # it. `immediate()` forbids `with conn:` inside, so these are bare executes.
+    with immediate(conn):
+        row = _run_by_token(conn, token)
+        if row is None:
+            raise FocusError("that timer is no longer running")
+        if (row["paused_at"] is not None) == paused:
+            return _run_view(row)
+        # One timestamp for the decision and for what gets written. Reading the
+        # clock twice leaves the countdown's last second between them: the check
+        # could see "not finished yet" and the UPDATE still stamp `paused_at` at
+        # or after the target — the case the refusal below exists to prevent.
+        stamp = now_iso()
+        at = _parse_iso(stamp)
+        target = int(row["target_seconds"] or 0)
+        if paused and target and _elapsed_seconds(row, at) >= target:
+            # A countdown that already ran out has nothing left to pause.
+            # Allowing it would fold the idle time between "ran out" and
+            # "resumed" into `paused_seconds`, and `_countdown_end` would then
+            # date the span after it truly ended — enough to move an overnight
+            # session onto the next day's Retro bar. The drawer resyncs on a
+            # refusal and finishes it.
+            raise FocusError("that countdown already finished — stop it to record it")
         if paused:
-            conn.execute(
-                "UPDATE focus_runs SET paused_at = ? "
-                "WHERE id = ? AND paused_at IS NULL",
-                (stamp, row["id"]),
-            )
+            conn.execute("UPDATE focus_runs SET paused_at = ? WHERE id = ?",
+                         (stamp, row["id"]))
         else:
             gap = 0
             paused_at = _parse_iso(row["paused_at"])
@@ -396,12 +395,12 @@ def set_run_paused(conn: sqlite3.Connection, token: str, paused: bool) -> dict:
                 gap = max(0, int((at - paused_at).total_seconds()))
             conn.execute(
                 "UPDATE focus_runs SET paused_at = NULL, paused_seconds = ? "
-                "WHERE id = ? AND paused_at = ?",
-                (int(row["paused_seconds"] or 0) + gap, row["id"], row["paused_at"]),
+                "WHERE id = ?",
+                (int(row["paused_seconds"] or 0) + gap, row["id"]),
             )
-    return _run_view(
-        conn.execute(_RUN_SELECT + "WHERE fs.id = ?", (row["id"],)).fetchone()
-    )
+        return _run_view(
+            conn.execute(_RUN_SELECT + "WHERE fs.id = ?", (row["id"],)).fetchone()
+        )
 
 
 def discard_run(conn: sqlite3.Connection, token: str) -> bool:
