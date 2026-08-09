@@ -133,6 +133,31 @@ def test_a_build_may_not_write_its_artifact_over_its_own_source():
     ) == ("src/page.js", "assets/page.js")
 
 
+def test_a_noisy_step_costs_a_constant_not_its_own_noise():
+    """Only the tail is ever reported, so only the tail is ever held.
+
+    The bundle step runs agent-authored code, which may print in a loop for the
+    whole 120-second timeout; buffering all of it to show 8 KiB would make what
+    a build costs the app a function of how loud it is.
+    """
+    import asyncio
+
+    async def tail_of(chunks, limit):
+        reader = asyncio.StreamReader()
+        for chunk in chunks:
+            reader.feed_data(chunk)
+        reader.feed_eof()
+        return await lesson_build._tail_of(reader, limit)
+
+    loud = [f"line {i}\n".encode() for i in range(20000)]
+    whole = b"".join(loud)
+    tail = asyncio.run(tail_of(loud, 512))
+    assert tail == whole[-512:]
+    assert len(tail) == 512
+    # Short output survives intact rather than being padded or clipped.
+    assert asyncio.run(tail_of([b"brief"], 512)) == b"brief"
+
+
 # --- the mount views ---------------------------------------------------------
 
 ROOTS = {
@@ -421,12 +446,21 @@ def test_the_gate_waits_for_the_page_to_finish_before_it_settles(lesson_csp):
     """
     site = _Site(lesson_csp)
     try:
+        started = time.monotonic()
         late = render_check.console_errors(
             f"{site.base}/slow.html", settle=_SLOW_SECONDS / 4
         )
-        assert any(e["source"] == "exception" for e in late), late
+        elapsed = time.monotonic() - started
     finally:
         site.close()
+    # The property, asserted on time rather than on which channel the failure
+    # came through: a gate that settled from `Page.navigate` returns in about a
+    # quarter of `_SLOW_SECONDS`, long before the script it is judging exists.
+    assert elapsed >= _SLOW_SECONDS, (
+        f"the gate stopped listening after {elapsed:.2f}s, before a subresource "
+        f"that takes {_SLOW_SECONDS}s had arrived"
+    )
+    assert late, "the late script throws, and a page that throws is not clean"
 
 
 @needs_browser
@@ -455,6 +489,46 @@ def test_a_page_erroring_in_a_loop_is_bounded_not_absorbed(lesson_csp):
         assert len(errors) <= render_check.MAX_ERRORS + 1
     finally:
         site.close()
+
+
+def test_the_settle_window_will_not_start_until_the_document_is_done():
+    """The same property as the browser test, without a browser in it."""
+    browser = render_check._Browser.__new__(render_check._Browser)
+    browser.events, browser.dropped = [], 0
+    browser.fetched, browser.executed, browser.loaded = set(), set(), False
+    # Nothing to read and no load: the wait must end as a refusal, never as a
+    # quiet return that lets the caller settle on a half-loaded page.
+    browser._read = lambda deadline: (_ for _ in ()).throw(TimeoutError())
+    with pytest.raises(render_check.RenderCheckUnavailable):
+        browser.wait_for_load(time.monotonic() + 0.05)
+    browser.loaded = True
+    browser.wait_for_load(time.monotonic() + 0.05)
+
+
+def test_the_blank_page_the_browser_started_on_does_not_count_as_loaded():
+    """The browser opens `about:blank`, in the frame the lesson then uses.
+
+    Its `Page.frameStoppedLoading` arrives after `Page.enable` and carries the
+    same frame id, so without a reset at navigation the gate treats the blank
+    page's completion as the lesson's and settles on a document that has not
+    fetched anything yet.
+    """
+    browser = render_check._Browser.__new__(render_check._Browser)
+    browser.events, browser.dropped = [], 0
+    browser.fetched, browser.executed, browser.loaded = set(), set(), False
+    browser._main_frame = None
+    browser._record({"method": "Page.frameStoppedLoading",
+                     "params": {"frameId": "F1"}})
+    assert browser.loaded, "about:blank did finish; the flag is not wrong yet"
+
+    browser.begin_navigation("F1")
+    assert not browser.loaded, "…but it is not the page under test"
+    browser._record({"method": "Page.frameStoppedLoading",
+                     "params": {"frameId": "OTHER"}})
+    assert not browser.loaded, "another frame finishing is not this one finishing"
+    browser._record({"method": "Page.frameStoppedLoading",
+                     "params": {"frameId": "F1"}})
+    assert browser.loaded
 
 
 def test_the_events_kept_for_a_report_are_capped(monkeypatch):
@@ -775,6 +849,59 @@ def test_a_symlinked_entry_is_missing_rather_than_a_fault(
         assert caught.value.code == "no-entry" and caught.value.status == 404
     finally:
         link.unlink()
+
+
+@needs_sandbox
+def test_an_output_directory_that_refuses_the_write_is_a_refusal(
+    built_lesson, monkeypatch
+):
+    """`chmod 0555 assets` passes the descriptor walk and fails the write."""
+    import asyncio
+
+    lesson, bundle = built_lesson
+    assets = bundle / "assets"
+    assets.mkdir(exist_ok=True)
+    before = assets.stat().st_mode
+    assets.chmod(0o555)
+    try:
+        _no_render_errors(monkeypatch)
+        with pytest.raises(lesson_build.BuildError) as caught:
+            asyncio.run(lesson_build.build_lesson(
+                lesson, add=[], entry="src/page.ts", out="assets/page.js",
+                page=None, page_url="http://127.0.0.1:1/unused",
+                artifact_url="http://127.0.0.1:1/unused.js",
+            ))
+        assert caught.value.code == "invalid-out" and caught.value.status == 409
+    finally:
+        assets.chmod(before)
+
+
+@needs_sandbox
+def test_a_rebuild_moves_the_page_the_learner_is_watching(built_lesson, monkeypatch):
+    """The preview token is the PAGE's mtime, and only the script changed.
+
+    Every consumer — the route's `?v` check, the metadata, the bridge poll —
+    derives from `lessons.lesson_file_info`'s `version`. Replacing the artifact
+    changes none of its inputs, so an open iframe would keep running the code
+    this build just replaced until somebody reloaded by hand.
+    """
+    import asyncio
+
+    from app.services import lessons
+
+    lesson, bundle = built_lesson
+    page = lessons.DEFAULT_ENTRY
+    before = lessons.lesson_file_info(lesson, page)["version"]
+    _no_render_errors(monkeypatch)
+    result = asyncio.run(lesson_build.build_lesson(
+        lesson, add=[], entry="src/page.ts", out="assets/page.js",
+        page=page, page_url="http://127.0.0.1:1/unused",
+        artifact_url="http://127.0.0.1:1/unused.js",
+    ))
+    assert result["ok"]
+    assert lessons.lesson_file_info(lesson, page)["version"] != before, (
+        "a rebuild the learner cannot see is a rebuild that did not happen"
+    )
 
 
 @needs_sandbox

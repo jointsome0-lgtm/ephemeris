@@ -141,6 +141,7 @@ class _Browser:
         self.fetched: set[str] = set()
         self.executed: set[str] = set()
         self.loaded = False
+        self._main_frame: str | None = None
         try:
             self.process = subprocess.Popen(
                 [
@@ -244,9 +245,8 @@ class _Browser:
             self.loaded = True
             return
         if method == "Page.frameStoppedLoading":
-            # No frame filter is needed: `default-src 'none'` forbids a nested
-            # frame, so a lesson document is the only frame there is.
-            self.loaded = True
+            if self._main_frame in (None, params.get("frameId")):
+                self.loaded = True
             return
         if method == "Network.responseReceived":
             response = params.get("response") or {}
@@ -265,6 +265,18 @@ class _Browser:
             self.events.append(event)
         else:
             self.dropped += 1
+
+    def begin_navigation(self, frame_id: str | None) -> None:
+        """Forget the document the browser was showing before this one.
+
+        The browser starts on `about:blank`, whose `Page.frameStoppedLoading`
+        arrives after `Page.enable` and lands in the same frame the lesson then
+        navigates into. Without this reset, the wait for "the page has
+        finished" is satisfied by the blank page it replaced, and the settle
+        window opens on a document that has not fetched anything yet.
+        """
+        self._main_frame = frame_id
+        self.loaded = False
 
     def wait_for_load(self, deadline: float) -> None:
         """Block until the document has finished loading.
@@ -407,6 +419,7 @@ def console_errors(
             raise RenderCheckUnavailable(
                 f"the browser could not load the page: {result['errorText']}"
             )
+        browser.begin_navigation(result.get("frameId"))
         browser.wait_for_load(deadline)
         # Then sit still: lesson pages draw on load, and a mermaid render or a
         # d3 join throws well after the document is done.

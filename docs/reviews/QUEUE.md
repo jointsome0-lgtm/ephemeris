@@ -79,7 +79,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   bundle by `_pure_bundle_path`; a bundle dir is required for `bundle` and
   rejected for `install`. New `sandbox.BUILD_OUTPUT_DIR = "out"`.
   New `app/services/lesson_build.py` runs the two steps as
-  `asyncio.create_subprocess_exec` with captured output and 300 s / 120 s
+  `asyncio.create_subprocess_exec`, reading the merged stdout/stderr pipe
+  incrementally and keeping only its last 8 KiB, with 300 s / 120 s
   timeouts, after checking bubblewrap, that `sandbox.BUN_BINARY` is
   executable, and that `sandbox.BUN_CACHE_DIR` exists or can be created
   `0o700`. The bundler writes into `<workspace>/out/artifact.js`, which is
@@ -100,7 +101,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   the same descriptor, and the new bytes land on
   `.<name>.<12 hex chars>.new` before being renamed into place; the aside
   copy is renamed back if the render gate fails or cannot run;
-  on a pass the aside copy is unlinked. Builds are serialised per lesson
+  on a pass the aside copy is unlinked and the rendered page's mtime is
+  moved forward with `os.utime(..., dir_fd=…, follow_symlinks=False)`, which
+  is what `lessons.lesson_file_info`'s `version` token is derived from. An
+  `OSError` from the placement itself is converted to `invalid-out` 409.
+  Builds are serialised per lesson
   slug by an in-process `asyncio.Lock`, and the workspace artifact path is
   unlinked before each bundle run. A `package.json` is seeded in the
   workspace on first use; no `bunfig.toml` is written.

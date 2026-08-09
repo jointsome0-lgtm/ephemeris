@@ -259,8 +259,14 @@ async def _run_step(
         )
     except OSError as exc:
         raise BuildError("build-unavailable", 503, f"could not start {step}: {exc}") from exc
+    async def run() -> bytes:
+        assert process.stdout is not None
+        tail = await _tail_of(process.stdout, OUTPUT_TAIL_BYTES)
+        await process.wait()
+        return tail
+
     try:
-        output, _ = await asyncio.wait_for(process.communicate(), timeout)
+        output = await asyncio.wait_for(run(), timeout)
     except asyncio.TimeoutError:
         process.kill()
         await process.wait()
@@ -269,9 +275,31 @@ async def _run_step(
             f"the {step} step ran longer than {timeout:.0f}s and was killed",
         ) from None
     elapsed = time.monotonic() - started
-    tail = output[-OUTPUT_TAIL_BYTES:].decode("utf-8", "replace").strip()
+    tail = output.decode("utf-8", "replace").strip()
     _log.info("lesson build: %s finished rc=%s in %.2fs", step, process.returncode, elapsed)
     return process.returncode, tail
+
+
+async def _tail_of(stream: asyncio.StreamReader, limit: int) -> bytes:
+    """Read a pipe to the end, keeping only its last `limit` bytes.
+
+    `communicate()` would keep all of it. Only the tail is ever reported, but
+    the whole stream would sit in the app's memory until the step finished —
+    and the bundle step runs agent-authored code, which is free to print in a
+    loop for the full timeout. Trimming as it arrives makes what a noisy build
+    costs the app a constant rather than a function of how noisy it is.
+    """
+    chunks: list[bytes] = []
+    held = 0
+    while True:
+        chunk = await stream.read(64 * 1024)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        held += len(chunk)
+        while len(chunks) > 1 and held - len(chunks[0]) >= limit:
+            held -= len(chunks.pop(0))
+    return b"".join(chunks)[-limit:]
 
 
 def _install_argv(packages: list[str]) -> list[str]:
@@ -389,6 +417,27 @@ def _write_through(fd: int, name: str, data: bytes) -> None:
         os.unlink(temporary, dir_fd=fd)
         raise
     os.replace(temporary, name, src_dir_fd=fd, dst_dir_fd=fd)
+
+
+def _touch_page(bundle_dir: Path, page: str | None) -> None:
+    """Move the page's mtime forward so the preview notices the new artifact.
+
+    Never fatal: the artifact has already passed every gate and belongs in the
+    bundle. The worst case without this is the stale preview it exists to
+    prevent, which a reload fixes.
+    """
+    if not page:
+        return
+    try:
+        fd, name = _bundle_fd(bundle_dir, page)
+    except OSError:
+        return
+    try:
+        os.utime(name, dir_fd=fd, follow_symlinks=False)
+    except OSError:  # pragma: no cover - a page we just rendered
+        _log.warning("lesson build: could not touch %s in %s", page, bundle_dir)
+    finally:
+        os.close(fd)
 
 
 def _remove_through(fd: int, name: str) -> None:
@@ -534,45 +583,72 @@ async def _build_locked(
             "a directory on that path is a symlink or not a directory",
             steps=steps,
         ) from exc
-    aside = None
-    placed = False
-    try:
-        aside = _set_aside(fd, name)
-        _write_through(fd, name, artifact)
-        placed = True
+    async def place() -> None:
+        aside = None
+        placed = False
         try:
-            errors = await asyncio.to_thread(
-                render_check.console_errors, page_url, expect_url=artifact_url,
-            )
-        except render_check.RenderCheckUnavailable as exc:
-            raise BuildError("render-check-unavailable", 503, str(exc), steps=steps) from exc
-        except OSError as exc:  # pragma: no cover - browser died mid-check
-            raise BuildError("render-check-unavailable", 503, str(exc), steps=steps) from exc
-        if errors:
-            raise BuildError(
-                "render-errors", 422,
-                f"the built page did not come back clean ({len(errors)} "
-                "problem(s)); the previous artifact is back in place",
-                steps=steps, errors=errors, page=page, page_url=page_url,
-            )
-    except BaseException:
-        # Every path out of here that is not a pass puts the bundle back the
-        # way it was found. A lesson never keeps an artifact this function
-        # knows to be broken, and never loses the one that worked.
-        if placed:
-            _remove_through(fd, name)
-        if aside is not None:
+            aside = _set_aside(fd, name)
+            _write_through(fd, name, artifact)
+            placed = True
             try:
-                os.rename(aside, name, src_dir_fd=fd, dst_dir_fd=fd)
-            except OSError:  # pragma: no cover - nothing better to try
-                _log.warning("lesson build: could not restore %s in %s", name, lesson_dir)
-        raise
-    else:
-        if aside is not None:
-            _remove_through(fd, aside)
+                errors = await asyncio.to_thread(
+                    render_check.console_errors, page_url, expect_url=artifact_url,
+                )
+            except render_check.RenderCheckUnavailable as exc:
+                raise BuildError(
+                    "render-check-unavailable", 503, str(exc), steps=steps
+                ) from exc
+            except OSError as exc:  # pragma: no cover - browser died mid-check
+                raise BuildError(
+                    "render-check-unavailable", 503, str(exc), steps=steps
+                ) from exc
+            if errors:
+                raise BuildError(
+                    "render-errors", 422,
+                    f"the built page did not come back clean ({len(errors)} "
+                    "problem(s)); the previous artifact is back in place",
+                    steps=steps, errors=errors, page=page, page_url=page_url,
+                )
+        except BaseException:
+            # Every path out of here that is not a pass puts the bundle back
+            # the way it was found. A lesson never keeps an artifact this
+            # function knows to be broken, and never loses the one that worked.
+            if placed:
+                _remove_through(fd, name)
+            if aside is not None:
+                try:
+                    os.rename(aside, name, src_dir_fd=fd, dst_dir_fd=fd)
+                except OSError:  # pragma: no cover - nothing better to try
+                    _log.warning(
+                        "lesson build: could not restore %s in %s", name, lesson_dir
+                    )
+            raise
+        else:
+            if aside is not None:
+                _remove_through(fd, aside)
+
+    try:
+        await place()
+    except OSError as exc:
+        # The walk proved the path, but the directory it ends in can still
+        # refuse the write — `chmod 0555 assets` is an ordinary thing for an
+        # agent to have done, and it deserves the same typed answer.
+        raise BuildError(
+            "invalid-out", 409,
+            f"the bundle would not accept the artifact at {out}: "
+            f"{exc.strerror or exc}",
+            steps=steps,
+        ) from exc
     finally:
         os.close(fd)
 
+    # The learner may have this page open. Every consumer of the preview
+    # token — the route's `?v` check, the metadata and the poll — derives it
+    # from the PAGE's stat, and replacing a script the page loads changes none
+    # of that, so an open iframe would keep running the artifact this build
+    # just replaced. Touching the page is the smallest true statement: what it
+    # renders did change.
+    _touch_page(lesson_dir, page)
     steps.append({"step": "render", "ok": True, "page": page, "url": page_url})
     return {
         "ok": True,
