@@ -15,4 +15,13 @@
   The timer moved into a drawer you can open from any page — the clock icon in
   the sidebar, or <strong>g</strong> then <strong>f</strong>. This page is gone.
 </p>
+{# Only a process that predates #75 can reach this page at all, and that
+   process has no /focus/timer routes: the drawer will draw itself, ask what is
+   running and be answered 404. Promising a working timer here would be a lie
+   for exactly as long as this page can be seen, so it says the true thing
+   instead — the timer is unavailable until the app is restarted. #}
+<p class="empty">
+  If the drawer says the timer is unavailable, this app is still running its
+  previous version. Restart it and the timer comes back.
+</p>
 {% endblock %}

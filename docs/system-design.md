@@ -2159,8 +2159,12 @@ thing being worked on, startable from wherever he already is.
   drawer and the user is still standing in front of it; the drawer reloads its
   options on that refusal. Elsewhere — the compatibility write, an id that no
   longer resolves at replay — a stale or junk id stores as NULL rather than
-  dangling. A target that dies *while* the timer runs keeps its attribution:
-  liveness is a question about starting, not about finishing.
+  dangling. A target *retired* while the timer runs — a habit archived, a task
+  completed — keeps its attribution: liveness is a question about starting, not
+  about finishing. Hard deletion is the exception and detaches, exactly as it
+  does to the history that target already earned (`items.delete_item` NULLs
+  `focus_runs.habit_id` alongside `focus_sessions.habit_id`): a deleted row
+  cannot be pointed at, and the time is kept unattached rather than lost.
 - **Idempotency.** `client_token` is unique on both tables: a retried start
   reuses the run, a retried finish returns the session the first call recorded.
   A countdown is capped at its chosen length — a tab left open into minute 30 of

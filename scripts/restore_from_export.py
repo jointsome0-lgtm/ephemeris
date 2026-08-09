@@ -692,7 +692,8 @@ def print_summary(target: Path, result: dict[str, Any]) -> None:
         detail = {
             "lists": "bootstrap rows/kind/order/timestamps are absent",
             "tasks": "note/create order and update fields/side effects are absent",
-            "focus_sessions": "note and authoritative row dates/timestamps are absent",
+            "focus_sessions": "the note is in the stream but not replayed; "
+                              "authoritative row dates/timestamps are absent",
             "lessons": "open state is unjournaled; bundle files are outside JSONL",
         }[table]
         print(f"  {table}: {_untouched(rows[table])} "
