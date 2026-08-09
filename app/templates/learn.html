@@ -302,7 +302,10 @@
           <span class="lesson-file-state">{{ selected.file.label }} · {{ 'HTML' if selected.file.exists else 'No file' }}</span>
         </div>
       </header>
-      <div class="lesson-frame-wrap">
+      {# `no-file` marks the placeholder case: what loads is app chrome, not
+         lesson HTML, so its canvas may follow the reader's colour scheme
+         (style.css) instead of the paper white a real bundle needs. #}
+      <div class="lesson-frame-wrap{% if not selected.file.exists %} no-file{% endif %}">
         {# sandbox tokens follow the effective runtime profile (D2); the
            `is defined` guard keeps the legacy tokens while a stale live
            process (pre-D2 Python, working-tree templates) renders this. #}

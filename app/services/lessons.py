@@ -2821,6 +2821,21 @@ def _placeholder_html(title: str, message: str, code_line: str) -> str:
       border-radius: 7px; background: #f1f3f5; overflow-wrap: anywhere;
       font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
     }}
+    /* A lesson with no file is a full-height sheet of app chrome, not lesson
+       content — so it follows the reader's colour scheme instead of blinding
+       them with paper in a dark room. The sandboxed preview is its own
+       document and cannot see the app's tokens, so the night palette is
+       repeated here literally; keep it in step with html[data-theme="dark"]
+       in style.css. The scheme comes from the OS, which is what the app's
+       default ("system") theme resolves to as well. */
+    @media (prefers-color-scheme: dark) {{
+      body {{ color: #e6e4da; background: #10131f; }}
+      main {{
+        border-color: #262c42; background: #1e2338;
+        box-shadow: 0 12px 36px rgba(0,0,0,.34);
+      }}
+      code {{ background: #171b2c; }}
+    }}
   </style>
 </head>
 <body>
