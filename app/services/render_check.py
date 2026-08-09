@@ -45,6 +45,8 @@ import urllib.request
 from dataclasses import dataclass
 from urllib.parse import unquote, urlsplit
 
+from .. import sandbox
+
 _log = logging.getLogger(__name__)
 
 CHROME_NAMES = ("google-chrome", "chromium", "chromium-browser", "chrome")
@@ -162,6 +164,13 @@ class _Browser:
         try:
             self.process = subprocess.Popen(
                 [
+                    # The page about to be loaded is the artifact this build
+                    # just produced. A script retaining large buffers in a loop
+                    # would otherwise exhaust the host well inside the CDP
+                    # deadline, and take the one worker serving this app with
+                    # it — so the browser and every renderer it forks share one
+                    # bounded cgroup, torn down as a group.
+                    *sandbox.render_scope_prefix(int(TIMEOUT_SECONDS)),
                     binary, "--headless=new", "--disable-gpu", "--no-sandbox",
                     "--no-first-run", "--no-default-browser-check",
                     "--disable-extensions", "--no-proxy-server",

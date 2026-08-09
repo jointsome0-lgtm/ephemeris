@@ -462,6 +462,28 @@ def _resolve_entry(lesson: dict, read: bundle_schema.ManifestRead, entry: str | 
     return _clean_html_ref(candidate or read.entry)
 
 
+def selected_page_ref(lesson: dict, entry: str) -> str:
+    """The spelling `entry` has to resolve to for the bundle to have accepted it.
+
+    `_resolve_entry` falls back to the manifest entry for a selection it will
+    not take, which is right for a preview and wrong for a caller that needs to
+    know whether it got the page it asked for. Comparing against the resolved
+    entry answers that — but only if the comparison uses the same spelling the
+    resolver would: v2 matches declared pages exactly (§4.1), while v1 keeps
+    its historical normalization, so `./index.html` is a fallback under one
+    version and a synonym under the other. Raises `LessonError` on a ref no
+    version would take.
+    """
+    read = _ensure_bundle_manifest(lesson)
+    if read.version != bundle_schema.SCHEMA_V2:
+        return _clean_html_ref(entry)
+    # Raised for its refusal, not its result: a malformed ref is a bad request
+    # under either version, and only the well-formed ones reach the exact
+    # comparison v2 requires.
+    _clean_bundle_ref(entry)
+    return entry
+
+
 def _file_info(
     lesson: dict,
     read: bundle_schema.ManifestRead,
@@ -1652,6 +1674,10 @@ Rules the app enforces, so you do not have to think about them:
   `import()` and a `.woff2` web font are all blocked. The build emits a
   single self-contained script so none of that comes up; keep the tag a
   plain `<script src>`.
+- **Stylesheets ride along.** `import "katex/dist/katex.min.css"` works;
+  the styles end up inside the built script and are applied on load. Do
+  not add a `<link>` for them — there is no second file to link to, and
+  `node_modules` is not served.
 - **Under 1 MiB.** Import the names you use — `import { select } from "d3"`,
   not the package default — or the build is refused. A default import of a
   large library is the usual cause: measured, `import mermaid from "mermaid"`

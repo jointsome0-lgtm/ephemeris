@@ -66,12 +66,17 @@ def test_an_install_with_nothing_to_add_still_carries_the_rules():
 
 
 def test_the_bundle_argv_asks_for_one_classic_script():
-    argv = lesson_build._bundle_argv(Path("/b/src/page.ts"), Path("/w/artifact.js"))
+    argv = lesson_build._bundle_argv(Path("/b/src/page.ts"), Path("/w/out"))
     # The opaque origin a lesson renders on blocks an external module script,
     # an import map and a dynamic import; a classic `<script src>` it allows.
     assert "--format=iife" in argv
     assert "--target=browser" in argv
-    assert "--outfile=/w/artifact.js" in argv
+    # A directory, because a stylesheet import gives bun a second output and
+    # `--outfile` refuses to hold two — with a naming rule, so the app knows
+    # what to read without parsing bun's report.
+    assert "--outdir=/w/out" in argv
+    assert f"--entry-naming={lesson_build._ARTIFACT_STEM}.[ext]" in argv
+    assert not [word for word in argv if word.startswith("--outfile")]
 
 
 @pytest.mark.parametrize("spec", [
@@ -276,19 +281,29 @@ def test_neither_step_gets_unbounded_memory_or_an_unbounded_scratch():
         assert (str(sandbox.BUILD_SCRATCH_BYTES), "/tmp") in sized
         assert (str(sandbox.BUILD_HOME_BYTES), sandbox.USER_HOME) in sized
 
-    prefix = sandbox.build_scope_prefix(120)
-    assert prefix[0] == sandbox.SYSTEMD_RUN and prefix[-1] == "--"
-    assert f"--property=MemoryMax={sandbox.BUILD_MEMORY_MAX}" in prefix
-    assert f"--property=TasksMax={sandbox.BUILD_TASKS_MAX}" in prefix
-    assert "--property=MemorySwapMax=0" in prefix
-    assert "--property=KillMode=control-group" in prefix
-    # The scope outlives the caller's own timeout, or a build that took its
-    # full budget would be killed by the backstop and read as a failure.
-    assert (f"--property=RuntimeMaxSec="
-            f"{120 + sandbox.BUILD_SCOPE_GRACE_SECONDS}s") in prefix
-    for bad in (0, -1, sandbox.BUILD_MAX_WALL_SECONDS + 1):
-        with pytest.raises(ValueError):
-            sandbox.build_scope_prefix(bad)
+    for prefix, memory, tasks, grace, ceiling, make in (
+        (sandbox.build_scope_prefix(120), sandbox.BUILD_MEMORY_MAX,
+         sandbox.BUILD_TASKS_MAX, sandbox.BUILD_SCOPE_GRACE_SECONDS,
+         sandbox.BUILD_MAX_WALL_SECONDS, sandbox.build_scope_prefix),
+        # The gate's browser runs the artifact that build just produced, from
+        # the same author, and a browser is a process tree — so it needs the
+        # same bounds, torn down as a group.
+        (sandbox.render_scope_prefix(60), sandbox.RENDER_MEMORY_MAX,
+         sandbox.RENDER_TASKS_MAX, sandbox.RENDER_SCOPE_GRACE_SECONDS,
+         sandbox.RENDER_MAX_WALL_SECONDS, sandbox.render_scope_prefix),
+    ):
+        wall = 120 if make is sandbox.build_scope_prefix else 60
+        assert prefix[0] == sandbox.SYSTEMD_RUN and prefix[-1] == "--"
+        assert f"--property=MemoryMax={memory}" in prefix
+        assert f"--property=TasksMax={tasks}" in prefix
+        assert "--property=MemorySwapMax=0" in prefix
+        assert "--property=KillMode=control-group" in prefix
+        # The scope outlives the caller's own timeout, or work that took its
+        # full budget would be killed by the backstop and read as a failure.
+        assert f"--property=RuntimeMaxSec={wall + grace}s" in prefix
+        for bad in (0, -1, ceiling + 1):
+            with pytest.raises(ValueError):
+                make(bad)
 
 
 def test_a_build_view_refuses_a_workspace_the_bundle_could_choose():
@@ -719,6 +734,67 @@ def test_a_real_build_places_one_artifact_and_leaves_the_bundle_clean(
 
 
 @needs_sandbox
+def test_a_stylesheet_import_still_produces_one_file(built_lesson, monkeypatch):
+    """`--outfile` cannot hold two outputs, and a lesson cannot fetch the second.
+
+    Measured on bun 1.3.11: an entry importing a `.css` file fails the whole
+    build with "Multiple files share the same output path". `node_modules` is
+    not served and the page has no way to reach a side file, so the stylesheet
+    rides inside the script the page already loads.
+    """
+    import asyncio
+
+    lesson, bundle = built_lesson
+    (bundle / "src" / "styled.css").write_text(
+        ".invented-marker{color:rgb(1,2,3)}\n", encoding="utf-8"
+    )
+    (bundle / "src" / "styled.ts").write_text(
+        'import "./styled.css";\ndocument.title = "styled";\n', encoding="utf-8"
+    )
+    _no_render_errors(monkeypatch)
+    result = asyncio.run(lesson_build.build_lesson(
+        lesson, add=[], entry="src/styled.ts", out="assets/styled.js",
+        page=None, page_url="http://127.0.0.1:1/unused",
+        artifact_url="http://127.0.0.1:1/unused.js",
+    ))
+    assert result["ok"]
+    artifact = (bundle / "assets" / "styled.js").read_text(encoding="utf-8")
+    assert ".invented-marker" in artifact, "the styles came with the script"
+    assert 'document.title = "styled"' in artifact or "styled" in artifact
+    assert not (bundle / "assets" / "styled.css").exists(), (
+        "one artifact and one classic tag; a side file has no URL the page "
+        "can reach"
+    )
+
+
+@needs_sandbox
+def test_a_stylesheet_that_is_gone_does_not_haunt_the_next_build(
+    built_lesson, monkeypatch
+):
+    """The bundler writes into a directory now, so stale outputs can survive."""
+    import asyncio
+
+    from app.services import lessons
+
+    lesson, bundle = built_lesson
+    (bundle / "src" / "plain.ts").write_text(
+        'document.title = "plain";\n', encoding="utf-8"
+    )
+    stale = (lessons.ensure_build_workspace(lesson["slug"])
+             / sandbox.BUILD_OUTPUT_DIR / f"{lesson_build._ARTIFACT_STEM}.css")
+    stale.write_text(".invented-marker{color:red}\n", encoding="utf-8")
+    _no_render_errors(monkeypatch)
+    asyncio.run(lesson_build.build_lesson(
+        lesson, add=[], entry="src/plain.ts", out="assets/plain.js",
+        page=None, page_url="http://127.0.0.1:1/unused",
+        artifact_url="http://127.0.0.1:1/unused.js",
+    ))
+    assert ".invented-marker" not in (
+        bundle / "assets" / "plain.js"
+    ).read_text(encoding="utf-8")
+
+
+@needs_sandbox
 def test_a_page_too_heavy_for_a_learner_is_refused(built_lesson, monkeypatch):
     import asyncio
 
@@ -848,7 +924,8 @@ def test_an_authored_file_at_the_backup_name_survives_a_build(
     assert result["ok"]
     for path, text in decoys.items():
         assert path.read_text(encoding="utf-8") == text, f"{path.name} was eaten"
-    assert sorted(p.name for p in (bundle / "assets").iterdir()) == [
+    assert sorted(p.name for p in (bundle / "assets").iterdir()
+                  if "page.js" in p.name) == [
         ".page.js.new", ".page.js.previous", "page.js"
     ], "no leftovers from the set-aside dance"
 
@@ -1198,6 +1275,47 @@ def test_the_page_to_render_is_the_page_asked_for_and_not_a_near_spelling(
     )
     assert response.status_code == 404
     assert response.json()["error"] == "no-page"
+
+
+def test_a_v1_bundle_keeps_the_spelling_it_always_accepted(client, built_lesson):
+    """The exactness above is v2's rule, and v1 predates it.
+
+    `_resolve_entry` normalizes for v1 on purpose — historical tolerance the
+    preview still relies on. Holding a v1 bundle to v2's comparison would
+    refuse a page the same app renders happily everywhere else.
+    """
+    from app.db import get_conn
+    from app.services import bundle_schema, lessons
+
+    lesson, _bundle = built_lesson
+    assert lessons.read_bundle_readonly(lesson).version == bundle_schema.SCHEMA_V2
+    assert lessons.selected_page_ref(lesson, "./index.html") == "./index.html"
+
+    conn = get_conn()
+    try:
+        legacy_id = lessons.create_lesson(conn, "Invented Legacy Bundle")
+        legacy = lessons.get_lesson(conn, legacy_id)
+    finally:
+        conn.close()
+    legacy_dir = lessons.lesson_bundle_dir(legacy["slug"])
+    (legacy_dir / lessons.DEFAULT_ENTRY).write_text(
+        "<!doctype html><title>t</title>", encoding="utf-8"
+    )
+    (legacy_dir / "lesson.json").write_text(
+        json.dumps({"entry": lessons.DEFAULT_ENTRY}), encoding="utf-8"
+    )
+    assert lessons.read_bundle_readonly(legacy).version == bundle_schema.SCHEMA_V1
+    assert lessons.selected_page_ref(legacy, "./index.html") == "index.html"
+    with pytest.raises(lessons.LessonError):
+        lessons.selected_page_ref(legacy, "../outside.html")
+    # …and the route agrees: the same selection that is a fallback under v2 is
+    # this bundle's own page under v1, so the build gets past the gate.
+    response = client.post(
+        f"/learn/lessons/{legacy_id}/build",
+        json={"entry": "src/page.ts", "out": "assets/page.js",
+              "page": "./index.html"},
+    )
+    assert response.json().get("error") != "no-page", response.json()
 
 
 def test_a_sandboxed_lesson_page_cannot_ask_for_its_own_rebuild(client, built_lesson):

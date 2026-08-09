@@ -80,13 +80,19 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   workspace is validated by the existing `_pure_build_workspace`, the
   bundle by `_pure_bundle_path`; a bundle dir is required for `bundle` and
   rejected for `install`. New `sandbox.BUILD_OUTPUT_DIR = "out"`.
-  New `sandbox.build_scope_prefix(wall_seconds)` returns
-  `systemd-run --user --scope --collect --quiet` with
-  `TasksMax=512`, `MemoryMax=2G`, `MemorySwapMax=0`,
-  `KillMode=control-group`, the same `--expand-environment=no` probe the
-  runner prefix uses, and `RuntimeMaxSec=<wall_seconds + 15>s`; it raises
-  outside 1..600 s. Measured 2026-08-09: a process allocating 6.4 GiB
-  inside the bundle view under this prefix exits 137 after 1.4 s.
+  New `sandbox._resource_scope_prefix(...)` returns
+  `systemd-run --user --scope --collect --quiet` with `TasksMax`,
+  `MemoryMax`, `MemorySwapMax=0`, `KillMode=control-group`, the same
+  `--expand-environment=no` probe the runner prefix uses, and
+  `RuntimeMaxSec=<wall_seconds + grace>s`; it raises outside its
+  ceiling. Two callers: `build_scope_prefix` (512 tasks, 2G, 15 s grace,
+  600 s ceiling) and `render_scope_prefix` (1024 tasks, 2G, 30 s grace,
+  600 s ceiling). Measured 2026-08-09: a process allocating 6.4 GiB
+  inside the bundle view under the build prefix exits 137 after 1.4 s; the
+  render scope reports `memory.max` 2147483648, `pids.max` 1024,
+  `memory.swap.max` 0, an idle headless Chrome sits at 74 tasks and
+  138 MiB inside it, and the scope is gone with no stray browser process
+  after `_Browser.close()`.
   `sandbox.require_runner_scope_runtime` and
   `sandbox._cached_runner_scope_probe` are renamed to
   `require_user_scope_runtime` / `_cached_user_scope_probe` with no change
@@ -101,12 +107,23 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   timeouts, after checking bubblewrap, the systemd user scope, that
   `sandbox.BUN_BINARY` is
   executable, and that `sandbox.BUN_CACHE_DIR` exists or can be created
-  `0o700`. The bundler writes into `<workspace>/out/artifact.js`, which is
-  unlinked before each run. Install argv: `bun add|install --backend=copyfile
+  `0o700`. The bundler writes into `<workspace>/out/`, whose entries are
+  unlinked (non-recursively, `dir_fd`-relative, no directory removed)
+  before each run. Install argv: `bun add|install --backend=copyfile
   --minimum-release-age=2592000 --ignore-scripts --no-progress
   --no-summary [-- <packages>]`. Bundle argv: `bun build <entry>
-  --target=browser --format=iife --production --keep-names --outfile=…`
-  into the workspace. Package specs are matched against an anchored npm
+  --target=browser --format=iife --production --keep-names
+  --outdir=<workspace>/out --entry-naming=artifact.[ext]`.
+  `--outdir` rather than `--outfile` because a `.css` import anywhere in
+  the graph gives bun a second output: measured on bun 1.3.11, an entry
+  with `import "./style.css"` and `--outfile` exits with "Multiple files
+  share the same output path" and writes nothing. When
+  `out/artifact.css` exists its bytes are JSON-encoded into a prologue
+  that creates a `<style>` element and appends it to
+  `document.head || document.documentElement`, prepended to
+  `out/artifact.js`; the 1 MiB ceiling applies to the combined bytes. The
+  `_AGENTS_TEMPLATE` brief documents that stylesheet imports work and
+  that there is no second file to link. Package specs are matched against an anchored npm
   name/range regex, at most 32 per request; `entry` and `out` go through
   `lessons.clean_bundle_ref` and are refused when equal; `out` is also
   refused unless it is under `assets/`, and `entry` is refused when
@@ -132,10 +149,10 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   is what `lessons.lesson_file_info`'s `version` token is derived from. An
   `OSError` from the placement itself is converted to `invalid-out` 409.
   Builds are serialised per lesson
-  slug by an in-process `asyncio.Lock`, and the workspace artifact path is
-  unlinked before each bundle run. A `package.json` is seeded in the
+  slug by an in-process `asyncio.Lock`. A `package.json` is seeded in the
   workspace on first use; no `bunfig.toml` is written.
-  New `app/services/render_check.py` starts headless Chrome with a
+  New `app/services/render_check.py` starts headless Chrome under
+  `sandbox.render_scope_prefix(60)` with a
   disposable profile on `--remote-debugging-port=0`, connects over CDP,
   enables `Page`/`Runtime`/`Log`/`Network`/`Debugger`, navigates to a caller-supplied
   URL, waits for `Page.loadEventFired` or `Page.frameStoppedLoading`
@@ -161,11 +178,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   Sandbox-runtime, bundle-path and entry-path failures inside
   `lesson_build` are converted to typed `BuildError`s
   (`build-unavailable` 503, `invalid-out` 409, `no-entry` 404), and the
-  route passes the requested `page` through `lessons.clean_bundle_ref`
-  inside its existing `LessonError` conversion to separate a malformed
-  name (400) from an unresolvable one, then refuses with `no-page` 404
-  unless `lessons.lesson_file_info` returns that exact string as its
-  entry. It raises rather
+  route passes the requested `page` through a new
+  `lessons.selected_page_ref(lesson, entry)` inside its existing
+  `LessonError` conversion — which raises on a malformed name (400) and
+  otherwise returns the raw string for a v2 bundle and
+  `_clean_html_ref(entry)` for a v1 one — then refuses with `no-page` 404
+  unless `lessons.lesson_file_info` returns exactly that as its entry. It raises rather
   than returning a pass when no browser is found, when the browser stops
   answering, when the page does not finish loading or the whole-check
   deadline passes, or when `window.origin` is not `"null"` after the load.

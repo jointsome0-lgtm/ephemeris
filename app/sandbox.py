@@ -60,17 +60,40 @@ BUILD_SCOPE_GRACE_SECONDS = 15
 BUILD_SCRATCH_BYTES = 512 * 1024 * 1024
 BUILD_HOME_BYTES = 64 * 1024 * 1024
 
-BUILD_SCOPE_PREFIX = (
-    SYSTEMD_RUN,
-    "--user",
-    "--scope",
-    "--collect",
-    "--quiet",
-    f"--property=TasksMax={BUILD_TASKS_MAX}",
-    f"--property=MemoryMax={BUILD_MEMORY_MAX}",
-    "--property=MemorySwapMax=0",
-    "--property=KillMode=control-group",
-)
+# The render gate loads the artifact the build just produced, so the page runs
+# code from the same author as the macro — in a browser, which is a process
+# tree rather than a process. Roomier than the build's: headless Chrome is a
+# handful of processes and a few hundred threads before a page has done
+# anything, and a cap that only a real browser trips would refuse every build.
+RENDER_MEMORY_MAX = "2G"
+RENDER_TASKS_MAX = 1024
+RENDER_MAX_WALL_SECONDS = 600
+RENDER_SCOPE_GRACE_SECONDS = 30
+
+
+def _resource_scope_prefix(
+    *, tasks_max: int, memory_max: str, wall_seconds: int, grace: int, ceiling: int
+) -> tuple[str, ...]:
+    """A transient user scope with the limits a whole process tree shares.
+
+    `RuntimeMaxSec` is a backstop under the caller's own timeout, not a
+    replacement for it: the caller kills the process it started, and this kills
+    the cgroup if that process is gone or wedged. `KillMode=control-group` is
+    what makes that reach the children — a browser's renderers, a macro's
+    forks — rather than only the leader.
+    """
+    if not 1 <= wall_seconds <= ceiling:
+        raise ValueError("a resource scope requires a bounded wall limit")
+    return (
+        SYSTEMD_RUN, "--user", "--scope", "--collect", "--quiet",
+        f"--property=TasksMax={tasks_max}",
+        f"--property=MemoryMax={memory_max}",
+        "--property=MemorySwapMax=0",
+        "--property=KillMode=control-group",
+        *_systemd_no_expand_option(),
+        f"--property=RuntimeMaxSec={wall_seconds + grace}s",
+        "--",
+    )
 
 
 @cache
@@ -119,19 +142,23 @@ def runner_scope_prefix(
 def build_scope_prefix(wall_seconds: int) -> tuple[str, ...]:
     """The resource scope one build step runs inside.
 
-    `RuntimeMaxSec` is a backstop under the caller's own timeout, not a
-    replacement for it: the caller kills the process it started, and this kills
-    the cgroup if that process is gone or wedged. The grace is wider than the
-    runner's because a build step's own timeout is minutes, not seconds, and a
-    scope that expired first would look like a build failure.
+    The grace is wider than the runner's because a build step's own timeout is
+    minutes, not seconds, and a scope that expired first would turn a slow but
+    honest install into a build failure.
     """
-    if not 1 <= wall_seconds <= BUILD_MAX_WALL_SECONDS:
-        raise ValueError("a build scope requires a bounded wall limit")
-    return (
-        *BUILD_SCOPE_PREFIX,
-        *_systemd_no_expand_option(),
-        f"--property=RuntimeMaxSec={wall_seconds + BUILD_SCOPE_GRACE_SECONDS}s",
-        "--",
+    return _resource_scope_prefix(
+        tasks_max=BUILD_TASKS_MAX, memory_max=BUILD_MEMORY_MAX,
+        wall_seconds=wall_seconds, grace=BUILD_SCOPE_GRACE_SECONDS,
+        ceiling=BUILD_MAX_WALL_SECONDS,
+    )
+
+
+def render_scope_prefix(wall_seconds: int) -> tuple[str, ...]:
+    """The resource scope the render gate's browser runs inside."""
+    return _resource_scope_prefix(
+        tasks_max=RENDER_TASKS_MAX, memory_max=RENDER_MEMORY_MAX,
+        wall_seconds=wall_seconds, grace=RENDER_SCOPE_GRACE_SECONDS,
+        ceiling=RENDER_MAX_WALL_SECONDS,
     )
 
 

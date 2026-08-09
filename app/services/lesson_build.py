@@ -80,6 +80,10 @@ _ENTRY_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts")
 # (`lessons.bundle_resource_info`), and therefore the only place an artifact
 # a page can load is allowed to go.
 _ARTIFACT_DIR = "assets"
+# What the bundler is told to call its outputs, so the app can find them
+# without reading bun's report: `<stem>.js`, plus `<stem>.css` when the graph
+# imported a stylesheet.
+_ARTIFACT_STEM = "artifact"
 
 
 class BuildError(Exception):
@@ -341,7 +345,7 @@ def _install_argv(packages: list[str]) -> list[str]:
     return argv
 
 
-def _bundle_argv(entry: Path, outfile: Path) -> list[str]:
+def _bundle_argv(entry: Path, outdir: Path) -> list[str]:
     return [
         sandbox.BUN_BINARY, "build", str(entry),
         "--target=browser",
@@ -356,7 +360,16 @@ def _bundle_argv(entry: Path, outfile: Path) -> list[str]:
         # `--production` minifies identifiers too, which turns every stack
         # trace the render gate reports into noise. Names are worth the bytes.
         "--keep-names",
-        f"--outfile={outfile}",
+        # A directory rather than `--outfile`, because a stylesheet import
+        # anywhere in the graph gives bun a second output and `--outfile`
+        # cannot hold two: measured on bun 1.3.11, an entry with
+        # `import "./style.css"` fails with "Multiple files share the same
+        # output path" and emits nothing. `katex` is one such package, and
+        # `node_modules` is not served, so that is a dead end for the lesson
+        # rather than an inconvenience. The naming is fixed so the app knows
+        # what to look for without parsing bun's report.
+        f"--outdir={outdir}",
+        f"--entry-naming={_ARTIFACT_STEM}.[ext]",
     ]
 
 
@@ -486,7 +499,10 @@ def _write_through(fd: int, name: str, data: bytes) -> None:
     os.replace(temporary, name, src_dir_fd=fd, dst_dir_fd=fd)
 
 
-def _read_artifact(outfile: Path, steps: list[dict]) -> bytes:
+def _read_artifact(
+    outfile: Path, steps: list[dict], *, limit: int = ARTIFACT_MAX_BYTES,
+    optional: bool = False,
+) -> bytes | None:
     """Read what the bundler produced, on one descriptor that followed no link.
 
     `out/` is the bundle step's one writable directory, and that step runs
@@ -501,6 +517,13 @@ def _read_artifact(outfile: Path, steps: list[dict]) -> bytes:
     """
     try:
         fd = os.open(outfile, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        if optional:
+            return None
+        raise BuildError(
+            "bundle-failed", 422,
+            "the bundler left no readable artifact", steps=steps,
+        ) from None
     except OSError as exc:
         raise BuildError(
             "bundle-failed", 422,
@@ -514,25 +537,79 @@ def _read_artifact(outfile: Path, steps: list[dict]) -> bytes:
                 "bundle-failed", 422,
                 "the bundler's output is not a regular file", steps=steps,
             )
-        if info.st_size > ARTIFACT_MAX_BYTES:
-            raise BuildError(
-                "artifact-too-large", 422,
-                f"the built page is {info.st_size} bytes, over the "
-                f"{ARTIFACT_MAX_BYTES}-byte ceiling; import the names you use "
-                "instead of the package default, or split the page",
-                steps=steps, bytes=info.st_size, limit=ARTIFACT_MAX_BYTES,
-            )
+        if info.st_size > limit:
+            raise _too_large(info.st_size, steps)
         with os.fdopen(os.dup(fd), "rb") as handle:
-            artifact = handle.read(ARTIFACT_MAX_BYTES + 1)
+            artifact = handle.read(limit + 1)
     finally:
         os.close(fd)
-    if len(artifact) > ARTIFACT_MAX_BYTES:
-        raise BuildError(
-            "artifact-too-large", 422,
-            f"the built page is over the {ARTIFACT_MAX_BYTES}-byte ceiling",
-            steps=steps, bytes=len(artifact), limit=ARTIFACT_MAX_BYTES,
-        )
+    if len(artifact) > limit:
+        raise _too_large(len(artifact), steps)
     return artifact
+
+
+def _too_large(size: int, steps: list[dict]) -> BuildError:
+    return BuildError(
+        "artifact-too-large", 422,
+        f"the built page is {size} bytes, over the {ARTIFACT_MAX_BYTES}-byte "
+        "ceiling; import the names you use instead of the package default, or "
+        "split the page",
+        steps=steps, bytes=size, limit=ARTIFACT_MAX_BYTES,
+    )
+
+
+def _empty_outdir(outdir: Path) -> None:
+    """Unlink the previous run's outputs without following anything.
+
+    The directory is the bundle step's one writable place, so its contents are
+    agent-reachable. Nothing here needs to recurse: bun writes files, and a
+    directory a macro left behind is not something to delete blindly — it stays,
+    and the read that follows refuses it for not being a regular file.
+    """
+    try:
+        fd = os.open(outdir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError:
+        return
+    try:
+        for name in os.listdir(fd):
+            try:
+                os.unlink(name, dir_fd=fd)
+            except OSError:
+                _log.warning("lesson build: could not clear %s in %s", name, outdir)
+    finally:
+        os.close(fd)
+
+
+def _compose_artifact(outdir: Path, steps: list[dict]) -> bytes:
+    """One file out of what the bundler may have written as two.
+
+    A stylesheet import gives bun a second output. Serving it as a second file
+    would mean a second placement, a second URL and a `<link>` the page has to
+    carry — and the page cannot fetch it as a module, cannot reach
+    `node_modules`, and would need the whole `<script src>` story told again
+    for CSS. Carrying the stylesheet inside the script instead keeps the
+    promise the page was written against: one artifact, one classic tag.
+
+    `style-src` in `interactive-local-v1` allows inline styles, so the injected
+    element is not the thing the render gate is watching for.
+    """
+    script = _read_artifact(outdir / f"{_ARTIFACT_STEM}.js", steps)
+    assert script is not None
+    styles = _read_artifact(
+        outdir / f"{_ARTIFACT_STEM}.css", steps,
+        limit=max(ARTIFACT_MAX_BYTES - len(script), 0), optional=True,
+    )
+    if not styles:
+        return script
+    injector = (
+        "(()=>{var s=document.createElement('style');s.textContent="
+        + json.dumps(styles.decode("utf-8", "replace"))
+        + ";(document.head||document.documentElement).appendChild(s)})();\n"
+    ).encode("utf-8")
+    combined = injector + script
+    if len(combined) > ARTIFACT_MAX_BYTES:
+        raise _too_large(len(combined), steps)
+    return combined
 
 
 def _touch_page(bundle_dir: Path, page: str | None) -> None:
@@ -665,20 +742,21 @@ async def _build_locked(
     # Straight into the workspace: the artifact is judged before the bundle is
     # allowed to see it, and `<workspace>` is the one directory in the view
     # that is writable and outside anything this app serves.
-    outfile = workspace / sandbox.BUILD_OUTPUT_DIR / "artifact.js"
+    outdir = workspace / sandbox.BUILD_OUTPUT_DIR
     # Cleared first, so a bundler that exits 0 without writing cannot get the
-    # previous run's bytes accepted as this run's result.
-    outfile.unlink(missing_ok=True)
+    # previous run's bytes accepted as this run's result — and so a stylesheet
+    # from a graph that no longer imports one cannot be carried forward.
+    _empty_outdir(outdir)
     started = time.monotonic()
     code, output = await _run_step(
         "bundle", workspace=workspace, bundle_dir=lesson_dir,
-        command=_bundle_argv(entry_path, outfile), timeout=BUNDLE_TIMEOUT_SECONDS,
+        command=_bundle_argv(entry_path, outdir), timeout=BUNDLE_TIMEOUT_SECONDS,
     )
     steps.append({"step": "bundle", "ok": code == 0,
                   "seconds": round(time.monotonic() - started, 2), "output": output})
     if code != 0:
         raise BuildError("bundle-failed", 422, "the bundle step failed", steps=steps)
-    artifact = _read_artifact(outfile, steps)
+    artifact = _compose_artifact(outdir, steps)
 
     # The descriptor walk refuses a symlinked or non-directory parent, which is
     # a thing the agent can create in its own bundle and therefore a request to
