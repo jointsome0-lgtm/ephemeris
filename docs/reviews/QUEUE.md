@@ -24,7 +24,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-08-09 — `4f3762b` (branch `term-quiet-prompt`, PR #172) —
+- [ ] 2026-08-09 — `2552323` (squash of `term-quiet-prompt`, PR #172) —
   `app/terminal.py`, `tests/test_010_platform_ui.py` — `_child_env` takes
   the child shell as a second argument and adds one variable,
   `PROMPT_COMMAND`, for the two lesson roles when that shell's basename
