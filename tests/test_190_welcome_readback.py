@@ -417,7 +417,20 @@ export const child = {
   },
 };
 
+/* The preview frame sits inside `.lesson-frame-wrap`, whose `no-file` class the
+ * runtime moves as documents swap and reads before reloading on a theme flip.
+ * Nothing here asserts on it — the wrapper exists so `closest` answers with
+ * something real instead of throwing. */
+const wrapClasses = new Set();
+const frameWrap = {
+  classList: {
+    contains: (name) => wrapClasses.has(name),
+    toggle(name, on) { if (on) wrapClasses.add(name); else wrapClasses.delete(name); },
+  },
+};
+
 const frame = {
+  closest(selector) { return selector === ".lesson-frame-wrap" ? frameWrap : null; },
   dataset: {
     metaUrl: "/learn/lessons/1/preview-meta",
     attemptsUrl: "/learn/lessons/1/attempts",
@@ -442,8 +455,19 @@ if (config.record !== null) frame.dataset["record"] = config.record;
 globalThis.document = {
   /* Hidden: the reload poll's own tick is not what this harness measures. */
   hidden: true,
+  /* `data-theme` lives here; the runtime watches it to reload a placeholder
+   * that was served in the other colour scheme. */
+  documentElement: { dataset: { theme: "dark" } },
   getElementById(id) { return id === "lesson-preview-frame" ? frame : null; },
   addEventListener() {},
+};
+/* Observing is all the runtime does with it, and this harness never mutates
+ * the attribute, so recording the observation is enough. */
+export const themeObservers = [];
+globalThis.MutationObserver = class {
+  constructor(callback) { this.callback = callback; }
+  observe(target, options) { themeObservers.push({ target, options }); }
+  disconnect() {}
 };
 /* The owner's consent dialog. `config.consent === "unavailable"` leaves
  * `window.confirm` undefined, which is what a parent that cannot ask looks

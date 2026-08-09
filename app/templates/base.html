@@ -16,9 +16,10 @@
   <link rel="apple-touch-icon" href="{{ static_url('app-icon.svg') }}">
   <link rel="stylesheet" href="{{ static_url('style.css') }}">
   {# resolve theme before first paint to avoid a flash (tri-state: system|light|dark).
-     window.alTheme is the ONE owner of the storage key, the resolve rule and the
-     system media query; the deferred app.js drives the toggle only through it
-     (read/save/resolve/mq), so the two can never drift. #}
+     window.alTheme is the ONE owner of the storage key, the resolve rule, the
+     system media query and the act of applying a resolved scheme; the deferred
+     app.js drives the toggle only through it (read/save/resolve/apply/mq), so
+     the two can never drift. #}
   <script>
     window.alTheme = (function () {
       var KEY = "al-theme";
@@ -34,8 +35,25 @@
       function resolve(p) {
         return p === "dark" || (p === "system" && mq.matches) ? "dark" : "light";
       }
-      document.documentElement.setAttribute("data-theme", resolve(read()));
-      return { ORDER: ORDER, read: read, save: save, resolve: resolve, mq: mq };
+      /* The resolved scheme is mirrored into a cookie because one surface is
+         rendered by the SERVER and cannot read `data-theme`: the lesson preview
+         placeholder, a sandboxed document of its own whose own
+         `prefers-color-scheme` answers with the OS — wrong whenever the theme
+         is pinned against it. A presentation hint and nothing more: it selects
+         a palette and authorises nothing. Written here, in the one owner, so it
+         cannot fall behind the attribute it mirrors. */
+      function apply(p) {
+        var scheme = resolve(p);
+        document.documentElement.setAttribute("data-theme", scheme);
+        try {
+          document.cookie =
+            "al-scheme=" + scheme + ";path=/;max-age=31536000;samesite=lax";
+        } catch (e) {}
+        return scheme;
+      }
+      apply(read());
+      return { ORDER: ORDER, read: read, save: save, resolve: resolve,
+               apply: apply, mq: mq };
     })();
   </script>
   <script src="{{ static_url('app.js') }}" defer></script>

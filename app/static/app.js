@@ -178,10 +178,10 @@
   // runs before us) — this block only drives the toggle through it.
   (() => {
     const btns = document.querySelectorAll(".theme-toggle");
-    const { ORDER, read, save, resolve, mq } = window.alTheme;
+    const { ORDER, read, save, apply: applyScheme, mq } = window.alTheme;
     const LABEL = { system: "System", light: "Light", dark: "Dark" };
     function apply(pref) {
-      document.documentElement.setAttribute("data-theme", resolve(pref));
+      applyScheme(pref);  // data-theme + the server-visible mirror, one owner
       btns.forEach((b) => {
         b.dataset.pref = pref;
         b.title = "Theme: " + LABEL[pref];

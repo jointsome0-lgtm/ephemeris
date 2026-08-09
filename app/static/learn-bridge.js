@@ -1609,6 +1609,24 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     };
     setInterval(() => void tick(), POLL_MS);
     document.addEventListener("visibilitychange", () => void tick());
+    /* A theme flip has to reach the placeholder, and only a reload can carry it:
+     * that document was SERVED in whichever scheme was current (the `al-scheme`
+     * cookie `window.alTheme` writes), and a sandboxed document cannot be
+     * restyled from out here. Only the no-file case needs it — a real bundle owns
+     * its colours and must not be reloaded under the learner — and it goes
+     * through the ordinary meta→navigate path, so the version binding and the
+     * teardown stay exactly as the poll would leave them. */
+    const root = document.documentElement;
+    let scheme = root.dataset["theme"];
+    new MutationObserver(() => {
+        if (root.dataset["theme"] === scheme)
+            return;
+        scheme = root.dataset["theme"];
+        if (!frame.closest(".lesson-frame-wrap")?.classList.contains("no-file"))
+            return;
+        void fetchMeta().then((meta) => { if (meta !== null)
+            navigate(meta); });
+    }).observe(root, { attributes: true, attributeFilter: ["data-theme"] });
 }
 /* ---- record counts poll (#133 tier 1) ------------------------------------
  *

@@ -785,12 +785,26 @@ def get_lesson_bundle_file(lesson_id: int, resource: str, v: str | None = None):
     return FileResponse(info["path"], media_type=info["media_type"], headers=headers)
 
 
+def _scheme_hint(request: Request) -> str | None:
+    """The colour scheme the app resolved for this reader, if it said.
+
+    `window.alTheme` (base.html) mirrors its resolved `data-theme` into the
+    `al-scheme` cookie precisely so this server-rendered page can match a theme
+    that is pinned against the OS. A presentation hint and nothing else: it
+    selects a palette, authorises nothing, and any value but the two known ones
+    is ignored rather than trusted into the response.
+    """
+    value = request.cookies.get("al-scheme")
+    return value if value in lessons.SCHEMES else None
+
+
 @router.get("/learn/lessons/{lesson_id}/preview")
-def get_lesson_preview(lesson_id: int, entry: str | None = None,
+def get_lesson_preview(request: Request, lesson_id: int, entry: str | None = None,
                        conn: sqlite3.Connection = Depends(get_db)):
     lesson = _lesson_or_404(conn, lesson_id)
     try:
-        html, info = lessons.preview_html(lesson, entry)
+        html, info = lessons.preview_html(lesson, entry,
+                                          scheme=_scheme_hint(request))
     except lessons.LessonError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Response(
@@ -798,6 +812,9 @@ def get_lesson_preview(lesson_id: int, entry: str | None = None,
         media_type="text/html; charset=utf-8",
         headers={
             "Cache-Control": "no-store",
+            # A generated placeholder is rendered in the reader's colour scheme,
+            # so the cookie is part of what selects this body.
+            "Vary": "Cookie",
             "Content-Security-Policy": _preview_csp(info["profile"]),
             "X-Content-Type-Options": "nosniff",
             "X-Lesson-Preview-Version": info["version"],
