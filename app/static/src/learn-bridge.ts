@@ -459,10 +459,25 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     }
   };
 
+  const applyNoFile = (meta: PreviewMeta): void => {
+    /* `no-file` marks the placeholder case, and only there may the frame's
+     * canvas follow the reader's colour scheme (style.css): a real bundle's
+     * HTML is arbitrary and may set no background of its own, so a dark canvas
+     * under it would leave default black text unreadable. Live reload swaps the
+     * document without re-rendering the template, so the class has to move with
+     * it — a file appearing drops the dark canvas before the bundle paints, a
+     * file deleted restores it. Only a real boolean speaks; anything else (a
+     * pre-D2 backend) leaves the server-rendered class as it is, like
+     * `applySandbox` above. */
+    if (typeof meta.exists !== "boolean") return;
+    frame.closest(".lesson-frame-wrap")?.classList.toggle("no-file", !meta.exists);
+  };
+
   const navigate = (meta: PreviewMeta): void => {
     teardown();
     expectedVersion = String(meta.version ?? "0");
     applySandbox(meta); // before src: sandbox is read at navigation time
+    applyNoFile(meta);  // before src: the canvas must suit the incoming document
     const src = (typeof meta.preview_url === "string" && meta.preview_url)
       || (meta.exists ? frame.dataset["src"] : fallbackSrc)
       || fallbackSrc;
