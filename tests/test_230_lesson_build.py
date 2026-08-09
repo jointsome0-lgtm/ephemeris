@@ -120,6 +120,83 @@ def test_the_output_must_land_where_the_lesson_route_will_serve_it():
             lesson_build.clean_source_ref(bad, "entry")
 
 
+def test_the_output_may_not_land_on_the_shelf_the_app_reseeds():
+    """`assets/libs/` is written by the app, not by the lesson.
+
+    It is restored on every terminal open, so an artifact placed there is
+    replaced by the vendored copy minutes after the build reported success —
+    the page changes with nothing in the response to say why.
+    """
+    from app.services import lessons
+
+    for ref in (f"{lessons.LESSON_LIBS_BUNDLE_DIR}/d3/d3.min.js",
+                f"{lessons.LESSON_LIBS_BUNDLE_DIR}/anything.js"):
+        with pytest.raises(lesson_build.BuildError) as caught:
+            lesson_build.clean_source_ref(ref, "out")
+        assert caught.value.status == 400
+    # The neighbours are fine; only the managed subtree is out of bounds.
+    assert lesson_build.clean_source_ref("assets/libraries.js", "out")
+    assert lesson_build.clean_source_ref("assets/lib/page.js", "out")
+
+
+def test_a_third_output_is_refused_rather_than_quietly_dropped(tmp_path):
+    """Two names are read; anything else would be a file the page cannot load.
+
+    Measured on bun 1.3.11 this does not arise — the stock KaTeX stylesheet
+    and a CSS `url()` to a PNG both come back inlined as data URLs. If some
+    input ever does split the output, the page would reference a file the
+    bundle does not hold, and a refusal says that where a 404 later would not.
+    """
+    (tmp_path / f"{lesson_build._ARTIFACT_STEM}.js").write_bytes(b"(()=>{})();")
+    (tmp_path / "KaTeX_Main-Regular.woff2").write_bytes(b"font")
+    with pytest.raises(lesson_build.BuildError) as caught:
+        lesson_build._compose_artifact(tmp_path, [])
+    assert caught.value.code == "split-artifact" and caught.value.status == 422
+    assert "KaTeX_Main-Regular.woff2" in caught.value.detail
+
+    (tmp_path / "KaTeX_Main-Regular.woff2").unlink()
+    (tmp_path / f"{lesson_build._ARTIFACT_STEM}.css").write_bytes(b".a{color:red}")
+    combined = lesson_build._compose_artifact(tmp_path, [])
+    assert b".a{color:red}" in combined and combined.endswith(b"(()=>{})();")
+    assert b"document.createElement('style')" in combined
+
+
+def test_a_cancelled_step_does_not_leave_a_package_manager_running(monkeypatch):
+    """`wait_for` cancels the wait, not the process.
+
+    The lesson lock is released as the request unwinds, so a surviving bun
+    would still be writing `package.json`, the lockfile and `node_modules`
+    while the next build starts a second one on the same files.
+    """
+    import asyncio
+    import subprocess as _sp
+
+    marker = f"ephemeris-cancel-probe-{os.getpid()}"
+    monkeypatch.setattr(lesson_build, "_require_build_runtime", lambda: None)
+    monkeypatch.setattr(
+        sandbox, "build_step_argv",
+        lambda *a, **k: ["/bin/sh", "-c", f"# {marker}\nsleep 30"],
+    )
+
+    async def scenario():
+        task = asyncio.ensure_future(lesson_build._run_step(
+            "install", workspace=Path("/nonexistent"), bundle_dir=None,
+            command=["/bin/true"], timeout=30,
+        ))
+        # Long enough for the shell to be up and running under the marker.
+        await asyncio.sleep(0.5)
+        alive = _sp.run(["pgrep", "-f", marker], capture_output=True, text=True)
+        assert alive.returncode == 0, "the probe never started"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.2)
+        return _sp.run(["pgrep", "-f", marker], capture_output=True, text=True)
+
+    left = asyncio.run(scenario())
+    assert left.returncode != 0, f"the step outlived the request: {left.stdout}"
+
+
 def test_a_build_may_not_write_its_artifact_over_its_own_source():
     """`{"entry": "x.js", "out": "x.js"}` would destroy the authored source.
 

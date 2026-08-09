@@ -144,6 +144,18 @@ def clean_source_ref(raw, field: str) -> str:
                 f"`out` must be under `{_ARTIFACT_DIR}/`, the only place in a "
                 "bundle besides its declared pages that the lesson route serves",
             )
+        # …but not the one part of `assets/` the app writes itself. The shelf
+        # is reseeded on every terminal open, so an artifact placed there is
+        # replaced by the vendored copy some minutes after the build reported
+        # success — the page changes with nothing in the response to say so.
+        shelf = lessons.LESSON_LIBS_BUNDLE_DIR
+        if ref == shelf or ref.startswith(f"{shelf}/"):
+            raise BuildError(
+                "invalid-request", 400,
+                f"`out` may not be under `{shelf}/`: that shelf is app-managed "
+                "and restored on the next terminal open, which would silently "
+                "replace anything built into it",
+            )
     return ref
 
 
@@ -285,16 +297,52 @@ async def _run_step(
     try:
         output = await asyncio.wait_for(run(), timeout)
     except asyncio.TimeoutError:
-        process.kill()
-        await process.wait()
+        await _kill(process)
         raise BuildError(
             f"{step}-timeout", 504,
             f"the {step} step ran longer than {timeout:.0f}s and was killed",
         ) from None
+    except BaseException:
+        # Cancellation, most likely a shutdown. `wait_for` cancels the wait and
+        # nothing else, so without this the step keeps running while the lesson
+        # lock is released under it — and the next build starts a second bun on
+        # the same `package.json`, lockfile and `node_modules`.
+        await _kill(process)
+        raise
     elapsed = time.monotonic() - started
     tail = output.decode("utf-8", "replace").strip()
     _log.info("lesson build: %s finished rc=%s in %.2fs", step, process.returncode, elapsed)
     return process.returncode, tail
+
+
+async def _kill(process: asyncio.subprocess.Process) -> None:
+    """End the step and wait for it where waiting is still possible.
+
+    The guarantee owed to the caller is the *kill*, and it is taken before the
+    first `await`: no bun keeps writing the workspace after the lock protecting
+    it is released, whatever happens to this coroutine next. The scope's
+    `KillMode=control-group` takes the children with it.
+
+    On the cancellation path the `await` raises again straight away, which is
+    fine and deliberately not shielded — asyncio's child watcher reaps the
+    process on SIGCHLD whether or not anyone is waiting, while a shielded task
+    left running past the loop's own shutdown is a real leak.
+    """
+    if process.returncode is None:
+        try:
+            process.kill()
+        except ProcessLookupError:  # pragma: no cover - it finished as we looked
+            pass
+    # The output pipe outlives its reader. Measured on CPython 3.10: cancelling
+    # the task inside `StreamReader.read` leaves the read transport open, so the
+    # subprocess transport never finishes and its fd waits for the collector.
+    # `Process` exposes no way to say this, and the alternative — owning the
+    # pipe here instead of letting asyncio make it — is a great deal of code for
+    # two file descriptors.
+    transport = getattr(process, "_transport", None)
+    if transport is not None:
+        transport.close()
+    await process.wait()
 
 
 async def _tail_of(stream: asyncio.StreamReader, limit: int) -> bytes:
@@ -558,6 +606,13 @@ def _too_large(size: int, steps: list[dict]) -> BuildError:
     )
 
 
+def _outdir_names(outdir: Path) -> list[str]:
+    try:
+        return os.listdir(outdir)
+    except OSError:
+        return []
+
+
 def _empty_outdir(outdir: Path) -> None:
     """Unlink the previous run's outputs without following anything.
 
@@ -592,7 +647,28 @@ def _compose_artifact(outdir: Path, steps: list[dict]) -> bytes:
 
     `style-src` in `interactive-local-v1` allows inline styles, so the injected
     element is not the thing the render gate is watching for.
+
+    A third output is refused rather than dropped. Measured on bun 1.3.11, the
+    stock KaTeX stylesheet and a CSS `url()` to a local PNG both come back
+    inlined as `data:` URLs, so nothing is left beside the two names — and if a
+    future input does leave something, it would be a file the page references
+    and the bundle does not hold. On an opaque origin a web font cannot be
+    fetched cross-scheme anyway, so placing such a file would not save the
+    page; saying so is the only useful answer.
     """
+    strays = sorted(
+        name for name in _outdir_names(outdir)
+        if name not in (f"{_ARTIFACT_STEM}.js", f"{_ARTIFACT_STEM}.css")
+    )
+    if strays:
+        raise BuildError(
+            "split-artifact", 422,
+            "the bundler produced files the page has no way to load: "
+            + ", ".join(strays[:10])
+            + "; a lesson is served one script, so import what you need as "
+            "code or as a data URL rather than as a side file",
+            steps=steps,
+        )
     script = _read_artifact(outdir / f"{_ARTIFACT_STEM}.js", steps)
     assert script is not None
     styles = _read_artifact(

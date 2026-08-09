@@ -104,7 +104,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` (both dropped again by
   bwrap's `--clearenv`), reading the merged stdout/stderr pipe
   incrementally and keeping only its last 8 KiB, with 300 s / 120 s
-  timeouts, after checking bubblewrap, the systemd user scope, that
+  timeouts. A timeout and any other exception out of the wait — including
+  cancellation — both `SIGKILL` the subprocess, close its transport and
+  await it before propagating, so no step outlives the request holding the
+  per-slug lock. The steps run after checking bubblewrap, the systemd user
+  scope, that
   `sandbox.BUN_BINARY` is
   executable, and that `sandbox.BUN_CACHE_DIR` exists or can be created
   `0o700`. The bundler writes into `<workspace>/out/`, whose entries are
@@ -121,12 +125,21 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `out/artifact.css` exists its bytes are JSON-encoded into a prologue
   that creates a `<style>` element and appends it to
   `document.head || document.documentElement`, prepended to
-  `out/artifact.js`; the 1 MiB ceiling applies to the combined bytes. The
+  `out/artifact.js`; the 1 MiB ceiling applies to the combined bytes. Any
+  other name in `out/` after the bundle step refuses the build with
+  `split-artifact` 422 (first ten named). Measured on bun 1.3.11: the
+  stock `katex/dist/katex.min.css` and a CSS `url()` to a local PNG both
+  come back inlined as `data:` URLs, so `out/` holds exactly the two
+  names; the katex case then exceeds the 1 MiB ceiling
+  (`artifact.js` 0.27 MB + `artifact.css` 1.46 MB) and is refused as
+  `artifact-too-large`. The
   `_AGENTS_TEMPLATE` brief documents that stylesheet imports work and
   that there is no second file to link. Package specs are matched against an anchored npm
   name/range regex, at most 32 per request; `entry` and `out` go through
   `lessons.clean_bundle_ref` and are refused when equal; `out` is also
-  refused unless it is under `assets/`, and `entry` is refused when
+  refused unless it is under `assets/` and outside
+  `assets/libs/` (`lessons.LESSON_LIBS_BUNDLE_DIR`, which
+  `seed_lesson_libs` rewrites on terminal open), and `entry` is refused when
   `bundle_schema.path_has_symlink` reports a symlink on its path, checked
   before the path is resolved. After the install step and before the
   bundle step the bundle directory is walked with
