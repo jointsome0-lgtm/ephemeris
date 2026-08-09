@@ -1,5 +1,5 @@
 /* GENERATED-SOURCE NOTICE: app/static/learn-bridge.js is emitted from this
- * file by `npm run build` (tsc, issue #42) and committed so deploy stays
+ * file by `bun run build` (tsc, issue #42) and committed so deploy stays
  * zero-build. Edit THIS file and re-emit; never edit the .js by hand. */
 /* Learn preview runtime + lesson bridge parent (D2, ABI v2 — see
  * docs/lesson-bridge-abi.md).

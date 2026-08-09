@@ -1,5 +1,5 @@
 /* GENERATED-SOURCE NOTICE: app/static/terminal.js is emitted from this
- * file by `npm run build` (tsc, issue #42) and committed so deploy stays
+ * file by `bun run build` (tsc, issue #42) and committed so deploy stays
  * zero-build. Edit THIS file and re-emit; never edit the .js by hand. */
 
 /* xterm and its addons are vendored browser globals without TypeScript

@@ -1,6 +1,6 @@
 "use strict";
 /* GENERATED-SOURCE NOTICE: app/static/terminal.js is emitted from this
- * file by `npm run build` (tsc, issue #42) and committed so deploy stays
+ * file by `bun run build` (tsc, issue #42) and committed so deploy stays
  * zero-build. Edit THIS file and re-emit; never edit the .js by hand. */
 // Desktop / localhost-only terminal drawer (GCP Cloud Shell style) — the client
 // half of app/terminal.py. Loaded by base.html only for local clients; the markup
