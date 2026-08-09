@@ -24,7 +24,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-08-09 — pending squash of `lesson-build-workspace`, PR #164 —
+- [ ] 2026-08-09 — `6f7d893` (squash of `lesson-build-workspace`, PR #164) —
   `app/sandbox.py`, `app/services/bundle_schema.py`,
   `app/services/lessons.py`, `app/terminal.py`,
   `docs/learn-bundle-spec.md`, `docs/reviews/QUEUE.md`,
