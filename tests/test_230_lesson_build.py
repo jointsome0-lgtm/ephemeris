@@ -261,6 +261,36 @@ def test_both_views_blank_the_home_the_agent_cannot_read_either():
         assert "--clearenv" in argv
 
 
+def test_neither_step_gets_unbounded_memory_or_an_unbounded_scratch():
+    """A timeout bounds wall time and nothing else.
+
+    `bun build` executes an agent-authored macro. Allocating or forking in a
+    loop takes the host down well inside a two-minute budget, and this app is
+    one worker on that host — so the limits have to be on the cgroup, not on
+    the clock.
+    """
+    for step, extra in (("install", {}), ("bundle", {"bundle_dir": "/data/lessons/demo"})):
+        argv = sandbox.build_step_argv(step, command=["/bin/true"], **ROOTS, **extra)
+        sized = [(argv[i - 1], argv[i + 1]) for i, word in enumerate(argv)
+                 if word == "--tmpfs" and i and argv[i - 2] == "--size"]
+        assert (str(sandbox.BUILD_SCRATCH_BYTES), "/tmp") in sized
+        assert (str(sandbox.BUILD_HOME_BYTES), sandbox.USER_HOME) in sized
+
+    prefix = sandbox.build_scope_prefix(120)
+    assert prefix[0] == sandbox.SYSTEMD_RUN and prefix[-1] == "--"
+    assert f"--property=MemoryMax={sandbox.BUILD_MEMORY_MAX}" in prefix
+    assert f"--property=TasksMax={sandbox.BUILD_TASKS_MAX}" in prefix
+    assert "--property=MemorySwapMax=0" in prefix
+    assert "--property=KillMode=control-group" in prefix
+    # The scope outlives the caller's own timeout, or a build that took its
+    # full budget would be killed by the backstop and read as a failure.
+    assert (f"--property=RuntimeMaxSec="
+            f"{120 + sandbox.BUILD_SCOPE_GRACE_SECONDS}s") in prefix
+    for bad in (0, -1, sandbox.BUILD_MAX_WALL_SECONDS + 1):
+        with pytest.raises(ValueError):
+            sandbox.build_scope_prefix(bad)
+
+
 def test_a_build_view_refuses_a_workspace_the_bundle_could_choose():
     for workspace in ("/data/lessons/demo/node_modules", "/elsewhere/demo", "relative"):
         with pytest.raises(ValueError):
@@ -569,6 +599,12 @@ def test_a_page_with_many_assets_is_not_charged_with_errors_it_never_had():
         for method in ("Network.requestWillBeSent", "Network.loadingFinished",
                        "Network.dataReceived", "Runtime.executionContextCreated"):
             browser._record({"method": method, "params": {"requestId": str(i)}})
+        # A chatty page is not a broken one either. The method is one the gate
+        # reads; the subtype is not, and `_errors_from` would throw both away.
+        browser._record({"method": "Runtime.consoleAPICalled", "params": {
+            "type": "log", "args": [{"value": f"step {i}"}]}})
+        browser._record({"method": "Log.entryAdded", "params": {
+            "entry": {"level": "info", "text": f"note {i}"}}})
     assert browser.events == [] and browser.dropped == 0
 
 

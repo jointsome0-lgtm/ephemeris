@@ -90,15 +90,22 @@ _NOISE_URL_SUFFIXES = ("/favicon.ico",)
 # and has to be reported, which a prefix match would have swallowed.
 _NOISE_TEXTS = frozenset({"Unrecognized Content-Security-Policy directive 'webrtc'."})
 
-# The three notifications `_errors_from` reads. Everything else the enabled
-# domains emit — `Network.*` fires several times per subresource — is thrown
-# away where it arrives, so a lesson with a hundred honest images cannot fill
-# `MAX_EVENTS` and be told it produced errors nobody collected.
-_DIAGNOSTIC_METHODS = frozenset({
-    "Runtime.exceptionThrown",
-    "Runtime.consoleAPICalled",
-    "Log.entryAdded",
-})
+def _is_diagnostic(method: str | None, params: dict) -> bool:
+    """Whether `_errors_from` could turn this notification into an error.
+
+    The same predicate at both ends on purpose. Whatever `_record` keeps is
+    what the cap counts, and anything the cap counts and `_errors_from` then
+    discards is reported as an error that was never collected — so a page with
+    six hundred `console.log` calls, or a hundred images behind their
+    `Network.*` traffic, would be refused for rendering correctly.
+    """
+    if method == "Runtime.exceptionThrown":
+        return True
+    if method == "Runtime.consoleAPICalled":
+        return params.get("type") in ("error", "assert")
+    if method == "Log.entryAdded":
+        return (params.get("entry") or {}).get("level") == "error"
+    return False
 
 
 class RenderCheckUnavailable(RuntimeError):
@@ -271,12 +278,10 @@ class _Browser:
             if url and len(self.executed) < MAX_URLS:
                 self.executed.add(_url_key(url))
             return
-        # Only what `_errors_from` will actually read. Everything else — and
-        # `Network.*` alone is several notifications per subresource — is
-        # dropped without being counted: an asset-heavy lesson that renders
-        # perfectly emits hundreds of them, and counting those as "further
-        # errors not collected" would refuse every build of it.
-        if method not in _DIAGNOSTIC_METHODS:
+        # Only what `_errors_from` will actually read. Everything else is
+        # dropped without being counted, so the cap measures how badly a page
+        # is failing rather than how much it has to say.
+        if not _is_diagnostic(method, params):
             return
         if len(self.events) < MAX_EVENTS:
             self.events.append(event)
@@ -357,13 +362,15 @@ def _errors_from(events: list[dict]) -> list[RenderError]:
     for event in events:
         method = event.get("method")
         params = event.get("params") or {}
+        # One predicate, shared with `_record`, so the set of events kept can
+        # never drift from the set of events read.
+        if not _is_diagnostic(method, params):
+            continue
         if method == "Runtime.exceptionThrown":
             details = params.get("exceptionDetails") or {}
             exception = details.get("exception") or {}
             add("exception", exception.get("description") or details.get("text") or "")
         elif method == "Runtime.consoleAPICalled":
-            if params.get("type") not in ("error", "assert"):
-                continue
             parts = []
             for argument in params.get("args") or []:
                 if "value" in argument:
@@ -373,8 +380,6 @@ def _errors_from(events: list[dict]) -> list[RenderError]:
             add("console", " ".join(part for part in parts if part))
         elif method == "Log.entryAdded":
             entry = params.get("entry") or {}
-            if entry.get("level") != "error":
-                continue
             url = entry.get("url") or ""
             text = entry.get("text") or ""
             if any(url.endswith(suffix) for suffix in _NOISE_URL_SUFFIXES):

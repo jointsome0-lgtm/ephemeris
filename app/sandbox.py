@@ -45,6 +45,33 @@ RUNNER_SCOPE_PREFIX = (
     "--property=KillMode=control-group",
 )
 
+# A build step is not user code from a stranger, but `bun build` executes an
+# agent-authored macro, and a wall-clock timeout is no help against a macro
+# that allocates or forks in a loop: the host is out of memory long before the
+# timer fires, and the one worker serving this app dies with it. Same scope
+# mechanism as the runner, sized for a toolchain rather than for one exercise —
+# a real `bun install` of a large tree peaks well under this.
+BUILD_MEMORY_MAX = "2G"
+BUILD_TASKS_MAX = 512
+BUILD_MAX_WALL_SECONDS = 600
+BUILD_SCOPE_GRACE_SECONDS = 15
+# Bounded for the same reason the runner's are: an unbounded tmpfs is host
+# memory that a loop can claim without ever allocating it in a process.
+BUILD_SCRATCH_BYTES = 512 * 1024 * 1024
+BUILD_HOME_BYTES = 64 * 1024 * 1024
+
+BUILD_SCOPE_PREFIX = (
+    SYSTEMD_RUN,
+    "--user",
+    "--scope",
+    "--collect",
+    "--quiet",
+    f"--property=TasksMax={BUILD_TASKS_MAX}",
+    f"--property=MemoryMax={BUILD_MEMORY_MAX}",
+    "--property=MemorySwapMax=0",
+    "--property=KillMode=control-group",
+)
+
 
 @cache
 def _systemd_no_expand_option() -> tuple[str, ...]:
@@ -87,6 +114,25 @@ def runner_scope_prefix(
         "--",
     ])
     return tuple(argv)
+
+
+def build_scope_prefix(wall_seconds: int) -> tuple[str, ...]:
+    """The resource scope one build step runs inside.
+
+    `RuntimeMaxSec` is a backstop under the caller's own timeout, not a
+    replacement for it: the caller kills the process it started, and this kills
+    the cgroup if that process is gone or wedged. The grace is wider than the
+    runner's because a build step's own timeout is minutes, not seconds, and a
+    scope that expired first would look like a build failure.
+    """
+    if not 1 <= wall_seconds <= BUILD_MAX_WALL_SECONDS:
+        raise ValueError("a build scope requires a bounded wall limit")
+    return (
+        *BUILD_SCOPE_PREFIX,
+        *_systemd_no_expand_option(),
+        f"--property=RuntimeMaxSec={wall_seconds + BUILD_SCOPE_GRACE_SECONDS}s",
+        "--",
+    )
 
 
 class SandboxError(RuntimeError):
@@ -609,8 +655,8 @@ def build_step_argv(
         "--ro-bind", "/", "/",
         "--proc", "/proc",
         "--dev", "/dev",
-        "--tmpfs", "/tmp",
-        "--tmpfs", USER_HOME,
+        "--size", str(BUILD_SCRATCH_BYTES), "--tmpfs", "/tmp",
+        "--size", str(BUILD_HOME_BYTES), "--tmpfs", USER_HOME,
         "--ro-bind", BUN_BINARY, BUN_BINARY,
     ])
     if step == "install":
@@ -650,7 +696,7 @@ class _ProbeResult:
 
 
 @cache
-def _cached_runner_scope_probe() -> _ProbeResult:
+def _cached_user_scope_probe() -> _ProbeResult:
     """Verify limits and literal argv delivery through the user scope."""
     literal = "$EPHEMERIS_SCOPE_LITERAL"
     prefix = list(runner_scope_prefix(5))
@@ -673,8 +719,8 @@ def _cached_runner_scope_probe() -> _ProbeResult:
     return _ProbeResult(False, detail[:500] or f"exit {result.returncode}")
 
 
-def require_runner_scope_runtime() -> None:
-    result = _cached_runner_scope_probe()
+def require_user_scope_runtime() -> None:
+    result = _cached_user_scope_probe()
     if not result.available:
         raise SandboxUnavailableError(
             f"systemd user scope probe failed: {result.detail}"
@@ -894,7 +940,7 @@ async def spawn_sandboxed(
         raise ValueError("runner-only spawn arguments used for a terminal profile")
     require_sandbox_runtime()
     if profile == "lesson-runner":
-        require_runner_scope_runtime()
+        require_user_scope_runtime()
     snapshot_fd: int | None = None
     module_cache_fd: int | None = None
     try:

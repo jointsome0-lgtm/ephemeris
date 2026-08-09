@@ -63,7 +63,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `build_sandbox_argv` that the terminal and runner paths do not call; it
   returns a bubblewrap argv for `step` in `("install", "bundle")`. Both
   steps: `--unshare-all`, `--die-with-parent`, `--ro-bind / /`, `--proc`,
-  `--dev`, `--tmpfs /tmp`, `--tmpfs $HOME`, `--ro-bind` of
+  `--dev`, `--size 536870912 --tmpfs /tmp`, `--size 67108864 --tmpfs $HOME`
+  (measured 2026-08-09 inside the bundle view: `df` reports exactly those
+  two sizes), `--ro-bind` of
   `$HOME/.bun/bin/bun`, `--chdir` to the build workspace, `--clearenv`,
   then `--setenv` for `PATH`, `HOME` and `TMPDIR` only. `install`
   additionally gets `--share-net`, a `--bind` of `$HOME/.bun/install/cache`
@@ -78,10 +80,26 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   workspace is validated by the existing `_pure_build_workspace`, the
   bundle by `_pure_bundle_path`; a bundle dir is required for `bundle` and
   rejected for `install`. New `sandbox.BUILD_OUTPUT_DIR = "out"`.
+  New `sandbox.build_scope_prefix(wall_seconds)` returns
+  `systemd-run --user --scope --collect --quiet` with
+  `TasksMax=512`, `MemoryMax=2G`, `MemorySwapMax=0`,
+  `KillMode=control-group`, the same `--expand-environment=no` probe the
+  runner prefix uses, and `RuntimeMaxSec=<wall_seconds + 15>s`; it raises
+  outside 1..600 s. Measured 2026-08-09: a process allocating 6.4 GiB
+  inside the bundle view under this prefix exits 137 after 1.4 s.
+  `sandbox.require_runner_scope_runtime` and
+  `sandbox._cached_runner_scope_probe` are renamed to
+  `require_user_scope_runtime` / `_cached_user_scope_probe` with no change
+  of behaviour; `app/runner.py` and `tests/test_060_role_runner.py` follow
+  the rename.
   New `app/services/lesson_build.py` runs the two steps as
-  `asyncio.create_subprocess_exec`, reading the merged stdout/stderr pipe
+  `asyncio.create_subprocess_exec` of `build_scope_prefix(int(timeout))`
+  followed by the bubblewrap argv, with an environment of only
+  `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` (both dropped again by
+  bwrap's `--clearenv`), reading the merged stdout/stderr pipe
   incrementally and keeping only its last 8 KiB, with 300 s / 120 s
-  timeouts, after checking bubblewrap, that `sandbox.BUN_BINARY` is
+  timeouts, after checking bubblewrap, the systemd user scope, that
+  `sandbox.BUN_BINARY` is
   executable, and that `sandbox.BUN_CACHE_DIR` exists or can be created
   `0o700`. The bundler writes into `<workspace>/out/artifact.js`, which is
   unlinked before each run. Install argv: `bun add|install --backend=copyfile
@@ -132,9 +150,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   word the refusal. The build route passes the artifact's own files URL.
   Notifications are routed as they arrive rather than kept whole: load
   flags, up to 2000 fetched URLs and up to 2000 executed script URLs as
-  sets, the three diagnostic methods above in a list capped at 500 with
-  the overflow reported as a count, and every other method discarded
-  without being counted. The load flag is reset at each
+  sets, and a list capped at 500 with the overflow reported as a count
+  holding only what a shared `_is_diagnostic(method, params)` predicate
+  accepts — `Runtime.exceptionThrown`, `Runtime.consoleAPICalled` of type
+  error/assert, `Log.entryAdded` at level error. The same predicate gates
+  the collection and the report, so nothing counted toward the cap is
+  discarded afterwards. The load flag is reset at each
   `Page.navigate` and `Page.frameStoppedLoading` is only accepted for the
   frame that navigation returned.
   Sandbox-runtime, bundle-path and entry-path failures inside

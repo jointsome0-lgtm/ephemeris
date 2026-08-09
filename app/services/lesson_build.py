@@ -211,6 +211,10 @@ def _require_build_runtime() -> None:
     """
     try:
         sandbox.require_sandbox_runtime()
+        # The step is not started outside its resource scope. A macro that
+        # allocates or forks in a loop takes the host down long before either
+        # step's timeout fires, and the app is a single worker on that host.
+        sandbox.require_user_scope_runtime()
     except sandbox.SandboxUnavailableError as exc:
         raise BuildError("build-unavailable", 503, str(exc)) from exc
     if not os.access(sandbox.BUN_BINARY, os.X_OK):
@@ -248,15 +252,23 @@ async def _run_step(
             bundle_dir=str(bundle_dir) if bundle_dir is not None else None,
             command=command,
         )
+        argv = [*sandbox.build_scope_prefix(int(timeout)), *argv]
     except ValueError as exc:
         raise BuildError("build-unavailable", 500, f"could not build the step view: {exc}") from exc
     started = time.monotonic()
+    # `systemd-run --user` finds its bus through these two, and only these two:
+    # bwrap's `--clearenv` drops them again before the step's own command runs.
+    env = {
+        name: value for name in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
+        if (value := os.environ.get(name))
+    }
     try:
         process = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            env=env,
         )
     except OSError as exc:
         raise BuildError("build-unavailable", 503, f"could not start {step}: {exc}") from exc
