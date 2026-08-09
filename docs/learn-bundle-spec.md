@@ -59,7 +59,15 @@ data/lessons/<slug>/
 
 Reserved names, which no page, block file, or artifact root may claim:
 `lesson.json`, `attempts.jsonl`, `assessments.jsonl`, `runs.jsonl`,
-`AGENTS.md`, `CLAUDE.md`, `.claude`, `node_modules`.
+`AGENTS.md`, `CLAUDE.md`, `.claude`, `node_modules`, `source`.
+
+`source/` holds the raw material a lesson was built from — fetched pages and
+a `_fetched.json` recording each one's url, date and sha256 — so provenance
+survives the session that gathered it. It is input to the tutor, never
+lesson content: nothing under it is served, walked as a page, or referenced
+from the manifest. Workspace prep creates it when the name is free, uses an
+existing directory as it stands, and renames nothing that holds the name,
+because the app writes nothing into it. (2026-08-09.)
 
 `node_modules` is a mount point, not bundle content. The packages an agent
 installs live outside the bundle, in that lesson's build workspace
@@ -889,6 +897,16 @@ in practice when a lesson could install packages at all, which is what #161
 introduces; no bundle on the instance this was landed against referenced it
 (15 bundles, none carrying a `node_modules` or a `package.json`).
 
+The fourth is the `source` reservation (§2, 2026-08-09), on the same terms:
+a file under `source/` that a v1 bundle previously served is no longer
+servable, and a v1 `entry` or `related[]` entry pointing there still reads
+but no longer renders. No bundle is migrated, and unlike the three above,
+nothing on disk is moved either — workspace prep declines the name when it
+is taken rather than renaming what holds it. Surveyed on the instance this
+was landed against: 16 bundles, one already carrying a `source/` directory
+of fetched course steps (the convention this reservation formalizes), and
+no manifest referencing the name.
+
 Everything else about what a v1 bundle renders is unchanged.
 
 ### 9.3 Unknown fields
@@ -902,7 +920,7 @@ re-dumping cannot provide it. Additive evolution inside v2 means new
 OPTIONAL fields; any change to the meaning of an existing field requires
 v3.
 
-Two named exceptions, taken deliberately rather than through v3. Adding
+Three named exceptions, taken deliberately rather than through v3. Adding
 `.claude` to the §2 reserved names (2026-07-29,
 [#84](https://github.com/jointsome0-lgtm/ephemeris/issues/84)) narrows what
 `entry`, `pages[].path`, `blocks[].file` and `artifact_roots[]` accept
@@ -911,16 +929,29 @@ without a version bump. A v2 manifest declaring a path whose first segment is
 `invalid-entry`), and a manifest whose only page was such a path becomes
 rejected with `no-pages`. Adding `node_modules` (2026-08-09,
 [#161](https://github.com/jointsome0-lgtm/ephemeris/issues/161)) narrows the
-same four fields the same way.
+same four fields the same way, and so does adding `source` (2026-08-09).
+
+`source` differs from the other two in what happens on disk. The app writes
+nothing under it — the tutor stores fetched material there — so workspace
+prep creates the directory only when the name is free, and whatever already
+holds the name keeps it exactly as it stands, renamed by nothing. A real
+directory there is the ordinary case, not a collision: it is what every
+second and later open of the same workspace finds, and it is used as the
+source directory, contents and all. A file or a link is the compatibility
+case: it stays untouched, and the tutor's brief then states that this
+bundle has no source directory rather than sending writes at it. Either
+way the name stops being author-addressable, like the two reservations
+above.
 
 The reason a v3 would not serve either purpose: the app writes
 `.claude/settings.json` into every bundle it prepares, and the lesson-agent
 sandbox binds a build workspace over `<bundle>/node_modules`, so neither
 directory can stay author-addressable in any version a current reader opens.
 The app never destroys what it finds there — a foreign node at an app-owned
-name is moved aside as `<name>.collision-<hex>` (§6.5's rule, applied to both
-names), so a bundle carrying the older shape loses a manifest binding, never
-its bytes.
+name is moved aside as `<name>.collision-<hex>` (§6.5's rule, applied to
+`.claude` and `node_modules`), so a bundle carrying the older shape loses a
+manifest binding, never its bytes. At `source` even the move is skipped, for
+the reason above.
 
 Canonical serialization, exactly: Python's
 `json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"`, UTF-8 — the

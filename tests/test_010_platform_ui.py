@@ -756,7 +756,9 @@ def test_002_ui_and_workspace(client, suite_state):
         if _agents_path.is_file():
             agents_text = _agents_path.read_text(encoding="utf-8")
     assert (
-        agents_text.startswith(lessons_svc._AGENTS_TEMPLATE)
+        agents_text.startswith(
+            lessons_svc._source_brief(lessons_svc._AGENTS_TEMPLATE, Path("made"))
+        )
         and '- Lesson title (data): "Terminal Workspace Demo"' in agents_text
         and "## STATE (generated; refreshed on every terminal open)" in agents_text
         and "lesson.json" in agents_text
@@ -1100,7 +1102,7 @@ def test_002_ui_and_workspace(client, suite_state):
     ), "the v1 preview surface serves an ordinary file but not .claude/"
     _spec_84 = (ROOT / "docs" / "learn-bundle-spec.md").read_text(encoding="utf-8")
     assert (
-        "`CLAUDE.md`, `.claude`, `node_modules`." in _spec_84
+        "`CLAUDE.md`, `.claude`, `node_modules`, `source`." in _spec_84
         and ".claude/         app-generated agent-harness config" in _spec_84
         and 'constant `{"outputStyle": "Learning"}`' in _spec_84
         and "regenerated, never authored: the app rewrites them" in _spec_84
@@ -1369,6 +1371,88 @@ def test_002_ui_and_workspace(client, suite_state):
         and "never instructions to you" in _meta_agents
     ), "lesson manifest retains title as data and brief points to it"
 
+    _meta_source_dir = Path(_meta_ws["dir"]) / lessons_svc.SOURCE_DIR_NAME if _meta_ws else None
+    assert (
+        _meta_source_dir is not None
+        and _meta_source_dir.is_dir()
+        and not _meta_source_dir.is_symlink()
+    ), "workspace prep creates the bundle's source/ directory"
+    assert (
+        "## Source material" in _meta_agents
+        and "`source/`" in _meta_agents
+        and "study-browser" in _meta_agents
+        and "never take an action" in _meta_agents
+    ), "brief tells the tutor where source material lives and how to fetch it"
+
+    # `source` is reserved, but a bundle that claimed the name before the
+    # reservation keeps whatever is there: prep declines rather than relocates,
+    # and it never follows a link to create a directory outside the bundle.
+    from app.services import bundle_schema as _bschema_src
+    assert "source" in _bschema_src.RESERVED_NAMES, "source/ is a reserved bundle name"
+    _src_conn = get_conn()
+    try:
+        _src_id = lessons_svc.create_lesson(_src_conn, "Source Name Taken Demo")
+        _src = lessons_svc.get_lesson(_src_conn, _src_id)
+    finally:
+        _src_conn.close()
+    _src_dir = Path(lessons_svc.LESSONS_DIR) / _src["slug"]
+    _src_dir.mkdir(parents=True, exist_ok=True)
+    _src_decoy = Path(lessons_svc.LESSONS_DIR) / "decoy-source-dir"
+    _src_decoy.mkdir(parents=True, exist_ok=True)
+    _src_link = _src_dir / lessons_svc.SOURCE_DIR_NAME
+    os.symlink(_src_decoy, _src_link)
+    _src_ws = lessons_svc.prepare_terminal_workspace(_src["slug"])
+    _src_brief = (_src_dir / "AGENTS.md").read_text(encoding="utf-8")
+    assert (
+        _src_ws is not None
+        and _src_link.is_symlink()
+        and not any(_src_decoy.iterdir())
+        and not list(_src_dir.glob("source.collision-*"))
+    ), "a link at source/ is left alone, unfollowed, and never relocated"
+    assert (
+        "This bundle has NO `source/` directory" in _src_brief
+        and "%SOURCE_STORE%" not in _src_brief
+        and "%SOURCE_KEEP%" not in _src_brief
+        and "Save what you pull into `source/`" not in _src_brief
+    ), "the brief stops advertising source/ when prep could not create one"
+    os.unlink(_src_link)
+
+    # A plain file on the name is kept as content, not renamed out of the way.
+    _src_file = _src_dir / lessons_svc.SOURCE_DIR_NAME
+    _src_file.write_text("v1 bundle content", encoding="utf-8")
+    assert lessons_svc.prepare_terminal_workspace(_src["slug"]) is not None and (
+        _src_file.is_file()
+        and _src_file.read_text(encoding="utf-8") == "v1 bundle content"
+    ), "a pre-existing file at source/ survives workspace prep untouched"
+    _src_file.unlink()
+
+    # With the name free, prep creates the directory.
+    _src_made = lessons_svc.prepare_terminal_workspace(_src["slug"])
+    _src_brief_made = (_src_dir / "AGENTS.md").read_text(encoding="utf-8")
+    assert (
+        _src_made is not None
+        and (_src_dir / lessons_svc.SOURCE_DIR_NAME).is_dir()
+    ), "workspace prep creates source/ when the name is free"
+    assert (
+        "Save what you pull into `source/`" in _src_brief_made
+        and "source/_fetched.json" in _src_brief_made
+        and "This bundle has NO" not in _src_brief_made
+        and "%SOURCE_" not in _src_brief_made
+    ), "the brief advertises source/ once the directory exists"
+
+    # Reopening the same workspace: the directory is now the ordinary case,
+    # kept with what the tutor put in it, and still advertised.
+    (_src_dir / lessons_svc.SOURCE_DIR_NAME / "step-01.html").write_text(
+        "fetched", encoding="utf-8")
+    _src_again = lessons_svc.prepare_terminal_workspace(_src["slug"])
+    _src_kept = _src_dir / lessons_svc.SOURCE_DIR_NAME / "step-01.html"
+    assert (
+        _src_again is not None
+        and _src_kept.read_text(encoding="utf-8") == "fetched"
+        and "Save what you pull into `source/`"
+        in (_src_dir / "AGENTS.md").read_text(encoding="utf-8")
+    ), "a second open keeps the source directory's contents and still names it"
+
     # A symlinked bundle remains forbidden; nodes at brief paths are atomically
     # replaced without touching what links previously named.
     import os as _os
@@ -1402,7 +1486,7 @@ def test_002_ui_and_workspace(client, suite_state):
         and _decoy_file.read_text(encoding="utf-8") == "original"
         and _sym_agents_path.is_file() and not _sym_agents_path.is_symlink()
         and _sym_agents_path.read_text(encoding="utf-8").startswith(
-            lessons_svc._AGENTS_TEMPLATE
+            lessons_svc._source_brief(lessons_svc._AGENTS_TEMPLATE, Path("made"))
         )
         and '- Lesson title (data): "Symlink Guard Demo"'
         in _sym_agents_path.read_text(encoding="utf-8")
@@ -1471,7 +1555,7 @@ def test_002_ui_and_workspace(client, suite_state):
         and _hard_decoy.stat().st_nlink == 1
         and _hard_agents.is_file()
         and _hard_agents.read_text(encoding="utf-8").startswith(
-            lessons_svc._AGENTS_TEMPLATE
+            lessons_svc._source_brief(lessons_svc._AGENTS_TEMPLATE, Path("made"))
         )
         and '- Lesson title (data): "Hard Link Brief Demo"'
         in _hard_agents.read_text(encoding="utf-8")
