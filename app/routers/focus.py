@@ -21,7 +21,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import JSONResponse
 
-from ..db import get_db
+from ..db import get_db, snapshot
 from ..services import focus
 
 router = APIRouter()  # GET /focus/timer[/targets], POST /focus/timer/*
@@ -29,14 +29,22 @@ router = APIRouter()  # GET /focus/timer[/targets], POST /focus/timer/*
 
 def _state(conn: sqlite3.Connection, **extra) -> JSONResponse:
     """One shape for every answer: whatever is running, plus today's totals and
-    the recent spans, so the drawer never needs a second call to redraw."""
-    return JSONResponse({
-        "ok": True,
-        "run": focus.active_run(conn),
-        "overview": focus.overview(conn),
-        "recent": focus.recent_sessions(conn, limit=8),
-        **extra,
-    })
+    the recent spans, so the drawer never needs a second call to redraw.
+
+    All three reads come from one snapshot. Another tab can finish the timer
+    between them, and the drawer has no periodic poll to correct itself with —
+    it would keep counting a run this answer said was still going while showing
+    the totals that already counted it.
+    """
+    with snapshot(conn):
+        state = {
+            "ok": True,
+            "run": focus.active_run(conn),
+            "overview": focus.overview(conn),
+            "recent": focus.recent_sessions(conn, limit=8),
+            **extra,
+        }
+    return JSONResponse(state)
 
 
 def _rejected(exc: focus.FocusError) -> JSONResponse:
@@ -82,8 +90,9 @@ def post_focus_session_legacy(
     # the record. Handing it the new shapes would blank its counters and mislabel
     # the row it appends — a compatibility route that only half-answers is worse
     # than none, because the write succeeded and the page says otherwise.
-    ov, rec = focus.overview(conn), focus.get_session_view(conn, sid)
-    pomo = focus.pomodoro_counts(conn)
+    with snapshot(conn):
+        ov, rec = focus.overview(conn), focus.get_session_view(conn, sid)
+        pomo = focus.pomodoro_counts(conn)
     return JSONResponse({
         "ok": True,
         "overview": {**ov, **pomo},

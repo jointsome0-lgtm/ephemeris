@@ -255,6 +255,35 @@ def immediate(conn: sqlite3.Connection):
     conn.commit()
 
 
+@contextmanager
+def snapshot(conn: sqlite3.Connection):
+    """Several reads, one version of the database (the mirror of `immediate`).
+
+    Outside a transaction every `SELECT` sees whatever is committed at the
+    instant it runs, so an answer assembled from three of them can describe
+    three different moments — a running timer next to the totals that already
+    include the session it became. `BEGIN` (deferred) takes a read snapshot at
+    the first statement and holds it, which costs nothing under WAL: readers do
+    not block the writer.
+
+    Use it where one response is built from more than one read. A single
+    statement needs nothing; it already sees one version by definition.
+
+    Same two ways to hold it wrong as `immediate()`: it cannot nest, and
+    `with conn:` inside would end it early. Nothing is written, so the exit is
+    always a rollback.
+    """
+    if conn.in_transaction:
+        raise RuntimeError(
+            "snapshot() needs a connection that is not already in a transaction"
+        )
+    conn.execute("BEGIN")
+    try:
+        yield conn
+    finally:
+        conn.rollback()
+
+
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
 SCHEMA_VERSION = 19
