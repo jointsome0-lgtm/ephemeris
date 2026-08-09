@@ -207,12 +207,13 @@
     // it), and reading the rendered link keeps the two from ever disagreeing.
     const tasksIcon = document.querySelector('.rail-ico[title="Tasks"]');
     const NAV = { t: (tasksIcon && tasksIcon.getAttribute("href")) || "/today",
-                  c: "/calendar", f: "/focus",
+                  c: "/calendar",
                   h: "/habits", l: "/learn", s: "/search" };
     const HINTS = [
       ["⌘K  Ctrl K", "Command palette"],
       ["n", "New task"],
-      ["g t / c / f", "Tasks / Calendar / Focus"],
+      ["g t / c", "Tasks / Calendar"],
+      ["g f", "Focus timer"],
       ["g h", "Habits"],
       ["g l / s", "Learn / Search"],
       ["t", "Toggle theme"],
@@ -256,7 +257,13 @@
       if (typing(e.target)) return;
       if (armed) {
         armed = false; clearTimeout(armTimer);
-        const dest = NAV[e.key.toLowerCase()];
+        const key = e.key.toLowerCase();
+        // `g f` kept its finger memory when Focus stopped being a page (#75):
+        // it now opens the timer drawer instead of navigating to it.
+        if (key === "f" && window.alUI && window.alUI.toggleTimer) {
+          e.preventDefault(); window.alUI.toggleTimer(); return;
+        }
+        const dest = NAV[key];
         if (dest) { e.preventDefault(); window.location.href = dest; }
         return;
       }
@@ -267,101 +274,4 @@
     });
   })();
 
-  // --- Pomodoro / Stopwatch (focus page) --------------------------------------
-  (() => {
-    const ft = document.getElementById("focus-time");
-    const fstart = document.getElementById("focus-start");
-    if (!ft || !fstart) return;
-    const fend = document.getElementById("focus-end");
-    const ring = document.getElementById("focus-ring");
-    const POMO = 25 * 60;
-    let mode = "pomo", remaining = POMO, elapsed = 0, timer = null, running = false;
-
-    const fmt = (s) => String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
-    function render() {
-      ft.textContent = fmt(mode === "pomo" ? remaining : elapsed);
-      if (fend) fend.hidden = !(mode === "stopwatch" && elapsed > 0);
-      if (ring) ring.style.setProperty("--focus-progress", String(mode === "pomo" ? (POMO - remaining) / POMO : (elapsed % POMO) / POMO));
-    }
-
-    // --- persist a finished session, then patch the Overview + Record list -----
-    function applyFocus(ov) {
-      if (!ov) return;
-      const set = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
-      set("st-today-pomo", String(ov.today_pomo));
-      set("st-today-focus", ov.today_focus.value + "<small>" + ov.today_focus.unit + "</small>");
-      set("st-total-pomo", String(ov.total_pomo));
-      set("st-total-focus", ov.total_focus.value + "<small>" + ov.total_focus.unit + "</small>");
-    }
-    function prependRecord(rec) {
-      const list = document.getElementById("focus-rec-list");
-      if (!rec || !list) return;
-      const empty = document.getElementById("focus-rec-empty");
-      if (empty) empty.remove();
-      const li = document.createElement("li");
-      li.className = "focus-rec-row";
-      li.dataset.id = rec.id;
-      // dot class from a server enum (pomo|stopwatch); text via textContent (XSS-safe)
-      li.innerHTML =
-        '<span class="fr-dot fr-' + (rec.mode === "pomo" ? "pomo" : "stopwatch") + '" aria-hidden="true"></span>' +
-        '<span class="fr-main"><span class="fr-dur"></span><span class="fr-sub"></span></span>' +
-        '<span class="fr-time"></span>';
-      li.querySelector(".fr-dur").textContent = rec.duration_label;
-      li.querySelector(".fr-sub").textContent =
-        rec.mode_label + (rec.lesson_title ? " · " + rec.lesson_title : "");
-      li.querySelector(".fr-time").textContent = rec.time_label;
-      list.insertBefore(li, list.firstChild);
-    }
-    async function recordSession(m, secs) {
-      secs = Math.round(secs);
-      if (!secs || secs < 1) return;
-      const params = { mode: m, seconds: secs };
-      const sel = document.getElementById("focus-lesson");
-      if (sel && sel.value) params.lesson_id = sel.value;
-      const res = await postPartial("/focus/session", params);
-      if (res && res.ok) { applyFocus(res.overview); prependRecord(res.record); }
-    }
-
-    function stop() {
-      running = false; fstart.textContent = "Start";
-      if (timer) { clearInterval(timer); timer = null; }
-    }
-    function start() {
-      if (running) return;
-      running = true; fstart.textContent = "Pause";
-      timer = setInterval(() => {
-        if (mode === "pomo") {
-          remaining -= 1;
-          if (remaining <= 0) {
-            remaining = POMO; render(); stop();
-            toast("Pomodoro complete 🍅");
-            recordSession("pomo", POMO);
-            return;
-          }
-        } else {
-          elapsed += 1;
-        }
-        render();
-      }, 1000);
-    }
-
-    fstart.addEventListener("click", () => (running ? stop() : start()));
-    if (fend) fend.addEventListener("click", () => {
-      if (mode !== "stopwatch" || elapsed <= 0) return;
-      const secs = elapsed;
-      stop(); elapsed = 0; render();
-      recordSession("stopwatch", secs);
-    });
-    document.querySelectorAll("#focus-seg button").forEach((b) => {
-      b.addEventListener("click", () => {
-        document.querySelectorAll("#focus-seg button").forEach((x) => x.classList.remove("on"));
-        b.classList.add("on");
-        mode = b.dataset.mode;
-        stop();
-        remaining = POMO; elapsed = 0;
-        render();
-      });
-    });
-    render();
-  })();
 })();

@@ -139,7 +139,7 @@ def _service_cases(client):
         cal.update_event(_conn(), event_id, note=text)
 
     def focus_note(text):
-        focus.record_session(_conn(), "pomo", 60, note=text)
+        focus.record_session(_conn(), "open", 60, note=text)
 
     def checkin_note(text):
         checkins.upsert_checkin(_conn(), today, item_id, status="full_done", note=text)
@@ -243,8 +243,8 @@ def test_an_over_long_checkin_note_is_refused_by_its_route(client):
 
 
 def test_an_over_long_focus_note_is_refused_by_its_route(client):
-    too_long = client.post("/focus/session", data={
-        "mode": "pomo", "seconds": 60, "note": "x" * (limits.FOCUS_NOTE + 1)},
+    too_long = client.post("/focus/timer/start", data={
+        "token": "note-cap", "mode": "open", "note": "x" * (limits.FOCUS_NOTE + 1)},
         headers={"X-Partial": "1"})
     assert too_long.status_code == 422
     assert too_long.json()["error"] == "focus note too long"

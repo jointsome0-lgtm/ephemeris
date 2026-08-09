@@ -57,7 +57,10 @@
          so a merged template can never link a 404 (live-template skew). #}
       <a class="rail-ico {% if R == 'tasks' %}active{% endif %}" href="{{ tasks_home | default('/today') }}" title="Tasks">{{ ic.icon('tasks') }}</a>
       <a class="rail-ico {% if R == 'calendar' %}active{% endif %}" href="/calendar" title="Calendar">{{ ic.icon('calendar') }}</a>
-      <a class="rail-ico {% if R == 'focus' %}active{% endif %}" href="/focus" title="Focus">{{ ic.icon('focus') }}</a>
+      {# Focus is no longer a destination (#75): the timer is a drawer, so its
+         rail slot toggles it instead of navigating away from whatever the
+         timer would be counting. #}
+      <button type="button" class="rail-ico timer-toggle" title="Focus timer (g f)" aria-label="Toggle focus timer">{{ ic.icon('focus') }}<span class="timer-pip" aria-hidden="true"></span></button>
       <a class="rail-ico {% if R == 'habit' %}active{% endif %}" href="/habits" title="Habit">{{ ic.icon('habit') }}</a>
       <a class="rail-ico {% if R == 'learn' %}active{% endif %}" href="/learn" title="Learn">{{ ic.icon('learn') }}</a>
       <a class="rail-ico {% if R == 'retro' %}active{% endif %}" href="/retro" title="Retro">{{ ic.icon('retro') }}</a>
@@ -88,7 +91,7 @@
   <nav class="bottom-nav" aria-label="Primary">
     <a href="{{ tasks_home | default('/today') }}" class="nav-link {% if R == 'tasks' %}active{% endif %}">{{ ic.icon('tasks') }}<span>Tasks</span></a>
     <a href="/calendar" class="nav-link {% if R == 'calendar' %}active{% endif %}">{{ ic.icon('calendar') }}<span>Calendar</span></a>
-    <a href="/focus" class="nav-link {% if R == 'focus' %}active{% endif %}">{{ ic.icon('focus') }}<span>Focus</span></a>
+    <button type="button" class="nav-link timer-toggle">{{ ic.icon('focus') }}<span>Timer</span><span class="timer-pip" aria-hidden="true"></span></button>
     <a href="/learn" class="nav-link {% if R == 'learn' %}active{% endif %}">{{ ic.icon('learn') }}<span>Learn</span></a>
     <a href="/habits" class="nav-link {% if R == 'habit' %}active{% endif %}">{{ ic.icon('habit') }}<span>Habit</span></a>
     <label for="more-toggle" class="nav-link more-open{% if R in ['retro','search','export','items'] %} active{% endif %}" aria-controls="more-sheet">{{ ic.icon('more') }}<span>More</span></label>
@@ -102,6 +105,10 @@
     <a class="more-item {% if R == 'items' %}active{% endif %}" href="/items">{{ ic.icon('settings') }}<span>Manage</span></a>
     {{ theme_toggle('more-item', with_label=true) }}
   </aside>
+
+  {# The focus timer drawer — every surface, every client (#75). #}
+  {% include "_timer_drawer.html" %}
+  <script src="{{ static_url('focus-timer.js') }}" defer></script>
 
   {% if client_is_local(request) %}
   {# Desktop / localhost-only terminal — a GCP-style bottom drawer docked over the content. #}

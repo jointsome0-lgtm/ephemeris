@@ -18,7 +18,7 @@ from fastapi import HTTPException, Request
 from fastapi.templating import Jinja2Templates
 
 from .db import is_not_future, is_valid_date, pretty_date, today_str
-from .services import checkins, lists, stats, tasks
+from .services import checkins, focus, lists, stats, tasks
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -169,6 +169,9 @@ def _habit_detail_ctx(conn, item_id: int, month: str | None, base: str) -> dict 
         "today": today_str(),
         # a habit whose start_date is still ahead cannot be checked in (#18)
         "not_started": bool(item["start_date"] and today_str() < item["start_date"]),
+        # Focused time recorded against this habit (#75). Per-target stats
+        # live where the target lives, now that the Focus page is gone.
+        "focus_total": focus.habit_total(conn, item_id),
         # Today check-in control in the pane (sec31)
         "today_status": today_row["status"] if today_row else None,
         "today_note": (today_row["note"] if today_row else "") or "",
@@ -348,7 +351,9 @@ def _selection_ctx(conn, request: Request, sel: str | None, month: str | None) -
         task = tasks.get_task(conn, sid)
         if task is None:
             return none
-        return {"sel": "task", "sel_id": sid, "task": task, "close_url": request.url.path}
+        return {"sel": "task", "sel_id": sid, "task": task,
+                "focus_total": focus.task_total(conn, sid),
+                "close_url": request.url.path}
     if kind == "habit":
         ctx = _habit_detail_ctx(conn, sid, month, f"{request.url.path}?sel=habit-{sid}")
         if ctx is None:

@@ -451,3 +451,74 @@ def test_routes_answer_an_archived_list_exactly_as_a_missing_one(client):
         "the quick-add JSON branch refuses both the same way"
         + "  -- " + str(json_answers)
     )
+
+
+def test_the_timer_state_reads_answer_from_one_snapshot(client):
+    """A drawer's answer is three reads, and it must describe one moment.
+
+    The interleaving is done by hand, at the point the old code left open: a
+    rival connection records the finish between the run read and the totals
+    read. Without a held snapshot the answer would say "still running" and, in
+    the same breath, hand back totals that already counted the session.
+    """
+    from app.db import snapshot
+    from app.services import focus
+
+    conn = _gc()
+    rival = _gc()
+    try:
+        focus.discard_run(conn, "snap-witness")
+        focus.start_run(conn, "open", "snap-witness")
+        # Backdated so the rival's finish has a span to record: the server
+        # computes the duration from this stamp, and a run started in the same
+        # second it is stopped is refused as empty.
+        from datetime import datetime, timedelta
+
+        from app.db import now_iso
+        conn.execute(
+            "UPDATE focus_runs SET started_at = ? WHERE client_token = 'snap-witness'",
+            ((datetime.fromisoformat(now_iso()) - timedelta(seconds=300))
+             .isoformat(timespec="seconds"),),
+        )
+        conn.commit()
+        with snapshot(conn):
+            first = focus.active_run(conn)
+            before = focus.overview(conn)["today_sessions"]
+            focus.finish_run(rival, "snap-witness")  # committed by the other tab
+            after_run = focus.active_run(conn)
+            after_total = focus.overview(conn)["today_sessions"]
+        assert first is not None and after_run is not None, (
+            "both reads see the timer the answer opened with"
+            + "  -- " + str((first, after_run))
+        )
+        assert after_total == before, (
+            "and the totals stay the ones that go with it"
+            + "  -- " + str((before, after_total))
+        )
+        assert focus.active_run(conn) is None, (
+            "outside the snapshot the finish is visible, as it must be"
+        )
+    finally:
+        conn.close()
+        rival.close()
+
+
+def test_snapshot_refuses_to_nest_and_leaves_nothing_open(client):
+    """Held wrong, a read transaction fails silently: the reads simply stop
+    agreeing. The precondition is checked so the failure has a name."""
+    from app.db import snapshot
+
+    conn = _gc()
+    try:
+        with snapshot(conn):
+            with pytest.raises(RuntimeError, match="already in a transaction"):
+                with snapshot(conn):
+                    pass
+        assert not conn.in_transaction, "the block leaves no transaction open"
+
+        with pytest.raises(ZeroDivisionError):
+            with snapshot(conn):
+                1 / 0
+        assert not conn.in_transaction, "and neither does a body that raises"
+    finally:
+        conn.close()

@@ -36,7 +36,6 @@ _PALETTE_VIEWS = [
     # the same destination the rail's Tasks icon has (#53), from its one owner
     {"label": "Tasks", "href": TASKS_HOME, "icon": "tasks"},
     {"label": "Calendar", "href": "/calendar", "icon": "calendar"},
-    {"label": "Focus", "href": "/focus", "icon": "focus"},
     {"label": "Habits", "href": "/habits", "icon": "habit"},
     {"label": "Learn", "href": "/learn", "icon": "learn"},
     {"label": "Retro", "href": "/retro", "icon": "retro"},
@@ -45,6 +44,9 @@ _PALETTE_VIEWS = [
 ]
 _PALETTE_ACTIONS = [
     {"label": "New task", "hint": "n", "shortcut": "n"},
+    # Focus left the views list with its page (#75): the timer is a drawer, so
+    # it is something to do from here, not somewhere to go.
+    {"label": "Focus timer", "hint": "g f", "shortcut": "f"},
     {"label": "Toggle theme", "hint": "t", "shortcut": "t"},
     {"label": "Keyboard shortcuts", "hint": "?", "shortcut": "?"},
 ]

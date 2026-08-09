@@ -255,9 +255,38 @@ def immediate(conn: sqlite3.Connection):
     conn.commit()
 
 
+@contextmanager
+def snapshot(conn: sqlite3.Connection):
+    """Several reads, one version of the database (the mirror of `immediate`).
+
+    Outside a transaction every `SELECT` sees whatever is committed at the
+    instant it runs, so an answer assembled from three of them can describe
+    three different moments — a running timer next to the totals that already
+    include the session it became. `BEGIN` (deferred) takes a read snapshot at
+    the first statement and holds it, which costs nothing under WAL: readers do
+    not block the writer.
+
+    Use it where one response is built from more than one read. A single
+    statement needs nothing; it already sees one version by definition.
+
+    Same two ways to hold it wrong as `immediate()`: it cannot nest, and
+    `with conn:` inside would end it early. Nothing is written, so the exit is
+    always a rollback.
+    """
+    if conn.in_transaction:
+        raise RuntimeError(
+            "snapshot() needs a connection that is not already in a transaction"
+        )
+    conn.execute("BEGIN")
+    try:
+        yield conn
+    finally:
+        conn.rollback()
+
+
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -892,6 +921,133 @@ def _migrate_to_18(conn: sqlite3.Connection) -> None:
     backfill_task_status(conn)
 
 
+# v19 — the timer, not the Pomodoro (#75). Two changes to how focused time is
+# stored, both forced by the same decision: the 25-minute cycle stops being the
+# model and the timer moves into a drawer shared by every page.
+#
+# 1. `focus_sessions.mode` was the TickTick vocabulary — 'pomo' (a fixed
+#    25-minute cycle, also counted as a headline metric) vs 'stopwatch'. It
+#    becomes 'countdown' (a span the user chose the length of, kept in the new
+#    `target_seconds`) vs 'open' (untimed tracking). Old rows convert without
+#    losing anything: a pomo WAS a 25-minute countdown. The CHECK has to be
+#    rewritten, so the table is rebuilt — which is also the cheapest moment to
+#    add the remaining target columns. `focus_session_recorded` events keep
+#    their historical payloads verbatim (sec13.3); only the table converts.
+#
+# 2. `focus_runs` holds the ONE timer currently running. A drawer that survives
+#    page loads cannot keep its state in a `setInterval` closure (#20): the
+#    elapsed time has to be derived from a server-owned `started_at`, so a
+#    reload, a sleep or a closed tab costs nothing. A run is not a session —
+#    it becomes one only when it is finished, which is why it lives in its own
+#    table instead of nullable columns on the history.
+#
+# `client_token` is the idempotency key on both: a retried start must not open
+# a second run, and a retried finish must return the session the first one
+# already recorded instead of double-counting the span.
+#
+# The rebuild is wrapped in its own transaction: `executescript` otherwise
+# commits statement by statement, so an interrupt between the staging INSERT and
+# the rename would leave `focus_sessions_v19` committed with `user_version` still
+# 18 — and the next boot would re-enter this script and die on "table
+# focus_sessions_v19 already exists", with no way in but manual repair.
+_SCHEMA_V19 = """
+BEGIN;
+
+-- The id counter has to outlive the rebuild. A JSONL restore deliberately
+-- advances it past every session_id in the retained audit stream WITHOUT
+-- restoring the rows (focus_sessions is a partial table), so on such a database
+-- the counter is the only memory of those ids. Copying live rows and dropping
+-- the old table would throw it away, and the next session recorded would reuse
+-- an id the event log already refers to.
+CREATE TEMP TABLE focus_seq_v19 AS
+  SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'focus_sessions'), 0) AS seq;
+
+CREATE TABLE focus_sessions_v19 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mode TEXT NOT NULL DEFAULT 'open' CHECK(mode IN ('countdown','open')),
+  seconds INTEGER NOT NULL CHECK(seconds >= 0),
+  target_seconds INTEGER,
+  note TEXT,
+  date TEXT NOT NULL,
+  started_at TEXT,
+  ended_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  lesson_id INTEGER REFERENCES lessons(id),
+  habit_id INTEGER REFERENCES routine_items(id),
+  task_id INTEGER REFERENCES tasks(id),
+  client_token TEXT
+);
+
+INSERT INTO focus_sessions_v19
+  (id, mode, seconds, target_seconds, note, date, started_at, ended_at, created_at, lesson_id)
+SELECT id,
+       CASE WHEN mode = 'pomo' THEN 'countdown' ELSE 'open' END,
+       seconds,
+       CASE WHEN mode = 'pomo' THEN 1500 ELSE NULL END,
+       note, date, started_at, ended_at, created_at, lesson_id
+FROM focus_sessions;
+
+DROP TABLE focus_sessions;
+ALTER TABLE focus_sessions_v19 RENAME TO focus_sessions;
+
+-- ...and put it back, never lower than where the copied rows left it.
+-- sqlite_sequence carries no unique index, so this replaces the row by hand
+-- rather than trusting INSERT OR REPLACE to find it.
+UPDATE focus_seq_v19
+   SET seq = MAX(seq, COALESCE(
+     (SELECT seq FROM sqlite_sequence WHERE name = 'focus_sessions'), 0));
+DELETE FROM sqlite_sequence WHERE name = 'focus_sessions';
+INSERT INTO sqlite_sequence (name, seq) SELECT 'focus_sessions', seq FROM focus_seq_v19;
+DROP TABLE focus_seq_v19;
+
+COMMIT;
+"""
+
+# The rest of v19 is CREATE ... IF NOT EXISTS throughout, so it runs on every
+# v19 upgrade regardless of how far a previous attempt got. `slot` is the
+# singleton: at most ONE timer may run, and saying so in the schema is what
+# makes it true under concurrent starts from two tabs — a SELECT-then-INSERT
+# check can be passed by both before either commits.
+_SCHEMA_V19_RUNS = """
+CREATE INDEX IF NOT EXISTS idx_focus_date ON focus_sessions(date);
+CREATE INDEX IF NOT EXISTS idx_focus_lesson ON focus_sessions(lesson_id);
+CREATE INDEX IF NOT EXISTS idx_focus_habit ON focus_sessions(habit_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_focus_token
+  ON focus_sessions(client_token) WHERE client_token IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS focus_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  slot INTEGER NOT NULL DEFAULT 0 UNIQUE CHECK(slot = 0),
+  mode TEXT NOT NULL CHECK(mode IN ('countdown','open')),
+  target_seconds INTEGER,
+  note TEXT,
+  started_at TEXT NOT NULL,
+  paused_at TEXT,
+  paused_seconds INTEGER NOT NULL DEFAULT 0 CHECK(paused_seconds >= 0),
+  lesson_id INTEGER REFERENCES lessons(id),
+  habit_id INTEGER REFERENCES routine_items(id),
+  task_id INTEGER REFERENCES tasks(id),
+  client_token TEXT NOT NULL UNIQUE
+);
+"""
+
+
+def _migrate_to_19(conn: sqlite3.Connection) -> None:
+    # Two independently guarded halves, because `user_version` is bumped once
+    # the step returns: if an interrupted attempt had rebuilt the table but not
+    # yet created `focus_runs`, treating the new column as proof the whole
+    # script ran would strand the database on a schema the app cannot serve.
+    # The rebuild itself must not run twice — it would copy rows into a table
+    # whose id sequence has already moved on — so only that half is gated, on
+    # its own evidence, and the CREATE-IF-NOT-EXISTS half always runs. The
+    # rebuild carries its own transaction, so it either happened or it didn't;
+    # there is no half-rebuilt state for this guard to misread.
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(focus_sessions)")}
+    if "target_seconds" not in have:
+        conn.executescript(_SCHEMA_V19)
+    conn.executescript(_SCHEMA_V19_RUNS)
+
+
 # Ordered, idempotent steps. A schema change must NEVER require deleting the
 # ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
 _MIGRATIONS = [
@@ -913,6 +1069,7 @@ _MIGRATIONS = [
     (16, _migrate_to_16),
     (17, _migrate_to_17),
     (18, _migrate_to_18),
+    (19, _migrate_to_19),
 ]
 
 

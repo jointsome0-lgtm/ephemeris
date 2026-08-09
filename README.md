@@ -7,7 +7,7 @@ Formerly known as *tick-like* — old repo URLs redirect here.
 See [`docs/system-design.md`](docs/system-design.md) for the full design.
 
 **Status:** runnable and actively implemented. Today/Tasks, Calendar (month),
-Focus (Pomodoro + persisted stats), Habits, Search, and JSONL Export are
+a Focus timer in a drawer on every surface, Habits, Search, and JSONL Export are
 available, with light/dark themes and Mode A (no-JS PRG) + Mode B (fetch)
 progressive enhancement. Recovery is a documented contract: full
 [backup and restore](docs/backup-restore.md) for the instance, the

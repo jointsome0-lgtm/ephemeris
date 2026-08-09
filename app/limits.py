@@ -65,7 +65,7 @@ EVENT_NOTE = 10_000
 """`calendar_events.note` — the event modal's textarea."""
 
 FOCUS_NOTE = 10_000
-"""`focus_sessions.note` — what one Pomodoro span was spent on."""
+"""`focus_sessions.note` — what one focused span was spent on."""
 
 DAILY_NOTE = 20_000
 """`daily_notes.text` — the whole day's journal, so twice a per-item note."""

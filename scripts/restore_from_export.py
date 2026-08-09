@@ -221,6 +221,11 @@ def _replay_routine(conn: sqlite3.Connection, record: Record) -> None:
         )
     elif record.type == "routine_item_deleted":
         conn.execute("DELETE FROM checkins WHERE routine_item_id = ?", (item_id,))
+        # Same detach as items.delete_item (schema v19): a target that already
+        # accrued focus time holds a foreign key, and a delivery replayed into a
+        # target that has some would otherwise roll back on the constraint.
+        conn.execute("UPDATE focus_sessions SET habit_id = NULL WHERE habit_id = ?", (item_id,))
+        conn.execute("UPDATE focus_runs SET habit_id = NULL WHERE habit_id = ?", (item_id,))
         conn.execute("DELETE FROM routine_items WHERE id = ?", (item_id,))
 
 
@@ -614,12 +619,17 @@ def _apply_records(
 
 # Payload key -> AUTOINCREMENT table whose id namespace the key belongs to.
 # Scanned across every record (task events carry list_id, focus events carry
-# lesson_id, calendar snapshots carry list_id).
+# lesson_id / habit_id / task_id, calendar snapshots carry list_id).
 _ID_NAMESPACES = {
     "task_id": "tasks",
     "list_id": "lists",
     "session_id": "focus_sessions",
     "lesson_id": "lessons",
+    # A focus event can name a habit that no event can rebuild — the bootstrap
+    # routine rows are inserted without one. Without this the next habit created
+    # after a restore takes that id back, and every retained focus event in the
+    # stream silently starts pointing at it.
+    "habit_id": "routine_items",
 }
 
 
@@ -687,7 +697,8 @@ def print_summary(target: Path, result: dict[str, Any]) -> None:
         detail = {
             "lists": "bootstrap rows/kind/order/timestamps are absent",
             "tasks": "note/create order and update fields/side effects are absent",
-            "focus_sessions": "note and authoritative row dates/timestamps are absent",
+            "focus_sessions": "the note is in the stream but not replayed; "
+                              "authoritative row dates/timestamps are absent",
             "lessons": "open state is unjournaled; bundle files are outside JSONL",
         }[table]
         print(f"  {table}: {_untouched(rows[table])} "

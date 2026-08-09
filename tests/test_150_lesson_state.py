@@ -179,7 +179,7 @@ def test_record_panel_keeps_the_shared_snapshot_counts_and_rendering(client):
     _record_answer_and_state(lesson, manifest)
     conn = get_conn()
     try:
-        focus.record_session(conn, "pomo", 2 * 60, None, lesson["id"])
+        focus.record_session(conn, "open", 2 * 60, lesson_id=lesson["id"])
         lesson = lessons.get_lesson(conn, lesson["id"])
         read = lessons.read_bundle_readonly(lesson)
         db_state = lessons.record_panel_db_state(conn, lesson["id"])

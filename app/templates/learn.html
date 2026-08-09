@@ -274,6 +274,14 @@
           {% if selected.source_url %}
           <a href="{{ selected.source_url }}" target="_blank" rel="noopener noreferrer">Source</a>
           {% endif %}
+          {# #75: study time starts here, on the lesson, instead of on a Focus
+             page that had to be navigated to and told which lesson this was.
+             Not offered for an archived lesson: the picker only lists live ones,
+             so the button would promise an attribution the start then drops. #}
+          {% if not selected.archived %}
+          <button type="button" class="timer-here" data-timer-target="lesson:{{ selected.id }}"
+                  title="Start the focus timer on this lesson">{{ ic.icon('focus') }} Timer</button>
+          {% endif %}
           {% if client_is_local(request) %}
           <button type="button" class="icon-btn" id="lesson-term-btn"
                   data-lesson="{{ selected.slug }}" data-lesson-title="{{ selected.title }}"

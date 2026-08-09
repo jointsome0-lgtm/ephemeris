@@ -15,8 +15,17 @@
       {# always a subordinate region: under the page "Habit" h1 in the pane, or
          under habit.html's page-head h1 on the full page — so use h2, not h1 #}
       <h2>{{ item.title }}</h2>
-      <p class="subtitle">{{ item.group_name }}{% if not item.active %} · archived{% endif %}</p>
+      <p class="subtitle">{{ item.group_name }}{% if not item.active %} · archived{% endif %}
+        {# #75: this habit's share of focused time, where the habit lives —
+           there is no global Focus dashboard any more. `is defined` guards the
+           live process, which renders this template with the older context. #}
+        {% if focus_total is defined and focus_total.seconds %} · {{ focus_total.label }} focused{% endif %}
+      </p>
     </div>
+    {% if item.active %}
+    <button type="button" class="timer-here" data-timer-target="habit:{{ item.id }}"
+            title="Start the focus timer on this habit">{{ ic.icon('focus') }} Timer</button>
+    {% endif %}
     {# The menu is on BOTH surfaces. It used to be pane-only, which was safe
        while every active habit was in the list behind the pane; since #18 a
        habit with a future start date is not, and the full page (reachable from

@@ -64,7 +64,7 @@ def _column_of(html: str, task_id: int) -> str:
 def test_schema_v18_adds_the_status_column(client):
     from app.db import SCHEMA_VERSION, get_conn
 
-    assert SCHEMA_VERSION == 18, "the board's column is schema v18"
+    assert SCHEMA_VERSION >= 18, "the board's column landed in schema v18"
     conn = get_conn()
     try:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION, (

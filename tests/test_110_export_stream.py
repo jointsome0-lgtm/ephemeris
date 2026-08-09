@@ -664,6 +664,46 @@ def test_a_row_with_a_corrupt_payload_can_still_be_redelivered(tmp_path):
     assert "events: 0 applied / 3 skipped" in run.stdout
 
 
+def test_deleting_a_habit_on_replay_detaches_the_focus_it_earned(tmp_path):
+    """focus_sessions is a partial table — its rows are never replayed, so a
+    redelivery target can hold focus time the stream knows nothing about. Since
+    schema v19 that time holds a foreign key on the habit, and the replayed
+    delete has to let go of it exactly like items.delete_item does."""
+    source = _write_stream(tmp_path / "stream.jsonl", _STREAM)
+    target = tmp_path / "restored-focus"
+    assert _restore(source, target).returncode == 0
+
+    import sqlite3
+
+    conn = sqlite3.connect(target / "activity.sqlite")
+    try:
+        conn.execute(
+            "INSERT INTO focus_sessions (mode, seconds, date, ended_at, created_at, habit_id) "
+            "VALUES ('countdown', 1500, '2031-05-06', '2031-05-06T08:00:00+03:00', "
+            "'2031-05-06T08:00:00+03:00', 4001)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    grown = _write_stream(tmp_path / "grown.jsonl", [*_STREAM, {
+        "id": "77777777-7777-4777-8777-777777777777",
+        "timestamp": "2031-05-06T09:00:00+03:00",
+        "type": "routine_item_deleted",
+        "payload_version": 1,
+        "payload": {"routine_item_id": 4001, "title": "Invented Redelivery Walk",
+                    "checkins_removed": 1},
+    }])
+    run = _restore(grown, target)
+
+    assert run.returncode == 0, run.stderr
+    db = target / "activity.sqlite"
+    assert _query(db, "SELECT COUNT(*) FROM routine_items WHERE id = 4001")[0][0] == 0, \
+        "the habit is gone"
+    assert _query(db, "SELECT seconds, habit_id FROM focus_sessions") == [(1500, None)], \
+        "the time it was spent on survives it, detached"
+
+
 def test_a_pre_existing_fk_violation_rolls_the_delivery_back(tmp_path):
     """The check used to run after the commit. On the fresh path that was hidden
     — the whole staging directory was discarded — but a redelivery would report

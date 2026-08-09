@@ -427,9 +427,15 @@ def test_restore_refuses_a_damaged_set_before_touching_the_target(
     manifest_path = backup_db.create_backup()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     snapshot = instance / "backups" / manifest["files"]["database"]["name"]
+    # Flip the bytes rather than zero them: the midpoint can land in a free page
+    # that is already all zeros, and then "corruption" leaves the file — and its
+    # checksum — byte-identical, so the test would pass itself.
     with open(snapshot, "r+b") as handle:
-        handle.seek(handle.seek(0, os.SEEK_END) // 2)
-        handle.write(b"\x00" * 64)
+        middle = handle.seek(0, os.SEEK_END) // 2
+        handle.seek(middle)
+        original = handle.read(64)
+        handle.seek(middle)
+        handle.write(bytes(b ^ 0xFF for b in original))
 
     target = tmp_path / "recovered"
     with pytest.raises(backup_db.BackupError):
