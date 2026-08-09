@@ -192,9 +192,11 @@ def _countdown_end(row: sqlite3.Row, target: int, now: datetime | None) -> str |
     """When a finished countdown actually ran out, as an ISO stamp.
 
     Only the totals are stored, not the pause history, so this reads as "the
-    moment `target` seconds of running time had passed". A clock that is paused
-    now was already past its target when it stopped, so the pause in flight is
-    the ceiling; otherwise now is. Either way the span never ends in the future.
+    moment `target` seconds of running time had passed". That is exact because
+    every stored pause provably started before the countdown ran out —
+    `set_run_paused` refuses to pause one that already reached its target — so
+    no post-completion idling can be added to the span. The ceiling is belt and
+    braces: the span never ends in the future, or after a pause in flight.
     """
     started = _parse_iso(row["started_at"])
     if started is None:
@@ -324,6 +326,14 @@ def set_run_paused(conn: sqlite3.Connection, token: str, paused: bool) -> dict:
         raise FocusError("that timer is no longer running")
     if (row["paused_at"] is not None) == paused:
         return _run_view(row)
+    target = int(row["target_seconds"] or 0)
+    if paused and target and _elapsed_seconds(row) >= target:
+        # A countdown that already ran out has nothing left to pause. Allowing it
+        # would fold the idle time between "ran out" and "resumed" into
+        # `paused_seconds`, and `_countdown_end` would then date the span from
+        # after it truly ended — enough to move an overnight session onto the
+        # next day's Retro bar. The drawer resyncs on a refusal and finishes it.
+        raise FocusError("that countdown already finished — stop it to record it")
     with conn:
         if paused:
             conn.execute("UPDATE focus_runs SET paused_at = ? WHERE id = ?",
@@ -536,6 +546,25 @@ def overview(conn: sqlite3.Connection) -> dict:
         "total_focus": _dur(total["sec"]),
         "total_seconds": total["sec"],
     }
+
+
+def pomodoro_counts(conn: sqlite3.Connection) -> dict:
+    """The two tallies `overview` dropped, for the legacy route's answer only.
+
+    A pre-#75 page reads `today_pomo` / `total_pomo` off every response and
+    would print `undefined` without them. What used to be a `pomo` row is now a
+    25-minute countdown; a database restored from an older export can still
+    hold the original word, so both spellings count.
+
+    Deletable with the rest of the compat layer — docs/system-design.md sec34.
+    """
+    row = conn.execute(
+        "SELECT COALESCE(SUM(CASE WHEN date = ? THEN 1 ELSE 0 END), 0) AS today_pomo, "
+        "COUNT(*) AS total_pomo FROM focus_sessions "
+        "WHERE mode = 'pomo' OR (mode = 'countdown' AND target_seconds = 1500)",
+        (today_str(),),
+    ).fetchone()
+    return {"today_pomo": row["today_pomo"], "total_pomo": row["total_pomo"]}
 
 
 _RECORD_SELECT = (

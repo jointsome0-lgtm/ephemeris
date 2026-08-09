@@ -959,16 +959,54 @@ def test_core_surfaces(client, suite_state):
         "the task pane shows its focused time and can start the timer"
     )
 
+    # A countdown that already ran out cannot be paused. Pausing it would fold
+    # the idle time between "ran out" and "resumed" into paused_seconds, and the
+    # recorded span would then be dated after it truly ended — far enough, on an
+    # overnight run, to land on the next day's Retro bar.
+    c.post("/focus/timer/start",
+           data={"token": "tok-p", "mode": "countdown", "target_seconds": "60"},
+           headers={"X-Partial": "1"})
+    _backdate("tok-p", 900)
+    late = c.post("/focus/timer/pause", data={"token": "tok-p", "paused": 1},
+                  headers={"X-Partial": "1"})
+    assert late.status_code == 422 and "already finished" in late.json()["error"], (
+        "pausing a countdown that ran out is refused" + "  -- " + late.text
+    )
+    lp = c.post("/focus/timer/finish", data={"token": "tok-p"},
+                headers={"X-Partial": "1"}).json()["recorded"]
+    assert lp["seconds"] == 60, (
+        "and it still records the minute it asked for" + "  -- " + str(lp)
+    )
+
     # The pre-#75 write still answers, for a Focus tab left open across the
     # restart: its app.js posts here when a Pomodoro completes, and a 404 would
-    # drop a span the user really did spend. The old words convert on the way in.
+    # drop a span the user really did spend. The old words convert on the way in
+    # — and back out again, because that page reads the answer in its own
+    # vocabulary and would print `undefined` for anything it does not know.
     legacy = c.post("/focus/session", data={"mode": "pomo", "seconds": 1500},
                     headers={"X-Partial": "1"})
     assert legacy.status_code == 200, "the retired session write still records"
-    lrec = legacy.json()["record"]
-    assert lrec["mode"] == "countdown" and lrec["duration_label"] == "25m", (
-        "a pomo lands as the countdown it always was" + "  -- " + str(lrec)
+    lrec, lov = legacy.json()["record"], legacy.json()["overview"]
+    assert lrec["mode"] == "pomo" and lrec["mode_label"] == "Pomo", (
+        "the answer speaks the old page's words" + "  -- " + str(lrec)
     )
+    assert lrec["duration_label"] == "25m" and "lesson_title" in lrec, (
+        "including the fields it prints on the row it appends"
+        + "  -- " + str(lrec)
+    )
+    assert lov["today_pomo"] >= 1 and lov["total_pomo"] >= lov["today_pomo"], (
+        "the counters it headlines come back" + "  -- " + str(lov)
+    )
+    assert lov["today_pomo"] < lov["today_sessions"], (
+        "and count Pomodoros, not every span" + "  -- " + str(lov)
+    )
+    lc = get_conn()
+    try:
+        assert lc.execute(
+            "SELECT mode FROM focus_sessions WHERE id = ?", (lrec["id"],)
+        ).fetchone()[0] == "countdown", "while the row stored is a countdown"
+    finally:
+        lc.close()
 
     assert 'class="sky-strip"' in c.get("/today").text, (
         "/today carries the sky-strip constellation"

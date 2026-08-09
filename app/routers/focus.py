@@ -71,10 +71,23 @@ def post_focus_session_legacy(
         )
     except focus.FocusError as exc:
         return _rejected(exc)
+    # The answer is in the old page's vocabulary too, not just the old URL: it
+    # reads `today_pomo` / `total_pomo` off the overview and `lesson_title` off
+    # the record. Handing it the new shapes would blank its counters and mislabel
+    # the row it appends — a compatibility route that only half-answers is worse
+    # than none, because the write succeeded and the page says otherwise.
+    ov, rec = focus.overview(conn), focus.get_session_view(conn, sid)
+    pomo = focus.pomodoro_counts(conn)
     return JSONResponse({
         "ok": True,
-        "overview": focus.overview(conn),
-        "record": focus.get_session_view(conn, sid),
+        "overview": {**ov, **pomo},
+        "record": {
+            **rec,
+            "mode": mode,
+            "mode_label": "Pomo" if mode == "pomo" else "Stopwatch",
+            "lesson_id": rec["target"]["id"] if rec["target"] else None,
+            "lesson_title": rec["target"]["title"] if rec["target"] else None,
+        },
     })
 
 
