@@ -2,3 +2,4 @@
 # deploy is zero-build. Marked generated so review reads the .ts source.
 app/static/learn-bridge.js linguist-generated=true
 app/static/terminal.js linguist-generated=true
+app/static/dnd.js linguist-generated=true

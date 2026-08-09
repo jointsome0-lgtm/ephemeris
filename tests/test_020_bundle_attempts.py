@@ -26,7 +26,6 @@ def test_bundle_attempts(client, suite_state):
     _mf_meta = suite_state["_mf_meta"]
     _os = suite_state["_os"]
     lessons_svc = suite_state["lessons_svc"]
-    terminal_js = suite_state["terminal_js"]
     # --- C3: bundle schema v2 (learn-bundle-spec.md) — readers, writer, identity
     from app import db as db_mod
     from app.services import bundle_schema as bschema
@@ -632,12 +631,16 @@ def test_bundle_attempts(client, suite_state):
             and "serializedByteLength" in _d2_text
             and "new TextEncoder()" in _d2_text
         ), f"{_d2_name}: handshake membrane anchors"
-    assert (
-        "app/static/learn-bridge.js linguist-generated=true"
-        in (ROOT / ".gitattributes").read_text(encoding="utf-8")
-        and "app/static/terminal.js linguist-generated=true"
-        in (ROOT / ".gitattributes").read_text(encoding="utf-8")
-    ), ".gitattributes marks both emitted runtimes as generated"
+    # every committed emit is marked generated, so review reads the .ts source
+    _d2_attrs = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+    _d2_emitted = sorted(
+        p.with_suffix(".js").name
+        for p in (ROOT / "app" / "static" / "src").glob("*.ts")
+    )
+    assert _d2_emitted and all(
+        f"app/static/{_d2_name} linguist-generated=true" in _d2_attrs
+        for _d2_name in _d2_emitted
+    ), f".gitattributes marks every emitted runtime as generated: {_d2_emitted}"
     _ci_workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
         encoding="utf-8")
     _ci_install = _ci_workflow.find("run: bun install --frozen-lockfile")
@@ -655,27 +658,20 @@ def test_bundle_attempts(client, suite_state):
         _d2_cp = subprocess.run(
             [str(_d2_tsc), "-p", str(ROOT), "--outDir", str(_d2_out)],
             cwd=ROOT, capture_output=True, text=True, timeout=180)
-        assert (
-            _d2_cp.returncode == 0
-            and (_d2_out / "learn-bridge.js").read_bytes() == _d2_js.encode("utf-8")
-        ), (
-            "committed learn-bridge.js matches a fresh tsc emit (#42)"
-            + "  -- "
-            + (
-                _d2_cp.stdout + _d2_cp.stderr
+        # every source in app/static/src, not a hand-kept list — a file
+        # converted to TypeScript is guarded the moment it lands
+        for _d2_name in _d2_emitted:
+            assert (
+                _d2_cp.returncode == 0
+                and (_d2_out / _d2_name).read_bytes()
+                == (ROOT / "app" / "static" / _d2_name).read_bytes()
+            ), (
+                f"committed {_d2_name} matches a fresh tsc emit (#42)"
+                + "  -- "
+                + (
+                    _d2_cp.stdout + _d2_cp.stderr
+                )
             )
-        )
-        assert (
-            _d2_cp.returncode == 0
-            and (_d2_out / "terminal.js").read_bytes()
-            == terminal_js.encode("utf-8")
-        ), (
-            "committed terminal.js matches a fresh tsc emit (#42)"
-            + "  -- "
-            + (
-                _d2_cp.stdout + _d2_cp.stderr
-            )
-        )
         _d2_mjs = _d2_out / "learn-bridge.mjs"
         _d2_mjs.write_text(_d2_js, encoding="utf-8")
         _d2_sha_cp = subprocess.run(
