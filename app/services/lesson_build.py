@@ -85,6 +85,14 @@ _ARTIFACT_DIR = "assets"
 # without reading bun's report: `<stem>.js`, plus `<stem>.css` when the graph
 # imported a stylesheet.
 _ARTIFACT_STEM = "artifact"
+# bun's report of the module graph, written beside the outputs and consumed —
+# then removed — before they are composed, so it never counts as an output.
+_GRAPH_NAME = "graph.json"
+# Generous: the report holds a line per module with no source text in it, so
+# even a graph of a few thousand modules stays in the low megabytes. Big enough
+# never to refuse an honest build, small enough that a macro cannot make the
+# app read an arbitrary amount into memory.
+_GRAPH_MAX_BYTES = 32 * 1024 * 1024
 
 
 class BuildError(Exception):
@@ -419,6 +427,11 @@ def _bundle_argv(entry: Path, outdir: Path) -> list[str]:
         # what to look for without parsing bun's report.
         f"--outdir={outdir}",
         f"--entry-naming={_ARTIFACT_STEM}.[ext]",
+        # Every file the bundler read, so the app can refuse to write the
+        # artifact over one of them. Nothing else here knows the graph: the
+        # request names one entry, and bun follows its imports wherever they
+        # lead. Read and removed before the outputs are composed.
+        f"--metafile={outdir / _GRAPH_NAME}",
     ]
 
 
@@ -549,10 +562,15 @@ def _write_through(fd: int, name: str, data: bytes) -> None:
 
 
 def _read_artifact(
-    outfile: Path, steps: list[dict], *, limit: int = ARTIFACT_MAX_BYTES,
+    outfile: Path, steps: list[dict], *, committed: int = 0,
     optional: bool = False,
 ) -> bytes | None:
     """Read what the bundler produced, on one descriptor that followed no link.
+
+    `committed` is what the artifact already weighs — the script, when this is
+    reading the stylesheet that will travel inside it. It shrinks the room left
+    and is added back into the refusal, so the number the agent is given is the
+    size of the page it asked for rather than of one half of it.
 
     `out/` is the bundle step's one writable directory, and that step runs
     agent-authored code: a build-time macro can put a symlink at this name and
@@ -564,6 +582,7 @@ def _read_artifact(
     the same descriptor it is read from, and read one byte past the ceiling so
     a file that grows between the two calls is refused rather than trusted.
     """
+    limit = max(ARTIFACT_MAX_BYTES - committed, 0)
     try:
         fd = os.open(outfile, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except FileNotFoundError:
@@ -587,13 +606,13 @@ def _read_artifact(
                 "the bundler's output is not a regular file", steps=steps,
             )
         if info.st_size > limit:
-            raise _too_large(info.st_size, steps)
+            raise _too_large(committed + info.st_size, steps)
         with os.fdopen(os.dup(fd), "rb") as handle:
             artifact = handle.read(limit + 1)
     finally:
         os.close(fd)
     if len(artifact) > limit:
-        raise _too_large(len(artifact), steps)
+        raise _too_large(committed + len(artifact), steps)
     return artifact
 
 
@@ -639,6 +658,70 @@ def _empty_outdir(outdir: Path, steps: list[dict]) -> None:
         ) from exc
 
 
+def _graph_sources(outdir: Path, workspace: Path, steps: list[dict]) -> set[str]:
+    """Every file the bundler read, absolute, from bun's own report.
+
+    Read on a descriptor that follows no link and removed straight away, so the
+    report is gone before `_compose_artifact` counts what is left in `out/`.
+
+    Fails closed. A build whose graph cannot be read is a build whose output
+    path cannot be checked against it, and the check exists to stop a
+    successful build from destroying an authored file.
+
+    Paths in the report are relative to the bundler's cwd, which is the
+    workspace, and are compared lexically: every symlink in the bundle has
+    already been refused by `_linked_paths`, so two spellings of one file
+    cannot get past this by disagreeing.
+    """
+    report = outdir / _GRAPH_NAME
+    try:
+        fd = os.open(report, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as exc:
+        raise BuildError(
+            "bundle-failed", 422,
+            f"the bundler reported no module graph, so the artifact cannot be "
+            f"checked against what it was built from: {exc.strerror or exc}",
+            steps=steps,
+        ) from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _GRAPH_MAX_BYTES:
+            raise BuildError(
+                "bundle-failed", 422,
+                "the bundler's module graph is not a file this app will read",
+                steps=steps,
+            )
+        with os.fdopen(os.dup(fd), "rb") as handle:
+            raw = handle.read(_GRAPH_MAX_BYTES + 1)
+    finally:
+        os.close(fd)
+    # `unlink` never follows a link, so this removes whatever name is there and
+    # nothing it points at.
+    try:
+        os.unlink(report)
+    except OSError:  # pragma: no cover - the next run empties the directory
+        pass
+    try:
+        graph = json.loads(raw.decode("utf-8"))
+        inputs = graph["inputs"]
+        if not isinstance(inputs, dict):
+            raise TypeError("inputs is not an object")
+    except (UnicodeDecodeError, ValueError, TypeError, KeyError) as exc:
+        raise BuildError(
+            "bundle-failed", 422,
+            f"the bundler's module graph could not be read: {exc}", steps=steps,
+        ) from exc
+    sources: set[str] = set()
+    for key, value in inputs.items():
+        if isinstance(key, str):
+            sources.add(os.path.normpath(os.path.join(workspace, key)))
+        for entry in (value or {}).get("imports", []) if isinstance(value, dict) else []:
+            path = entry.get("path") if isinstance(entry, dict) else None
+            if isinstance(path, str):
+                sources.add(os.path.normpath(os.path.join(workspace, path)))
+    return sources
+
+
 def _compose_artifact(outdir: Path, steps: list[dict]) -> bytes:
     """One file out of what the bundler may have written as two.
 
@@ -677,7 +760,7 @@ def _compose_artifact(outdir: Path, steps: list[dict]) -> bytes:
     assert script is not None
     styles = _read_artifact(
         outdir / f"{_ARTIFACT_STEM}.css", steps,
-        limit=max(ARTIFACT_MAX_BYTES - len(script), 0), optional=True,
+        committed=len(script), optional=True,
     )
     if not styles:
         return script
@@ -836,6 +919,23 @@ async def _build_locked(
                   "seconds": round(time.monotonic() - started, 2), "output": output})
     if code != 0:
         raise BuildError("bundle-failed", 422, "the bundle step failed", steps=steps)
+
+    # `entry == out` is the obvious way to ask the build to eat its own source,
+    # and not the only one: the entry may import `../assets/helper.js` while the
+    # request names that same file as `out`. bun reads both happily, the page
+    # renders, and the placement then writes the whole bundle over the helper
+    # and — on a passing render — deletes the copy it set aside. The authored
+    # file is gone, and the response says `ok`. So the output is checked against
+    # every file the build actually read, not just against the entry.
+    destination = os.path.normpath(lesson_dir / out)
+    if destination in _graph_sources(outdir, workspace, steps):
+        raise BuildError(
+            "out-is-source", 409,
+            f"`out` names {out}, which this build read as source; writing the "
+            "artifact there would replace it with the bundle it was compiled "
+            "into and leave no copy behind",
+            steps=steps,
+        )
     artifact = _compose_artifact(outdir, steps)
 
     # The descriptor walk refuses a symlinked or non-directory parent, which is

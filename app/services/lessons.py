@@ -137,6 +137,15 @@ def _clean_bundle_ref(value: str | None, *, html_only: bool = False) -> str:
     value = (value or DEFAULT_ENTRY).strip()
     if not value or "\\" in value or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
         raise LessonError("invalid lesson entry")
+    # A name neither the filesystem nor a URL can carry is not a name in this
+    # bundle. A JSON body may hold a lone surrogate — `"assets/\ud800.js"` —
+    # which is a perfectly ordinary `str` here and then raises
+    # `UnicodeEncodeError` out of `os.open` or `urllib.parse.quote`, turning a
+    # bad request into an unstructured 500 several layers away.
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise LessonError("invalid lesson entry") from None
     ref = PurePosixPath(value)
     if ref.is_absolute() or ".." in ref.parts:
         raise LessonError("invalid lesson entry")

@@ -77,6 +77,10 @@ def test_the_bundle_argv_asks_for_one_classic_script():
     assert "--outdir=/w/out" in argv
     assert f"--entry-naming={lesson_build._ARTIFACT_STEM}.[ext]" in argv
     assert not [word for word in argv if word.startswith("--outfile")]
+    # The module graph, beside the outputs: the request names one entry and the
+    # bundler follows its imports, so this is the app's only way to know which
+    # files the artifact must not be written over.
+    assert f"--metafile=/w/out/{lesson_build._GRAPH_NAME}" in argv
 
 
 @pytest.mark.parametrize("spec", [
@@ -1250,6 +1254,139 @@ def test_a_directory_standing_where_the_artifact_goes_is_a_refusal(
                 if "tree.js" in p.name] == ["tree.js"], "nothing was moved aside"
     finally:
         shutil.rmtree(tree, ignore_errors=True)
+
+
+@needs_sandbox
+def test_an_output_the_build_itself_read_is_refused(built_lesson, monkeypatch):
+    """`entry == out` is the obvious way to ask for this, and not the only one.
+
+    The entry may import `../assets/helper.js` while the request names that same
+    file as `out`. Everything downstream succeeds — bun reads both, the page
+    renders — and the placement then writes the whole bundle over the helper and
+    deletes the copy it set aside, because a passing render is what tells it the
+    aside copy is no longer needed. Authored work gone, response `ok`.
+    """
+    import asyncio
+
+    lesson, bundle = built_lesson
+    (bundle / "assets").mkdir(exist_ok=True)
+    helper = bundle / "assets" / "helper.js"
+    helper.write_text('export const h = () => "authored";\n', encoding="utf-8")
+    (bundle / "src" / "uses-helper.ts").write_text(
+        'import { h } from "../assets/helper.js";\ndocument.title = h();\n',
+        encoding="utf-8",
+    )
+    try:
+        _no_render_errors(monkeypatch)
+        with pytest.raises(lesson_build.BuildError) as caught:
+            asyncio.run(lesson_build.build_lesson(
+                lesson, add=[], entry="src/uses-helper.ts", out="assets/helper.js",
+                page=None, page_url="http://127.0.0.1:1/unused",
+                artifact_url="http://127.0.0.1:1/unused.js",
+            ))
+        assert caught.value.code == "out-is-source", caught.value.code
+        assert caught.value.status == 409
+        assert helper.read_text(encoding="utf-8") == 'export const h = () => "authored";\n'
+        assert [p.name for p in helper.parent.iterdir()
+                if "helper.js" in p.name] == ["helper.js"], "nothing was set aside"
+    finally:
+        helper.unlink(missing_ok=True)
+
+
+@needs_sandbox
+def test_a_build_that_read_nothing_of_the_kind_still_places_its_artifact(
+    built_lesson, monkeypatch
+):
+    """The graph check is a refusal, not a tax: an ordinary build still lands,
+    and the bundler's report does not survive as a stray output."""
+    import asyncio
+
+    from app.services import lessons
+
+    lesson, bundle = built_lesson
+    (bundle / "src" / "graph-ok.ts").write_text(
+        'document.title = "graph ok";\n', encoding="utf-8"
+    )
+    _no_render_errors(monkeypatch)
+    result = asyncio.run(lesson_build.build_lesson(
+        lesson, add=[], entry="src/graph-ok.ts", out="assets/graph-ok.js",
+        page=None, page_url="http://127.0.0.1:1/unused",
+        artifact_url="http://127.0.0.1:1/unused.js",
+    ))
+    assert result["ok"]
+    assert (bundle / "assets" / "graph-ok.js").is_file()
+    outdir = lessons.ensure_build_workspace(lesson["slug"]) / "out"
+    assert lesson_build._GRAPH_NAME not in os.listdir(outdir)
+
+
+def test_a_graph_that_cannot_be_read_stops_the_build(tmp_path):
+    """Fail closed. Without the graph there is no way to tell whether the
+    output path is one of the files the artifact was compiled from, and the
+    check exists precisely because that case ends in lost work."""
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    with pytest.raises(lesson_build.BuildError) as missing:
+        lesson_build._graph_sources(outdir, tmp_path, [])
+    assert missing.value.code == "bundle-failed"
+
+    (outdir / lesson_build._GRAPH_NAME).write_text("not json", encoding="utf-8")
+    with pytest.raises(lesson_build.BuildError) as malformed:
+        lesson_build._graph_sources(outdir, tmp_path, [])
+    assert malformed.value.code == "bundle-failed"
+
+    # Read, then removed: it is not one of the outputs the page is composed of.
+    (outdir / lesson_build._GRAPH_NAME).write_text(
+        json.dumps({"inputs": {
+            "../bundle/src/page.ts": {"imports": [
+                {"path": "/data/lessons/x/assets/helper.js"},
+            ]},
+            "node_modules/d3/index.js": {},
+        }}),
+        encoding="utf-8",
+    )
+    sources = lesson_build._graph_sources(outdir, tmp_path, [])
+    assert str(tmp_path.parent / "bundle" / "src" / "page.ts") in sources
+    assert "/data/lessons/x/assets/helper.js" in sources
+    assert str(tmp_path / "node_modules" / "d3" / "index.js") in sources
+    assert not (outdir / lesson_build._GRAPH_NAME).exists()
+
+
+def test_a_page_over_the_ceiling_is_measured_whole(tmp_path):
+    """The refusal names the size of the page that was asked for.
+
+    The stylesheet is read against what the script has already spent, so a
+    900 KiB script and a 200 KiB stylesheet must not be refused as a
+    "204800-byte" page that is somehow over a 1 MiB ceiling — a number the
+    agent cannot act on, attached to the wrong file.
+    """
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    script = 900 * 1024
+    styles = 200 * 1024
+    (outdir / f"{lesson_build._ARTIFACT_STEM}.js").write_bytes(b"x" * script)
+    (outdir / f"{lesson_build._ARTIFACT_STEM}.css").write_bytes(b"y" * styles)
+    with pytest.raises(lesson_build.BuildError) as caught:
+        lesson_build._compose_artifact(outdir, [])
+    assert caught.value.code == "artifact-too-large"
+    assert caught.value.fields["bytes"] == script + styles
+    assert str(script + styles) in caught.value.detail
+
+
+def test_a_name_no_filesystem_can_carry_is_a_bad_request(client, built_lesson):
+    """A JSON body may hold a lone surrogate: `"assets/\\ud800.js"` is a
+    perfectly ordinary Python `str` that neither `os.open` nor
+    `urllib.parse.quote` can encode. Refused here, or it becomes an
+    unstructured 500 several layers away."""
+    lesson, _bundle = built_lesson
+    url = f"/learn/lessons/{lesson['id']}/build"
+    for field, body in (
+        ("out", {"entry": "src/page.ts", "out": "assets/\ud800.js"}),
+        ("entry", {"entry": "src/\ud800.ts", "out": "assets/page.js"}),
+    ):
+        response = client.post(url, content=json.dumps(body).encode("utf-8"),
+                               headers={"Content-Type": "application/json"})
+        assert response.status_code == 400, (field, response.status_code)
+        assert response.json()["error"] == "invalid-request", (field, response.json())
 
 
 @needs_sandbox

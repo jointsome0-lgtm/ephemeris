@@ -119,7 +119,14 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   --minimum-release-age=2592000 --ignore-scripts --no-progress
   --no-summary [-- <packages>]`. Bundle argv: `bun build <entry>
   --target=browser --format=iife --production --keep-names
-  --outdir=<workspace>/out --entry-naming=artifact.[ext]`.
+  --outdir=<workspace>/out --entry-naming=artifact.[ext]
+  --metafile=<workspace>/out/graph.json`. That report is read on an
+  `O_NOFOLLOW` descriptor, required to be a regular file of at most
+  32 MiB, unlinked, and parsed; its `inputs` keys and each
+  `imports[].path` are joined to the workspace (the bundler's cwd) and
+  normalised. When `<bundle>/<out>` is among them the build is refused
+  with `out-is-source` 409 before anything is placed, and an unreadable
+  or unparsable report refuses the build too.
   `--outdir` rather than `--outfile` because a `.css` import anywhere in
   the graph gives bun a second output: measured on bun 1.3.11, an entry
   with `import "./style.css"` and `--outfile` exits with "Multiple files
@@ -138,7 +145,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `_AGENTS_TEMPLATE` brief documents that stylesheet imports work and
   that there is no second file to link. Package specs are matched against an anchored npm
   name/range regex, at most 32 per request; `entry` and `out` go through
-  `lessons.clean_bundle_ref` and are refused when equal; `out` is also
+  `lessons.clean_bundle_ref` — which now also refuses a value that cannot
+  be encoded as UTF-8, such as a lone surrogate from a JSON body — and are
+  refused when equal; `out` is also
   refused unless it is under `assets/` and outside
   `assets/libs/` (`lessons.LESSON_LIBS_BUNDLE_DIR`, which
   `seed_lesson_libs` rewrites on terminal open), and `entry` is refused when
@@ -150,7 +159,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   the build with `linked-source` 409. The artifact is opened with
   `O_RDONLY | O_NOFOLLOW`, refused unless `fstat` reports a regular file,
   refused over 1 MiB by that same `fstat`, and then read through a `dup`
-  of that descriptor with a cap of 1 MiB + 1 byte. It is
+  of that descriptor with a cap of 1 MiB + 1 byte; the stylesheet is read
+  against what the script already weighs and the refusal reports the two
+  together. It is
   placed in the bundle through a descriptor chain opened component by
   component with `O_NOFOLLOW` and `os.replace`. Whatever was at the output
   name is refused with `invalid-out` 409 when `os.stat(..., dir_fd=…,
