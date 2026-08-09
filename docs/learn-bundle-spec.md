@@ -65,9 +65,9 @@ Reserved names, which no page, block file, or artifact root may claim:
 a `_fetched.json` recording each one's url, date and sha256 — so provenance
 survives the session that gathered it. It is input to the tutor, never
 lesson content: nothing under it is served, walked as a page, or referenced
-from the manifest. Workspace prep creates it when the name is free and
-otherwise leaves whatever is there untouched, because the app writes nothing
-into it. (2026-08-09.)
+from the manifest. Workspace prep creates it when the name is free, uses an
+existing directory as it stands, and renames nothing that holds the name,
+because the app writes nothing into it. (2026-08-09.)
 
 `node_modules` is a mount point, not bundle content. The packages an agent
 installs live outside the bundle, in that lesson's build workspace
@@ -933,11 +933,15 @@ same four fields the same way, and so does adding `source` (2026-08-09).
 
 `source` differs from the other two in what happens on disk. The app writes
 nothing under it — the tutor stores fetched material there — so workspace
-prep creates the directory only when the name is free, and a bundle that
-already holds a file, a directory or a link at that name keeps it exactly
-as it stands. Such a bundle loses the manifest binding like the two above,
-but nothing is renamed and the tutor is told, in its brief, that this
-bundle has no source directory.
+prep creates the directory only when the name is free, and whatever already
+holds the name keeps it exactly as it stands, renamed by nothing. A real
+directory there is the ordinary case, not a collision: it is what every
+second and later open of the same workspace finds, and it is used as the
+source directory, contents and all. A file or a link is the compatibility
+case: it stays untouched, and the tutor's brief then states that this
+bundle has no source directory rather than sending writes at it. Either
+way the name stops being author-addressable, like the two reservations
+above.
 
 The reason a v3 would not serve either purpose: the app writes
 `.claude/settings.json` into every bundle it prepares, and the lesson-agent

@@ -1440,6 +1440,19 @@ def test_002_ui_and_workspace(client, suite_state):
         and "%SOURCE_" not in _src_brief_made
     ), "the brief advertises source/ once the directory exists"
 
+    # Reopening the same workspace: the directory is now the ordinary case,
+    # kept with what the tutor put in it, and still advertised.
+    (_src_dir / lessons_svc.SOURCE_DIR_NAME / "step-01.html").write_text(
+        "fetched", encoding="utf-8")
+    _src_again = lessons_svc.prepare_terminal_workspace(_src["slug"])
+    _src_kept = _src_dir / lessons_svc.SOURCE_DIR_NAME / "step-01.html"
+    assert (
+        _src_again is not None
+        and _src_kept.read_text(encoding="utf-8") == "fetched"
+        and "Save what you pull into `source/`"
+        in (_src_dir / "AGENTS.md").read_text(encoding="utf-8")
+    ), "a second open keeps the source directory's contents and still names it"
+
     # A symlinked bundle remains forbidden; nodes at brief paths are atomically
     # replaced without touching what links previously named.
     import os as _os
