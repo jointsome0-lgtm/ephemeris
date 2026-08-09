@@ -828,6 +828,9 @@ def test_core_surfaces(client, suite_state):
     # against a run that no longer exists.
     c.post("/focus/timer/start", data={"token": "tok-z", "mode": "open"},
            headers={"X-Partial": "1"})
+    # Started a moment from now, so "no time has passed" is a fact rather than a
+    # bet on the two requests landing inside the same clock second.
+    _backdate("tok-z", -2)
     too_soon = c.post("/focus/timer/finish", data={"token": "tok-z"},
                       headers={"X-Partial": "1"})
     assert too_soon.status_code == 422, "an empty span is refused"
@@ -937,6 +940,25 @@ def test_core_surfaces(client, suite_state):
     assert len(pulse) == 7 and pulse[-1]["focus_min"] == 70, (
         "week_pulse spans 7 days; today reflects 70m focus"
     )
+    # A task is a timer target too, so its focused time is readable on the task
+    # — a picker that promises attribution nothing can show back is a lie.
+    c.post("/tasks", data={"title": "Invented focus target", "return_to": "/tasks"},
+           follow_redirects=False)
+    tid = c.get("/focus/timer/targets").json()["targets"]["task"][0]["id"]
+    c.post("/focus/timer/start",
+           data={"token": "tok-t", "mode": "open", "task_id": str(tid)},
+           headers={"X-Partial": "1"})
+    _backdate("tok-t", 300)
+    trec = c.post("/focus/timer/finish", data={"token": "tok-t"},
+                  headers={"X-Partial": "1"}).json()["recorded"]
+    assert trec["target"]["kind"] == "task" and trec["target"]["id"] == tid, (
+        "the session names the task it was spent on" + "  -- " + str(trec["target"])
+    )
+    tpane = c.get(f"/board?sel=task-{tid}").text
+    assert "5m focused" in tpane and f'data-timer-target="task:{tid}"' in tpane, (
+        "the task pane shows its focused time and can start the timer"
+    )
+
     # The pre-#75 write still answers, for a Focus tab left open across the
     # restart: its app.js posts here when a Pomodoro completes, and a 404 would
     # drop a span the user really did spend. The old words convert on the way in.

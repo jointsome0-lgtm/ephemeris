@@ -78,6 +78,9 @@ def _coerce_target(conn: sqlite3.Connection, kind: str, value) -> int | None:
     return target_id if row else None
 
 
+_NO_TARGET = {"lesson_id": None, "habit_id": None, "task_id": None}
+
+
 def _one_target(resolved: dict) -> dict:
     """A span of attention is spent on one thing: letting two ids through would
     double-count the same minutes in two per-target totals."""
@@ -386,15 +389,27 @@ def finish_run(conn: sqlite3.Connection, token: str) -> dict:
             started_at=row["started_at"], ended_at=ended_at, token=token,
             targets=_stored_targets(row), run_id=row["id"],
         )
-    except (sqlite3.IntegrityError, FocusError):
+    except (sqlite3.IntegrityError, FocusError) as exc:
         # A double-click on Stop: both calls read the run, one wrote the session.
         # The loser fails either on the token's unique index or on finding the
         # run already claimed — and the token is the idempotency key, so it
         # returns the winner's row instead of a 500 or a 422.
         recorded = session_by_token(conn, token)
-        if recorded is None:
+        if recorded is not None:
+            return recorded
+        if not isinstance(exc, sqlite3.IntegrityError):
             raise
-        return recorded
+        # Nothing was recorded, so the conflict is the other race: the target was
+        # hard-deleted between reading the run and writing the session, and the
+        # stale id no longer has a row to point at. The time was still spent —
+        # record it detached, exactly as deleting a habit does to its history.
+        session_id = record_session(
+            conn, row["mode"], seconds,
+            target_seconds=row["target_seconds"], note=row["note"],
+            started_at=row["started_at"], ended_at=ended_at, token=token,
+            targets=_NO_TARGET, run_id=row["id"],
+        )
+        return get_session_view(conn, session_id)
     return get_session_view(conn, session_id)
 
 
@@ -451,7 +466,7 @@ def record_session(conn: sqlite3.Connection, mode: str, seconds, *,
         session_id = cur.lastrowid
         append_event(conn, "focus_session_recorded",
                      {"session_id": session_id, "mode": mode, "seconds": seconds,
-                      "target_seconds": target_seconds, **targets})
+                      "target_seconds": target_seconds, "note": note, **targets})
     return session_id
 
 
@@ -650,6 +665,12 @@ def habit_total(conn: sqlite3.Connection, habit_id: int) -> dict:
     """All focused time recorded against ONE habit, plus today's share — the
     per-target stats that replaced the global Focus dashboard (#75)."""
     return _target_total(conn, "habit_id", habit_id)
+
+
+def task_total(conn: sqlite3.Connection, task_id: int) -> dict:
+    """All focused time recorded against ONE task. A task is offered as a timer
+    target, so the time spent on it has to be readable on the task itself."""
+    return _target_total(conn, "task_id", task_id)
 
 
 def habit_totals(conn: sqlite3.Connection) -> dict[int, dict]:

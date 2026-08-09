@@ -33,6 +33,7 @@
   let targetsLoading = null;  // the in-flight fetch, so two opens share one
   let mode = "countdown";
   let minutes = 25;
+  let preset = 25;   // the last length chosen from the buttons
   let busy = false;
   let issueSeq = 0;        // every request takes a ticket when it is sent
   let appliedSeq = 0;      // the ticket of the state currently on screen
@@ -318,18 +319,28 @@
   els.lengths.addEventListener("click", (e) => {
     const b = e.target.closest("button[data-minutes]");
     if (!b) return;
-    minutes = parseInt(b.dataset.minutes, 10);
+    preset = parseInt(b.dataset.minutes, 10);
+    minutes = preset;
     els.custom.value = "";
     els.lengths.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
     render();
   });
+  // The field always speaks for itself: cleared, it hands the length back to the
+  // chosen preset; nonsense in it means nonsense goes to the server, which says
+  // so. What it must never do is leave a stale number armed behind a value the
+  // user has since changed.
   els.custom.addEventListener("input", () => {
-    const v = Number(els.custom.value);
-    if (Number.isFinite(v) && v > 0) {
-      minutes = v;
+    const raw = els.custom.value.trim();
+    if (!raw) {
+      minutes = preset;
+      els.lengths.querySelectorAll("button").forEach(
+        (x) => x.classList.toggle("on", parseInt(x.dataset.minutes, 10) === preset));
+    } else {
+      const v = Number(raw);
+      minutes = Number.isFinite(v) && v > 0 ? v : 0;
       els.lengths.querySelectorAll("button").forEach((x) => x.classList.remove("on"));
-      render();
     }
+    render();
   });
   els.start.addEventListener("click", startTimer);
   els.pause.addEventListener("click", togglePause);

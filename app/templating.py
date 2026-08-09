@@ -351,7 +351,9 @@ def _selection_ctx(conn, request: Request, sel: str | None, month: str | None) -
         task = tasks.get_task(conn, sid)
         if task is None:
             return none
-        return {"sel": "task", "sel_id": sid, "task": task, "close_url": request.url.path}
+        return {"sel": "task", "sel_id": sid, "task": task,
+                "focus_total": focus.task_total(conn, sid),
+                "close_url": request.url.path}
     if kind == "habit":
         ctx = _habit_detail_ctx(conn, sid, month, f"{request.url.path}?sel=habit-{sid}")
         if ctx is None:
