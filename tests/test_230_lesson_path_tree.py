@@ -232,6 +232,30 @@ def test_nested_tracks(client, suite_state):
         and len(_row_ids(_flat)) == len(_live_rows)
     ), "a pre-nesting backend's flat groups render, headed by the full address"
 
+    # The live process has the globals it booted with, so a merged template
+    # calling `star_body()` there is an UndefinedError, not a missing colour.
+    # The `is defined` guard is tested with the global actually absent.
+    _saved = _tpl.env.globals.pop("star_body")
+    try:
+        _preglobal = _tpl.get_template("learn.html").render(
+            request=_req, rail="learn", status_filter=None, show_archived=False,
+            counts={"all": 0, "archived": 0,
+                    **{k: 0 for k in lessons_svc.STATUSES}},
+            status_tabs=[], selected=None, self_url="/learn", flash=None,
+            rows=_live_rows, tracks=[],
+            groups=[{"path": "zt-cc", "studied": 1, "total": 4, "pct": 25,
+                     "selected": False, "next": None,
+                     "rows": [_live_rows[0]]}],
+            ungrouped=_live_rows[1:],
+        )
+    finally:
+        _tpl.env.globals["star_body"] = _saved
+    assert (
+        'data-track="zt-cc"' in _preglobal
+        and '<details class="lesson-group-d" data-track="zt-cc"' in _preglobal
+        and 'data-readout="25% · 4 lessons"' in _preglobal
+    ), "without the global the tree still renders, unclassed and in the default gold"
+
     # --- the vine ------------------------------------------------------------
     # Each branch carries one shoot, filled to the same share its head counts.
     # The fill is a CSS gradient stop, so `--pct` on the rows box is the whole
@@ -263,7 +287,7 @@ def test_nested_tracks(client, suite_state):
     assert (
         ".lesson-vine {" in _css
         and ".vine-0 {" in _css and ".vine-3 {" in _css
-        and 'content: attr(data-pct) "%"' in _css
+        and "content: attr(data-readout)" in _css
     ), "the shoot, its four curls and the hover readout have their styles"
     # Both ends have to be unambiguous, and only a fade band that shrinks
     # toward them delivers that — a fixed band leaves a finished branch dimming
@@ -280,4 +304,60 @@ def test_nested_tracks(client, suite_state):
         _tray.rstrip().endswith("@media (hover: hover) {")
     ), "the hover-only action tray is gated on the device having hover"
 
+    # --- spectral class ------------------------------------------------------
+    # Every part that used to be hard-coded gold has to read `--star` instead,
+    # or a blue giant grows gold tendrils.
+    assert (
+        ".lesson-group-d { --star: var(--astral); }" in _css
+        and all(f".lesson-group-d.{c} {{ --star:" in _css
+                for c in ("star-m", "star-k", "star-g", "star-f", "star-b", "star-bh"))
+    ), "every spectral class sets --star, and an unclassed branch stays gold"
+    _drawn = _css.split(".lesson-group-count {")[1].split(".lesson-list {")[0]
+    assert (
+        "var(--astral)" not in _drawn
+    ), "past the ladder the tree draws in --star only, never in raw gold"
+    assert (
+        ".star-bh > .lesson-group-head > .lesson-body {" in _css
+        and "var(--bh, 12px)" in _css
+    ), "the black hole takes its diameter from the template, with a floor"
+    # #169 dropped the caret, so the body is the only thing left that can say a
+    # branch is folded — at every level, and for a black hole too, which is
+    # already dark-cored and cannot answer by going hollow.
+    assert (
+        ".lesson-group-d:not([open]):not(.star-bh) > .lesson-group-head > .lesson-body {" in _css
+        and ".lesson-group-d:not([open]).star-bh > .lesson-group-head > .lesson-body {" in _css
+    ), "a folded cluster is marked at every level, black holes included"
+
     suite_state["path_tree"] = sorted(tree)
+
+
+def test_star_body_ladder():
+    """Mass picks the body, and past the ladder the body grows logarithmically.
+
+    The thresholds are a product decision (owner, 2026-08-09: "x10 on all of
+    it") — the ladder is meant to take years to climb, so an off-by-one here is
+    a whole tier of the tree wearing the wrong colour.
+    """
+    from app.templating import BLACK_HOLE_MAX_PX, star_body
+
+    # Each boundary from both sides: the limit is inclusive.
+    for total, cls in ((0, "star-m"), (20, "star-m"), (21, "star-k"),
+                       (50, "star-k"), (51, "star-g"),
+                       (110, "star-g"), (111, "star-f"),
+                       (230, "star-f"), (231, "star-b"),
+                       (999, "star-b"), (1000, "star-bh")):
+        assert star_body(total)["cls"] == cls, f"{total} lessons is a {cls}"
+
+    # A star wears its size in CSS; only the hole carries a computed one.
+    assert star_body(42)["size"] is None
+    assert star_body(None)["cls"] == "star-m" and star_body(-5)["cls"] == "star-m"
+    assert star_body(1)["label"] == "red dwarf"
+    assert star_body(5000)["label"] == "black hole"
+
+    # +3px per doubling, and a ceiling — otherwise a big enough platform root
+    # eventually draws a disc the width of the panel.
+    assert star_body(1000)["size"] == 12
+    assert star_body(2000)["size"] == 15
+    assert star_body(4000)["size"] == 18
+    assert star_body(8000)["size"] == 21
+    assert star_body(10_000_000)["size"] == BLACK_HOLE_MAX_PX
