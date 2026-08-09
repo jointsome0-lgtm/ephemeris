@@ -29,12 +29,6 @@
       {% if lesson.archived %}<span>Archived</span>{% endif %}
     </div>
   </a>
-  {# The strip that asks for the status tray. Inside a track the tray floats
-     over the row, and a tray revealed by hovering the row itself lands on top
-     of the title — the one thing the row is for. So the reveal gets its own
-     narrow target at the right edge, and the rest of the row stays a link.
-     Decoration with no content of its own; the CSS gives it a size only where
-     the tray actually floats. #}
   <span class="lesson-actions-edge" aria-hidden="true"></span>
   <div class="lesson-actions">
     {% if not lesson.archived %}
