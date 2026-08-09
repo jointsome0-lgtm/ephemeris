@@ -1733,3 +1733,267 @@ def test_a_sandboxed_lesson_page_cannot_ask_for_its_own_rebuild(client, built_le
         headers={"Origin": "null"},
     )
     assert response.status_code == 403
+
+
+def _replace_output_mid_check(path: Path, body: bytes, errors=()):
+    """A `console_errors` stand-in that writes the bundle while the gate runs.
+
+    The gate is where the build releases the event loop for seconds, and the
+    lesson-agent session owns this directory: it can replace the page it is
+    working on at any moment, and the request holding the lesson lock cannot
+    stop it. Atomically, the way an editor or a `>` into a temporary saves.
+    """
+    def check(*args, **kwargs):
+        temporary = path.with_suffix(".invented-concurrent")
+        temporary.write_bytes(body)
+        os.replace(temporary, path)
+        return list(errors)
+    return check
+
+
+@needs_sandbox
+def test_a_page_replaced_during_the_gate_is_not_deleted_by_the_rollback(
+    built_lesson, monkeypatch
+):
+    """The refusal path used to unlink whatever the name held, sight unseen.
+
+    Sequence: the build sets the previous artifact aside, writes its own, and
+    the gate refuses it. The undo removed `assets/page.js` and moved the old
+    copy back — but if the agent had written that path while the gate ran, the
+    bytes removed were the agent's, and they were the newest thing there. The
+    build must leave a write it did not make alone, and say why it stopped.
+    """
+    import asyncio
+
+    lesson, bundle = built_lesson
+    # Its own source, with nothing to install: this test is about the placement
+    # window, and the fixture's entry imports d3.
+    (bundle / "src" / "page.ts").write_text(
+        'document.title = "invented";\n', encoding="utf-8"
+    )
+    (bundle / "assets").mkdir(exist_ok=True)
+    (bundle / "assets" / "page.js").write_bytes(b"//invented old artifact\n")
+    concurrent = b"//invented concurrent authored bytes\n"
+    monkeypatch.setattr(
+        render_check, "console_errors",
+        _replace_output_mid_check(
+            bundle / "assets" / "page.js", concurrent, errors=["invented failure"],
+        ),
+    )
+
+    # Snapshot first: other tests here share this bundle and leave decoy names
+    # behind deliberately, so what matters is that this build adds nothing.
+    before = set(os.listdir(bundle / "assets"))
+    with pytest.raises(lesson_build.BuildError) as caught:
+        asyncio.run(lesson_build.build_lesson(
+            lesson, add=[], entry="src/page.ts", out="assets/page.js",
+            page=None, page_url="http://127.0.0.1:1/unused",
+            artifact_url="http://127.0.0.1:1/unused.js",
+        ))
+
+    assert caught.value.code == "output-replaced" and caught.value.status == 409
+    assert (bundle / "assets" / "page.js").read_bytes() == concurrent, (
+        "the rollback destroyed a write this build never made"
+    )
+    assert set(os.listdir(bundle / "assets")) == before, (
+        "and left no hidden copy of the artifact it displaced"
+    )
+
+
+@needs_sandbox
+def test_a_page_replaced_during_the_gate_is_not_reported_as_rendered(
+    built_lesson, monkeypatch
+):
+    """The success path used to say `ok` about bytes the browser never saw.
+
+    Same window, clean verdict: the gate rendered the built artifact, the agent
+    replaced it before the response was written, and the build deleted the copy
+    it had set aside and answered `ok: true`. The lesson then served bytes no
+    gate ever passed, under a claim that one had.
+    """
+    import asyncio
+
+    lesson, bundle = built_lesson
+    # Its own source, with nothing to install: this test is about the placement
+    # window, and the fixture's entry imports d3.
+    (bundle / "src" / "page.ts").write_text(
+        'document.title = "invented";\n', encoding="utf-8"
+    )
+    (bundle / "assets").mkdir(exist_ok=True)
+    (bundle / "assets" / "page.js").write_bytes(b"//invented old artifact\n")
+    concurrent = b"//invented unrendered bytes\n"
+    monkeypatch.setattr(
+        render_check, "console_errors",
+        _replace_output_mid_check(bundle / "assets" / "page.js", concurrent),
+    )
+
+    with pytest.raises(lesson_build.BuildError) as caught:
+        asyncio.run(lesson_build.build_lesson(
+            lesson, add=[], entry="src/page.ts", out="assets/page.js",
+            page=None, page_url="http://127.0.0.1:1/unused",
+            artifact_url="http://127.0.0.1:1/unused.js",
+        ))
+
+    assert caught.value.code == "output-replaced"
+    assert (bundle / "assets" / "page.js").read_bytes() == concurrent
+
+
+@needs_sandbox
+def test_an_untouched_gate_still_rolls_back_and_still_commits(
+    built_lesson, monkeypatch
+):
+    """The check above must not have cost the ordinary two outcomes.
+
+    Nothing writes during the gate here. A refusal has to put the previous
+    artifact back, byte for byte, and a pass has to replace it and drop the
+    copy it set aside — the behaviour the replacement check is wrapped around,
+    pinned so a stricter identity cannot quietly turn every build into a
+    conflict.
+    """
+    import asyncio
+
+    lesson, bundle = built_lesson
+    # Its own source, with nothing to install: this test is about the placement
+    # window, and the fixture's entry imports d3.
+    (bundle / "src" / "page.ts").write_text(
+        'document.title = "invented";\n', encoding="utf-8"
+    )
+    (bundle / "assets").mkdir(exist_ok=True)
+    previous = b"//invented old artifact\n"
+    (bundle / "assets" / "page.js").write_bytes(previous)
+
+    _no_render_errors(monkeypatch, errors=["invented failure"])
+    with pytest.raises(lesson_build.BuildError) as caught:
+        asyncio.run(lesson_build.build_lesson(
+            lesson, add=[], entry="src/page.ts", out="assets/page.js",
+            page=None, page_url="http://127.0.0.1:1/unused",
+            artifact_url="http://127.0.0.1:1/unused.js",
+        ))
+    assert caught.value.code == "render-errors"
+    assert (bundle / "assets" / "page.js").read_bytes() == previous
+
+    _no_render_errors(monkeypatch)
+    before = set(os.listdir(bundle / "assets"))
+    result = asyncio.run(lesson_build.build_lesson(
+        lesson, add=[], entry="src/page.ts", out="assets/page.js",
+        page=None, page_url="http://127.0.0.1:1/unused",
+        artifact_url="http://127.0.0.1:1/unused.js",
+    ))
+    assert result["ok"]
+    assert (bundle / "assets" / "page.js").read_bytes() != previous
+    assert set(os.listdir(bundle / "assets")) == before
+
+
+@needs_sandbox
+def test_a_refused_first_build_leaves_no_artifact_behind(built_lesson, monkeypatch):
+    """The undo's other branch: there was nothing at the output name to restore.
+
+    With a previous artifact, the rollback is one rename of the copy set aside,
+    which replaces the build's own file in the same syscall. With none, the
+    removal IS the whole undo — and skipping it would leave a lesson serving a
+    page the gate had just refused.
+    """
+    import asyncio
+
+    lesson, bundle = built_lesson
+    (bundle / "src" / "page.ts").write_text(
+        'document.title = "invented";\n', encoding="utf-8"
+    )
+    (bundle / "assets").mkdir(exist_ok=True)
+    fresh = bundle / "assets" / "never-built-before.js"
+    assert not fresh.exists()
+
+    _no_render_errors(monkeypatch, errors=["invented failure"])
+    with pytest.raises(lesson_build.BuildError) as caught:
+        asyncio.run(lesson_build.build_lesson(
+            lesson, add=[], entry="src/page.ts", out="assets/never-built-before.js",
+            page=None, page_url="http://127.0.0.1:1/unused",
+            artifact_url="http://127.0.0.1:1/unused.js",
+        ))
+
+    assert caught.value.code == "render-errors"
+    assert not fresh.exists(), "the refused artifact stayed in the bundle"
+
+
+@needs_sandbox
+def test_a_page_deleted_during_the_gate_is_not_resurrected(built_lesson, monkeypatch):
+    """Removed and replaced are the same answer: the agent spoke about that path.
+
+    The undo used to treat an absent output as "the write never landed" and
+    rename the copy it had set aside back onto it — bringing back a page the
+    agent had just deleted on purpose. Once the artifact is placed, the path is
+    no longer this build's to restore.
+    """
+    import asyncio
+
+    lesson, bundle = built_lesson
+    (bundle / "src" / "page.ts").write_text(
+        'document.title = "invented";\n', encoding="utf-8"
+    )
+    (bundle / "assets").mkdir(exist_ok=True)
+    output = bundle / "assets" / "page.js"
+    output.write_bytes(b"//invented old artifact\n")
+
+    def delete_mid_check(*args, **kwargs):
+        output.unlink()
+        return []
+
+    monkeypatch.setattr(render_check, "console_errors", delete_mid_check)
+    before = set(os.listdir(bundle / "assets"))
+
+    with pytest.raises(lesson_build.BuildError) as caught:
+        asyncio.run(lesson_build.build_lesson(
+            lesson, add=[], entry="src/page.ts", out="assets/page.js",
+            page=None, page_url="http://127.0.0.1:1/unused",
+            artifact_url="http://127.0.0.1:1/unused.js",
+        ))
+
+    assert caught.value.code == "output-replaced"
+    assert not output.exists(), "the rollback brought back a deleted page"
+    assert set(os.listdir(bundle / "assets")) == before - {"page.js"}, (
+        "and left no hidden copy of it behind either"
+    )
+
+
+def test_the_placed_identity_is_read_through_the_descriptor(tmp_path):
+    """Not through a second look at the path — that is its own race.
+
+    Between the rename that publishes the artifact and a path-based `stat`, the
+    agent session can replace the output. A stat would then record ITS inode as
+    this build's own, the final check would compare the replacement against
+    itself, and the build would answer `ok` for bytes it never produced. The
+    identity comes from `fstat` on the descriptor the artifact was written to,
+    held open across the rename, so there is no window to lose.
+    """
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        placed = lesson_build._write_through(fd, "page.js", b"//invented built\n")
+        assert (tmp_path / "page.js").read_bytes() == b"//invented built\n"
+        assert placed == lesson_build._identity(fd, "page.js"), (
+            "an untouched file still answers with the identity it was given"
+        )
+
+        (tmp_path / "authored").write_bytes(b"//invented agent bytes\n")
+        os.replace(tmp_path / "authored", tmp_path / "page.js")
+        assert lesson_build._identity(fd, "page.js") != placed
+
+        (tmp_path / "page.js").unlink()
+        assert lesson_build._identity(fd, "page.js") is None
+    finally:
+        os.close(fd)
+
+
+def test_an_in_place_overwrite_is_not_mistaken_for_the_same_file(tmp_path):
+    """`echo … > assets/page.js` keeps the inode, so the inode alone is no answer."""
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        placed = lesson_build._write_through(fd, "page.js", b"//invented built\n")
+        inode = os.stat(tmp_path / "page.js").st_ino
+        (tmp_path / "page.js").write_bytes(b"//invented agent bytes, in place\n")
+
+        assert os.stat(tmp_path / "page.js").st_ino == inode, (
+            "the probe is only meaningful while the truncation keeps the inode"
+        )
+        assert lesson_build._identity(fd, "page.js") != placed
+    finally:
+        os.close(fd)

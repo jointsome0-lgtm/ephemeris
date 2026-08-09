@@ -33,12 +33,23 @@ The archive is defined by **exclusion**, not by a list of known directories.
 `course-raw/`, `agent-homes/` (each lesson's persistent agent memory — the
 transcripts `claude --continue` reads), projection caches, and whatever the
 next feature adds beside them. Enumerating those by name would mean a backup that is silently incomplete
-between edits, so two things are left out instead and the manifest names them
-under `excluded`:
+between edits, so what is left out is left out deliberately and the manifest
+names it under `excluded`:
 
 - `backups/` — this directory; including it would nest every set in the next.
 - `exports/` — JSONL exports are generated *from* the database that is already
   in the set, so they cost size and add no recoverable state.
+- `lesson-builds/*/node_modules/` — a lesson's **installed** packages, and only
+  those. This is derived state: a build reinstalls it. It is skipped rather than
+  archived because the archive carries no symlinks (below) and a package tree's
+  internal links — the `.bin/` shims and the like — are symlinks, so archiving
+  it would produce a restore that looks complete and does not run.
+
+  The `package.json` and lockfile beside it **are** in the set. They are the
+  record of what the lesson added, and the input the reinstall reads: after a
+  restore, the lesson's next build runs `bun install` against them and comes
+  back with the same packages. Dropping the whole workspace instead would leave
+  a restored lesson importing packages it could no longer name.
 - `*.pre-restore-*` — copies a forced restore preserved. They are scrap you
   delete once satisfied, not instance state, and archiving them would make every
   backup after a forced restore carry a second copy of the instance it replaced.
@@ -53,6 +64,13 @@ under `excluded`:
   is reserved either way, because that is the name a restore writes the snapshot
   to — so if you rename the database, the file it used to be is left out of the
   backup rather than restored over the snapshot that was verified.
+
+**Regular files only.** The archive carries no symlink, in any directory: a link
+is a target the walk has not proved is inside the instance, and following or
+recreating one on restore is how a backup writes outside the tree it is meant to
+restore. That rule is what makes an installed package tree the one skipped
+subtree above rather than a directory this set carries in half — anywhere else
+under the data directory, the instance's own state is regular files.
 
 **The manifest is written last, by rename.** That one rule is the durability
 contract: a manifest on disk is a promise that the two files it names are

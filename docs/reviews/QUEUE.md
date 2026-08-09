@@ -24,25 +24,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-08-09 — `2552323` (squash of `term-quiet-prompt`, PR #172) —
-  `app/terminal.py`, `tests/test_010_platform_ui.py` — `_child_env` takes
-  the child shell as a second argument and adds one variable,
-  `PROMPT_COMMAND`, for the two lesson roles when that shell's basename
-  is `bash` — for no other role and no other shell. Its value is one of
-  two constants chosen by the role (`PS1='agent $ '`, `PS1='\W $ '`);
-  nothing else is interpolated into it, and the rest of the allowlist is
-  unchanged. Separately, the two
-  banner writes in `_spawn_on_pty` become one write assembled from the
-  same pieces: the role, the already-redacted proxy URL, and the
-  `AGENTS.md` note. The workspace path is no longer printed, so the
-  `isprintable()` filter that defanged it is gone with it; the proxy
-  URL keeps both `_redact_userinfo` and its filter.
-  Reviewed 2026-08-09 →
-  `docs/reviews/2026-08-09-terminal-prompt-and-lesson-build-review.md`:
-  0 Critical, 0 High, 0 Medium, 2 Low, 0 Info in the combined Pending
-  batch; both entries remain Pending for a separate repair and fresh drain.
+_None._
 
-- [ ] 2026-08-09 — `8a4e3ee` (squash of `feat/161-build-step`, PR #165) —
+## Done
+
+- [x] 2026-08-09 — `8a4e3ee` (squash of `feat/161-build-step`, PR #165) —
   `app/sandbox.py`, `app/services/lesson_build.py`,
   `app/services/render_check.py`, `app/services/lessons.py`,
   `app/routers/learn.py`, `app/terminal.py`, `docs/learn-bundle-spec.md`,
@@ -224,12 +210,33 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   to any terminal profile's mount list.
   Reviewed 2026-08-09 →
   `docs/reviews/2026-08-09-terminal-prompt-and-lesson-build-review.md`:
-  0 Critical, 0 High, 0 Medium, 2 Low, 0 Info. A concurrent output
-  replacement can be deleted or accepted unrendered, and full backups still
-  omit package-tree symlinks; this entry remains Pending for repair and a
-  fresh drain.
+  0 Critical, 0 High, 0 Medium, 2 Low, 0 Info. Both repaired in PR #175:
+  the placement now identifies the artifact it wrote and re-checks that
+  identity after the render gate, so a concurrently replaced output is
+  neither deleted by the rollback nor reported as rendered
+  (`output-replaced` 409); and `lesson-builds/` is declared reconstructible
+  and excluded from the backup whole, instead of being archived without the
+  symlinks a package tree needs.
 
-## Done
+- [x] 2026-08-09 — `2552323` (squash of `term-quiet-prompt`, PR #172) —
+  `app/terminal.py`, `tests/test_010_platform_ui.py` — `_child_env` takes
+  the child shell as a second argument and adds one variable,
+  `PROMPT_COMMAND`, for the two lesson roles when that shell's basename
+  is `bash` — for no other role and no other shell. Its value is one of
+  two constants chosen by the role (`PS1='agent $ '`, `PS1='\W $ '`);
+  nothing else is interpolated into it, and the rest of the allowlist is
+  unchanged. Separately, the two
+  banner writes in `_spawn_on_pty` become one write assembled from the
+  same pieces: the role, the already-redacted proxy URL, and the
+  `AGENTS.md` note. The workspace path is no longer printed, so the
+  `isprintable()` filter that defanged it is gone with it; the proxy
+  URL keeps both `_redact_userinfo` and its filter.
+  Reviewed 2026-08-09 →
+  `docs/reviews/2026-08-09-terminal-prompt-and-lesson-build-review.md`:
+  0 Critical, 0 High, 0 Medium, 2 Low, 0 Info in the combined Pending
+  batch. Neither Low is against this change — the prompt and banner diff
+  drew no finding — and both were repaired in PR #175, which is what closes
+  this entry.
 
 - [x] 2026-08-09 — `6f7d893` (squash of `lesson-build-workspace`, PR #164) —
   `app/sandbox.py`, `app/services/bundle_schema.py`,
@@ -260,9 +267,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `bundle_schema.RESERVED_NAMES` and to §2 of the bundle spec.
   Drained 2026-08-09 →
   `docs/reviews/2026-08-09-lesson-build-workspace-review.md`: 1 Low finding.
-  Full backups include regular files below `lesson-builds` but silently omit
-  package-tree symlinks, so a verified restore can return an incomplete
-  `node_modules`; no application repair or live-service action was performed.
+  Full backups included regular files below `lesson-builds` but silently
+  omitted package-tree symlinks, so a verified restore could return an
+  incomplete `node_modules`. Re-established by the 2026-08-09 batch drain as
+  its L2 and repaired in PR #175, which excludes `lesson-builds/` from the
+  archive whole and names it in the manifest.
 
 - [x] 2026-08-08 — `8483d68` (squash of `agent-home-persist`, PR #158) —
   `app/sandbox.py`, `app/services/lessons.py`, `app/terminal.py`,
