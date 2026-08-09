@@ -23,7 +23,7 @@ import sqlite3
 from datetime import date as _date, datetime, timedelta
 
 from .. import limits
-from ..db import app_tz, append_event, now_iso, pretty_date, today_str
+from ..db import app_tz, append_event, immediate, now_iso, pretty_date, today_str
 
 MODES = ("countdown", "open")
 """'countdown' runs to a length the user chose; 'open' just tracks until stopped.
@@ -421,59 +421,70 @@ def finish_run(conn: sqlite3.Connection, token: str) -> dict:
     25-minute timer means 25 minutes of intent, not 30 of credit.
     """
     token = _clean_token(token)
-    row = _run_by_token(conn, token)
-    if row is None:
-        recorded = session_by_token(conn, token)
-        if recorded is not None:
-            return recorded
-        raise FocusError("that timer is no longer running")
-    now = _parse_iso(now_iso())
-    seconds = _elapsed_seconds(row, now)
-    target = int(row["target_seconds"] or 0)
-    # A paused clock stopped counting when it was paused, so that is when the
-    # span ended — Stop pressed the next morning writes down last night's work,
-    # not a session that shows a time nothing was worked at.
-    ended_at = row["paused_at"]
-    if target and seconds >= target:
-        # The countdown ended when it ran out, not when the user came back to a
-        # sleeping laptop. Stamping the return time would credit yesterday's
-        # session to today and put it on the wrong bar of the Retro chart.
-        seconds = target
-        ended_at = _countdown_end(row, target, now)
-    if seconds <= 0:
-        # Stop pressed inside the same second as Start. The run stays: the drawer
-        # keeps its own copy either way, and discarding it here would leave a
-        # ticking timer the server no longer knows about.
-        raise FocusError("nothing to record yet")
     try:
-        session_id = record_session(
-            conn, row["mode"], seconds,
-            target_seconds=row["target_seconds"], note=row["note"],
-            started_at=row["started_at"], ended_at=ended_at, token=token,
-            targets=_stored_targets(row), run_id=row["id"],
-        )
-    except (sqlite3.IntegrityError, FocusError) as exc:
-        # A double-click on Stop: both calls read the run, one wrote the session.
-        # The loser fails either on the token's unique index or on finding the
-        # run already claimed — and the token is the idempotency key, so it
-        # returns the winner's row instead of a 500 or a 422.
+        session_id = _price_and_record(conn, token, detached=False)
+    except FocusError:
+        # A double-click on Stop, or a Stop behind a Discard: the run is gone.
+        # The token is the idempotency key, so if it already became a session
+        # that session is the answer — otherwise the refusal stands.
         recorded = session_by_token(conn, token)
         if recorded is not None:
             return recorded
-        if not isinstance(exc, sqlite3.IntegrityError):
-            raise
-        # Nothing was recorded, so the conflict is the other race: the target was
-        # hard-deleted between reading the run and writing the session, and the
-        # stale id no longer has a row to point at. The time was still spent —
-        # record it detached, exactly as deleting a habit does to its history.
-        session_id = record_session(
-            conn, row["mode"], seconds,
-            target_seconds=row["target_seconds"], note=row["note"],
-            started_at=row["started_at"], ended_at=ended_at, token=token,
-            targets=_NO_TARGET, run_id=row["id"],
-        )
-        return get_session_view(conn, session_id)
+        raise
+    except sqlite3.IntegrityError:
+        recorded = session_by_token(conn, token)
+        if recorded is not None:
+            return recorded
+        # Nothing was recorded, so the conflict is the other race: the target
+        # was hard-deleted while the timer ran, and the stale id no longer has a
+        # row to point at. The time was still spent — record it detached,
+        # exactly as deleting a habit does to the history it earned.
+        session_id = _price_and_record(conn, token, detached=True)
     return get_session_view(conn, session_id)
+
+
+def _price_and_record(conn: sqlite3.Connection, token: str, *,
+                      detached: bool) -> int:
+    """Read the run, price it and write it down, all under the writer lock.
+
+    The lock is the point. Pause and Stop can arrive from two tabs at once, and
+    pricing a row read before the pause committed would count the pause as work
+    — or, the other way round, cut a resumed span short. Reading inside
+    `immediate()` means the duration is computed from the run as it is when it
+    is claimed, and the claim is in the same transaction as the write.
+    """
+    with immediate(conn):
+        row = _run_by_token(conn, token)
+        if row is None:
+            raise FocusError("that timer is no longer running")
+        now = _parse_iso(now_iso())
+        seconds = _elapsed_seconds(row, now)
+        target = int(row["target_seconds"] or 0)
+        # A paused clock stopped counting when it was paused, so that is when
+        # the span ended — Stop pressed the next morning writes down last
+        # night's work, not a session that shows a time nothing was worked at.
+        ended_at = row["paused_at"]
+        if target and seconds >= target:
+            # The countdown ended when it ran out, not when the user came back
+            # to a sleeping laptop. Stamping the return time would credit
+            # yesterday's session to today, on the wrong Retro bar.
+            seconds = target
+            ended_at = _countdown_end(row, target, now)
+        if seconds <= 0:
+            # Stop pressed inside the same second as Start. Nothing is written
+            # and the rollback leaves the run alone: the drawer keeps its own
+            # copy either way, and dropping it here would leave a ticking timer
+            # the server no longer knows about.
+            raise FocusError("nothing to record yet")
+        # The run is claimed BEFORE the session is written: Stop and Discard can
+        # both be in flight, and whichever deletes the run owns the span.
+        conn.execute("DELETE FROM focus_runs WHERE id = ?", (row["id"],))
+        return _write_session(
+            conn, row["mode"], seconds, target_seconds=row["target_seconds"],
+            note=row["note"], started_at=row["started_at"], ended_at=ended_at,
+            token=token,
+            targets=_NO_TARGET if detached else _stored_targets(row),
+        )
 
 
 # --- write -----------------------------------------------------------------
@@ -491,7 +502,29 @@ def record_session(conn: sqlite3.Connection, mode: str, seconds, *,
     not exist without its ledger entry.
 
     `targets` is the already-resolved column set a finishing run hands over; any
-    other caller passes raw ids and gets them coerced against live rows."""
+    other caller passes raw ids and gets them coerced against live rows.
+
+    A finishing timer does not come through here: it needs the writer lock held
+    across its own read, so it opens the transaction itself and calls
+    `_write_session` directly.
+    """
+    with conn:
+        return _write_session(
+            conn, mode, seconds, target_seconds=target_seconds, note=note,
+            started_at=started_at, ended_at=ended_at, token=token,
+            lesson_id=lesson_id, habit_id=habit_id, task_id=task_id,
+            targets=targets, run_id=run_id,
+        )
+
+
+def _write_session(conn: sqlite3.Connection, mode: str, seconds, *,
+                   target_seconds=None, note: str | None = None,
+                   started_at: str | None = None, ended_at: str | None = None,
+                   token: str | None = None,
+                   lesson_id=None, habit_id=None, task_id=None,
+                   targets: dict | None = None,
+                   run_id: int | None = None) -> int:
+    """The write itself, inside a transaction the caller already opened."""
     if mode not in MODES:
         raise FocusError("unknown timer mode")
     try:
@@ -510,26 +543,25 @@ def record_session(conn: sqlite3.Connection, mode: str, seconds, *,
     # down; they differ for a countdown finalised after the fact, and the day the
     # session counts towards follows the former.
     ended_at = ended_at or ts
-    with conn:
-        # The run is claimed BEFORE the session is written: Stop and Discard can
-        # both be in flight, and whichever deletes the run owns the span. A
-        # finish that finds it already gone is recording time the user threw
-        # away, so it rolls back instead.
-        if run_id is not None and not conn.execute(
-            "DELETE FROM focus_runs WHERE id = ?", (run_id,)
-        ).rowcount:
-            raise FocusError("that timer is no longer running")
-        cur = conn.execute(
-            "INSERT INTO focus_sessions (mode, seconds, target_seconds, note, date, "
-            "started_at, ended_at, created_at, lesson_id, habit_id, task_id, client_token) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (mode, seconds, target_seconds, note, ended_at[:10], started_at, ended_at, ts,
-             targets["lesson_id"], targets["habit_id"], targets["task_id"], token),
-        )
-        session_id = cur.lastrowid
-        append_event(conn, "focus_session_recorded",
-                     {"session_id": session_id, "mode": mode, "seconds": seconds,
-                      "target_seconds": target_seconds, "note": note, **targets})
+    # The run is claimed BEFORE the session is written: Stop and Discard can
+    # both be in flight, and whichever deletes the run owns the span. A finish
+    # that finds it already gone is recording time the user threw away, so it
+    # rolls back instead.
+    if run_id is not None and not conn.execute(
+        "DELETE FROM focus_runs WHERE id = ?", (run_id,)
+    ).rowcount:
+        raise FocusError("that timer is no longer running")
+    cur = conn.execute(
+        "INSERT INTO focus_sessions (mode, seconds, target_seconds, note, date, "
+        "started_at, ended_at, created_at, lesson_id, habit_id, task_id, client_token) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (mode, seconds, target_seconds, note, ended_at[:10], started_at, ended_at, ts,
+         targets["lesson_id"], targets["habit_id"], targets["task_id"], token),
+    )
+    session_id = cur.lastrowid
+    append_event(conn, "focus_session_recorded",
+                 {"session_id": session_id, "mode": mode, "seconds": seconds,
+                  "target_seconds": target_seconds, "note": note, **targets})
     return session_id
 
 
