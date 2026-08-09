@@ -163,6 +163,27 @@ AGENT_STATE_SUBDIRS = {
 # the bundle spec's reserved entry from drifting apart.
 BUILD_WORKSPACE_MOUNT = "node_modules"
 
+# The package manager the build step drives, addressed by absolute path because
+# the view below hands it no PATH worth searching. `~/.bun` is deliberately NOT
+# on the terminal profiles' mount list: an agent that could run `bun` itself
+# would own the install command line, and with it the 30-day quarantine and the
+# copying backend that keeps one lesson out of another's cache entry. The app
+# runs the package manager; the agent asks it to (`app/services/lesson_build.py`).
+BUN_BINARY = f"{USER_HOME}/.bun/bin/bun"
+BUN_CACHE_DIR = f"{USER_HOME}/.bun/install/cache"
+
+BuildStep = Literal["install", "bundle"]
+_BUILD_STEPS: tuple[BuildStep, ...] = ("install", "bundle")
+
+# What the two build steps get for an environment. `--clearenv` first, so the
+# app process's own environment — proxy variables, tokens, whatever systemd
+# handed it — is not what resolves a package name.
+_BUILD_STEP_ENV: Mapping[str, str] = {
+    "PATH": "/usr/bin:/bin",
+    "HOME": USER_HOME,
+    "TMPDIR": "/tmp",
+}
+
 
 def _agent_home_mounts(agent_home: str | None) -> tuple[_HomeMount, ...]:
     """The agent profile's home mounts, ephemeral or backed by `agent_home`."""
@@ -493,6 +514,106 @@ def build_sandbox_argv(
                 f"{bundle}/{BUILD_WORKSPACE_MOUNT}",
             ])
         argv.extend(["--chdir", bundle])
+    return argv
+
+
+def build_step_argv(
+    step: BuildStep,
+    *,
+    build_workspace: str | os.PathLike[str],
+    bundle_root: str | os.PathLike[str],
+    private_root: str | os.PathLike[str] | None = None,
+    bundle_dir: str | os.PathLike[str] | None = None,
+    command: Sequence[str],
+) -> list[str]:
+    """Purely build the bubblewrap argv for one app-owned build step.
+
+    Deliberately a sibling of :func:`build_sandbox_argv` rather than a fourth
+    profile inside it: the terminal and runner profiles exist to confine a
+    shell somebody else drives, and their argv is reviewed as one shape. These
+    two steps run a command *this app wrote*, with no interactive tenant, and
+    they need a different view — no bundle for ``install``, no network for
+    ``bundle``. Folding that into the profile builder would put two unrelated
+    contracts behind one set of arguments.
+
+    What the view is for, in order of how easy each is to get wrong:
+
+    1. **Module resolution.** bun resolves a bare specifier by walking up from
+       the importer file, not from cwd, and the packages live outside the
+       bundle (#164). So the ``bundle`` step re-creates the one bind the
+       agent's terminal already has — ``<workspace>/node_modules`` at
+       ``<bundle>/node_modules`` — and resolution is then the ordinary
+       filesystem walk, byte-identical to building inside the workspace.
+       ``NODE_PATH`` resolves too, but silently skips the package ``exports``
+       map: measured, katex fell back from its ESM entry to its legacy CJS
+       ``main``, and a package that declares only ``exports`` does not resolve
+       at all. That is not a base to hand an agent free package choice on.
+    2. **Reading no more than the agent can.** The entry is an agent-authored
+       file. A plain subprocess of the app would compile it against the real
+       ``$HOME``, where ``import s from "../../../secret" with {type:"text"}``
+       or a tsconfig ``paths`` mapping inlines an owner-readable file into an
+       artifact this app then serves. Keeping the terminal's blank ``$HOME``
+       means the build reads what the agent already reads and nothing more.
+    3. **cwd.** ``bunfig.toml`` carries ``preload``, which executes a script,
+       and bun reads it from cwd. cwd is the app-owned workspace for both
+       steps; the entry travels as an absolute path. The bundle — writable
+       from inside the agent's own session — is never cwd, and for ``bundle``
+       it is bound read-only: the artifact is placed by the app afterwards,
+       once the size and render gates have passed.
+
+    It is not a confinement boundary for package code, which this step never
+    executes: bun runs no dependency lifecycle script without an explicit
+    ``trustedDependencies`` entry, and ``package.json`` lives in the workspace,
+    which no session can reach. ``--ignore-scripts`` on the install argv says
+    so a second time.
+    """
+    if step not in _BUILD_STEPS:
+        raise ValueError(f"unknown build step: {step}")
+    if not command:
+        raise ValueError("build step command must not be empty")
+    private = (
+        _pure_private_root(private_root, bundle_root)
+        if private_root is not None else None
+    )
+    workspace = _pure_build_workspace(build_workspace, private, bundle_root)
+    if (bundle_dir is None) != (step == "install"):
+        raise ValueError("the bundle step needs a bundle dir and install must not have one")
+    bundle = (
+        _pure_bundle_path(bundle_dir, bundle_root)
+        if bundle_dir is not None else None
+    )
+
+    argv = [BWRAP, "--unshare-all"]
+    if step == "install":
+        # The only step that talks to a registry.
+        argv.append("--share-net")
+    argv.extend([
+        "--die-with-parent",
+        "--ro-bind", "/", "/",
+        "--proc", "/proc",
+        "--dev", "/dev",
+        "--tmpfs", "/tmp",
+        "--tmpfs", USER_HOME,
+        "--ro-bind", BUN_BINARY, BUN_BINARY,
+    ])
+    if step == "install":
+        # Writable because this is the step that fills it. Shared between
+        # lessons on purpose — it is why the second lesson to want d3 costs
+        # nothing — which is exactly why the install argv forces a copying
+        # backend: a hardlinked node_modules entry IS the cache entry, and one
+        # lesson's session could edit what every later install receives.
+        argv.extend(["--bind", BUN_CACHE_DIR, BUN_CACHE_DIR])
+    argv.extend(["--bind", workspace, workspace])
+    if bundle is not None:
+        argv.extend([
+            "--ro-bind", bundle, bundle,
+            "--bind", f"{workspace}/{BUILD_WORKSPACE_MOUNT}",
+            f"{bundle}/{BUILD_WORKSPACE_MOUNT}",
+        ])
+    argv.extend(["--chdir", workspace, "--clearenv"])
+    for name, value in _BUILD_STEP_ENV.items():
+        argv.extend(["--setenv", name, value])
+    argv.extend(["--", *command])
     return argv
 
 

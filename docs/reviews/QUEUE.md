@@ -52,6 +52,61 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `None` for it. `node_modules` is added to
   `bundle_schema.RESERVED_NAMES` and to §2 of the bundle spec.
 
+- [ ] 2026-08-09 — `<pending squash>` (branch `feat/161-build-step`, PR #165) —
+  `app/sandbox.py`, `app/services/lesson_build.py`,
+  `app/services/render_check.py`, `app/services/lessons.py`,
+  `app/routers/learn.py`, `app/terminal.py`, `docs/learn-bundle-spec.md`,
+  `docs/reviews/QUEUE.md`, `tests/test_230_lesson_build.py` —
+  the app runs a package manager and a bundler for a lesson, and loads the
+  result in a browser.
+  New `sandbox.build_step_argv(step, ...)`, a sibling of
+  `build_sandbox_argv` that the terminal and runner paths do not call; it
+  returns a bubblewrap argv for `step` in `("install", "bundle")`. Both
+  steps: `--unshare-all`, `--die-with-parent`, `--ro-bind / /`, `--proc`,
+  `--dev`, `--tmpfs /tmp`, `--tmpfs $HOME`, `--ro-bind` of
+  `$HOME/.bun/bin/bun`, `--bind` of the build workspace, `--chdir` to the
+  build workspace, `--clearenv`, then `--setenv` for `PATH`, `HOME` and
+  `TMPDIR` only. `install` additionally gets `--share-net` and a `--bind`
+  of `$HOME/.bun/install/cache`; `bundle` additionally gets a `--ro-bind`
+  of the bundle and a `--bind` of `<workspace>/node_modules` at
+  `<bundle>/node_modules`, and gets neither the network nor the cache. The
+  workspace is validated by the existing `_pure_build_workspace`, the
+  bundle by `_pure_bundle_path`; a bundle dir is required for `bundle` and
+  rejected for `install`.
+  New `app/services/lesson_build.py` runs the two steps as
+  `asyncio.create_subprocess_exec` with captured output and 300 s / 120 s
+  timeouts. Install argv: `bun add|install --backend=copyfile
+  --minimum-release-age=2592000 --ignore-scripts --no-progress
+  --no-summary [-- <packages>]`. Bundle argv: `bun build <entry>
+  --target=browser --format=iife --production --keep-names --outfile=…`
+  into the workspace. Package specs are matched against an anchored npm
+  name/range regex, at most 32 per request; `entry` and `out` go through
+  `lessons.clean_bundle_ref`. The artifact is refused over 1 MiB. It is
+  placed in the bundle through a descriptor chain opened component by
+  component with `O_NOFOLLOW` and `os.replace`. Whatever was at the output
+  name is first renamed aside to `.<name>.previous` through the same
+  descriptor and renamed back if the render gate fails or cannot run;
+  on a pass the aside copy is unlinked. Builds are serialised per lesson
+  slug by an in-process `asyncio.Lock`, and the workspace artifact path is
+  unlinked before each bundle run. A `package.json` is seeded in the
+  workspace on first use; no `bunfig.toml` is written.
+  New `app/services/render_check.py` starts headless Chrome with a
+  disposable profile on `--remote-debugging-port=0`, connects over CDP,
+  enables `Page`/`Runtime`/`Log`, navigates to a caller-supplied URL, and
+  collects `Runtime.exceptionThrown`, `Runtime.consoleAPICalled` of type
+  error/assert, and `Log.entryAdded` at level error (dropping
+  `/favicon.ico` entries and `Unrecognized Content-Security-Policy
+  directive` texts). It raises rather than returning a pass when no
+  browser is found, when the browser stops answering, or when
+  `window.origin` is not `"null"` after the load.
+  New route `POST /learn/lessons/{lesson_id}/build`, no capability token,
+  `application/json` only, body capped at 16 KiB. The URL handed to the
+  browser is built from the ASGI scope's `server` and never from the Host
+  header. New `EPHEMERIS_BUILD_URL` in the `lesson-agent` child
+  environment, set beside the existing assessment pair. The
+  `_AGENTS_TEMPLATE` brief documents the endpoint. `~/.bun` is not added
+  to any terminal profile's mount list.
+
 ## Done
 
 - [x] 2026-08-08 — `8483d68` (squash of `agent-home-persist`, PR #158) —
