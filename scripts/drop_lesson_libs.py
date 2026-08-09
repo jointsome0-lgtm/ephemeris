@@ -48,7 +48,7 @@ import os
 import re
 import stat as stat_module
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.services.lessons import LESSONS_DIR  # noqa: E402
@@ -64,31 +64,110 @@ _LINE = re.compile(r"^([0-9a-f]{64}) {2}(\S.*)$")
 # The stamp is four comment lines and a handful of digests; anything larger is
 # not the file this tool knows how to read.
 _STAMP_MAX_BYTES = 64 * 1024
+# The biggest thing the shelf ever held was mermaid at 3.4 MB. Generous enough
+# never to refuse an honest seeded copy, bounded so a file swapped for
+# something enormous is refused rather than read into memory.
+_LIBRARY_MAX_BYTES = 64 * 1024 * 1024
 
 
-def _read_no_follow(path: Path, limit: int) -> bytes | None:
-    """Read a regular file on a descriptor that followed no symlink.
+class Unverifiable(Exception):
+    """Something IS at this path and this tool could not read it as its own.
 
-    `None` for anything that is not an ordinary file, is missing, or is bigger
-    than `limit` — every one of which means "not something this tool acts on".
+    Distinct from absence, and the difference decides whether the stamp may be
+    removed. An absent file is owed nothing; an unverifiable one is unfinished
+    business, and dropping the stamp for it would leave seeded bytes behind
+    with no marker for a rerun to find them by.
+    """
+
+
+def _descend(shelf: Path, relative: str) -> tuple[int, str] | None:
+    """A descriptor for `relative`'s parent directory, reached without
+    following one symlink, plus the final name to use against it.
+
+    `O_NOFOLLOW` guards only the LAST component of a path, so opening
+    `<shelf>/d3/d3.min.js` in a single call still walks through a `d3` that a
+    lesson session may have replaced with a link at somebody else's directory
+    — and this tool's next move is `unlink`. Each component is therefore
+    opened on its own and refused if it is a link or not a directory, so the
+    descriptor the caller hashes and unlinks through provably never left the
+    shelf.
+
+    None when a component is simply missing. Raises :class:`Unverifiable` when
+    one is present but is not a directory this tool will walk.
+    """
+    parts = PurePosixPath(relative).parts
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        fd = os.open(shelf, flags)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise Unverifiable(exc.strerror or str(exc)) from exc
+    try:
+        for component in parts[:-1]:
+            child = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+    except FileNotFoundError:
+        os.close(fd)
+        return None
+    except OSError as exc:
+        os.close(fd)
+        # ELOOP for a symlinked component, ENOTDIR for a file in the way.
+        raise Unverifiable(
+            f"{exc.strerror or exc} on the path to it; nothing was read or removed"
+        ) from exc
+    return fd, parts[-1]
+
+
+def _read_at(dir_fd: int, name: str, limit: int) -> bytes | None:
+    """The bytes of a regular file opened relative to `dir_fd`, or None when
+    nothing is there. Raises :class:`Unverifiable` for anything else.
+
+    `O_NONBLOCK` is not decoration: without it a FIFO planted at one of these
+    names parks the `open` on a writer that never comes, and the `fstat` that
+    would reject it as non-regular never runs. This tool is meant to be run by
+    hand on a live instance and must not be something a lesson can hang.
     """
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    except OSError:
+        fd = os.open(
+            name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            dir_fd=dir_fd,
+        )
+    except FileNotFoundError:
         return None
+    except OSError as exc:
+        # ELOOP for a symlink at the name itself, ENXIO for a FIFO with no
+        # writer, EACCES for a mode this process cannot read.
+        raise Unverifiable(exc.strerror or str(exc)) from exc
     try:
         info = os.fstat(fd)
-        if not stat_module.S_ISREG(info.st_mode) or info.st_size > limit:
-            return None
+        if not stat_module.S_ISREG(info.st_mode):
+            raise Unverifiable("not an ordinary file")
+        if info.st_size > limit:
+            raise Unverifiable(f"{info.st_size} bytes, past what this tool reads")
         with os.fdopen(os.dup(fd), "rb") as handle:
             return handle.read(limit)
+    except OSError as exc:
+        raise Unverifiable(exc.strerror or str(exc)) from exc
     finally:
         os.close(fd)
 
 
 def _inventory(shelf: Path) -> dict[str, str] | None:
     """The stamp's `{relative path: sha256}`, or None when it is not ours."""
-    raw = _read_no_follow(shelf / STAMP_NAME, _STAMP_MAX_BYTES)
+    try:
+        found = _descend(shelf, STAMP_NAME)
+        if found is None:
+            return None
+        fd, name = found
+        try:
+            raw = _read_at(fd, name, _STAMP_MAX_BYTES)
+        finally:
+            os.close(fd)
+    except Unverifiable:
+        return None
     if raw is None:
         return None
     try:
@@ -112,22 +191,24 @@ def _inventory(shelf: Path) -> dict[str, str] | None:
     return entries
 
 
-def _digest(path: Path) -> str | None:
-    data = _read_no_follow(path, 64 * 1024 * 1024)
-    return None if data is None else hashlib.sha256(data).hexdigest()
+def _prune_empty(shelf: Path) -> None:
+    """Remove every directory left empty under `shelf`, and `shelf` itself.
 
-
-def _prune_empty(root: Path, shelf: Path) -> None:
-    """Remove `root` and every empty directory up to and including `shelf`."""
-    current = root
-    while True:
-        try:
-            current.rmdir()
-        except OSError:
-            return  # not empty, or gone — either way, stop climbing
-        if current == shelf:
-            return
-        current = current.parent
+    Bottom-up, and `rmdir` removes only an EMPTY directory and never follows a
+    link at the name it is given — so the worst a race here could achieve is
+    the loss of an empty directory, which is also the only thing it removes on
+    purpose.
+    """
+    for parent, dirs, _files in os.walk(shelf, topdown=False, followlinks=False):
+        for name in dirs:
+            try:
+                os.rmdir(os.path.join(parent, name))
+            except OSError:
+                pass
+    try:
+        shelf.rmdir()
+    except OSError:
+        pass
 
 
 def retire(bundle: Path, *, apply: bool) -> tuple[int, int, list[str]]:
@@ -145,23 +226,30 @@ def retire(bundle: Path, *, apply: bool) -> tuple[int, int, list[str]]:
     removed = freed = 0
     kept: list[str] = []
     for relative, digest in sorted(inventory.items()):
-        target = shelf / relative
-        found = _digest(target)
-        if found is None:
-            continue  # already gone, or never an ordinary file — nothing owed
-        if found != digest:
-            kept.append(f"{relative} no longer matches the stamp; left in place")
-            continue
-        size = target.stat().st_size
-        if apply:
+        try:
+            found = _descend(shelf, relative)
+            if found is None:
+                continue  # already gone — nothing owed
+            fd, name = found
             try:
-                target.unlink()
-            except OSError as exc:
-                kept.append(f"{relative}: {exc.strerror or exc}")
-                continue
-            _prune_empty(target.parent, shelf)
-        removed += 1
-        freed += size
+                data = _read_at(fd, name, _LIBRARY_MAX_BYTES)
+                if data is None:
+                    continue
+                if hashlib.sha256(data).hexdigest() != digest:
+                    kept.append(f"{relative} no longer matches the stamp; left in place")
+                    continue
+                if apply:
+                    os.unlink(name, dir_fd=fd)
+                removed += 1
+                freed += len(data)
+            finally:
+                os.close(fd)
+        except Unverifiable as exc:
+            # Present, but this tool cannot prove it is the app's copy. Keeping
+            # it also keeps the stamp, so a rerun still sees what is owed.
+            kept.append(f"{relative}: {exc}; left in place")
+        except OSError as exc:
+            kept.append(f"{relative}: {exc.strerror or exc}")
 
     if kept:
         # The stamp stays: it is what a rerun reads to know what is still owed,
@@ -174,8 +262,11 @@ def retire(bundle: Path, *, apply: bool) -> tuple[int, int, list[str]]:
     # otherwise report every file this run intends to remove as a stray.
     strays = sorted(
         relative
-        for parent, _dirs, files in os.walk(shelf)
-        for name in files
+        for parent, dirs, files in os.walk(shelf, followlinks=False)
+        # A symlinked directory is listed in `dirs` and never descended into,
+        # so it would go unseen among `files`. It is as much somebody else's
+        # node as a stray file is.
+        for name in files + [d for d in dirs if os.path.islink(os.path.join(parent, d))]
         if (relative := (Path(parent) / name).relative_to(shelf).as_posix())
         not in inventory and relative != STAMP_NAME
     )
@@ -188,11 +279,15 @@ def retire(bundle: Path, *, apply: bool) -> tuple[int, int, list[str]]:
 
     if apply:
         try:
-            (shelf / STAMP_NAME).unlink(missing_ok=True)
-            _prune_empty(shelf, shelf)
+            os.unlink(shelf / STAMP_NAME)
+        except FileNotFoundError:
+            pass
         except OSError as exc:
             kept.append(f"{STAMP_NAME}: {exc.strerror or exc}")
             return removed, freed, kept
+        # Last, and only once nothing is kept: the directories are empty by now
+        # and the shelf has stopped being the app's.
+        _prune_empty(shelf)
     removed += 1
     return removed, freed, kept
 

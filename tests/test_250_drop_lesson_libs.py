@@ -11,6 +11,8 @@ them, so it seeds nothing and asserts nothing about anyone else's counts.
 from __future__ import annotations
 
 import hashlib
+import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -156,6 +158,73 @@ def test_a_symlinked_shelf_is_never_followed(root, capsys):
     assert drop_lesson_libs.main([]) == 0
     assert (outside / "d3/d3.min.js").is_file()
     assert "0 carried a seeded shelf" in capsys.readouterr().out
+
+
+def test_a_symlinked_directory_on_the_way_is_not_walked_through(root, capsys):
+    """`O_NOFOLLOW` guards only a path's last component.
+
+    So `assets/libs/d3` — a name a lesson session can replace — pointing at a
+    directory elsewhere would otherwise be walked through to hash and then
+    UNLINK a file outside the bundle, and the digest would match, because the
+    bytes are the ones this tool was sent to delete.
+    """
+    outside = root.parent / "elsewhere"
+    outside.mkdir()
+    (outside / "d3.min.js").write_bytes(FILES["d3/d3.min.js"])
+    bundle = _bundle(root, "linked-component")
+    shelf = _seed(bundle)
+    shutil.rmtree(shelf / "d3")
+    (shelf / "d3").symlink_to(outside, target_is_directory=True)
+
+    assert drop_lesson_libs.main([]) == 1
+    assert (outside / "d3.min.js").read_bytes() == FILES["d3/d3.min.js"]
+    assert (shelf / drop_lesson_libs.STAMP_NAME).is_file()
+    assert "d3/d3.min.js" in capsys.readouterr().out
+
+
+def test_a_fifo_at_a_seeded_name_does_not_park_the_run(root, capsys):
+    """Without `O_NONBLOCK` the open waits for a writer that never comes, and
+    the `fstat` that would reject it as non-regular never runs."""
+    bundle = _bundle(root, "fifo")
+    shelf = _seed(bundle)
+    (shelf / "d3/d3.min.js").unlink()
+    os.mkfifo(shelf / "d3/d3.min.js")
+
+    # The assertion is that this returns at all.
+    assert drop_lesson_libs.main([]) == 1
+    assert (shelf / drop_lesson_libs.STAMP_NAME).is_file()
+    assert "d3/d3.min.js" in capsys.readouterr().out
+
+
+def test_an_unreadable_copy_keeps_the_stamp_rather_than_being_read_as_absent(
+    root, capsys
+):
+    """A mode this process cannot read is not the same as nothing being there.
+
+    Conflating the two would drop the stamp, exit clean, and leave the seeded
+    bytes with no marker for a later run to find them by.
+    """
+    bundle = _bundle(root, "unreadable")
+    shelf = _seed(bundle)
+    locked = shelf / "d3/d3.min.js"
+    locked.chmod(0o000)
+    try:
+        if _readable_despite_mode(locked):
+            pytest.skip("running as a user that ignores the mode bits")
+        assert drop_lesson_libs.main([]) == 1
+        assert (shelf / drop_lesson_libs.STAMP_NAME).is_file()
+        assert locked.exists()
+        assert "d3/d3.min.js" in capsys.readouterr().out
+    finally:
+        locked.chmod(0o644)
+
+
+def _readable_despite_mode(path: Path) -> bool:
+    try:
+        path.read_bytes()
+    except OSError:
+        return False
+    return True
 
 
 def test_slug_limits_the_run(root, capsys):
