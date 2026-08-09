@@ -920,7 +920,7 @@ re-dumping cannot provide it. Additive evolution inside v2 means new
 OPTIONAL fields; any change to the meaning of an existing field requires
 v3.
 
-Two named exceptions, taken deliberately rather than through v3. Adding
+Three named exceptions, taken deliberately rather than through v3. Adding
 `.claude` to the §2 reserved names (2026-07-29,
 [#84](https://github.com/jointsome0-lgtm/ephemeris/issues/84)) narrows what
 `entry`, `pages[].path`, `blocks[].file` and `artifact_roots[]` accept
@@ -929,16 +929,25 @@ without a version bump. A v2 manifest declaring a path whose first segment is
 `invalid-entry`), and a manifest whose only page was such a path becomes
 rejected with `no-pages`. Adding `node_modules` (2026-08-09,
 [#161](https://github.com/jointsome0-lgtm/ephemeris/issues/161)) narrows the
-same four fields the same way.
+same four fields the same way, and so does adding `source` (2026-08-09).
+
+`source` differs from the other two in what happens on disk. The app writes
+nothing under it — the tutor stores fetched material there — so workspace
+prep creates the directory only when the name is free, and a bundle that
+already holds a file, a directory or a link at that name keeps it exactly
+as it stands. Such a bundle loses the manifest binding like the two above,
+but nothing is renamed and the tutor is told, in its brief, that this
+bundle has no source directory.
 
 The reason a v3 would not serve either purpose: the app writes
 `.claude/settings.json` into every bundle it prepares, and the lesson-agent
 sandbox binds a build workspace over `<bundle>/node_modules`, so neither
 directory can stay author-addressable in any version a current reader opens.
 The app never destroys what it finds there — a foreign node at an app-owned
-name is moved aside as `<name>.collision-<hex>` (§6.5's rule, applied to both
-names), so a bundle carrying the older shape loses a manifest binding, never
-its bytes.
+name is moved aside as `<name>.collision-<hex>` (§6.5's rule, applied to
+`.claude` and `node_modules`), so a bundle carrying the older shape loses a
+manifest binding, never its bytes. At `source` even the move is skipped, for
+the reason above.
 
 Canonical serialization, exactly: Python's
 `json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"`, UTF-8 — the

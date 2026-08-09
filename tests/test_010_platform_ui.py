@@ -756,7 +756,9 @@ def test_002_ui_and_workspace(client, suite_state):
         if _agents_path.is_file():
             agents_text = _agents_path.read_text(encoding="utf-8")
     assert (
-        agents_text.startswith(lessons_svc._AGENTS_TEMPLATE)
+        agents_text.startswith(
+            lessons_svc._source_brief(lessons_svc._AGENTS_TEMPLATE, Path("made"))
+        )
         and '- Lesson title (data): "Terminal Workspace Demo"' in agents_text
         and "## STATE (generated; refreshed on every terminal open)" in agents_text
         and "lesson.json" in agents_text
@@ -1400,12 +1402,19 @@ def test_002_ui_and_workspace(client, suite_state):
     _src_link = _src_dir / lessons_svc.SOURCE_DIR_NAME
     os.symlink(_src_decoy, _src_link)
     _src_ws = lessons_svc.prepare_terminal_workspace(_src["slug"])
+    _src_brief = (_src_dir / "AGENTS.md").read_text(encoding="utf-8")
     assert (
         _src_ws is not None
         and _src_link.is_symlink()
         and not any(_src_decoy.iterdir())
         and not list(_src_dir.glob("source.collision-*"))
     ), "a link at source/ is left alone, unfollowed, and never relocated"
+    assert (
+        "This bundle has NO `source/` directory" in _src_brief
+        and "%SOURCE_STORE%" not in _src_brief
+        and "%SOURCE_KEEP%" not in _src_brief
+        and "Save what you pull into `source/`" not in _src_brief
+    ), "the brief stops advertising source/ when prep could not create one"
     os.unlink(_src_link)
 
     # A plain file on the name is kept as content, not renamed out of the way.
@@ -1419,10 +1428,17 @@ def test_002_ui_and_workspace(client, suite_state):
 
     # With the name free, prep creates the directory.
     _src_made = lessons_svc.prepare_terminal_workspace(_src["slug"])
+    _src_brief_made = (_src_dir / "AGENTS.md").read_text(encoding="utf-8")
     assert (
         _src_made is not None
         and (_src_dir / lessons_svc.SOURCE_DIR_NAME).is_dir()
     ), "workspace prep creates source/ when the name is free"
+    assert (
+        "Save what you pull into `source/`" in _src_brief_made
+        and "source/_fetched.json" in _src_brief_made
+        and "This bundle has NO" not in _src_brief_made
+        and "%SOURCE_" not in _src_brief_made
+    ), "the brief advertises source/ once the directory exists"
 
     # A symlinked bundle remains forbidden; nodes at brief paths are atomically
     # replaced without touching what links previously named.
@@ -1457,7 +1473,7 @@ def test_002_ui_and_workspace(client, suite_state):
         and _decoy_file.read_text(encoding="utf-8") == "original"
         and _sym_agents_path.is_file() and not _sym_agents_path.is_symlink()
         and _sym_agents_path.read_text(encoding="utf-8").startswith(
-            lessons_svc._AGENTS_TEMPLATE
+            lessons_svc._source_brief(lessons_svc._AGENTS_TEMPLATE, Path("made"))
         )
         and '- Lesson title (data): "Symlink Guard Demo"'
         in _sym_agents_path.read_text(encoding="utf-8")
@@ -1526,7 +1542,7 @@ def test_002_ui_and_workspace(client, suite_state):
         and _hard_decoy.stat().st_nlink == 1
         and _hard_agents.is_file()
         and _hard_agents.read_text(encoding="utf-8").startswith(
-            lessons_svc._AGENTS_TEMPLATE
+            lessons_svc._source_brief(lessons_svc._AGENTS_TEMPLATE, Path("made"))
         )
         and '- Lesson title (data): "Hard Link Brief Demo"'
         in _hard_agents.read_text(encoding="utf-8")

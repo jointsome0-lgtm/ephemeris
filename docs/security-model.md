@@ -89,6 +89,35 @@ When a proxy URL is shown in the terminal banner, any `user:password@`
 credentials are redacted — the redaction covers what is *displayed*, not the
 child environment.
 
+### The study browser (host configuration, not app code)
+
+The tutor's brief describes a `study-browser` MCP server: one real browser,
+signed into the accounts whose material a lesson is built from, used when a
+plain fetch returns a login wall. Nothing in this repository starts it,
+configures it, or grants access to it. It exists when the operator runs a
+`@playwright/mcp` server on loopback and registers it in their own Claude
+configuration; the `lesson-agent` sandbox reaches it because that profile
+already shares the host network namespace, and sees it because
+`~/.claude.json` is bind-mounted read-only.
+
+What that means for the trust boundary, stated plainly rather than implied
+by the brief:
+
+- The agent gets whatever the browser's profile is signed into. The profile
+  is therefore the boundary, and it should be a study profile signed into
+  the lesson sources only — not the operator's everyday browser profile.
+- The brief tells the tutor to read the lesson's material and change no
+  account state. That is agent compliance, not enforcement: source material
+  is untrusted text, and a prompt-injected tutor is exactly the case
+  compliance does not cover. `--allowed-origins` narrows which origins the
+  browser will request and is worth setting to the lesson's hosts, but its
+  own documentation says it is not a security boundary.
+- Consequently: run the server only while lessons are being built, and keep
+  its profile signed out of anything whose loss would matter. An
+  app-owned capability that scopes origins per lesson and refuses
+  state-changing tools would replace compliance with enforcement; it is not
+  built, and is the open question this section exists to name.
+
 A lesson-scoped terminal (`/terminal/ws?lesson=<slug>`) fails closed: if the
 lesson workspace cannot be prepared — unknown slug, symlinked bundle directory,
 filesystem or database error — the connection is refused with a visible message
