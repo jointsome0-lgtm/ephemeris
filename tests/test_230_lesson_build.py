@@ -58,6 +58,43 @@ def test_the_install_argv_carries_both_rules_the_agent_could_otherwise_undo():
     assert argv[-2:] == ["--", "d3"]
 
 
+def test_the_repository_toolchain_is_quarantined_too():
+    """The lesson path carries the age rule on its argv; the repository's own
+    `bun install` has only `bunfig.toml`.
+
+    This assertion came with the vendored lesson-libs shelf, whose manual
+    refresh leaned on the gate. The shelf is gone (#161) and the gate is not:
+    it still governs every devDependency this repository installs, which is
+    the one remaining place a young release enters the machine through bun.
+
+    The key has to match exactly. bun ignores `minimumReleaseAgeTYPO` in
+    silence (checked), so a prefix match would keep passing over a dead gate.
+    """
+    repo = Path(__file__).resolve().parents[1]
+    bunfig = repo / "bunfig.toml"
+    assert bunfig.is_file(), "the repository carries no bunfig.toml"
+    setting = [
+        value.strip()
+        for key, _, value in (
+            line.partition("=") for line in bunfig.read_text("utf-8").splitlines()
+        )
+        if key.strip() == "minimumReleaseAge"
+    ]
+    # Seconds, not days — bun's unit differs from the npm setting it replaced,
+    # and it is the same 30 days the lesson build puts on its argv.
+    assert setting == [str(lesson_build.MINIMUM_RELEASE_AGE_SECONDS)], (
+        f"expected a 30-day quarantine, found {setting}"
+    )
+    # A bun that predates the setting does not know the key and installs anyway.
+    engines = json.loads((repo / "package.json").read_text("utf-8")).get("engines", {})
+    assert engines.get("bun") == ">=1.3.11", (
+        f"the bun that understands the gate is not declared: {engines}"
+    )
+    # npm's gate is gone; a leftover .npmrc would look like a second, live one.
+    assert not (repo / ".npmrc").exists(), "a stale .npmrc survives the bun move"
+    assert not (repo / "package-lock.json").exists(), "a stale npm lockfile survives"
+
+
 def test_an_install_with_nothing_to_add_still_carries_the_rules():
     argv = lesson_build._install_argv([])
     assert argv[1] == "install" and "--" not in argv
@@ -124,23 +161,18 @@ def test_the_output_must_land_where_the_lesson_route_will_serve_it():
             lesson_build.clean_source_ref(bad, "entry")
 
 
-def test_the_output_may_not_land_on_the_shelf_the_app_reseeds():
-    """`assets/libs/` is written by the app, not by the lesson.
+def test_no_part_of_assets_is_reserved_from_the_artifact():
+    """`assets/` is the agent's, all of it (#161).
 
-    It is restored on every terminal open, so an artifact placed there is
-    replaced by the vendored copy minutes after the build reported success —
-    the page changes with nothing in the response to say why.
+    Until the vendored shelf was dropped the app reseeded `assets/libs/` on
+    every terminal open and had to refuse an artifact there — the copy came
+    back over it minutes after the build reported success. Nothing in the
+    bundle is app-written any more, so the carve-out went with the shelf, and
+    a lesson that wants to keep its built pages under `assets/libs/` may.
     """
-    from app.services import lessons
-
-    for ref in (f"{lessons.LESSON_LIBS_BUNDLE_DIR}/d3/d3.min.js",
-                f"{lessons.LESSON_LIBS_BUNDLE_DIR}/anything.js"):
-        with pytest.raises(lesson_build.BuildError) as caught:
-            lesson_build.clean_source_ref(ref, "out")
-        assert caught.value.status == 400
-    # The neighbours are fine; only the managed subtree is out of bounds.
-    assert lesson_build.clean_source_ref("assets/libraries.js", "out")
-    assert lesson_build.clean_source_ref("assets/lib/page.js", "out")
+    for ref in ("assets/libs/d3/d3.min.js", "assets/libs/anything.js",
+                "assets/libraries.js", "assets/lib/page.js"):
+        assert lesson_build.clean_source_ref(ref, "out") == ref
 
 
 def test_a_third_output_is_refused_rather_than_quietly_dropped(tmp_path):

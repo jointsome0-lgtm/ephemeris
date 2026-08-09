@@ -153,18 +153,12 @@ def clean_source_ref(raw, field: str) -> str:
                 f"`out` must be under `{_ARTIFACT_DIR}/`, the only place in a "
                 "bundle besides its declared pages that the lesson route serves",
             )
-        # …but not the one part of `assets/` the app writes itself. The shelf
-        # is reseeded on every terminal open, so an artifact placed there is
-        # replaced by the vendored copy some minutes after the build reported
-        # success — the page changes with nothing in the response to say so.
-        shelf = lessons.LESSON_LIBS_BUNDLE_DIR
-        if ref == shelf or ref.startswith(f"{shelf}/"):
-            raise BuildError(
-                "invalid-request", 400,
-                f"`out` may not be under `{shelf}/`: that shelf is app-managed "
-                "and restored on the next terminal open, which would silently "
-                "replace anything built into it",
-            )
+        # No carve-out inside `assets/` any more: the app used to reseed a
+        # vendored library shelf at `assets/libs/` on every terminal open and
+        # had to refuse an artifact there, because the copy would come back
+        # over it minutes after the build reported success. The shelf is gone
+        # (#161) — a lesson builds every library it needs — so the whole of
+        # `assets/` is the agent's to place an artifact in.
     return ref
 
 
