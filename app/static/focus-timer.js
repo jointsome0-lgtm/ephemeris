@@ -30,6 +30,7 @@
   let run = null;          // the server's last word on the running timer
   let syncedAt = 0;        // Date.now() when that word arrived
   let ticker = null;
+  let poller = null;       // the slow resync, alive only while a timer is
   let targetsLoading = null;  // the in-flight fetch, so two opens share one
   let mode = "countdown";
   let minutes = 25;
@@ -39,7 +40,9 @@
   let appliedSeq = 0;      // the ticket of the state currently on screen
   let pendingTarget = null;  // a target picked from a row before the list loaded
 
-  const RETRY_MS = 3000;   // second look after a write whose answer never came
+  const RETRY_MS = 3000;         // first look back after a lost answer…
+  const RETRY_CEILING_MS = 12000;  // …then 6s and 12s, well past the 5s lock wait
+  const POLL_MS = 30000;   // slow resync while a timer exists, for a second window
 
   const toast = (msg) => (window.alUI && window.alUI.toast
     ? window.alUI.toast(msg) : undefined);
@@ -71,11 +74,10 @@
       showError("timer unavailable — is the app up to date?");
       // An answer that never arrives says nothing about the server: the write
       // may well have committed just before the connection dropped. Ask what is
-      // actually running — now, and once more shortly in case the connection is
-      // still coming back — or the drawer sits idle over a timer that is
-      // running, with no periodic poll to notice.
+      // actually running, rather than assuming nothing happened and sitting
+      // idle over a timer that is.
       refused = true;
-      setTimeout(() => sync(true), RETRY_MS);
+      resyncAfterLostAnswer();
       return null;
     } finally {
       busy = false;
@@ -88,13 +90,28 @@
   }
 
   async function sync(keepError) {
-    if (busy) return;  // a write is in flight; its own answer is the newer one
+    if (busy) return false;  // a write is in flight; its answer is the newer one
     const ticket = ++issueSeq;
     try {
       const r = await fetch("/focus/timer", { headers: { "X-Partial": "1" } });
-      if (!r.ok) return;
+      if (!r.ok) return false;
       absorb(await r.json(), ticket, keepError);
+      return true;
     } catch (_) { /* offline: keep interpolating from the last sync */ }
+    return false;
+  }
+
+  // Keep asking after a write whose answer was lost. It may still have been
+  // queued behind the writer lock, which waits up to five seconds (app/db.py),
+  // so an early read can see a database that has not changed yet. The last of
+  // these lands well past that window; a drawer that stops asking sooner sits
+  // over a timer the server is still running. Once a run is visible, `poll()`
+  // below keeps it honest.
+  async function resyncAfterLostAnswer() {
+    for (let wait = RETRY_MS; wait <= RETRY_CEILING_MS; wait *= 2) {
+      await new Promise((settle) => setTimeout(settle, wait));
+      await sync(true);
+    }
   }
 
   // Tickets are handed out in send order. A read issued before a write can
@@ -173,11 +190,23 @@
       b.classList.toggle("timer-paused", running && run.paused);
     });
     tick(running && !run.paused);
+    poll(running);
   }
 
   function tick(on) {
     if (on && !ticker) ticker = setInterval(render, 1000);
     else if (!on && ticker) { clearInterval(ticker); ticker = null; }
+  }
+
+  // A slow resync for as long as there is a timer at all, paused or not. Two
+  // windows can be visible at once — no `visibilitychange` fires in the one
+  // that was not touched — so a timer paused, stopped or discarded in one would
+  // otherwise keep counting in the other for as long as it stayed open. Half a
+  // minute is the cheapest interval that still bounds how wrong a tab can get,
+  // and an idle drawer pays nothing.
+  function poll(on) {
+    if (on && !poller) poller = setInterval(() => sync(), POLL_MS);
+    else if (!on && poller) { clearInterval(poller); poller = null; }
   }
 
   function showError(msg) {

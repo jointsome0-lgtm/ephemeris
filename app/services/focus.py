@@ -461,13 +461,16 @@ def _price_and_record(conn: sqlite3.Connection, token: str, *,
         row = _run_by_token(conn, token)
         if row is None:
             raise FocusError("that timer is no longer running")
-        now = _parse_iso(now_iso())
+        # One reading of the clock prices the span and dates it. Two would let
+        # midnight fall between them: priced yesterday, filed today.
+        stamp = now_iso()
+        now = _parse_iso(stamp)
         seconds = _elapsed_seconds(row, now)
         target = int(row["target_seconds"] or 0)
         # A paused clock stopped counting when it was paused, so that is when
         # the span ended — Stop pressed the next morning writes down last
         # night's work, not a session that shows a time nothing was worked at.
-        ended_at = row["paused_at"]
+        ended_at = row["paused_at"] or stamp
         if target and seconds >= target:
             # The countdown ended when it ran out, not when the user came back
             # to a sleeping laptop. Stamping the return time would credit

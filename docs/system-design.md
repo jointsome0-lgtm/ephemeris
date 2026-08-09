@@ -2153,8 +2153,14 @@ thing being worked on, startable from wherever he already is.
   so an old export stays restorable.
 - **One target, at most.** `lesson_id` (v8) is joined by `habit_id` and
   `task_id`; the write refuses two at once, because a span of attention spent on
-  one thing must not be double-counted in two per-target totals. A stale or junk
-  id stores as NULL rather than dangling.
+  one thing must not be double-counted in two per-target totals. Starting a
+  timer at a target that is not live — deleted, archived, already completed —
+  is **refused** (422), because the drawer's picker can go stale under an open
+  drawer and the user is still standing in front of it; the drawer reloads its
+  options on that refusal. Elsewhere — the compatibility write, an id that no
+  longer resolves at replay — a stale or junk id stores as NULL rather than
+  dangling. A target that dies *while* the timer runs keeps its attribution:
+  liveness is a question about starting, not about finishing.
 - **Idempotency.** `client_token` is unique on both tables: a retried start
   reuses the run, a retried finish returns the session the first call recorded.
   A countdown is capped at its chosen length — a tab left open into minute 30 of
