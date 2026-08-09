@@ -62,6 +62,15 @@ TIMEOUT_SECONDS = 60.0
 # must not turn the report into a megabyte.
 MAX_ERRORS = 25
 MAX_MESSAGE_CHARS = 500
+# How many diagnostic notifications are kept. A page erroring in a loop emits
+# them as fast as the socket carries them, and for up to `TIMEOUT_SECONDS` —
+# keeping all of them to report at most `MAX_ERRORS` would let a broken lesson
+# spend the app's memory instead of getting a refusal. Well above what any
+# honest page produces, and duplicates collapse in `_errors_from` anyway.
+MAX_EVENTS = 500
+# The same bound for the two URL sets, which a page could otherwise grow with
+# thousands of distinct requests.
+MAX_URLS = 2000
 
 # Chrome asks for this on every top-level navigation and the app has none to
 # give, so the 404 is the browser talking about itself, not about the lesson.
@@ -123,7 +132,15 @@ class _Browser:
             raise RenderCheckUnavailable(f"no websocket client: {exc}") from exc
         self.profile = tempfile.mkdtemp(prefix="ephemeris-render-check-")
         self._next_id = 0
+        # Every channel is bounded, because all four are driven by the page.
+        # The signals the gate needs are kept as they arrive rather than
+        # rediscovered from a transcript, so nothing the gate depends on can be
+        # displaced by a flood of the channel that has a cap.
         self.events: list[dict] = []
+        self.dropped = 0
+        self.fetched: set[str] = set()
+        self.executed: set[str] = set()
+        self.loaded = False
         try:
             self.process = subprocess.Popen(
                 [
@@ -216,11 +233,41 @@ class _Browser:
             raise RenderCheckUnavailable(f"the browser stopped answering: {exc}") from exc
         message = json.loads(raw)
         if "method" in message:
-            self.events.append(message)
+            self._record(message)
         return message
 
-    def wait_for_load(self, frame_id: str | None, deadline: float) -> None:
-        """Block until the main frame has finished loading.
+    def _record(self, event: dict) -> None:
+        """Route one notification to the channel that will be asked for it."""
+        method = event.get("method")
+        params = event.get("params") or {}
+        if method == "Page.loadEventFired":
+            self.loaded = True
+            return
+        if method == "Page.frameStoppedLoading":
+            # No frame filter is needed: `default-src 'none'` forbids a nested
+            # frame, so a lesson document is the only frame there is.
+            self.loaded = True
+            return
+        if method == "Network.responseReceived":
+            response = params.get("response") or {}
+            status = response.get("status")
+            url = response.get("url")
+            if url and not (isinstance(status, int) and status >= 400):
+                if len(self.fetched) < MAX_URLS:
+                    self.fetched.add(_url_key(url))
+            return
+        if method == "Debugger.scriptParsed":
+            url = params.get("url")
+            if url and len(self.executed) < MAX_URLS:
+                self.executed.add(_url_key(url))
+            return
+        if len(self.events) < MAX_EVENTS:
+            self.events.append(event)
+        else:
+            self.dropped += 1
+
+    def wait_for_load(self, deadline: float) -> None:
+        """Block until the document has finished loading.
 
         `Page.navigate` returns as soon as the navigation has been *committed*,
         which on anything but a trivial page is well before the document is
@@ -230,31 +277,15 @@ class _Browser:
         the code on it had run. So the settle interval starts here, after the
         load, and this wait gets the whole remaining budget.
         """
-        def finished(events: list[dict]) -> bool:
-            for event in events:
-                method = event.get("method")
-                if method == "Page.loadEventFired":
-                    return True
-                if method == "Page.frameStoppedLoading" and (
-                    frame_id is None
-                    or (event.get("params") or {}).get("frameId") == frame_id
-                ):
-                    return True
-            return False
-
-        if finished(self.events):
-            return
-        while time.monotonic() < deadline:
-            seen = len(self.events)
+        while not self.loaded and time.monotonic() < deadline:
             try:
                 self._read(deadline)
             except TimeoutError:
                 break
-            if finished(self.events[seen:]):
-                return
-        raise RenderCheckUnavailable(
-            "the page never finished loading inside the check's time budget"
-        )
+        if not self.loaded:
+            raise RenderCheckUnavailable(
+                "the page never finished loading inside the check's time budget"
+            )
 
     def pump(self, until: float, deadline: float) -> None:
         """Collect events until `until`, never past the whole-check `deadline`."""
@@ -340,40 +371,6 @@ def _url_key(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}{unquote(parts.path)}"
 
 
-def _fetched_urls(events: list[dict]) -> set[str]:
-    """Every URL the page got a usable response for."""
-    fetched: set[str] = set()
-    for event in events:
-        if event.get("method") != "Network.responseReceived":
-            continue
-        response = (event.get("params") or {}).get("response") or {}
-        status = response.get("status")
-        if isinstance(status, int) and status >= 400:
-            continue
-        url = response.get("url")
-        if url:
-            fetched.add(_url_key(url))
-    return fetched
-
-
-def _executed_urls(events: list[dict]) -> set[str]:
-    """Every URL whose script the engine actually compiled.
-
-    A download is not a run. `<link rel="preload" as="script">` fetches the
-    file and never executes it, and a page that only preloads the artifact
-    would satisfy a network-only check while proving nothing about the code —
-    which is the whole thing the gate exists to establish. V8 reports
-    `Debugger.scriptParsed` when it compiles a script, so a file that was
-    fetched but never reached the engine is absent here.
-    """
-    return {
-        _url_key(url)
-        for event in events
-        if event.get("method") == "Debugger.scriptParsed"
-        and (url := ((event.get("params") or {}).get("url") or ""))
-    }
-
-
 def console_errors(
     url: str,
     *,
@@ -410,7 +407,7 @@ def console_errors(
             raise RenderCheckUnavailable(
                 f"the browser could not load the page: {result['errorText']}"
             )
-        browser.wait_for_load(result.get("frameId"), deadline)
+        browser.wait_for_load(deadline)
         # Then sit still: lesson pages draw on load, and a mermaid render or a
         # d3 join throws well after the document is done.
         browser.pump(time.monotonic() + settle, deadline)
@@ -426,10 +423,16 @@ def console_errors(
                     "so this run would not see an opaque-origin failure"
                 )
         errors = _errors_from(browser.events)
+        if browser.dropped:
+            errors.append(RenderError(
+                "browser",
+                f"{browser.dropped} further error(s) were not collected; this "
+                "page fails faster than it can be reported on",
+            ))
         if expect_url is not None:
             wanted = _url_key(expect_url)
-            if wanted not in _executed_urls(browser.events):
-                fetched = wanted in _fetched_urls(browser.events)
+            if wanted not in browser.executed:
+                fetched = wanted in browser.fetched
                 errors.insert(0, RenderError("artifact", (
                     f"the page fetched {expect_url} but never ran it, so "
                     "nothing here is evidence about the built script; a "

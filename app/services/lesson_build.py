@@ -36,7 +36,7 @@ import time
 from pathlib import Path, PurePosixPath
 
 from .. import sandbox
-from . import lessons, render_check
+from . import bundle_schema, lessons, render_check
 
 _log = logging.getLogger(__name__)
 
@@ -172,6 +172,9 @@ def _seed_workspace(workspace: Path, slug: str) -> None:
     quarantine holds. With no file here and a blank `$HOME` in the view, bun
     finds no configuration at all — which is the state the argv assumes.
     """
+    # The one directory the bundle step may write. It exists before the view is
+    # built because bubblewrap will not bind a source that is not there.
+    (workspace / sandbox.BUILD_OUTPUT_DIR).mkdir(mode=0o700, exist_ok=True)
     manifest = workspace / "package.json"
     if manifest.exists():
         return
@@ -196,6 +199,35 @@ def _atomic_write(path: Path, data: bytes, *, mode: int = 0o600) -> None:
     os.replace(temporary, path)
 
 
+def _require_build_runtime() -> None:
+    """Everything the view needs, checked before bubblewrap is asked to mount it.
+
+    Not only the sandbox: bwrap fails at *setup* when a `--bind` source is
+    missing, and a nonzero exit during setup is indistinguishable from a
+    package manager that could not resolve a version. Without this, a host with
+    no bun installed answers a build request with `install-failed` 422 and the
+    output of a mount error — true, unactionable, and about the wrong thing.
+    """
+    try:
+        sandbox.require_sandbox_runtime()
+    except sandbox.SandboxUnavailableError as exc:
+        raise BuildError("build-unavailable", 503, str(exc)) from exc
+    if not os.access(sandbox.BUN_BINARY, os.X_OK):
+        raise BuildError(
+            "build-unavailable", 503,
+            f"no executable package manager at {sandbox.BUN_BINARY}",
+        )
+    # Created rather than demanded: bun makes it on first use anyway, and on a
+    # host that has never installed anything its absence is not a fault.
+    try:
+        os.makedirs(sandbox.BUN_CACHE_DIR, mode=0o700, exist_ok=True)
+    except OSError as exc:
+        raise BuildError(
+            "build-unavailable", 503,
+            f"no usable package cache at {sandbox.BUN_CACHE_DIR}: {exc}",
+        ) from exc
+
+
 async def _run_step(
     step: sandbox.BuildStep,
     *,
@@ -205,13 +237,7 @@ async def _run_step(
     timeout: float,
 ) -> tuple[int, str]:
     """Run one step in its mount view; return its exit status and output tail."""
-    try:
-        sandbox.require_sandbox_runtime()
-    except sandbox.SandboxUnavailableError as exc:
-        # A host without working unprivileged namespaces cannot build, and the
-        # agent asking is entitled to be told that in the same shape as every
-        # other refusal rather than through a 500.
-        raise BuildError("build-unavailable", 503, str(exc)) from exc
+    _require_build_runtime()
     try:
         argv = sandbox.build_step_argv(
             step,
@@ -346,7 +372,10 @@ def _set_aside(fd: int, name: str) -> str | None:
 
 
 def _write_through(fd: int, name: str, data: bytes) -> None:
-    temporary = f".{name}.new"
+    # Random, for the reason `_set_aside` is: this name is opened `O_TRUNC` and
+    # then renamed over `name`, so a predictable one would destroy an authored
+    # `.page.js.new` and then present it as the build's output.
+    temporary = f".{name}.{os.urandom(6).hex()}.new"
     handle = os.open(
         temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC,
         0o644, dir_fd=fd,
@@ -426,13 +455,15 @@ async def _build_locked(
         workspace = lessons.ensure_build_workspace(slug)
     except (OSError, lessons.LessonError) as exc:
         raise BuildError("workspace-unavailable", 503, str(exc)) from exc
-    # A symlink anywhere along the entry is refused by `bundle_ref_path`, the
-    # same way every other bundle reader here treats one — and an agent can
-    # make a symlink, so this is an ordinary request to refuse, not an internal
-    # fault. Both outcomes read as "that source is not in this bundle".
+    # §2 of the bundle spec: a symlinked path is missing, full stop, and every
+    # other reader here checks that BEFORE resolving so the link is never
+    # followed. `bundle_ref_path` only raises when the target escapes the
+    # bundle, so a link to a sibling inside it would otherwise be compiled —
+    # and an agent can make either kind. Both read as "not in this bundle".
     try:
+        symlinked = bundle_schema.path_has_symlink(lesson_dir, entry)
         entry_path = lessons.bundle_ref_path(slug, entry)
-        readable = entry_path.is_file()
+        readable = not symlinked and entry_path.is_file()
     except lessons.LessonError:
         readable = False
     if not readable:
@@ -455,7 +486,7 @@ async def _build_locked(
     # Straight into the workspace: the artifact is judged before the bundle is
     # allowed to see it, and `<workspace>` is the one directory in the view
     # that is writable and outside anything this app serves.
-    outfile = workspace / "artifact.js"
+    outfile = workspace / sandbox.BUILD_OUTPUT_DIR / "artifact.js"
     # Cleared first, so a bundler that exits 0 without writing cannot get the
     # previous run's bytes accepted as this run's result.
     outfile.unlink(missing_ok=True)

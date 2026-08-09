@@ -64,30 +64,42 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   returns a bubblewrap argv for `step` in `("install", "bundle")`. Both
   steps: `--unshare-all`, `--die-with-parent`, `--ro-bind / /`, `--proc`,
   `--dev`, `--tmpfs /tmp`, `--tmpfs $HOME`, `--ro-bind` of
-  `$HOME/.bun/bin/bun`, `--bind` of the build workspace, `--chdir` to the
-  build workspace, `--clearenv`, then `--setenv` for `PATH`, `HOME` and
-  `TMPDIR` only. `install` additionally gets `--share-net` and a `--bind`
-  of `$HOME/.bun/install/cache`; `bundle` additionally gets a `--ro-bind`
-  of the bundle and a `--bind` of `<workspace>/node_modules` at
-  `<bundle>/node_modules`, and gets neither the network nor the cache. The
+  `$HOME/.bun/bin/bun`, `--chdir` to the build workspace, `--clearenv`,
+  then `--setenv` for `PATH`, `HOME` and `TMPDIR` only. `install`
+  additionally gets `--share-net`, a `--bind` of `$HOME/.bun/install/cache`
+  and a `--bind` of the build workspace. `bundle` gets neither the network
+  nor the cache, and instead a `--ro-bind` of the build workspace followed
+  by a `--bind` of `<workspace>/out` (later, so it wins over the read-only
+  cover), a `--ro-bind` of the bundle and a `--ro-bind` of
+  `<workspace>/node_modules` at `<bundle>/node_modules`. Measured
+  2026-08-09 in that view: writes to the workspace root, to
+  `<workspace>/node_modules` and to the bundle are refused, and a write to
+  `<workspace>/out` persists. The
   workspace is validated by the existing `_pure_build_workspace`, the
   bundle by `_pure_bundle_path`; a bundle dir is required for `bundle` and
-  rejected for `install`.
+  rejected for `install`. New `sandbox.BUILD_OUTPUT_DIR = "out"`.
   New `app/services/lesson_build.py` runs the two steps as
   `asyncio.create_subprocess_exec` with captured output and 300 s / 120 s
-  timeouts. Install argv: `bun add|install --backend=copyfile
+  timeouts, after checking bubblewrap, that `sandbox.BUN_BINARY` is
+  executable, and that `sandbox.BUN_CACHE_DIR` exists or can be created
+  `0o700`. The bundler writes into `<workspace>/out/artifact.js`, which is
+  unlinked before each run. Install argv: `bun add|install --backend=copyfile
   --minimum-release-age=2592000 --ignore-scripts --no-progress
   --no-summary [-- <packages>]`. Bundle argv: `bun build <entry>
   --target=browser --format=iife --production --keep-names --outfile=…`
   into the workspace. Package specs are matched against an anchored npm
   name/range regex, at most 32 per request; `entry` and `out` go through
   `lessons.clean_bundle_ref` and are refused when equal; `out` is also
-  refused unless it is under `assets/`. The artifact's size is taken with
+  refused unless it is under `assets/`, and `entry` is refused when
+  `bundle_schema.path_has_symlink` reports a symlink on its path, checked
+  before the path is resolved. The artifact's size is taken with
   `stat` and refused over 1 MiB before it is read. It is
   placed in the bundle through a descriptor chain opened component by
   component with `O_NOFOLLOW` and `os.replace`. Whatever was at the output
   name is first renamed aside to `.<name>.<12 hex chars>.previous` through
-  the same descriptor and renamed back if the render gate fails or cannot run;
+  the same descriptor, and the new bytes land on
+  `.<name>.<12 hex chars>.new` before being renamed into place; the aside
+  copy is renamed back if the render gate fails or cannot run;
   on a pass the aside copy is unlinked. Builds are serialised per lesson
   slug by an in-process `asyncio.Lock`, and the workspace artifact path is
   unlinked before each bundle run. A `package.json` is seeded in the
@@ -95,8 +107,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   New `app/services/render_check.py` starts headless Chrome with a
   disposable profile on `--remote-debugging-port=0`, connects over CDP,
   enables `Page`/`Runtime`/`Log`/`Network`/`Debugger`, navigates to a caller-supplied
-  URL, waits for `Page.loadEventFired` or the main frame's
-  `Page.frameStoppedLoading` before starting the settle interval, and
+  URL, waits for `Page.loadEventFired` or `Page.frameStoppedLoading`
+  before starting the settle interval, and
   collects `Runtime.exceptionThrown`, `Runtime.consoleAPICalled` of type
   error/assert, and `Log.entryAdded` at level error (dropping
   `/favicon.ico` entries and the exact text `Unrecognized
@@ -105,6 +117,10 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   compared on scheme, authority and unquoted path; the
   `Network.responseReceived` URLs with a status under 400 are used only to
   word the refusal. The build route passes the artifact's own files URL.
+  Notifications are routed as they arrive rather than kept whole: load
+  flags, up to 2000 fetched URLs and up to 2000 executed script URLs as
+  sets, other diagnostics in a list capped at 500 with the overflow
+  reported as a count.
   Sandbox-runtime, bundle-path and entry-path failures inside
   `lesson_build` are converted to typed `BuildError`s
   (`build-unavailable` 503, `invalid-out` 409, `no-entry` 404), and the

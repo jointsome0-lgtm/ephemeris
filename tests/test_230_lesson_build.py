@@ -149,6 +149,15 @@ def _pairs(argv: list[str], flag: str) -> list[tuple[str, str]]:
     ]
 
 
+def _mount_at(argv: list[str], flag: str, source: str, target: str) -> int:
+    """Where one mount sits in the argv. Order decides which of two overlapping
+    binds wins, so it is part of the meaning, not of the formatting."""
+    for i, word in enumerate(argv):
+        if word == flag and argv[i + 1 : i + 3] == [source, target]:
+            return i
+    raise AssertionError(f"no {flag} {source} {target} in {argv}")
+
+
 def test_only_the_install_step_can_reach_the_network_or_the_package_cache():
     install = sandbox.build_step_argv("install", command=["/bin/true"], **ROOTS)
     bundle = sandbox.build_step_argv(
@@ -169,10 +178,38 @@ def test_the_bundle_step_sees_the_packages_where_the_agent_sees_them():
     # bun resolves a bare specifier by walking up from the importer file, so
     # the packages have to appear at the bundle path or nothing resolves.
     assert ("/data/lesson-builds/demo/node_modules",
-            "/data/lessons/demo/node_modules") in _pairs(argv, "--bind")
+            "/data/lessons/demo/node_modules") in _pairs(argv, "--ro-bind")
     assert ("/data/lessons/demo", "/data/lessons/demo") in _pairs(argv, "--ro-bind"), (
         "the bundle is an input; the artifact is placed by the app once the "
         "size and render gates have passed"
+    )
+
+
+def test_a_build_time_macro_cannot_leave_config_for_the_next_install():
+    """`bun build` runs agent-authored code, in a view that must not persist.
+
+    A `with {type: "macro"}` import executes during the bundle. If it could
+    write the workspace it would leave a `bunfig.toml`, a `package.json` or a
+    lockfile for the NEXT install to read — the one step with the network and a
+    writable shared cache. A dependency rewritten to a tarball URL has no
+    release age, which is the 30-day quarantine gone.
+    """
+    workspace = ROOTS["build_workspace"]
+    install = sandbox.build_step_argv("install", command=["/bin/true"], **ROOTS)
+    bundle = sandbox.build_step_argv(
+        "bundle", bundle_dir="/data/lessons/demo", command=["/bin/true"], **ROOTS
+    )
+    # The step that fills the workspace has it writable; the step that runs
+    # somebody else's code does not.
+    assert (workspace, workspace) in _pairs(install, "--bind")
+    assert (workspace, workspace) not in _pairs(bundle, "--bind")
+    assert (workspace, workspace) in _pairs(bundle, "--ro-bind")
+    # One writable hole, holding the artifact and nothing bun reads config from.
+    out = f"{workspace}/{sandbox.BUILD_OUTPUT_DIR}"
+    assert (out, out) in _pairs(bundle, "--bind")
+    # …and it is bound AFTER the read-only cover, or it would not be writable.
+    assert _mount_at(bundle, "--ro-bind", workspace, workspace) < _mount_at(
+        bundle, "--bind", out, out
     )
 
 
@@ -237,6 +274,11 @@ _PAGES = {
     "/boom.js": b"null.f();",
     "/cerr.js": b"console.error('invented lesson failure');",
     "/slow.js": b"null.f();",
+    # Errors as fast as the socket carries them, for as long as it is allowed to.
+    "/flood.html": b"<!doctype html><meta charset=utf-8><script src='flood.js'></script>",
+    "/flood.js": (
+        b"for (let i = 0; i < 200000; i++) console.error('flood ' + i);"
+    ),
 }
 # How long `/slow.js` is held back. Longer than the settle interval the test
 # passes in, so a check that started settling at navigation would miss it.
@@ -396,6 +438,45 @@ def test_running_out_of_time_is_a_refusal_and_never_a_pass(lesson_csp):
             render_check.console_errors(f"{site.base}/slow.html", timeout=1.0)
     finally:
         site.close()
+
+
+@needs_browser
+def test_a_page_erroring_in_a_loop_is_bounded_not_absorbed(lesson_csp):
+    """A broken page must cost a refusal, not the app's memory.
+
+    Every notification was retained until the deadline and only trimmed to
+    `MAX_ERRORS` at the end, so a page looping over `console.error` could grow
+    the process for a minute before being told no.
+    """
+    site = _Site(lesson_csp)
+    try:
+        errors = render_check.console_errors(f"{site.base}/flood.html", settle=1.0)
+        assert errors, "a page shouting errors is not a clean page"
+        assert len(errors) <= render_check.MAX_ERRORS + 1
+    finally:
+        site.close()
+
+
+def test_the_events_kept_for_a_report_are_capped(monkeypatch):
+    """The cap is on collection, and the signals the gate needs bypass it."""
+    browser = render_check._Browser.__new__(render_check._Browser)
+    browser.events, browser.dropped = [], 0
+    browser.fetched, browser.executed, browser.loaded = set(), set(), False
+    for i in range(render_check.MAX_EVENTS * 3):
+        browser._record({"method": "Runtime.consoleAPICalled", "params": {
+            "type": "error", "args": [{"value": f"flood {i}"}],
+        }})
+    assert len(browser.events) == render_check.MAX_EVENTS
+    assert browser.dropped == render_check.MAX_EVENTS * 2
+    # A flood cannot displace the load, fetch and execution signals, because
+    # none of them is kept in the channel that has the cap.
+    browser._record({"method": "Page.loadEventFired", "params": {}})
+    browser._record({"method": "Debugger.scriptParsed",
+                     "params": {"url": "http://x/a.js"}})
+    browser._record({"method": "Network.responseReceived", "params": {
+        "response": {"url": "http://x/a.js", "status": 200}}})
+    assert browser.loaded
+    assert browser.executed == {"http://x/a.js"} and browser.fetched == {"http://x/a.js"}
 
 
 def test_no_browser_is_a_refusal_and_never_a_pass(monkeypatch):
@@ -620,8 +701,15 @@ def test_an_authored_file_at_the_backup_name_survives_a_build(
     import asyncio
 
     lesson, bundle = built_lesson
-    decoy = bundle / "assets" / ".page.js.previous"
-    decoy.write_text("authored, not a backup\n", encoding="utf-8")
+    (bundle / "assets").mkdir(exist_ok=True)
+    decoys = {
+        # The set-aside name and the write-through name: both are renamed over,
+        # and `os.rename` replaces its target without asking.
+        bundle / "assets" / ".page.js.previous": "authored, not a backup\n",
+        bundle / "assets" / ".page.js.new": "authored, not a scratch file\n",
+    }
+    for path, text in decoys.items():
+        path.write_text(text, encoding="utf-8")
     _no_render_errors(monkeypatch)
     result = asyncio.run(lesson_build.build_lesson(
         lesson, add=[], entry="src/page.ts", out="assets/page.js",
@@ -629,9 +717,10 @@ def test_an_authored_file_at_the_backup_name_survives_a_build(
         artifact_url="http://127.0.0.1:1/unused.js",
     ))
     assert result["ok"]
-    assert decoy.read_text(encoding="utf-8") == "authored, not a backup\n"
+    for path, text in decoys.items():
+        assert path.read_text(encoding="utf-8") == text, f"{path.name} was eaten"
     assert sorted(p.name for p in (bundle / "assets").iterdir()) == [
-        ".page.js.previous", "page.js"
+        ".page.js.new", ".page.js.previous", "page.js"
     ], "no leftovers from the set-aside dance"
 
 
@@ -661,13 +750,21 @@ def test_a_bundle_that_cannot_hold_the_artifact_is_a_refusal_not_a_fault(
         link.unlink()
 
 
-def test_a_symlinked_entry_is_missing_rather_than_a_fault(built_lesson, monkeypatch):
-    """An agent can make a symlink; bundle readers treat one as not there."""
+@pytest.mark.parametrize("target", ["/etc/hostname", "page.ts"])
+def test_a_symlinked_entry_is_missing_rather_than_a_fault(
+    built_lesson, monkeypatch, target
+):
+    """§2: a symlinked path is missing, and the check comes BEFORE the resolve.
+
+    Both directions matter. A link out of the bundle is caught by the resolver;
+    a link to a sibling INSIDE it resolves perfectly well, and would be
+    compiled by a check that only watched for an escape.
+    """
     import asyncio
 
     lesson, bundle = built_lesson
     link = bundle / "src" / "linked.ts"
-    link.symlink_to("/etc/hostname")
+    link.symlink_to(target)
     try:
         with pytest.raises(lesson_build.BuildError) as caught:
             asyncio.run(lesson_build.build_lesson(
@@ -678,6 +775,71 @@ def test_a_symlinked_entry_is_missing_rather_than_a_fault(built_lesson, monkeypa
         assert caught.value.code == "no-entry" and caught.value.status == 404
     finally:
         link.unlink()
+
+
+@needs_sandbox
+def test_build_time_code_cannot_write_the_config_the_next_install_reads(
+    built_lesson, monkeypatch
+):
+    """The P1, end to end: a macro runs during `bun build`, and must not persist.
+
+    Whether this particular macro compiles is bun's business; what is asserted
+    is the property underneath it — after any bundle step, the files the next
+    install reads are exactly the ones the app wrote.
+    """
+    import asyncio
+
+    lesson, bundle = built_lesson
+    from app.services import lessons
+
+    workspace = lessons.ensure_build_workspace(lesson["slug"])
+    (bundle / "src" / "macro.ts").write_text(
+        'import { plant } from "./plant.ts" with { type: "macro" };\n'
+        'export const x = plant();\n',
+        encoding="utf-8",
+    )
+    (bundle / "src" / "plant.ts").write_text(
+        "import { writeFileSync } from 'node:fs';\n"
+        "export function plant() {\n"
+        "  try {\n"
+        "    writeFileSync('bunfig.toml', '[install]\\nminimumReleaseAge = 0\\n');\n"
+        "  } catch (e) { return 'blocked'; }\n"
+        "  return 'planted';\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    _no_render_errors(monkeypatch)
+    try:
+        asyncio.run(lesson_build.build_lesson(
+            lesson, add=[], entry="src/macro.ts", out="assets/macro.js",
+            page=None, page_url="http://127.0.0.1:1/unused",
+            artifact_url="http://127.0.0.1:1/unused.js",
+        ))
+    except lesson_build.BuildError:
+        pass  # refusing to compile it at all is also a pass
+    assert not (workspace / "bunfig.toml").exists(), (
+        "a build-time macro reached the config the next install reads, in the "
+        "one view that has the network and a writable shared package cache"
+    )
+    assert json.loads((workspace / "package.json").read_text())["name"] == (
+        f"lesson-{lesson['slug']}"
+    ), "the workspace manifest is the app's, and stays the app's"
+
+
+def test_a_host_without_the_package_manager_says_so(built_lesson, monkeypatch):
+    """bwrap fails at mount setup for a missing bind source, and a nonzero exit
+    during setup is indistinguishable from a package that would not resolve."""
+    import asyncio
+
+    lesson, _bundle = built_lesson
+    monkeypatch.setattr(sandbox, "BUN_BINARY", "/nonexistent/bin/bun")
+    with pytest.raises(lesson_build.BuildError) as caught:
+        asyncio.run(lesson_build.build_lesson(
+            lesson, add=[], entry="src/page.ts", out="assets/page.js",
+            page=None, page_url="http://127.0.0.1:1/unused",
+            artifact_url="http://127.0.0.1:1/unused.js",
+        ))
+    assert caught.value.code == "build-unavailable" and caught.value.status == 503
 
 
 def test_a_host_that_cannot_sandbox_refuses_in_the_documented_shape(

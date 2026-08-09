@@ -169,6 +169,11 @@ BUILD_WORKSPACE_MOUNT = "node_modules"
 # would own the install command line, and with it the 30-day quarantine and the
 # copying backend that keeps one lesson out of another's cache entry. The app
 # runs the package manager; the agent asks it to (`app/services/lesson_build.py`).
+# The only writable place in the `bundle` step's view. A build-time macro runs
+# agent-authored code, and everything bun reads configuration from — the
+# workspace `bunfig.toml`, `package.json` and lockfile — has to stay out of its
+# reach, or the next install inherits whatever it wrote.
+BUILD_OUTPUT_DIR = "out"
 BUN_BINARY = f"{USER_HOME}/.bun/bin/bun"
 BUN_CACHE_DIR = f"{USER_HOME}/.bun/install/cache"
 
@@ -561,11 +566,23 @@ def build_step_argv(
        it is bound read-only: the artifact is placed by the app afterwards,
        once the size and render gates have passed.
 
-    It is not a confinement boundary for package code, which this step never
+    4. **What each step may write.** ``install`` fills the workspace, so it has
+       it writable. ``bundle`` does not: ``bun build`` executes an
+       ``with {type: "macro"}`` import at build time, so agent-authored code
+       *does* run in that view, and a writable workspace would let it leave a
+       ``bunfig.toml``, a ``package.json`` or a lockfile behind for the next
+       install to read — in the one view that has the network and a writable
+       shared package cache. Rewriting a dependency to a tarball URL, which has
+       no release age at all, would walk straight through the 30-day quarantine
+       this whole mechanism exists to enforce. So ``bundle`` gets the workspace
+       read-only with exactly one writable hole, ``<workspace>/out``, which
+       holds the artifact and nothing bun ever reads configuration from.
+
+    It is not a confinement boundary for package code, which neither step
     executes: bun runs no dependency lifecycle script without an explicit
     ``trustedDependencies`` entry, and ``package.json`` lives in the workspace,
-    which no session can reach. ``--ignore-scripts`` on the install argv says
-    so a second time.
+    which no session can reach and the bundle step cannot write.
+    ``--ignore-scripts`` on the install argv says so a second time.
     """
     if step not in _BUILD_STEPS:
         raise ValueError(f"unknown build step: {step}")
@@ -603,11 +620,20 @@ def build_step_argv(
         # backend: a hardlinked node_modules entry IS the cache entry, and one
         # lesson's session could edit what every later install receives.
         argv.extend(["--bind", BUN_CACHE_DIR, BUN_CACHE_DIR])
-    argv.extend(["--bind", workspace, workspace])
-    if bundle is not None:
+    if bundle is None:
+        # `install` is the step that fills the workspace.
+        argv.extend(["--bind", workspace, workspace])
+    else:
+        # `bundle` runs agent-authored code (a build-time macro) and must not
+        # be able to leave install configuration behind for the next install to
+        # read. Read-only everywhere, with one writable hole for the artifact —
+        # a later bind wins over the earlier one covering it.
         argv.extend([
+            "--ro-bind", workspace, workspace,
+            "--bind", f"{workspace}/{BUILD_OUTPUT_DIR}",
+            f"{workspace}/{BUILD_OUTPUT_DIR}",
             "--ro-bind", bundle, bundle,
-            "--bind", f"{workspace}/{BUILD_WORKSPACE_MOUNT}",
+            "--ro-bind", f"{workspace}/{BUILD_WORKSPACE_MOUNT}",
             f"{bundle}/{BUILD_WORKSPACE_MOUNT}",
         ])
     argv.extend(["--chdir", workspace, "--clearenv"])
