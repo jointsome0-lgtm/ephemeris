@@ -976,6 +976,24 @@ def test_core_surfaces(client, suite_state):
     c.post(f"/tasks/{tid}/complete", data={"return_to": "/today"},
            headers={"X-Partial": "1"})
 
+    # Discard losing to Stop is the one race whose outcome the user cannot see:
+    # the span is already a session no screen here can take back, so saying "ok"
+    # would claim the time was thrown away when it was kept.
+    c.post("/focus/timer/start", data={"token": "tok-q", "mode": "open"},
+           headers={"X-Partial": "1"})
+    _backdate("tok-q", 120)
+    c.post("/focus/timer/finish", data={"token": "tok-q"}, headers={"X-Partial": "1"})
+    late_drop = c.post("/focus/timer/discard", data={"token": "tok-q"},
+                       headers={"X-Partial": "1"})
+    assert late_drop.status_code == 422 and "recorded" in late_drop.json()["error"], (
+        "discarding an already-recorded span says so" + "  -- " + late_drop.text
+    )
+    again = c.post("/focus/timer/discard", data={"token": "tok-never"},
+                   headers={"X-Partial": "1"})
+    assert again.status_code == 200, (
+        "while a repeat discard of a timer that never existed is simply done"
+    )
+
     # A countdown that already ran out cannot be paused. Pausing it would fold
     # the idle time between "ran out" and "resumed" into paused_seconds, and the
     # recorded span would then be dated after it truly ended — far enough, on an

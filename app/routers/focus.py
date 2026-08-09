@@ -177,7 +177,13 @@ def post_focus_discard(
 ):
     """Drop a timer without recording it — a mis-start is not focused time."""
     try:
-        focus.discard_run(conn, token)
+        dropped = focus.discard_run(conn, token)
+        if not dropped and focus.session_by_token(conn, token) is not None:
+            # Stop won this race in another tab, and the span is already a
+            # session that no screen here can take back. Answering "ok" would
+            # tell the user their time was thrown away when it was kept — the
+            # opposite of what happened, and the one outcome they cannot see.
+            raise focus.FocusError("that timer was already stopped and recorded")
     except focus.FocusError as exc:
         return _rejected(exc)
     return _state(conn)

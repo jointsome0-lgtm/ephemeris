@@ -30,7 +30,8 @@
   let run = null;          // the server's last word on the running timer
   let syncedAt = 0;        // Date.now() when that word arrived
   let ticker = null;
-  let poller = null;       // the slow resync, alive only while a timer is
+  let poller = null;       // the resync loop; its period follows `run`
+  let pollEvery = 0;       // the period that loop is currently running at
   let targetsLoading = null;  // the in-flight fetch, so two opens share one
   let mode = "countdown";
   let minutes = 25;
@@ -42,7 +43,8 @@
 
   const RETRY_MS = 3000;         // first look back after a lost answer…
   const RETRY_CEILING_MS = 12000;  // …then 6s and 12s, well past the 5s lock wait
-  const POLL_MS = 30000;   // slow resync while a timer exists, for a second window
+  const POLL_MS = 30000;   // resync period while a timer is running
+  const IDLE_POLL_MS = 120000;  // …and while there is none: only a start to miss
 
   const toast = (msg) => (window.alUI && window.alUI.toast
     ? window.alUI.toast(msg) : undefined);
@@ -67,6 +69,7 @@
         return null;
       }
       absorb(data, ticket);
+      if (channel) channel.postMessage(1);
       return data;
     } catch (_) {
       // A pre-#75 process still serving these pages has no /focus/timer route;
@@ -190,7 +193,7 @@
       b.classList.toggle("timer-paused", running && run.paused);
     });
     tick(running && !run.paused);
-    poll(running);
+    poll();
   }
 
   function tick(on) {
@@ -198,16 +201,26 @@
     else if (!on && ticker) { clearInterval(ticker); ticker = null; }
   }
 
-  // A slow resync for as long as there is a timer at all, paused or not. Two
-  // windows can be visible at once — no `visibilitychange` fires in the one
-  // that was not touched — so a timer paused, stopped or discarded in one would
-  // otherwise keep counting in the other for as long as it stayed open. Half a
-  // minute is the cheapest interval that still bounds how wrong a tab can get,
-  // and an idle drawer pays nothing.
-  function poll(on) {
-    if (on && !poller) poller = setInterval(() => sync(), POLL_MS);
-    else if (!on && poller) { clearInterval(poller); poller = null; }
+  // Two windows can be visible at once, and no `visibilitychange` fires in the
+  // one that was not touched: without asking, it would keep counting a timer
+  // the other stopped — or miss one the other started — for as long as it
+  // stayed open. So every tab keeps asking, quickly while it has a timer to be
+  // wrong about and slowly while it has none. `channel` below usually gets
+  // there first; this is what covers a second browser, or a phone.
+  function poll() {
+    const wanted = run ? POLL_MS : IDLE_POLL_MS;
+    if (poller && pollEvery === wanted) return;
+    if (poller) clearInterval(poller);
+    pollEvery = wanted;
+    poller = setInterval(() => sync(), wanted);
   }
+
+  // Same browser, same profile: a write in one tab tells the others at once,
+  // so the common case costs no polling latency. Nothing is sent but a nudge —
+  // the state itself always comes from the server, which is the only clock.
+  const channel = ("BroadcastChannel" in window)
+    ? new BroadcastChannel("al-focus-timer") : null;
+  if (channel) channel.onmessage = () => sync();
 
   function showError(msg) {
     els.error.textContent = msg || "";
