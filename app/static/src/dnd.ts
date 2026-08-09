@@ -8,19 +8,16 @@
  * full reload.
  *
  * Loaded as a classic deferred script, not a module, so this file stays a
- * global script: no top-level import/export, and `window.alUI` is reached by a
- * local cast rather than a global augmentation (the same shape learn-bridge.ts
- * uses — one file's idea of the global namespace should not become every
- * file's). */
+ * global script: no top-level import/export. `window.alUI` is the surface
+ * app.ts declares, which is why it needs no cast here — before app.js was
+ * converted (#170) this file kept a private shape of its own. */
 (() => {
   "use strict";
 
   interface MoveAnswer { ok?: boolean; error?: string }
 
   const toast = (m: string): void => {
-    const ui = (window as unknown as {
-      alUI?: { toast?: (msg: string) => void };
-    }).alUI;
+    const ui = window.alUI;
     if (ui && ui.toast) ui.toast(m);
   };
 
