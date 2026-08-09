@@ -342,6 +342,11 @@ def start_run(conn: sqlite3.Connection, mode: str, token: str, *,
         raced = _run_by_token(conn, token)
         if raced is not None:
             return _run_view(raced)
+        # Two different conflicts land here: the singleton slot, and a target
+        # hard-deleted in another tab between the check above and this insert,
+        # which the foreign key catches. Asking again which one it was keeps the
+        # drawer from announcing a running timer that does not exist.
+        _picked_targets(conn, lesson_id, habit_id, task_id)
         raise FocusError("a timer is already running")
     row = conn.execute(_RUN_SELECT + "WHERE fs.id = ?", (run_id,)).fetchone()
     return _run_view(row)
@@ -371,10 +376,19 @@ def set_run_paused(conn: sqlite3.Connection, token: str, paused: bool) -> dict:
         # after it truly ended — enough to move an overnight session onto the
         # next day's Retro bar. The drawer resyncs on a refusal and finishes it.
         raise FocusError("that countdown already finished — stop it to record it")
+    # Both writes carry the state they were decided on in their WHERE clause.
+    # Two tabs are two independent hands on the same timer: one can read the run
+    # and stall while the other pauses and resumes it, and an unconditional
+    # update would then apply a decision about a world that has moved on. A
+    # transition that no longer fits simply does not take, and the answer below
+    # is read fresh, so the caller is told what is actually true.
     with conn:
         if paused:
-            conn.execute("UPDATE focus_runs SET paused_at = ? WHERE id = ?",
-                         (stamp, row["id"]))
+            conn.execute(
+                "UPDATE focus_runs SET paused_at = ? "
+                "WHERE id = ? AND paused_at IS NULL",
+                (stamp, row["id"]),
+            )
         else:
             gap = 0
             paused_at = _parse_iso(row["paused_at"])
@@ -382,8 +396,8 @@ def set_run_paused(conn: sqlite3.Connection, token: str, paused: bool) -> dict:
                 gap = max(0, int((at - paused_at).total_seconds()))
             conn.execute(
                 "UPDATE focus_runs SET paused_at = NULL, paused_seconds = ? "
-                "WHERE id = ?",
-                (int(row["paused_seconds"] or 0) + gap, row["id"]),
+                "WHERE id = ? AND paused_at = ?",
+                (int(row["paused_seconds"] or 0) + gap, row["id"], row["paused_at"]),
             )
     return _run_view(
         conn.execute(_RUN_SELECT + "WHERE fs.id = ?", (row["id"],)).fetchone()
