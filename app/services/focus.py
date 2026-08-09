@@ -382,15 +382,19 @@ def set_run_paused(conn: sqlite3.Connection, token: str, paused: bool) -> dict:
         # or after the target — the case the refusal below exists to prevent.
         stamp = now_iso()
         at = _parse_iso(stamp)
-        target = int(row["target_seconds"] or 0)
-        if paused and target and _elapsed_seconds(row, at) >= target:
-            # A countdown that already ran out has nothing left to pause.
-            # Allowing it would fold the idle time between "ran out" and
-            # "resumed" into `paused_seconds`, and `_capped_end` would then
-            # date the span after it truly ended — enough to move an overnight
-            # session onto the next day's Retro bar. The drawer resyncs on a
-            # refusal and finishes it.
-            raise FocusError("that countdown already finished — stop it to record it")
+        cap = int(row["target_seconds"] or 0) or MAX_SECONDS
+        if paused and _elapsed_seconds(row, at) >= cap:
+            # A run that already reached its cap — the countdown's length, or the
+            # day an open one is clamped to — has nothing left to pause. Allowing
+            # it would fold the idle time between "ran out" and "resumed" into
+            # `paused_seconds`, and `_capped_end` would then date the span after
+            # it truly ended: enough to move an overnight session onto the next
+            # day's Retro bar. The drawer resyncs on a refusal and finishes it.
+            raise FocusError(
+                "that countdown already finished — stop it to record it"
+                if row["target_seconds"]
+                else "that timer has run its full day — stop it to record it"
+            )
         if paused:
             conn.execute("UPDATE focus_runs SET paused_at = ? WHERE id = ?",
                          (stamp, row["id"]))

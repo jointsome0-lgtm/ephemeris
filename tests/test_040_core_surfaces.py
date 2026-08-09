@@ -1001,6 +1001,12 @@ def test_core_surfaces(client, suite_state):
     c.post("/focus/timer/start", data={"token": "tok-w", "mode": "open"},
            headers={"X-Partial": "1"})
     _backdate("tok-w", 50 * 3600)
+    late_open = c.post("/focus/timer/pause", data={"token": "tok-w", "paused": 1},
+                       headers={"X-Partial": "1"})
+    assert late_open.status_code == 422 and "full day" in late_open.json()["error"], (
+        "a run past its cap cannot be paused either — the idle time would move "
+        "the span" + "  -- " + late_open.text
+    )
     wrec = c.post("/focus/timer/finish", data={"token": "tok-w"},
                   headers={"X-Partial": "1"}).json()["recorded"]
     from datetime import datetime as _dtm3, timedelta as _td3

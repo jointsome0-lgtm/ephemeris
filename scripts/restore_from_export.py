@@ -619,12 +619,17 @@ def _apply_records(
 
 # Payload key -> AUTOINCREMENT table whose id namespace the key belongs to.
 # Scanned across every record (task events carry list_id, focus events carry
-# lesson_id, calendar snapshots carry list_id).
+# lesson_id / habit_id / task_id, calendar snapshots carry list_id).
 _ID_NAMESPACES = {
     "task_id": "tasks",
     "list_id": "lists",
     "session_id": "focus_sessions",
     "lesson_id": "lessons",
+    # A focus event can name a habit that no event can rebuild — the bootstrap
+    # routine rows are inserted without one. Without this the next habit created
+    # after a restore takes that id back, and every retained focus event in the
+    # stream silently starts pointing at it.
+    "habit_id": "routine_items",
 }
 
 
