@@ -785,7 +785,8 @@ bound into another bundle's world (#114).
   §6.5 the writer never truncates. The reader's guard is a PREFIX, not the
   newest-lines tail §6.5 and §6.6 use: the order already puts the closest
   lessons first, so the brief tells the tutor to read the meta line and as
-  many entries as fit in 2 MiB, and to treat the rest as unread — not as
+  many entries as fit in 2 MiB, to skip a single entry too large to fit on
+  its own rather than stop at it, and to treat the rest as unread — not as
   lessons the learner never studied.
 - **Staleness is the contract**: the file is regenerated when a lesson-agent
   terminal opens for THIS lesson, and never fanned out. A verdict recorded in

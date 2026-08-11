@@ -1454,7 +1454,9 @@ This is what turns you from a page generator into a tutor:
   the learner already met instead of re-teaching it, and to name the
   connection out loud. Read it from the top — the meta line, then as many
   entries as fit in 2 MiB — and stop there: the file has no fixed ceiling,
-  and the ones you did not reach are the least related. It is regenerated
+  and the ones you did not reach are the least related. Skip any single
+  entry too big to fit on its own and keep reading the rest; one outsized
+  lesson must not cost you all the others. It is regenerated
   only when a lesson terminal opens, so another lesson's newest verdicts can
   be missing from it: evidence when present, never proof of absence, whether
   a lesson went unread or was never studied. Concept names come verbatim
