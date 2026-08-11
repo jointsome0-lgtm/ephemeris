@@ -738,13 +738,16 @@ bound into another bundle's world (#114).
 
 - **Authority**: the same `lesson_assessments` table, folded per lesson by the
   §6.5 rules. Assessment-derived only: another lesson's `attempts.jsonl`,
-  artifacts and learner files never appear here.
+  artifacts and learner files never appear here. Its standing reviews travel
+  as a COUNT, not as rows — an attempt id means nothing outside the lesson
+  that recorded it — so a session cut short after reviewing attempts but
+  before recording evidence still reads as studied.
 - **Scope**: every lesson that has assessment records, EXCEPT the current one
   — its own state is `assessments.jsonl`, beside this file and in full. Not a
   path neighbourhood: entries are labelled with their address and ordered by
   closeness, and which of them is relevant is the tutor's judgment, not the
   writer's filter. A lesson whose records are all superseded or retracted has
-  nothing standing and gets no entry.
+  nothing standing — no evidence, no summary, no review — and gets no entry.
 - **Address**: each entry's `path`/`step` are read fresh from that lesson's
   own `lesson.json` (§4.5) at render time — they live only there (#81) and are
   never mirrored into SQLite. A missing, unreadable, rejected, or
@@ -769,6 +772,7 @@ bound into another bundle's world (#114).
  "title": "Vera Example: Channels, first look",
  "path": "invented-track/basics", "step": 2,
  "concepts": [{"concept": "channels", "level": "developing", "basis": "attempts"}],
+ "reviews": 3,
  "summary": {"note": "Vera Example: traced a send/receive pair unaided.",
              "next_action": "invented: introduce buffering",
              "created_at": "2026-08-10T09:14:02.000112+00:00"}}
@@ -778,7 +782,11 @@ bound into another bundle's world (#114).
   guessing at its lines; unknown record kinds and malformed lines are skipped
   the way §6.2 skips them. Its size tracks the learner's studied lessons —
   one line each, however long they were studied — not lifetime writes; like
-  §6.5 the writer never truncates.
+  §6.5 the writer never truncates. The reader's guard is a PREFIX, not the
+  newest-lines tail §6.5 and §6.6 use: the order already puts the closest
+  lessons first, so the brief tells the tutor to read the meta line and as
+  many entries as fit in 2 MiB, and to treat the rest as unread — not as
+  lessons the learner never studied.
 - **Staleness is the contract**: the file is regenerated when a lesson-agent
   terminal opens for THIS lesson, and never fanned out. A verdict recorded in
   lesson A does not reach lesson B's copy until B's next terminal open. So

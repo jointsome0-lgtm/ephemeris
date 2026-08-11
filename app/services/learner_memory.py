@@ -102,9 +102,13 @@ def _entry(lesson: dict, state: dict, path: str | None, step: int | None) -> dic
     """One studied lesson as the tutor reads it, or None when it has nothing
     standing left to say.
 
-    Assessment-derived only: the active evidence level per concept and the
-    latest summary. Another lesson's `attempts.jsonl`, artifacts and learner
-    files are that lesson's own volume and stay in that lesson's bundle."""
+    Assessment-derived only: the active evidence level per concept, the latest
+    summary, and how many of that lesson's attempts carry a standing verdict.
+    Another lesson's `attempts.jsonl`, artifacts and learner files are that
+    lesson's own volume and stay in that lesson's bundle — so the reviews are
+    a COUNT: their attempt ids mean nothing outside the lesson that recorded
+    them, and the count is what makes a session cut short after reviews but
+    before any evidence read as studied rather than as untouched."""
     concepts = [
         {"concept": concept, "level": row["level"], "basis": row["basis"]}
         for concept, row in sorted(state["evidence_by_concept"].items())
@@ -115,7 +119,8 @@ def _entry(lesson: dict, state: dict, path: str | None, step: int | None) -> dic
         "next_action": summary_row["next_action"],
         "created_at": summary_row["created_at"],
     }
-    if not concepts and summary is None:
+    reviews = len(state["reviews_by_attempt"])
+    if not concepts and summary is None and not reviews:
         # Every record retracted or superseded into nothing: an entry here
         # would assert studied-ness the authority no longer stands behind.
         return None
@@ -127,6 +132,7 @@ def _entry(lesson: dict, state: dict, path: str | None, step: int | None) -> dic
         "path": path,
         "step": step,
         "concepts": concepts,
+        "reviews": reviews,
         "summary": summary,
     }
 

@@ -11,13 +11,20 @@ file.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
 from app.db import get_conn
-from app.services import assessments, bundle_schema, learner_memory, lessons
+from app.services import (
+    assessments,
+    attempts,
+    bundle_schema,
+    learner_memory,
+    lessons,
+)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -131,6 +138,54 @@ def test_memory_folds_other_lessons_and_sorts_by_closeness():
         < order.index(far["slug"])
         < order.index(loose["slug"])
     ), "closest track first, then cluster, then the rest, then no address at all"
+
+
+def test_a_reviewed_lesson_counts_as_studied_and_an_erased_one_does_not():
+    here = _lesson("standing state reader", "inv-standing/root", 1)
+    reviewed = _lesson("reviewed only", "inv-standing/root", 2)
+    erased = _lesson("erased", "inv-standing/root", 3)
+
+    # A session interrupted after reviewing attempts but before any evidence
+    # or summary: the fold has reviews and nothing else.
+    lesson_dir = Path(lessons.LESSONS_DIR) / reviewed["slug"]
+    manifest_path = lesson_dir / lessons.MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["questions"] = [{
+        "id": "q_mem114rev", "page": manifest["pages"][0]["id"],
+        "kind": "prediction", "label": "Invented prediction",
+    }]
+    bundle_schema.write_manifest(manifest_path, manifest)
+    index = lesson_dir / "index.html"
+    index.write_text("<html>Invented memory fixture</html>", encoding="utf-8")
+    conn = get_conn()
+    try:
+        attempt = attempts.record_attempt(conn, reviewed, {
+            "question_id": "q_mem114rev",
+            "page_id": manifest["pages"][0]["id"],
+            "page_rev": "sha256:" + hashlib.sha256(
+                index.read_bytes()).hexdigest(),
+            "answer": "Invented answer, awaiting a verdict.",
+            "idempotency_key": "114-review-attempt",
+        })
+    finally:
+        conn.close()
+    _record(reviewed, "114-review", kind="review", level="partial",
+            attempt_id=attempt["attempt_id"])
+
+    struck = _record(erased, "114-erased-1", kind="evidence", level="weak",
+                     basis="live", concepts=["invented-erased"])
+    _record(erased, "114-erased-2", kind="retraction", supersedes=struck)
+
+    entries = {entry["slug"]: entry for entry in _project(here)[1:]}
+
+    assert (
+        entries[reviewed["slug"]]["reviews"] == 1
+        and entries[reviewed["slug"]]["concepts"] == []
+        and entries[reviewed["slug"]]["summary"] is None
+    ), "reviews alone are standing state: the lesson was studied, and says so"
+    assert erased["slug"] not in entries, (
+        "a lesson whose every record was retracted claims nothing"
+    )
 
 
 def test_meta_line_versions_the_whole_file():

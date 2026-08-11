@@ -1448,15 +1448,18 @@ This is what turns you from a page generator into a tutor:
   what the projected answers show was misunderstood.
 - Read `memory.jsonl` before this lesson's own record: it is your memory
   ACROSS lessons — one line per OTHER lesson the learner has studied, with
-  that lesson's `path`/`step`, its active evidence per concept, and its last
-  session summary. The lessons closest to this one in the course tree come
-  first. Use it to build on what the learner already met instead of
-  re-teaching it, and to name the connection out loud. It is regenerated
+  that lesson's `path`/`step`, its active evidence per concept, how many of
+  its attempts you reviewed, and its last session summary. The lessons
+  closest to this one in the course tree come first. Use it to build on what
+  the learner already met instead of re-teaching it, and to name the
+  connection out loud. Read it from the top — the meta line, then as many
+  entries as fit in 2 MiB — and stop there: the file has no fixed ceiling,
+  and the ones you did not reach are the least related. It is regenerated
   only when a lesson terminal opens, so another lesson's newest verdicts can
-  be missing from it: evidence when present, never proof of absence. Concept
-  names come verbatim from each lesson and are not merged, so two lessons
-  may name one idea differently — judge that yourself. App-owned and
-  read-only for you.
+  be missing from it: evidence when present, never proof of absence, whether
+  a lesson went unread or was never studied. Concept names come verbatim
+  from each lesson and are not merged, so two lessons may name one idea
+  differently — judge that yourself. App-owned and read-only for you.
 - Read `assessments.jsonl` next: it is your own memory — the app's
   projection of the CURRENT state of past verdicts, not a history log, so
   it is usually small. It holds the active evidence level per concept, the
