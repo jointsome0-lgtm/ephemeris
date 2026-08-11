@@ -70,7 +70,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `lesson-profile` directory still present on the host — is private host
   cleanup, outside Git. The deploy gate stays closed until the repair PR.
 
-- [ ] 2026-08-11 — branch `lesson-network` (squash hash recorded on merge) —
+- [ ] 2026-08-11 — `c83c093` (squash of `lesson-network`, PR #181) —
   `app/sandbox.py`, `app/terminal.py`, `app/routers/learn.py`,
   `app/services/lessons.py`, `app/services/render_check.py`,
   `app/templates/learn.html`, `scripts/verify_e3_sessions.py`,
