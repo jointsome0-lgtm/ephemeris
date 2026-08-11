@@ -188,6 +188,33 @@ def test_a_reviewed_lesson_counts_as_studied_and_an_erased_one_does_not():
     )
 
 
+def test_a_hand_edited_address_groups_the_way_the_learn_tree_groups_it():
+    here = _lesson("splitter reader", "inv-split/alpha", 1)
+    doubled = _lesson("doubled separator", "inv-split//alpha", 2)
+    unrelated = _lesson("another track", "inv-split-other", 1)
+    separators = _lesson("separators only", "//", 3)
+
+    for lesson, key in ((doubled, "114-doubled"), (unrelated, "114-unrelated"),
+                        (separators, "114-separators")):
+        _record(lesson, key, kind="evidence", level="seen", basis="live",
+                concepts=[f"invented-{key}"])
+
+    lines = _project(here)
+    entries = {entry["slug"]: entry for entry in lines[1:]}
+    order = [entry["slug"] for entry in lines[1:]]
+
+    assert entries[doubled["slug"]]["path"] == "inv-split//alpha", (
+        "the address is printed as its manifest wrote it — one opaque ref"
+    )
+    assert order.index(doubled["slug"]) < order.index(unrelated["slug"]), (
+        "§4.5 collapses empty segments: `a//b` is the same track as `a/b`"
+    )
+    assert (
+        entries[separators["slug"]]["path"] is None
+        and order.index(separators["slug"]) > order.index(unrelated["slug"])
+    ), "an all-separator ref groups nowhere, so it is no address at all"
+
+
 def test_meta_line_versions_the_whole_file():
     here = _lesson("meta reader", "inv-meta/root", 4)
     studied = _lesson("meta neighbour", "inv-meta/root", 5)

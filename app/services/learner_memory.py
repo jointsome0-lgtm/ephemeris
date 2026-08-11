@@ -35,14 +35,16 @@ import sqlite3
 import stat as stat_module
 from uuid import uuid4
 
-from . import lessons
+from . import bundle_schema, lessons
 from .assessments import (
+    ACTIVE_FOLD_KEYS_SQL,
     _DIRECTORY_FLAGS,
+    _fold_keys,
+    _hydrate,
     _lesson_lock,
     _projection_file_lock,
     _utc_now_iso,
     _write_all,
-    active_rows,
     fold_rows,
 )
 
@@ -93,12 +95,39 @@ def _address(lesson: dict) -> tuple[str | None, int | None, bool]:
     contradicts = isinstance(uid, str) and bool(uid) and uid != lesson.get("uid")
     if contradicts:
         return None, None, True
-    path = read.path_ref if isinstance(read.path_ref, str) and read.path_ref else None
+    path = read.path_ref if isinstance(read.path_ref, str) else None
+    if not bundle_schema.split_path_ref(path):
+        # An all-separator ref groups nowhere (§4.5), so it is no address at
+        # all — the same answer the Learn track strip gives it.
+        path = None
     step = read.step if isinstance(read.step, int) else None
     return path, (step if path is not None else None), False
 
 
-def _entry(lesson: dict, state: dict, path: str | None, step: int | None) -> dict | None:
+def _lesson_state(conn: sqlite3.Connection, lesson_id: int) -> tuple[dict, int]:
+    """One lesson's active fold, with only the rows this file prints read
+    whole, plus its standing-review count.
+
+    The §6.5 two-phase idiom, and this is the caller that most needs it: the
+    fold has to visit every active row, but a lesson's history has no ceiling,
+    every row can carry an 8 KiB note, and this runs across EVERY studied
+    lesson at every terminal open. So the fold walks the narrow key columns,
+    the reviews are counted and dropped before hydration — the file prints
+    their number, never their notes — and only the evidence and summary
+    winners are re-read whole."""
+    rows = [
+        _fold_keys(row)
+        for row in conn.execute(ACTIVE_FOLD_KEYS_SQL, (lesson_id,)).fetchall()
+    ]
+    state = fold_rows(rows)
+    reviews = len(state["reviews_by_attempt"])
+    state["reviews_by_attempt"] = {}
+    return _hydrate(conn, lesson_id, state), reviews
+
+
+def _entry(
+    lesson: dict, state: dict, reviews: int, path: str | None, step: int | None
+) -> dict | None:
     """One studied lesson as the tutor reads it, or None when it has nothing
     standing left to say.
 
@@ -119,7 +148,6 @@ def _entry(lesson: dict, state: dict, path: str | None, step: int | None) -> dic
         "next_action": summary_row["next_action"],
         "created_at": summary_row["created_at"],
     }
-    reviews = len(state["reviews_by_attempt"])
     if not concepts and summary is None and not reviews:
         # Every record retracted or superseded into nothing: an entry here
         # would assert studied-ness the authority no longer stands behind.
@@ -138,11 +166,18 @@ def _entry(lesson: dict, state: dict, path: str | None, step: int | None) -> dic
 
 
 def _shared_segments(left: str | None, right: str | None) -> int:
-    """How many leading `/`-separated segments two addresses share (§4.5)."""
+    """How many leading segments two addresses share.
+
+    Split by the schema's own §4.5 splitter, which collapses empty segments:
+    `a//b` and `a/b` are ONE address to the Learn tree, so they must be one
+    address to this ranking too — otherwise a hand-edited manifest would sort
+    the learner's closest lesson behind unrelated ones."""
     if not left or not right:
         return 0
     count = 0
-    for one, other in zip(left.split("/"), right.split("/")):
+    for one, other in zip(
+        bundle_schema.split_path_ref(left), bundle_schema.split_path_ref(right)
+    ):
         if one != other:
             break
         count += 1
@@ -179,15 +214,15 @@ def _collect(
     try:
         others = _studied_lessons(conn, lesson["id"])
         states = {
-            other["id"]: fold_rows(active_rows(conn, other["id"]))
-            for other in others
+            other["id"]: _lesson_state(conn, other["id"]) for other in others
         }
     finally:
         conn.rollback()  # nothing was written; just release the snapshot
     entries = []
     for other in others:
         path, step, _ = _address(other)
-        entry = _entry(other, states[other["id"]], path, step)
+        state, reviews = states[other["id"]]
+        entry = _entry(other, state, reviews, path, step)
         if entry is not None:
             entries.append(entry)
     entries.sort(key=lambda entry: _sort_key(entry, here_path))
