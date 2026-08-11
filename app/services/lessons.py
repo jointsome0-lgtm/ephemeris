@@ -1446,6 +1446,22 @@ This is what turns you from a page generator into a tutor:
   Skim the learner's files under every artifact root. Compare the visible
   records against the manifest's `questions[]`: what was answered and
   what the projected answers show was misunderstood.
+- Read `memory.jsonl` before this lesson's own record: it is your memory
+  ACROSS lessons — one line per OTHER lesson the learner has studied, with
+  that lesson's `path`/`step`, its active evidence per concept, how many of
+  its attempts you reviewed, and its last session summary. The lessons
+  closest to this one in the course tree come first. Use it to build on what
+  the learner already met instead of re-teaching it, and to name the
+  connection out loud. Read it from the top — the meta line, then as many
+  entries as fit in 2 MiB — and stop there: the file has no fixed ceiling,
+  and the ones you did not reach are the least related. Skip any single
+  entry too big to fit on its own and keep reading the rest; one outsized
+  lesson must not cost you all the others. It is regenerated
+  only when a lesson terminal opens, so another lesson's newest verdicts can
+  be missing from it: evidence when present, never proof of absence, whether
+  a lesson went unread or was never studied. Concept names come verbatim
+  from each lesson and are not merged, so two lessons may name one idea
+  differently — judge that yourself. App-owned and read-only for you.
 - Read `assessments.jsonl` next: it is your own memory — the app's
   projection of the CURRENT state of past verdicts, not a history log, so
   it is usually small. It holds the active evidence level per concept, the
@@ -2460,6 +2476,31 @@ def _reconcile_assessment_projection(lesson: dict) -> None:
         pass
 
 
+def _reconcile_learner_memory(lesson: dict) -> None:
+    """Regenerate `memory.jsonl` — what every OTHER studied lesson concluded
+    (#114) — for the tutor about to read it.
+
+    Unconditional, unlike the assessment reconcile above: this file is derived
+    from other lessons' assessments and manifests, so an intact file proves
+    nothing about being current. Terminal open is its only trigger, which is
+    exactly the staleness the spec states — evidence recorded elsewhere
+    arrives here at the next open.
+
+    Best effort in every direction, and deferred import for the same cycle
+    reason as its siblings.
+    """
+    try:
+        from .learner_memory import reconcile_projection
+
+        conn = get_conn()
+        try:
+            reconcile_projection(conn, lesson)
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error, ImportError):
+        pass
+
+
 def _reconcile_attempt_projection(lesson: dict) -> None:
     """Rebuild `attempts.jsonl` from the authority if it does not match.
 
@@ -2554,6 +2595,7 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
     # After the briefs: the workspace is ready either way, and a projection
     # hiccup may not cost the agent its regenerated contract.
     _reconcile_assessment_projection(lesson)
+    _reconcile_learner_memory(lesson)
     _retire_foreign_run_projection(lesson)
     return _workspace_view(slug, lesson, lesson_dir, agent_home, build_workspace)
 

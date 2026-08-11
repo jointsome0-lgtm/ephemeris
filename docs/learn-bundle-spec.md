@@ -50,6 +50,7 @@ data/lessons/<slug>/
   attempts/        learner-authored work (default artifact root)
   attempts.jsonl   app-owned projection of recorded attempts (§6)
   assessments.jsonl   app-owned projection of the tutor's active record (§6.5)
+  memory.jsonl     app-owned projection of what OTHER lessons concluded (§6.8)
   runs.jsonl       app-owned log of finished editor runs (§6.6)
   AGENTS.md        app-generated agent brief — regenerated, never authored
   CLAUDE.md        app-generated shim for AGENTS.md — regenerated
@@ -58,8 +59,8 @@ data/lessons/<slug>/
 ```
 
 Reserved names, which no page, block file, or artifact root may claim:
-`lesson.json`, `attempts.jsonl`, `assessments.jsonl`, `runs.jsonl`,
-`AGENTS.md`, `CLAUDE.md`, `.claude`, `node_modules`, `source`.
+`lesson.json`, `attempts.jsonl`, `assessments.jsonl`, `memory.jsonl`,
+`runs.jsonl`, `AGENTS.md`, `CLAUDE.md`, `.claude`, `node_modules`, `source`.
 
 `source/` holds the raw material a lesson was built from — fetched pages and
 a `_fetched.json` recording each one's url, date and sha256 — so provenance
@@ -728,6 +729,81 @@ what the tutor said about them without leaving the question.
   that ignore it are unaffected — read-back adds nothing a bundle must
   implement.
 
+### 6.8 Learner memory across lessons (`memory.jsonl`)
+
+§6.5 is what past sessions concluded about THIS lesson; `memory.jsonl` is what
+they concluded about every other one. A second read model over the same
+course-wide authority — no new table, no new write capability, no bundle
+bound into another bundle's world (#114).
+
+- **Authority**: the same `lesson_assessments` table, folded per lesson by the
+  §6.5 rules. Assessment-derived only: another lesson's `attempts.jsonl`,
+  artifacts and learner files never appear here. Its standing reviews travel
+  as a COUNT, not as rows — an attempt id means nothing outside the lesson
+  that recorded it — so a session cut short after reviewing attempts but
+  before recording evidence still reads as studied.
+- **Scope**: every lesson that has assessment records, EXCEPT the current one
+  — its own state is `assessments.jsonl`, beside this file and in full. Not a
+  path neighbourhood: entries are labelled with their address and ordered by
+  closeness, and which of them is relevant is the tutor's judgment, not the
+  writer's filter. A lesson whose records are all superseded or retracted has
+  nothing standing — no evidence, no summary, no review — and gets no entry.
+- **Address**: each entry's `path`/`step` are read fresh from that lesson's
+  own `lesson.json` (§4.5) at render time — they live only there (#81) and are
+  never mirrored into SQLite. A missing, unreadable, rejected, or
+  identity-contradicting manifest yields `"path": null`.
+- **Order**: by the number of leading path segments shared with the current
+  lesson, descending — same course first, then same cluster, then the rest —
+  then `step` ascending, then `slug`. Entries with no address sort last.
+- **Concepts are verbatim**, attributed to their source lesson. Near-synonyms
+  across lessons are NOT merged: the tags are free text, and a wrong merge
+  would claim a demonstration that never happened. Reconciling them is the
+  reader's judgment.
+- **Format**: one meta line carrying `format` — the version of the whole file,
+  not of a record — then one line per lesson:
+
+```json
+{"kind": "learner_memory_meta", "format": 1, "scope": "all-studied-lessons",
+ "lesson_uid": "7f2a4c88-9d3b-4e21-8b5a-6c0d1e9f3a72", "slug": "invented-lesson",
+ "path": "invented-track/basics", "step": 3, "entries": 1,
+ "generated_at": "2026-08-11T12:00:00.000000+00:00"}
+{"kind": "lesson_memory", "slug": "invented-earlier-lesson",
+ "lesson_uid": "1c9e5b40-7a62-4d18-9f03-2b8ac41d6e57",
+ "title": "Vera Example: Channels, first look",
+ "path": "invented-track/basics", "step": 2,
+ "concepts": [{"concept": "channels", "level": "developing", "basis": "attempts"}],
+ "reviews": 3,
+ "summary": {"note": "Vera Example: traced a send/receive pair unaided.",
+             "next_action": "invented: introduce buffering",
+             "created_at": "2026-08-10T09:14:02.000112+00:00"}}
+```
+
+  A reader that does not recognize `format` skips the file rather than
+  guessing at its lines; unknown record kinds and malformed lines are skipped
+  the way §6.2 skips them. Its size tracks the learner's studied lessons —
+  one line each, however long they were studied — not lifetime writes; like
+  §6.5 the writer never truncates. The reader's guard is a PREFIX, not the
+  newest-lines tail §6.5 and §6.6 use: the order already puts the closest
+  lessons first, so the brief tells the tutor to read the meta line and as
+  many entries as fit in 2 MiB, to skip a single entry too large to fit on
+  its own rather than stop at it, and to treat the rest as unread — not as
+  lessons the learner never studied.
+- **Staleness is the contract**: the file is regenerated when a lesson-agent
+  terminal opens for THIS lesson, and never fanned out. A verdict recorded in
+  lesson A does not reach lesson B's copy until B's next terminal open. So
+  the brief tells the tutor to read it as evidence when present, never as
+  proof of absence — the same caveat §6.5 carries, for a stronger reason.
+- **Write mechanics**: rendered fresh and published in full under the same
+  app-private per-lesson lock the §6.5 projection uses, via a temporary file
+  plus atomic rename; a foreign node on the name is moved aside, never adopted
+  or written through. Unconditional, unlike §6.5's seal skip: the file is
+  derived from OTHER lessons' state, so an intact file is no evidence that it
+  is current. Nothing here can fail a terminal open. The app never writes the
+  file into a bundle with nothing to say and no file already on the name, so a
+  lesson studied before any other has none.
+- **Identity gate**: as in §6.5, the app never publishes into a bundle whose
+  manifest carries a contradicting `lesson_uid`.
+
 ## 7. Artifact roots and deterministic discovery
 
 `artifact_roots` (default `["attempts"]`) bounds where learner-authored work
@@ -1069,12 +1145,14 @@ stability, and current-entry head-insertion (§10).
 | lesson pages / `assets/` | creation placeholder | ✎ authors | byte-preserved | — |
 | `attempts.jsonl` | owns (projection + reconcile) | read-only | — | read-only |
 | `assessments.jsonl` | owns (projection + reconcile) | read-only; records verdicts through the endpoint (§6.5) | — | read-only |
+| `memory.jsonl` | owns (projection, §6.8) | read-only | — | read-only |
 | `runs.jsonl` | owns (projection, §6.6) | read-only | — | read-only |
 | `attempts/` files | editor save endpoint (F1) | read (SHOULD not edit learner work — #35) | — | ✎ via terminal/editor |
 | `AGENTS.md`, `CLAUDE.md` | regenerates (B1 writer) | overwritten | — | — |
 
 The agent MUST NOT: change `lesson_uid` or `schema_version`, reuse retired
-ids, write `attempts.jsonl`, `assessments.jsonl` or `runs.jsonl`, or put
+ids, write `attempts.jsonl`, `assessments.jsonl`, `memory.jsonl` or
+`runs.jsonl`, or put
 commands into the manifest (§4.4).
 Agent-caused violations degrade or reject visibly per §9.2 — the app never
 silently rewrites an agent's manifest to "fix" it.
