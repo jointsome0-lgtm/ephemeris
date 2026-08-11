@@ -24,7 +24,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-08-09 — `feat/study-browser` (PR pending) —
+- [ ] 2026-08-09 — `5096a50` (squash of `feat/study-browser`, PR #177) and
+  `514b363` (squash of `docs/playwright-browser-brief`, PR #178) —
   `app/services/lessons.py`, `app/services/bundle_schema.py`,
   `docs/learn-bundle-spec.md`, `docs/reviews/QUEUE.md` —
   lesson workspace prep now also creates a `source/` directory in the bundle
@@ -39,6 +40,16 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `lesson-agent` sandbox profile runs with `--share-net` and bind-mounts
   `~/.claude.json` read-only, so that server is reachable and configured
   inside lesson-agent sessions without a repository change.
+  Amended 2026-08-11: the host-side facts above changed before this entry
+  was drained. There is now ONE user-scope MCP server, named `playwright`,
+  at `http://localhost:9223/mcp` with the profile `chrome-profile`; the
+  the `study-browser` server no longer exists and no configuration or
+  running process references `lesson-profile` any more, though that profile
+  directory is still present on the host; the server rejects a `127.0.0.1`
+  Host header. `514b363` updates the
+  brief's "Source material" section and `docs/security-model.md` to that
+  naming and adds usage rules for the shared browser; it changes no code
+  path. Review the surface as it stands at `514b363`.
 
 ## Done
 
