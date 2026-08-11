@@ -49,7 +49,21 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   Host header. `514b363` updates the
   brief's "Source material" section and `docs/security-model.md` to that
   naming and adds usage rules for the shared browser; it changes no code
-  path. Review the surface as it stands at `514b363`.
+  path.
+  Reviewed 2026-08-11 →
+  `docs/reviews/2026-08-11-lesson-source-material-review.md`:
+  0 Critical, 1 High, 0 Medium, 0 Low, 1 Info. The entry stays Pending on
+  the High: the brief points the lesson agent at the whole
+  `mcp__playwright__browser_*` family, which the `lesson-agent` profile can
+  reach through `--share-net` and the read-only `~/.claude.json` mount,
+  while the server runs without capability or origin limits and the tool
+  set includes arbitrary host-side code execution — the read-only
+  restriction is brief prose, not enforcement. The repair is host-side
+  first (narrow the server's capabilities and origins) and, longer term,
+  the app-owned per-lesson capability named as the open question in
+  `docs/security-model.md`. The Info item — the unreferenced
+  `lesson-profile` directory still present on the host — is private host
+  cleanup, outside Git. The deploy gate stays closed until the repair PR.
 
 ## Done
 
