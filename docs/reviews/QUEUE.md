@@ -58,10 +58,15 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   reach through `--share-net` and the read-only `~/.claude.json` mount,
   while the server runs without capability or origin limits and the tool
   set includes arbitrary host-side code execution — the read-only
-  restriction is brief prose, not enforcement. The repair is host-side
-  first (narrow the server's capabilities and origins) and, longer term,
-  the app-owned per-lesson capability named as the open question in
-  `docs/security-model.md`. The Info item — the unreferenced
+  restriction is brief prose, not enforcement. The repair has to stop the
+  lesson agent reaching the general Playwright server at all: the
+  arbitrary-code tool sits in that server's always-on core capability, so
+  neither an origin allowlist nor a capability flag removes it, and the
+  entry does not close on those. What closes it is mechanical refusal of
+  every state-changing and arbitrary-code tool — the app-owned per-lesson
+  capability named as the open question in `docs/security-model.md`, or an
+  equivalently restricted separate server. Client-side deny rules and
+  origin limits are defence in depth on top, not the repair. The Info item — the unreferenced
   `lesson-profile` directory still present on the host — is private host
   cleanup, outside Git. The deploy gate stays closed until the repair PR.
 
