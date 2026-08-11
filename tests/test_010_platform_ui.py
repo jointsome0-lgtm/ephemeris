@@ -1380,7 +1380,7 @@ def test_002_ui_and_workspace(client, suite_state):
     assert (
         "## Source material" in _meta_agents
         and "`source/`" in _meta_agents
-        and "study-browser" in _meta_agents
+        and "mcp__playwright__browser_*" in _meta_agents
         and "never take an action" in _meta_agents
     ), "brief tells the tutor where source material lives and how to fetch it"
 

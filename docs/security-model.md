@@ -91,12 +91,13 @@ child environment.
 
 ### The study browser (host configuration, not app code)
 
-The tutor's brief describes a `study-browser` MCP server: one real browser,
-signed into the accounts whose material a lesson is built from, used when a
-plain fetch returns a login wall. Nothing in this repository starts it,
-configures it, or grants access to it. It exists when the operator runs a
-`@playwright/mcp` server on loopback and registers it in their own Claude
-configuration; the `lesson-agent` sandbox reaches it because that profile
+The tutor's brief describes a `playwright` MCP server: one shared real
+browser, running under a logged-in study profile whose material a lesson is
+built from, used when a plain fetch returns a login wall. Nothing in this
+repository starts it, configures it, or grants access to it. It exists when
+the operator runs a `@playwright/mcp` server on loopback and registers it in
+their own Claude configuration; the `lesson-agent` sandbox reaches it
+because that profile
 already shares the host network namespace, and sees it because
 `~/.claude.json` is bind-mounted read-only.
 
