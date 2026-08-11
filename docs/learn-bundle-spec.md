@@ -402,10 +402,10 @@ D1 (landed) pins the enforcement:
   affordances — those flags come from the manifest read, not the CSP.
 - `interactive-local-v1` is code-local, data-open (owner decision
   2026-08-11): `sandbox allow-scripts`; `default-src 'none'`;
-  `script-src 'self' 'unsafe-inline'` — code only from the bundle, so the
-  build step's 30-day release quarantine is the sole road for library
-  code and render-time loads cannot bypass it; every non-script resource
-  may use the network — `style-src 'self' 'unsafe-inline' http: https:`,
+  `script-src 'self' 'unsafe-inline'` — a page cannot load code from the
+  network, so the build step's 30-day release quarantine is the sanctioned
+  road for library code (see the residual below for the loader caveat);
+  every non-script resource may use the network — `style-src 'self' 'unsafe-inline' http: https:`,
   `img-src`/`media-src` `'self' data: blob: http: https:`,
   `font-src 'self' data: http: https:`,
   `connect-src 'self' data: blob: http: https: ws: wss:` (the D2 bridge
@@ -439,7 +439,12 @@ D1 (landed) pins the enforcement:
   non-script network channels (fetch/beacon/WebSocket, remote
   subresources, WebRTC) are open by design as well; what stays closed is
   code delivery (remote/`data:`/`blob:` script, eval) plus forms, popups
-  and downloads. Accepted for
+  and downloads. One more accepted residual follows from combining
+  `'unsafe-inline'` with the open `connect-src`: a script already on the
+  page can fetch remote text and inject it as a fresh inline `<script>`,
+  so the 30-day quarantine bounds what a build ships, not what a shipped
+  loader pulls at runtime — no CSP mechanism distinguishes the two while
+  inline script stays allowed. Accepted for
   the loopback single-user deployment; D2's parent runtime — whose bridge
   port dies with the document — is the layer that observes a frame leaving
   the lesson and can tear it down/reload it.

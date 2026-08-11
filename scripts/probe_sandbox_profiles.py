@@ -117,7 +117,7 @@ def run_profile(
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
-            env=clean_env(proxy=profile == "lesson-agent"),
+            env=clean_env(proxy=profile in ("lesson-agent", "lesson-learner")),
             check=False,
             pass_fds=((module_cache_fd,) if module_cache_fd is not None else ()),
         )
@@ -128,7 +128,7 @@ def run_profile(
         raise SystemExit(f"{profile}: probe failed: {result.stderr.strip()}")
     payload = json.loads(result.stdout)
     expected_access = "ro" if profile == "lesson-runner" else "rw"
-    expected_network = "host" if profile == "lesson-agent" else "none"
+    expected_network = "none" if profile == "lesson-runner" else "host"
     expected_cwd = str(bundle) if profile != "lesson-runner" else RUNNER_WORKDIR
     if not (
         payload["repo_absent"]

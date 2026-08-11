@@ -1678,9 +1678,10 @@ Pages render with network access for everything except code: fetch, images,
 media, fonts and stylesheets may use remote URLs. Remote SCRIPTS are the one
 exception — a script tag pointing at a CDN is blocked by policy and simply
 fails. Every library a page uses gets compiled into it by the build step
-below; that is the only road for code, and it is what keeps the 30-day
-quarantine meaningful. Still prefer self-contained pages: a remote resource
-is a page that breaks when its host does.
+below — the one sanctioned road for code. Never work around it with a
+loader (fetching script text and injecting it): that defeats the 30-day
+quarantine the build exists to apply. Still prefer self-contained pages: a
+remote resource is a page that breaks when its host does.
 
 ## Any package you want, built into one script
 

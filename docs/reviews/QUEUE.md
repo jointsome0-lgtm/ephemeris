@@ -72,10 +72,14 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 - [ ] 2026-08-11 — branch `lesson-network` (squash hash recorded on merge) —
   `app/sandbox.py`, `app/terminal.py`, `app/routers/learn.py`,
-  `app/services/lessons.py`, `scripts/verify_e3_sessions.py`,
-  `tests/test_010_platform_ui.py`, `tests/test_020_bundle_attempts.py`,
-  `tests/test_060_role_runner.py`, `docs/learn-bundle-spec.md`,
-  `docs/security-model.md` — owner decision: the `lesson-learner` sandbox
+  `app/services/lessons.py`, `app/services/render_check.py`,
+  `app/templates/learn.html`, `scripts/verify_e3_sessions.py`,
+  `scripts/probe_sandbox_profiles.py`, `tests/test_010_platform_ui.py`,
+  `tests/test_020_bundle_attempts.py`, `tests/test_050_sandbox_learning.py`,
+  `tests/test_060_role_runner.py`, `tests/test_230_lesson_build.py`,
+  `docs/learn-bundle-spec.md`, `docs/security-model.md`,
+  `docs/lesson-artifacts-api.md`, `docs/lesson-assessments-api.md` —
+  owner decision: the `lesson-learner` sandbox
   profile now runs with `--share-net`, and the learner role joins
   `_HOST_NETWORK_ROLES`, so learner shells get the host network and the same
   proxy variables as agent shells; the `interactive-local-v1` preview CSP

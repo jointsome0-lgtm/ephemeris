@@ -644,9 +644,13 @@ _LESSON_PREVIEW_CSP_LEGACY = (
 )
 # interactive-local-v1: code local, data open (owner decision 2026-08-11).
 # SCRIPTS stay 'self' + inline only — remote script URLs, data:/blob: script
-# and 'unsafe-eval' are refused, so the only road for library code is the
-# build step with its 30-day release quarantine, and render-time loads
-# cannot bypass it. Everything that is not code may use the network:
+# and 'unsafe-eval' are refused, so a page cannot LOAD code from the network;
+# the sanctioned road for library code is the build step with its 30-day
+# release quarantine. Residual, accepted with the decision: 'unsafe-inline'
+# plus an open connect-src means a script already on the page could fetch
+# remote text and inject it as a new inline <script> — the quarantine gates
+# what ships in the bundle, not what a shipped loader does at runtime (spec
+# §5 residual). Everything that is not code may use the network:
 # fetch/XHR/WebSocket (connect-src), images, media, fonts and stylesheets
 # accept remote URLs, http: included — lesson experiments talk to loopback
 # servers the learner just started, and the app itself is served over http.

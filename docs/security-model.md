@@ -198,9 +198,21 @@ These are documented limitations, not fixes made in this pass:
 - The lesson-preview CSPs permit external network connections through
   `connect-src ... https:`. For `interactive-local-v1` this is a deliberate
   owner decision (2026-08-11): non-script resources and fetch are open, while
-  script sources stay bundle-local so the build step's 30-day release
-  quarantine remains the only road for code. It is not scheduled for
-  tightening.
+  script sources stay bundle-local, keeping the build step's 30-day release
+  quarantine the sanctioned road for code. It is not scheduled for
+  tightening. Two consequences ride along, accepted with the decision: a
+  page script can fetch remote text and inject it as inline script (the
+  quarantine bounds what a build ships, not what a shipped loader pulls —
+  see the spec §5 residual), and a page can read the app's unauthenticated
+  GET routes via `connect-src 'self'` and relay the response out (writes
+  still die on the origin guard's `Origin: null` refusal).
+- The `lesson-learner` terminal shares the host network (same 2026-08-11
+  decision), so commands in it can reach the unauthenticated loopback app —
+  read routes and, as an origin-less non-browser client, unsafe ones — the
+  same authority the `lesson-agent` shell and every other local process
+  already had. The filesystem masks still bound what the shell reads
+  directly; the durable fix for the HTTP path is the single-user
+  authentication already listed above, not a network carve-out.
 
 Until those fixes exist, keep the documented deployment boundary: loopback by
 default, a trusted LAN only when needed, and never the public internet.
