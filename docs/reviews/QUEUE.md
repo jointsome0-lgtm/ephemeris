@@ -24,7 +24,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-08-09 — `feat/study-browser` (PR pending) —
+- [ ] 2026-08-09 — `5096a50` (squash of `feat/study-browser`, PR #177) and
+  `514b363` (squash of `docs/playwright-browser-brief`, PR #178) —
   `app/services/lessons.py`, `app/services/bundle_schema.py`,
   `docs/learn-bundle-spec.md`, `docs/reviews/QUEUE.md` —
   lesson workspace prep now also creates a `source/` directory in the bundle
@@ -39,6 +40,35 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `lesson-agent` sandbox profile runs with `--share-net` and bind-mounts
   `~/.claude.json` read-only, so that server is reachable and configured
   inside lesson-agent sessions without a repository change.
+  Amended 2026-08-11: the host-side facts above changed before this entry
+  was drained. There is now ONE user-scope MCP server, named `playwright`,
+  at `http://localhost:9223/mcp` with the profile `chrome-profile`; the
+  the `study-browser` server no longer exists and no configuration or
+  running process references `lesson-profile` any more, though that profile
+  directory is still present on the host; the server rejects a `127.0.0.1`
+  Host header. `514b363` updates the
+  brief's "Source material" section and `docs/security-model.md` to that
+  naming and adds usage rules for the shared browser; it changes no code
+  path.
+  Reviewed 2026-08-11 →
+  `docs/reviews/2026-08-11-lesson-source-material-review.md`:
+  0 Critical, 1 High, 0 Medium, 0 Low, 1 Info. The entry stays Pending on
+  the High: the brief points the lesson agent at the whole
+  `mcp__playwright__browser_*` family, which the `lesson-agent` profile can
+  reach through `--share-net` and the read-only `~/.claude.json` mount,
+  while the server runs without capability or origin limits and the tool
+  set includes arbitrary host-side code execution — the read-only
+  restriction is brief prose, not enforcement. The repair has to stop the
+  lesson agent reaching the general Playwright server at all: the
+  arbitrary-code tool sits in that server's always-on core capability, so
+  neither an origin allowlist nor a capability flag removes it, and the
+  entry does not close on those. What closes it is mechanical refusal of
+  every state-changing and arbitrary-code tool — the app-owned per-lesson
+  capability named as the open question in `docs/security-model.md`, or an
+  equivalently restricted separate server. Client-side deny rules and
+  origin limits are defence in depth on top, not the repair. The Info item — the unreferenced
+  `lesson-profile` directory still present on the host — is private host
+  cleanup, outside Git. The deploy gate stays closed until the repair PR.
 
 ## Done
 
