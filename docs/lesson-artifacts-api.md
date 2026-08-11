@@ -2,7 +2,10 @@
 
 Status: the editor half is frozen with phase F1 and the run API with phase F4.
 This is the HTTP contract used by the parent Learn runtime; the lesson document
-itself has no network access. Manifest authority is
+may fetch remote data (the data-open CSP, 2026-08-11) but has no sanctioned
+path to these endpoints — persistence stays bridge-only, and unsafe methods
+sit behind the central origin guard, which refuses the sandboxed document's
+`null` origin. Manifest authority is
 [learn-bundle-spec.md §4.4](learn-bundle-spec.md), and the child-facing membrane
 is [lesson-bridge-abi.md](lesson-bridge-abi.md).
 

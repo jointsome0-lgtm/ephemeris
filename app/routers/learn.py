@@ -642,16 +642,19 @@ _LESSON_PREVIEW_CSP_LEGACY = (
     "connect-src 'self' data: blob: https:; "
     "object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
 )
-# interactive-local-v1: everything local. Pages are self-contained documents
-# with inline script/style and pinned libraries under assets/ ('self'), so
-# inline stays allowed while every remote source, eval vector (data:/blob:
-# script, 'unsafe-eval'), form submission, popup, download, plugin, nested
-# frame (default-src 'none') and network call (connect-src 'none' — the D2
-# bridge is postMessage, not fetch) is refused. WebRTC is not governed by
-# connect-src; CSP3 gates it separately, so `webrtc 'block'` closes the
-# RTCPeerConnection/STUN path where enforced (Firefox today; Chromium has
-# not shipped the directive and ignores it — that engine keeps WebRTC as
-# part of the documented residual below).
+# interactive-local-v1: code local, data open (owner decision 2026-08-11).
+# SCRIPTS stay 'self' + inline only — remote script URLs, data:/blob: script
+# and 'unsafe-eval' are refused, so a page cannot LOAD code from the network;
+# the sanctioned road for library code is the build step with its 30-day
+# release quarantine. Residual, accepted with the decision: 'unsafe-inline'
+# plus an open connect-src means a script already on the page could fetch
+# remote text and inject it as a new inline <script> — the quarantine gates
+# what ships in the bundle, not what a shipped loader does at runtime (spec
+# §5 residual). Everything that is not code may use the network:
+# fetch/XHR/WebSocket (connect-src), images, media, fonts and stylesheets
+# accept remote URLs, http: included — lesson experiments talk to loopback
+# servers the learner just started, and the app itself is served over http.
+# Forms, popups, downloads, plugins and nested frames stay refused.
 #
 # Known residual (spec §5): SAME-FRAME NAVIGATION is not blocked — a page can
 # still `location.href = remote` or follow a plain link, and the destination
@@ -665,12 +668,11 @@ _LESSON_PREVIEW_CSP_INTERACTIVE = (
     "sandbox allow-scripts; "
     "default-src 'none'; "
     "script-src 'self' 'unsafe-inline'; "
-    "style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data: blob:; "
-    "media-src 'self' data: blob:; "
-    "font-src 'self' data:; "
-    "connect-src 'none'; "
-    "webrtc 'block'; "
+    "style-src 'self' 'unsafe-inline' http: https:; "
+    "img-src 'self' data: blob: http: https:; "
+    "media-src 'self' data: blob: http: https:; "
+    "font-src 'self' data: http: https:; "
+    "connect-src 'self' data: blob: http: https: ws: wss:; "
     "form-action 'none'; object-src 'none'; base-uri 'none'; "
     "frame-ancestors 'self'"
 )

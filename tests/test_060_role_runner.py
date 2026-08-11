@@ -310,10 +310,10 @@ def test_role_runner(client, suite_state):
         assert _e3_probe.get("briefs_unchanged") is True, f"E3 host probe: learner leaves both briefs untouched: {_e3_extra}"
         assert (
             _e3_probe.get("agent_network") is True
-            and _e3_probe.get("learner_no_network") is True
-            and _e3_probe.get("learner_no_proxy_env") is True
+            and _e3_probe.get("learner_network") is True
+            and _e3_probe.get("learner_proxy_matches_agent") is True
             and _e3_probe.get("learner_no_socket_env") is True
-        ), f"E3 host probe: agent network; learner no network/proxy/socket env: {_e3_extra}"
+        ), f"E3 host probe: both shells network + agent-matching proxy; learner no socket env: {_e3_extra}"
     else:
         assert True, f"E3 host probe skipped when sandbox runtime is unavailable: {_e3_runtime_detail}"
 
@@ -410,7 +410,7 @@ def test_role_runner(client, suite_state):
         )) == "a0a6b85c4d66389748fd17572dc7f5f2bbfb69c92414d9fb21732dde5a0acf5a"
         and _f3_argv_digest(_sandbox.build_sandbox_argv(
             "lesson-learner", _sb_bundle, bundle_root=_sb_root
-        )) == "a77d4eeef5689810b8a10cd123fe5600dbe8332b994072c1d09fdd605ce8301f"
+        )) == "06f6efba3398392f12dd547f0b05288e23d81a68a09988433f82308cbc5f895c"
     ), "F3 sandbox amendments keep agent/learner argv byte-identical"
     _f3_private = "/srv/invented-private"
     _f3_root = f"{_f3_private}/lessons"

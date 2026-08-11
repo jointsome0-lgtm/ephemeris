@@ -102,11 +102,14 @@ async def _run_sessions(port: int, slug: str, bundle: Path) -> dict[str, bool | 
     learner_uri = f"{base}?lesson={lesson}&{ROLE_PARAM}=lesson-learner"
     async with connect(agent_uri, open_timeout=5) as agent:
         agent_handshake = await _handshake(agent)
+        agent_proxy_expr = repr(PROXY_NAMES)
         await agent.send((
-            ("/usr/bin/python3 -c \"import socket; s=socket.socket(); "
+            ("/usr/bin/python3 -c \"import os,socket; s=socket.socket(); "
              "s.settimeout(2); r=s.connect_ex(('127.0.0.1', %d)); s.close(); "
-             "print('__E3_' + ('AGENT_NET_OK' if r == 0 else 'AGENT_NET_BLOCKED') + '__')\"; "
-             "printf '__E3_%%s__\\n' 'AGENT_LIVE'\n") % port
+             "print('__E3_' + ('AGENT_NET_OK' if r == 0 else 'AGENT_NET_BLOCKED') + '__'); "
+             "p=%s; print('__E3_' + ('AGENT_PROXY_PRESENT' if any(k in os.environ for k in p) "
+             "else 'AGENT_PROXY_NONE') + '__')\"; "
+             "printf '__E3_%%s__\\n' 'AGENT_LIVE'\n") % (port, agent_proxy_expr)
         ).encode())
         agent_output = await _output_until(agent, "__E3_AGENT_LIVE__")
 
@@ -128,9 +131,9 @@ async def _run_sessions(port: int, slug: str, bundle: Path) -> dict[str, bool | 
                 ("/usr/bin/python3 -c \"import os,socket; "
                  "p=%s; s=socket.socket(); s.settimeout(2); "
                  "r=s.connect_ex(('127.0.0.1', %d)); s.close(); "
-                 "print('__E3_' + ('LEARNER_NET_BLOCKED' if r != 0 else 'LEARNER_NET_OPEN') + '__'); "
-                 "print('__E3_' + ('LEARNER_PROXY_NONE' if not any(k in os.environ for k in p) "
-                 "else 'LEARNER_PROXY_PRESENT') + '__'); "
+                 "print('__E3_' + ('LEARNER_NET_OPEN' if r == 0 else 'LEARNER_NET_BLOCKED') + '__'); "
+                 "print('__E3_' + ('LEARNER_PROXY_PRESENT' if any(k in os.environ for k in p) "
+                 "else 'LEARNER_PROXY_NONE') + '__'); "
                  "q=%s; print('__E3_' + ('LEARNER_SOCKET_ENV_NONE' "
                  "if not any(k in os.environ for k in q) "
                  "else 'LEARNER_SOCKET_ENV_PRESENT') + '__')\"; "
@@ -162,8 +165,14 @@ async def _run_sessions(port: int, slug: str, bundle: Path) -> dict[str, bool | 
         "learner_role_echoed": learner_handshake.get("role") == "lesson-learner",
         "briefs_unchanged": before == after_spawn,
         "agent_network": "__E3_AGENT_NET_OK__" in agent_output,
-        "learner_no_network": "__E3_LEARNER_NET_BLOCKED__" in learner_output,
-        "learner_no_proxy_env": "__E3_LEARNER_PROXY_NONE__" in learner_output,
+        "learner_network": "__E3_LEARNER_NET_OPEN__" in learner_output,
+        # The learner shell shares the host network on the agent's terms, so
+        # its proxy env must match the agent's — present together or absent
+        # together, depending on what the service detected.
+        "learner_proxy_matches_agent": (
+            ("__E3_LEARNER_PROXY_PRESENT__" in learner_output)
+            == ("__E3_AGENT_PROXY_PRESENT__" in agent_output)
+        ),
         "learner_no_socket_env": "__E3_LEARNER_SOCKET_ENV_NONE__" in learner_output,
         "stale_learner_sid_refused": stale_learner_refused,
         "both_shells_live": (

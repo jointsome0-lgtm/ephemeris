@@ -882,13 +882,11 @@ def test_no_browser_is_a_refusal_and_never_a_pass(monkeypatch):
         render_check.console_errors("http://127.0.0.1:1/never.html")
 
 
-def test_the_apps_own_csp_complaint_is_not_charged_to_the_lesson():
-    """`webrtc 'block'` is deliberate and Chrome does not know it; the
-    complaint is about the response, and appears identically under every page."""
+def test_csp_complaints_are_charged_to_the_lesson_and_favicon_noise_is_not():
+    """Every directive the app sends is one Chrome knows (the `webrtc`
+    suppression died with the directive), so an unrecognized-CSP complaint
+    can only come from a `<meta>` policy the page wrote — report it."""
     noise = [{"method": "Log.entryAdded", "params": {"entry": {
-        "level": "error", "url": "http://x/page.html",
-        "text": "Unrecognized Content-Security-Policy directive 'webrtc'.",
-    }}}, {"method": "Log.entryAdded", "params": {"entry": {
         "level": "error", "url": "http://x/favicon.ico",
         "text": "Failed to load resource: the server responded with a status of 404",
     }}}]
@@ -899,15 +897,16 @@ def test_the_apps_own_csp_complaint_is_not_charged_to_the_lesson():
         "args": [{"value": "my Unrecognized Content-Security-Policy directive note"}],
     }}]
     assert len(render_check._errors_from(mine)) == 1
-    # And so is a policy the PAGE got wrong. `webrtc` is the only directive of
-    # `interactive-local-v1` Chrome does not know, so any other unrecognized
-    # one came from a `<meta>` tag the lesson wrote — a real defect that a
-    # prefix match would have swallowed along with the noise.
-    misspelled = [{"method": "Log.entryAdded", "params": {"entry": {
-        "level": "error", "url": "http://x/page.html",
-        "text": "Unrecognized Content-Security-Policy directive 'scrpit-src'.",
-    }}}]
-    assert len(render_check._errors_from(misspelled)) == 1
+    # A page-authored policy Chrome does not recognise is a real defect —
+    # including the directive the app itself used to send.
+    for text in (
+        "Unrecognized Content-Security-Policy directive 'scrpit-src'.",
+        "Unrecognized Content-Security-Policy directive 'webrtc'.",
+    ):
+        entry = [{"method": "Log.entryAdded", "params": {"entry": {
+            "level": "error", "url": "http://x/page.html", "text": text,
+        }}}]
+        assert len(render_check._errors_from(entry)) == 1
 
 
 # --- the whole step, on this host --------------------------------------------

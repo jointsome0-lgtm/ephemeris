@@ -75,10 +75,10 @@ def test_sandbox_learning(client, suite_state):
     )
     assert (
         "--share-net" in _sb_agent
-        and "--share-net" not in _sb_learner
+        and "--share-net" in _sb_learner
         and "--share-net" not in _sb_runner
     ), (
-        "E1 argv: host network is shared only by lesson-agent"
+        "E1 argv: both interactive shells share the host network; the runner does not"
     )
 
     _sb_agent_try_ro = {
@@ -598,10 +598,11 @@ def test_sandbox_learning(client, suite_state):
     assert (
         _proxy_plain.get("HTTP_PROXY") == "http://127.0.0.1:19091"
         and _proxy_agent.get("HTTPS_PROXY") == "http://127.0.0.1:19091"
-        and _proxy_learner == {}
+        and _proxy_learner == _proxy_agent
         and _proxy_off == ({}, {})
     ), (
-        "E2 proxy env is limited to host-network roles and honors override-off"
+        "E2 proxy env reaches every host-network role (learner matches agent) "
+        "and honors override-off"
     )
     # A proxied child must still reach this app directly: the s3 capability URL
     # is a loopback address, and an inherited proxy can arrive with no NO_PROXY

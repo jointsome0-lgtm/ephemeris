@@ -46,9 +46,9 @@ When the app opens a **lesson-agent** terminal session it mints an opaque token
 bound in-process to that lesson and that session, and puts it — with the
 complete per-lesson endpoint URL — into the session environment as
 `EPHEMERIS_ASSESS_URL` and `EPHEMERIS_ASSESS_TOKEN`. Those two variables reach
-the lesson-agent role only: the learner and runner profiles have no network and
-receive neither, and no broad `EPHEMERIS_` prefix joins the child environment
-allowlist. The URL is built from the app's own bound address (the ASGI scope's
+the lesson-agent role only: recording assessments is the tutor's job, so the
+learner and runner shells receive neither variable, and no broad `EPHEMERIS_`
+prefix joins the child environment allowlist. The URL is built from the app's own bound address (the ASGI scope's
 `server`), never from a client-supplied `Host` header.
 
 The caller returns the token in the `X-Ephemeris-Assess-Token` header:

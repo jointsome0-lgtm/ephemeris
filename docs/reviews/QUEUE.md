@@ -70,6 +70,32 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `lesson-profile` directory still present on the host — is private host
   cleanup, outside Git. The deploy gate stays closed until the repair PR.
 
+- [ ] 2026-08-11 — branch `lesson-network` (squash hash recorded on merge) —
+  `app/sandbox.py`, `app/terminal.py`, `app/routers/learn.py`,
+  `app/services/lessons.py`, `app/services/render_check.py`,
+  `app/templates/learn.html`, `scripts/verify_e3_sessions.py`,
+  `scripts/probe_sandbox_profiles.py`, `tests/test_010_platform_ui.py`,
+  `tests/test_020_bundle_attempts.py`, `tests/test_050_sandbox_learning.py`,
+  `tests/test_060_role_runner.py`, `tests/test_230_lesson_build.py`,
+  `docs/learn-bundle-spec.md`, `docs/security-model.md`,
+  `docs/lesson-artifacts-api.md`, `docs/lesson-assessments-api.md` —
+  owner decision: the `lesson-learner` sandbox
+  profile now runs with `--share-net`, and the learner role joins
+  `_HOST_NETWORK_ROLES`, so learner shells get the host network and the same
+  proxy variables as agent shells; the `interactive-local-v1` preview CSP
+  opens non-script sources to the network (`style`/`img`/`media`/`font` +
+  `connect-src` gain `http: https:`, connect also `ws: wss:`; the `webrtc
+  'block'` directive is dropped) while `script-src` stays
+  `'self' 'unsafe-inline'`; the tutor brief and the E3 probe/tests updated
+  to match.
+  Coupling, recorded 2026-08-12: the shared namespace also reaches the
+  host Playwright MCP listener on `localhost:9223` described in the
+  2026-08-09 entry above. That entry's open High and its repair therefore
+  cover the `lesson-learner` profile as well as `lesson-agent`, and this
+  entry does not close — nor does any restart carry it — before that
+  repair lands (`docs/security-model.md` records the same dependency and
+  the pasta/slirp4netns fallback if the listener cannot be restricted).
+
 ## Done
 
 - [x] 2026-08-09 — `8a4e3ee` (squash of `feat/161-build-step`, PR #165) —

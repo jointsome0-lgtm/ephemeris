@@ -195,9 +195,34 @@ These are documented limitations, not fixes made in this pass:
   The intended fixes are single-user session authentication and CSRF protection
   for state-changing requests. The origin-policy middleware is defense in
   depth, not a substitute for either.
-- The lesson-preview CSP permits external network connections through
-  `connect-src ... https:`. The intended fix is a tighter `connect-src` policy
-  or an explicit minimal allowlist for lesson content that genuinely needs it.
+- The lesson-preview CSPs permit external network connections through
+  `connect-src ... https:`. For `interactive-local-v1` this is a deliberate
+  owner decision (2026-08-11): non-script resources and fetch are open, while
+  script sources stay bundle-local, keeping the build step's 30-day release
+  quarantine the sanctioned road for code. It is not scheduled for
+  tightening. Two consequences ride along, accepted with the decision: a
+  page script can fetch remote text and inject it as inline script (the
+  quarantine bounds what a build ships, not what a shipped loader pulls —
+  see the spec §5 residual), and a page can read the app's unauthenticated
+  GET routes via `connect-src 'self'` and relay the response out (writes
+  still die on the origin guard's `Origin: null` refusal).
+- The `lesson-learner` terminal shares the host network (same 2026-08-11
+  decision), so commands in it can reach the unauthenticated loopback app —
+  read routes and, as an origin-less non-browser client, unsafe ones — the
+  same authority the `lesson-agent` shell and every other local process
+  already had. The filesystem masks still bound what the shell reads
+  directly; the durable fix for the HTTP path is the single-user
+  authentication already listed above, not a network carve-out.
+  The same shared namespace also reaches any other host-loopback listener —
+  concretely the Playwright MCP server on `localhost:9223`, whose tool set
+  includes arbitrary host-side code execution. That listener is already the
+  subject of an open review-queue High (2026-08-09 entry) whose repair —
+  mechanical refusal of state-changing and arbitrary-code tools, or an
+  equivalently restricted server — now gates the learner profile too: the
+  deploy gate holds until it lands, and this profile must not serve live
+  beside an unrestricted 9223. If the listener cannot be restricted, the
+  fallback carve-out is a filtered user-mode network (pasta/slirp4netns)
+  for the learner shell instead of `--share-net`.
 
 Until those fixes exist, keep the documented deployment boundary: loopback by
 default, a trusted LAN only when needed, and never the public internet.

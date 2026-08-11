@@ -505,7 +505,10 @@ def build_sandbox_argv(
         snapshot_target = f"{RUNNER_WORKDIR}/{snapshot_name}"
 
     argv = [BWRAP, "--unshare-all"]
-    if profile == "lesson-agent":
+    if profile in ("lesson-agent", "lesson-learner"):
+        # Both interactive shells share the host network (owner decision
+        # 2026-08-11): network lessons need real experiments from the
+        # learner's shell. The offline profile is now lesson-runner only.
         argv.append("--share-net")
     argv.extend([
         "--die-with-parent",
@@ -522,8 +525,11 @@ def build_sandbox_argv(
         # Preserve the E1 terminal profile argv byte-for-byte.
         argv.extend(["--tmpfs", "/tmp", "--tmpfs", USER_HOME])
     if profile in ("lesson-learner", "lesson-runner"):
-        # AF_UNIX sockets survive network namespace isolation. Replace the
-        # whole runtime tree; /var/run resolves into this mount as well.
+        # Keep the host's AF_UNIX sockets (session bus, agent sockets) out of
+        # these profiles by replacing the whole runtime tree; /var/run
+        # resolves into this mount as well. For lesson-runner this backs up
+        # its network isolation; for lesson-learner it stands on its own now
+        # that the shell shares the host network.
         argv.extend(["--tmpfs", RUNTIME_DIR])
 
     mounts = [] if profile == "lesson-runner" else list(_COMMON_HOME_MOUNTS)

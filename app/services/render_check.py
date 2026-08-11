@@ -78,19 +78,10 @@ MAX_URLS = 2000
 # give, so the 404 is the browser talking about itself, not about the lesson.
 _NOISE_URL_SUFFIXES = ("/favicon.ico",)
 
-# The one thing the browser reports that is a fact about the RESPONSE rather
-# than about the page, and that therefore appears identically under every
-# lesson: `webrtc 'block'` is in `interactive-local-v1` on purpose, and Chrome
-# has not shipped the directive, so it complains once per load. Filtering the
-# complaint is right; dropping the directive to silence it would weaken the
-# policy for the browsers that do honour it.
-#
-# The whole message, not its prefix. `webrtc` is the only directive in
-# `interactive-local-v1` that Chrome does not recognise, so a second
-# "Unrecognized Content-Security-Policy directive" can only be about a policy
-# the PAGE wrote — a misspelled `script-src` in a `<meta>` tag is a real defect
-# and has to be reported, which a prefix match would have swallowed.
-_NOISE_TEXTS = frozenset({"Unrecognized Content-Security-Policy directive 'webrtc'."})
+# Since `webrtc 'block'` left `interactive-local-v1` (the data-open policy),
+# every directive the app sends is one Chrome knows, so an unrecognized-CSP
+# complaint can only be about a policy the PAGE wrote — a real defect to
+# report, never noise to filter.
 
 def _is_diagnostic(method: str | None, params: dict) -> bool:
     """Whether `_errors_from` could turn this notification into an error.
@@ -399,8 +390,6 @@ def _errors_from(events: list[dict]) -> list[RenderError]:
             url = entry.get("url") or ""
             text = entry.get("text") or ""
             if any(url.endswith(suffix) for suffix in _NOISE_URL_SUFFIXES):
-                continue
-            if " ".join(text.split()) in _NOISE_TEXTS:
                 continue
             # This channel is where a CSP refusal and a blocked subresource
             # land; neither reaches the console API, and both are exactly the

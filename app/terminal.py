@@ -120,7 +120,7 @@ _TERMINAL_ROLES: tuple[TerminalRole, ...] = (
     "plain", "lesson-agent", "lesson-learner",
 )
 _LEARNER_SID_PREFIX = "learner."
-_HOST_NETWORK_ROLES = frozenset(("plain", "lesson-agent"))
+_HOST_NETWORK_ROLES = frozenset(("plain", "lesson-agent", "lesson-learner"))
 
 
 def is_local_host(host: str | None) -> bool:
@@ -469,7 +469,7 @@ def _child_env(
             "PS1='agent $ '" if role == "lesson-agent" else r"PS1='\W $ '"
         )
     if role == "lesson-learner":
-        # Network namespaces don't isolate AF_UNIX, and the service may have
+        # The sandbox blanks the runtime tree, but the service may still carry
         # external HOME/XDG/PATH values. Give learner commands only normalized
         # paths that the profile intentionally exposes.
         for name in (
@@ -889,8 +889,9 @@ async def _create_session(
                 sid, workspace["id"], workspace.get("uid"), base_url,
             )
             # Exactly these names, only on this role — no broad EPHEMERIS_
-            # prefix joins the child allowlist (the learner and runner profiles
-            # have no network and are given nothing).
+            # prefix joins the child allowlist. Recording assessments and
+            # builds is the tutor's job, so the learner and runner shells
+            # are given neither URL nor token.
             env[_ASSESS_URL_ENV] = capability["url"]
             env[_ASSESS_TOKEN_ENV] = capability["token"]
             # The build step (#161). A URL and no token, unlike the pair above:
