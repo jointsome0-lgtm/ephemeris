@@ -31,8 +31,8 @@ SCHEMA_V2 = 2
 DEFAULT_ENTRY = "index.html"
 DEFAULT_ARTIFACT_ROOT = "attempts"
 RESERVED_NAMES = (
-    "lesson.json", "attempts.jsonl", "assessments.jsonl", "runs.jsonl", "AGENTS.md",
-    "CLAUDE.md", ".claude", "node_modules", "source",
+    "lesson.json", "attempts.jsonl", "assessments.jsonl", "memory.jsonl",
+    "runs.jsonl", "AGENTS.md", "CLAUDE.md", ".claude", "node_modules", "source",
 )
 
 MAX_MANIFEST_BYTES = 256 * 1024
