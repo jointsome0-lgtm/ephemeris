@@ -213,6 +213,16 @@ These are documented limitations, not fixes made in this pass:
   already had. The filesystem masks still bound what the shell reads
   directly; the durable fix for the HTTP path is the single-user
   authentication already listed above, not a network carve-out.
+  The same shared namespace also reaches any other host-loopback listener —
+  concretely the Playwright MCP server on `localhost:9223`, whose tool set
+  includes arbitrary host-side code execution. That listener is already the
+  subject of an open review-queue High (2026-08-09 entry) whose repair —
+  mechanical refusal of state-changing and arbitrary-code tools, or an
+  equivalently restricted server — now gates the learner profile too: the
+  deploy gate holds until it lands, and this profile must not serve live
+  beside an unrestricted 9223. If the listener cannot be restricted, the
+  fallback carve-out is a filtered user-mode network (pasta/slirp4netns)
+  for the learner shell instead of `--share-net`.
 
 Until those fixes exist, keep the documented deployment boundary: loopback by
 default, a trusted LAN only when needed, and never the public internet.

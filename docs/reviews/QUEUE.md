@@ -88,6 +88,13 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   'block'` directive is dropped) while `script-src` stays
   `'self' 'unsafe-inline'`; the tutor brief and the E3 probe/tests updated
   to match.
+  Coupling, recorded 2026-08-12: the shared namespace also reaches the
+  host Playwright MCP listener on `localhost:9223` described in the
+  2026-08-09 entry above. That entry's open High and its repair therefore
+  cover the `lesson-learner` profile as well as `lesson-agent`, and this
+  entry does not close — nor does any restart carry it — before that
+  repair lands (`docs/security-model.md` records the same dependency and
+  the pasta/slirp4netns fallback if the listener cannot be restricted).
 
 ## Done
 
