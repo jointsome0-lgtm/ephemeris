@@ -382,7 +382,7 @@ fragments, no capability lists in the manifest).
 | profile                | rendering | bridge | attempts | editor/run blocks |
 |------------------------|-----------|--------|----------|-------------------|
 | `legacy-display`       | sandboxed iframe as today | no | no | inert (visible in preview meta) |
-| `interactive-local-v1` | sandboxed iframe + strict CSP (D1: `connect-src 'none'`, no remote scripts, no eval, no forms/popups/downloads) | eligible when the manifest is valid v2 (D2) | via bridge for declared questions (D4/D5) | active as features land (F phases) |
+| `interactive-local-v1` | sandboxed iframe + code-local CSP (D1: no remote scripts, no eval, no forms/popups/downloads; non-script network open) | eligible when the manifest is valid v2 (D2) | via bridge for declared questions (D4/D5) | active as features land (F phases) |
 
 - Missing `runtime` ⇒ `legacy-display` (fail-closed default).
 - Unknown profile ⇒ forced `legacy-display` + `unknown-profile` finding.
@@ -400,18 +400,19 @@ D1 (landed) pins the enforcement:
   `https:`, `'unsafe-eval'`, forms/popups/downloads) so pre-v2 bundles render
   unchanged. The profile still grants no bridge/attempt/editor/run
   affordances — those flags come from the manifest read, not the CSP.
-- `interactive-local-v1` is local-only: `sandbox allow-scripts`;
-  `default-src 'none'`; `script-src`/`style-src` `'self' 'unsafe-inline'`
-  (pages are self-contained, and the libraries a page uses are compiled
-  into a built script under `assets/`, i.e. same-origin);
-  `img-src`/`media-src` `'self' data: blob:`;
-  `font-src 'self' data:`; `connect-src 'none'` (the D2 bridge is
-  postMessage, not fetch); `webrtc 'block'` (WebRTC is not governed by
-  `connect-src`; the CSP3 directive closes the RTCPeerConnection/STUN
-  channel where enforced — Firefox today, Chromium ignores it and keeps
-  WebRTC in the residual below); `form-action`/`object-src`/`base-uri`
-  `'none'`; `frame-ancestors 'self'`. No remote loads, no eval vectors (no
-  `'unsafe-eval'`, no `data:`/`blob:` script), no nested frames.
+- `interactive-local-v1` is code-local, data-open (owner decision
+  2026-08-11): `sandbox allow-scripts`; `default-src 'none'`;
+  `script-src 'self' 'unsafe-inline'` — code only from the bundle, so the
+  build step's 30-day release quarantine is the sole road for library
+  code and render-time loads cannot bypass it; every non-script resource
+  may use the network — `style-src 'self' 'unsafe-inline' http: https:`,
+  `img-src`/`media-src` `'self' data: blob: http: https:`,
+  `font-src 'self' data: http: https:`,
+  `connect-src 'self' data: blob: http: https: ws: wss:` (the D2 bridge
+  itself stays postMessage, not fetch);
+  `form-action`/`object-src`/`base-uri` `'none'`; `frame-ancestors
+  'self'`. No eval vectors (no `'unsafe-eval'`, no `data:`/`blob:`
+  script), no nested frames.
 - Bridge eligibility = manifest parsed as v2 AND not rejected AND profile
   `interactive-local-v1`. Degraded v2 findings do not revoke it (identity
   stays valid; D2 gates per page); every fail-closed-to-legacy path does.
@@ -434,12 +435,11 @@ D1 (landed) pins the enforcement:
   outside the lesson response's CSP. No shipped mechanism closes this:
   CSP3's `navigate-to` was removed from the spec (Sept 2022) without any
   browser implementation, and no iframe sandbox token governs a frame
-  navigating itself. Every in-document channel (fetch/beacon/WebSocket,
-  forms, popups, downloads, remote subresources; WebRTC on engines that
-  enforce `webrtc 'block'`) IS closed, so on those engines the channel
-  requires a whole-document navigation the learner can see; on engines
-  without the `webrtc` directive (Chromium today) WebRTC joins this
-  residual. Accepted for
+  navigating itself. Since the 2026-08-11 data-open decision the
+  non-script network channels (fetch/beacon/WebSocket, remote
+  subresources, WebRTC) are open by design as well; what stays closed is
+  code delivery (remote/`data:`/`blob:` script, eval) plus forms, popups
+  and downloads. Accepted for
   the loopback single-user deployment; D2's parent runtime — whose bridge
   port dies with the document — is the layer that observes a frame leaving
   the lesson and can tear it down/reload it.

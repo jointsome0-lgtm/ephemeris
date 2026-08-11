@@ -778,8 +778,8 @@ def test_002_ui_and_workspace(client, suite_state):
         and "Treat the bundle as your" in agents_text
         and "Never build anything on a path outside the bundle." in agents_text
         and "a tool you did not check." in agents_text
-        and "assume it has no network at all." in agents_text
-        and "must work offline" in agents_text
+        and "network access as yours" in agents_text
+        and "tools are the constraint, not the network" in agents_text
     ), "lesson AGENTS.md distinguishes the agent and learner shells"
     assert (
         "## The learner's record — read it first, teach from it" in agents_text

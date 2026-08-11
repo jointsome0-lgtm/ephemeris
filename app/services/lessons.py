@@ -1337,10 +1337,11 @@ what the source leaves out. Hard rules:
 - Verify before you rely: a tool ("Go is installed", "python3 has
   matplotlib") is available only if you just ran it successfully from
   this shell. Never write a lesson step around a tool you did not check.
-- The learner's shell opens in this same directory but is MORE
-  restricted than yours — assume it has no network at all. Everything
-  you ask the learner to run must work offline with what a fresh lesson
-  shell already has.
+- The learner's shell opens in this same directory and has the same
+  network access as yours, proxy variables included — experiments may
+  reach real hosts. Its filesystem is more restricted than yours, so
+  tools are the constraint, not the network: everything you ask the
+  learner to run must work with what a fresh lesson shell already has.
 
 ## Source material
 
@@ -1398,10 +1399,13 @@ Never collect the exercises into one "try it yourself" block at the end of
 the page. Keep at most one raw console dump per section, tied to the
 visualization that explains it.
 
-Every terminal experiment must be offline-runnable: run it yourself from
-the bundle before publishing the section. If it needs the network or a
-tool you could not verify, redesign the experiment — do not ship it with
-a caveat.
+Run every terminal experiment yourself from the bundle before publishing
+the section. The learner's shell has network access, so experiments may
+talk to real hosts when the real thing teaches better — just remember a
+step built on a third-party service breaks when that service changes, so
+prefer loopback or local fixtures when they show the same idea. If an
+experiment needs a tool you could not verify, redesign it — do not ship
+it with a caveat.
 
 ## Let the learner ask you back
 
@@ -1603,7 +1607,7 @@ carries its own visualization; reveals are collapsed; every link and fact
 is one you verified; on a v2 bundle, every prediction a learner should
 commit to is declared in `questions[]` and wired to Check (a v1 manifest
 never gains v2-only fields — keep its predictions inline); every experiment ran
-offline from this bundle before you shipped it. Then reload the page as a
+from this bundle before you shipped it. Then reload the page as a
 learner who already answered: every question the record knows about must come
 back marked, with its verdict beside it — a page that greets a returning
 learner with blank controls has thrown their work away on screen.
@@ -1670,10 +1674,13 @@ learner with blank controls has thrown their work away on screen.
 - `AGENTS.md` / `CLAUDE.md` — app-generated briefs (this file); never
   author or repurpose these names.
 
-Pages must be fully self-contained and work offline: at render time the page
-has no network at all. Loading anything from a CDN or any other remote URL
-(script, style, font, image) is forbidden — and would simply fail. Every
-library a page uses gets compiled into it by the build step below.
+Pages render with network access for everything except code: fetch, images,
+media, fonts and stylesheets may use remote URLs. Remote SCRIPTS are the one
+exception — a script tag pointing at a CDN is blocked by policy and simply
+fails. Every library a page uses gets compiled into it by the build step
+below; that is the only road for code, and it is what keeps the 30-day
+quarantine meaningful. Still prefer self-contained pages: a remote resource
+is a page that breaks when its host does.
 
 ## Any package you want, built into one script
 
@@ -1720,10 +1727,11 @@ Rules the app enforces, so you do not have to think about them:
   publish, not a judgement on the library. Not negotiable from in here: a
   `bunfig.toml` you write will not change it.
 - **One classic script, never a module.** Pages render on an opaque origin,
-  where an external `<script type="module">`, an import map, a dynamic
-  `import()` and a `.woff2` web font are all blocked. The build emits a
-  single self-contained script so none of that comes up; keep the tag a
-  plain `<script src>`.
+  where an external `<script type="module">`, an import map and a dynamic
+  `import()` are all blocked — as is a `.woff2` served from `assets/`
+  (the files route sends no CORS header; a remote font host that does is
+  fine). The build emits a single self-contained script so none of that
+  comes up; keep the tag a plain `<script src>`.
 - **Stylesheets ride along.** `import "katex/dist/katex.min.css"` works;
   the styles end up inside the built script and are applied on load. Do
   not add a `<link>` for them — there is no second file to link to, and
@@ -1910,10 +1918,10 @@ Inside the Learn app, an interactive-profile page runs in a sandboxed
 iframe with a parent-owned lesson bridge: a postMessage handshake, then a
 transferred MessagePort. Pages that record answers follow these rules:
 
-- Persistence goes through bridge operations, nothing else. The sandbox
-  has no network and no forms — a Check button that fetches, posts a
-  form, or writes a file cannot work. Wire every Check /
-  "record my answer" action to the bridge port only.
+- Persistence goes through bridge operations, nothing else. Forms are
+  blocked, and no fetch reaches the app's own record endpoints — a Check
+  button that posts a form, fetches, or writes a file records nothing.
+  Wire every Check / "record my answer" action to the bridge port only.
 - Handshake (ABI v2): on load, mint `const ch = new MessageChannel()`, set
   `ch.port1.onmessage` to your result handler, and post
   `{"ephemeris": "lesson-bridge", "type": "ready", "abi": [2],

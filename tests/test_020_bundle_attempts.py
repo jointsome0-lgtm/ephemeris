@@ -381,18 +381,17 @@ def test_bundle_attempts(client, suite_state):
         and _d1_prev.headers.get("content-security-policy") == _CSP_INT
     ), "v2 interactive pages serve under the strict D1 CSP (files + preview)"
     assert (
-        "connect-src 'none'" in _d1_csp
-        and "webrtc 'block'" in _d1_csp
+        "script-src 'self' 'unsafe-inline';" in _d1_csp
+        and "connect-src 'self' data: blob: http: https: ws: wss:" in _d1_csp
         and "default-src 'none'" in _d1_csp
         and "form-action 'none'" in _d1_csp
         and "base-uri 'none'" in _d1_csp
-        and "https:" not in _d1_csp
         and "unsafe-eval" not in _d1_csp
         and "sandbox allow-scripts;" in _d1_csp
         and "allow-forms" not in _d1_csp
         and "allow-popups" not in _d1_csp
         and "allow-downloads" not in _d1_csp
-    ), "strict CSP: no network, no eval, no forms/popups/downloads"
+    ), "code-local CSP: scripts self-only, data network open, no eval, no forms/popups/downloads"
     _d1_meta = c.get(f"/learn/lessons/{_v2_id}/preview-meta").json()
     assert (
         _d1_meta["profile"] == "interactive-local-v1"

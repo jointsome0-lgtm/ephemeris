@@ -195,9 +195,12 @@ These are documented limitations, not fixes made in this pass:
   The intended fixes are single-user session authentication and CSRF protection
   for state-changing requests. The origin-policy middleware is defense in
   depth, not a substitute for either.
-- The lesson-preview CSP permits external network connections through
-  `connect-src ... https:`. The intended fix is a tighter `connect-src` policy
-  or an explicit minimal allowlist for lesson content that genuinely needs it.
+- The lesson-preview CSPs permit external network connections through
+  `connect-src ... https:`. For `interactive-local-v1` this is a deliberate
+  owner decision (2026-08-11): non-script resources and fetch are open, while
+  script sources stay bundle-local so the build step's 30-day release
+  quarantine remains the only road for code. It is not scheduled for
+  tightening.
 
 Until those fixes exist, keep the documented deployment boundary: loopback by
 default, a trusted LAN only when needed, and never the public internet.
