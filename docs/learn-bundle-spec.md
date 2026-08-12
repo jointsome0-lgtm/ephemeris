@@ -57,7 +57,7 @@ data/lessons/<slug>/
   .claude/         app-generated agent-harness config for the bundle
     settings.json  constant `{"outputStyle": "Learning"}` — regenerated
   .git/            per-lesson history — app-initialized, agent-committed
-  .gitignore       written once at init; ignores the `node_modules` mount
+    info/exclude   app-owned rules, written once at init
 ```
 
 Reserved names, which no page, block file, or artifact root may claim:
@@ -67,13 +67,28 @@ Reserved names, which no page, block file, or artifact root may claim:
 
 Each bundle is its own local git repository, initialized on the read path when
 nothing already holds the name and never repaired afterwards; the app
-guarantees only that the repo and its `.gitignore` exist, and the tutor agent
+guarantees only that the repository exists and is usable, and the tutor agent
 owns every commit. Init is best-effort — a missing or failing `git` is logged
 and skipped, and the bundle read proceeds unchanged. History is local: no
 remote, no push, and one repository per bundle rather than one over the
 `lessons/` tree, because the lesson-scoped sandbox only ever sees its own
-bundle directory. `.gitignore` names `node_modules/`, which is the mount point
-described below and never bundle content. (2026-08-12,
+bundle directory.
+
+Init leaves the repository two things a commit made inside the sandbox cannot
+get anywhere else. A repository-local `user.name`/`user.email` — a
+non-personal identity, since nothing here is the owner's work and there is no
+remote — because the lesson-agent sandbox binds a blank `$HOME` with no
+`.gitconfig` and passes no `GIT_AUTHOR_*`, so an unconfigured commit would die
+on "unable to auto-detect email address". And app-owned exclude rules in
+`.git/info/exclude`, never `.gitignore`: that name is the agent's, so writing
+it would either overwrite the agent's rules or — for a bundle that already had
+one — silently lose the app's. The rules cover `node_modules` (the mount point
+described below, never bundle content), the app-owned `*.jsonl` projections,
+and the regenerated briefs. Excluding the projections is what keeps rollback
+safe: they are read-only for the agent (§6), a tracked `runs.jsonl` would be
+rewritten by a learner's `git reset --hard`, and its output tails exist nowhere
+else. History therefore holds authored work — pages, assets, and the learner's
+files under the artifact roots. (2026-08-12,
 [#186](https://github.com/jointsome0-lgtm/ephemeris/issues/186).)
 
 `source/` holds the raw material a lesson was built from — fetched pages and

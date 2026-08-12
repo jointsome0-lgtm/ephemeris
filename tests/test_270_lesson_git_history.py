@@ -49,31 +49,90 @@ def _counting_run(calls: list):
     return run
 
 
-def test_bundle_ensure_inits_one_repo_with_a_gitignore():
+def _git(bundle: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(bundle), *args],
+        capture_output=True, text=True, timeout=30,
+    )
+
+
+def test_bundle_ensure_inits_one_usable_repo():
     lesson = _lesson("init")
     bundle = _bundle(lesson)
 
     assert (bundle / ".git").is_dir(), (
         "creating a lesson leaves it a git repository"
     )
-    assert (bundle / ".gitignore").read_text(encoding="utf-8") == "node_modules/\n", (
-        "the mount point is the one path that must never enter history: the "
-        "build workspace is bound over <bundle>/node_modules in the sandbox"
+    assert _git(bundle, "rev-parse", "--is-inside-work-tree").stdout.strip() == (
+        "true"
+    ), "git itself agrees the bundle is a work tree"
+    assert not (bundle / ".gitignore").exists(), (
+        "`.gitignore` is the agent's to own — the app's rules live in the "
+        "repository's own exclude file"
+    )
+    assert _git(bundle, "config", "user.email").stdout.strip().endswith(
+        "@ephemeris.invalid"
+    ), "a local identity, because the sandbox has no .gitconfig and no remote"
+
+
+def test_a_commit_from_a_bare_environment_holds_authored_work_only():
+    """The whole point of the identity and the exclude rules: an agent doing
+    exactly what the brief asks — `git add -A` in a session whose `$HOME` has
+    no git configuration at all — must produce a commit, and that commit must
+    not carry app-owned state a later `git reset --hard` would then destroy.
+    """
+    lesson = _lesson("bare commit")
+    bundle = _bundle(lesson)
+    (bundle / "attempts").mkdir(exist_ok=True)
+    (bundle / "attempts" / "invented-work.go").write_text("// learner\n",
+                                                          encoding="utf-8")
+    (bundle / "runs.jsonl").write_text('{"invented": "app-owned"}\n',
+                                       encoding="utf-8")
+    (bundle / "node_modules").mkdir(exist_ok=True)
+    (bundle / "node_modules" / "invented-package.js").write_text("//\n",
+                                                                 encoding="utf-8")
+    bare = {"PATH": "/usr/bin:/bin", "HOME": str(bundle / "invented-empty-home")}
+
+    add = subprocess.run(["git", "-C", str(bundle), "add", "-A"],
+                         capture_output=True, text=True, timeout=30, env=bare)
+    commit = subprocess.run(
+        ["git", "-C", str(bundle), "commit", "-q", "-m", "invented checkpoint"],
+        capture_output=True, text=True, timeout=30, env=bare,
+    )
+    assert add.returncode == 0 and commit.returncode == 0, (
+        "an unconfigured session commits: " + (commit.stderr or add.stderr)
     )
     assert subprocess.run(
-        ["git", "-C", str(bundle), "rev-parse", "--is-inside-work-tree"],
-        capture_output=True, text=True, timeout=10,
-    ).stdout.strip() == "true", "git itself agrees the bundle is a work tree"
+        ["git", "-C", str(bundle), "log", "-1", "--format=%ae"],
+        capture_output=True, text=True, timeout=30, env=bare,
+    ).stdout.strip() == "lesson@ephemeris.invalid", (
+        "and it commits as the repository's own identity, not a stray "
+        "system-level one that happens to be configured on this machine"
+    )
+    tracked = set(
+        subprocess.run(["git", "-C", str(bundle), "ls-files"],
+                       capture_output=True, text=True, timeout=30,
+                       env=bare).stdout.split()
+    )
+    assert "attempts/invented-work.go" in tracked, "authored work is history"
+    assert not {
+        name for name in tracked
+        if name.startswith("node_modules/")
+        or name.endswith(".jsonl")
+        or name in ("AGENTS.md", "CLAUDE.md")
+    }, (
+        "app-owned state stays out: rollback must not be able to rewrite a "
+        "projection whose contents exist nowhere else"
+    )
 
 
-def test_repeated_ensures_neither_re_init_nor_rewrite(monkeypatch):
+def test_repeated_ensures_never_re_init(monkeypatch):
     lesson = _lesson("idempotent")
     bundle = _bundle(lesson)
-    # An agent's own ignore rules are its business; the app writes the file at
-    # init and never again.
-    (bundle / ".gitignore").write_text(
-        "node_modules/\ninvented-agent-rule/\n", encoding="utf-8"
-    )
+    marker = "invented-agent-rule/\n"
+    # An agent's own ignore rules are its business, and the app never touches
+    # the name — before or after this read.
+    (bundle / ".gitignore").write_text(marker, encoding="utf-8")
 
     calls: list = []
     monkeypatch.setattr(lessons.subprocess, "run", _counting_run(calls))
@@ -81,9 +140,9 @@ def test_repeated_ensures_neither_re_init_nor_rewrite(monkeypatch):
         lessons.lesson_file_info(lesson)
 
     assert calls == [], "the .git check is cheap and the subprocess never reruns"
-    assert (
-        "invented-agent-rule/" in (bundle / ".gitignore").read_text(encoding="utf-8")
-    ), "a bundle's own ignore rules survive every later read"
+    assert (bundle / ".gitignore").read_text(encoding="utf-8") == marker, (
+        "a bundle's own ignore rules survive every later read"
+    )
 
 
 def test_git_is_reserved_and_never_served(client):
@@ -151,9 +210,6 @@ def test_a_missing_git_leaves_the_bundle_readable(monkeypatch):
     bundle = _bundle(lesson)
 
     assert not (bundle / ".git").exists(), "the init could not happen"
-    assert not (bundle / ".gitignore").exists(), (
-        "and nothing is written that would claim it did"
-    )
     info = lessons.lesson_file_info(lesson)
     assert info and (bundle / lessons.MANIFEST_NAME).is_file(), (
         "history is derived, best-effort state: the read path does not care"
@@ -168,4 +224,7 @@ def test_the_brief_asks_the_agent_to_commit():
     )
     assert "Commit at every checkpoint" in brief, (
         "commits are the agent's job — the app writes none (#186 non-goal)"
+    )
+    assert "`git add -A` stages authored work only" in brief, (
+        "and the agent is told the app's own files are already excluded"
     )

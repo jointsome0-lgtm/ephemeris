@@ -47,14 +47,44 @@ AGENT_HOMES_DIR = DATA_DIR / "agent-homes"
 # so the bundle on disk never carries them (see _ensure_build_workspace).
 BUILD_WORKSPACES_DIR = DATA_DIR / "lesson-builds"
 # Each bundle is its own local git repository (#186), initialized on the read
-# path and never served. The only ignore that matters is the mount point above:
-# the build workspace (packages and the bundler's `out/`) appears at
-# `<bundle>/node_modules` inside the sandbox, and on-host state must not enter
-# a lesson's history.
+# path and never served.
 GIT_DIR_NAME = ".git"
-GITIGNORE_NAME = ".gitignore"
-BUNDLE_GITIGNORE = "node_modules/\n"
 GIT_INIT_TIMEOUT_SECONDS = 10
+# What history is for is authored work: the lesson's pages and the learner's
+# files. Everything the app itself writes into a bundle stays out of it, in the
+# repository's own exclude file rather than a `.gitignore` — that name belongs
+# to the agent, and a bundle that already has one must neither be overwritten
+# nor able to bypass these rules.
+#   node_modules  the mount point above; on-host package state and the
+#                 bundler's `out/` appear there inside the sandbox
+#   *.jsonl       app-owned projections, read-only for the agent. A checkpoint
+#                 that tracked them would let a learner's `git reset --hard`
+#                 roll them back too, and `runs.jsonl` output tails exist
+#                 nowhere else — rollback must not be able to destroy them.
+#   briefs        regenerated verbatim on every terminal open, so tracking them
+#                 buys a diff per session and no history worth reading
+GIT_EXCLUDE_PATH = ("info", "exclude")
+BUNDLE_GIT_EXCLUDE = """\
+# Written once by the Learn app when it initialized this repository (#186).
+# App-owned paths only: your own rules belong in .gitignore.
+node_modules/
+attempts.jsonl
+assessments.jsonl
+memory.jsonl
+runs.jsonl
+AGENTS.md
+CLAUDE.md
+.claude/
+"""
+# A repository-local identity, because the lesson-agent sandbox gives the
+# session a blank `$HOME` with no `.gitconfig` bound and no `GIT_AUTHOR_*` in
+# its environment: without this, the first commit the brief asks for dies on
+# "unable to auto-detect email address". Deliberately not the owner's identity
+# — nothing here is authored by them, and these repositories have no remote.
+BUNDLE_GIT_IDENTITY = (
+    ("user.name", "Ephemeris Learn"),
+    ("user.email", "lesson@ephemeris.invalid"),  # RFC 2606 reserved TLD
+)
 DEFAULT_ENTRY = bundle_schema.DEFAULT_ENTRY
 MANIFEST_NAME = "lesson.json"
 
@@ -376,10 +406,13 @@ def _ensure_bundle_repo(lesson_dir: Path) -> None:
     Per-lesson history is what lets the learner roll a broken experiment back
     and lets a later tutor session read `git log` instead of guessing what
     earlier ones did. The app only guarantees the repo exists; committing is
-    the tutor agent's job (see the brief). Best-effort throughout — a bundle
-    read must never fail because git is absent or refused to init — and never
-    through a link (§2): anything already holding the name, symlink included,
-    means hands off entirely.
+    the tutor agent's job (see the brief) — which is why init also leaves
+    behind the two things a commit from inside the sandbox needs and cannot
+    get anywhere else: the app-owned exclude rules and a local identity.
+
+    Best-effort throughout — a bundle read must never fail because git is
+    absent or refused — and never through a link (§2): anything already
+    holding the `.git` name, symlink included, means hands off entirely.
     """
     git_dir = lesson_dir / GIT_DIR_NAME
     if git_dir.is_symlink() or git_dir.exists():
@@ -389,16 +422,20 @@ def _ensure_bundle_repo(lesson_dir: Path) -> None:
             ["git", "init", "--quiet", str(lesson_dir)],
             check=True, capture_output=True, timeout=GIT_INIT_TIMEOUT_SECONDS,
         )
+        for key, value in BUNDLE_GIT_IDENTITY:
+            subprocess.run(
+                ["git", "-C", str(lesson_dir), "config", key, value],
+                check=True, capture_output=True,
+                timeout=GIT_INIT_TIMEOUT_SECONDS,
+            )
+        # git init wrote this file itself (a comment-only template), so there
+        # is no foreign content here to preserve.
+        git_dir.joinpath(*GIT_EXCLUDE_PATH).write_text(
+            BUNDLE_GIT_EXCLUDE, encoding="utf-8"
+        )
     except (OSError, subprocess.SubprocessError) as exc:
-        _log.warning("lesson bundle git init skipped for %s: %s", lesson_dir, exc)
-        return
-    ignore = lesson_dir / GITIGNORE_NAME
-    if not ignore.is_symlink() and not ignore.exists():
-        try:
-            ignore.write_text(BUNDLE_GITIGNORE, encoding="utf-8")
-        except OSError as exc:
-            _log.warning("lesson bundle .gitignore not written for %s: %s",
-                         lesson_dir, exc)
+        _log.warning("lesson bundle git init incomplete for %s: %s",
+                     lesson_dir, exc)
 
 
 def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:
@@ -1718,7 +1755,10 @@ learner with blank controls has thrown their work away on screen.
 - `.git/` — this bundle is a local git repository, initialized by the app.
   Commit at every checkpoint and at the end of each session, with a message
   saying what the learner did and what changed; `git log`/`git diff` is how
-  your next session sees what this one actually did.
+  your next session sees what this one actually did. The app's own files —
+  the projections above, these briefs, `node_modules` — are already excluded
+  from history, so `git add -A` stages authored work only; `.gitignore` is
+  free for rules of your own. History is local: there is no remote to push.
 
 Pages render with network access for everything except code: fetch, images,
 media, fonts and stylesheets may use remote URLs. Remote SCRIPTS are the one
