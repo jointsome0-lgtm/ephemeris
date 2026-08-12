@@ -40,7 +40,7 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 
-from .db import DB_PATH
+from .db import DATA_DIR, DB_PATH
 from .sandbox import SandboxError, SandboxProfile, USER_HOME, spawn_sandboxed
 from .services.lessons import (
     LESSONS_DIR,
@@ -369,6 +369,24 @@ _ASSESS_CAPABILITIES: dict[str, dict] = {}
 # The build step's endpoint (#161), on the same "the brief is a constant, the
 # instance data is an environment variable" footing as the pair above.
 _BUILD_URL_ENV = "EPHEMERIS_BUILD_URL"
+
+# Claude auth for the tutor's shell, on the same env-variable footing (#188).
+# The host's `~/.claude/.credentials.json` must never enter the sandbox: its
+# refresh token is single-use, and a sandboxed refresh consumes it server-side
+# without being able to write the replacement back, killing the host's login.
+# What travels instead is a long-lived token (`claude setup-token`), which does
+# not rotate on use, read from the private instance so no lesson can serve or
+# edit it. Owner-created; absent file → the variable stays unset and the agent
+# CLI visibly asks for login instead of silently borrowing host credentials.
+_CLAUDE_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+_CLAUDE_TOKEN_FILE = DATA_DIR / "claude-token"
+
+
+def _read_claude_token() -> str:
+    try:
+        return _CLAUDE_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 def _build_url(lesson_id: int, base_url: str) -> str:
@@ -879,6 +897,14 @@ async def _create_session(
         # which must not stall the event loop (and every other PTY pump) mid-detect.
         proxy = await asyncio.to_thread(_detect_proxy_env, role)
         env.update(proxy)
+        if role == "lesson-agent":
+            # Unconditional on this role, unlike the capability pair below: auth
+            # is not tied to having a base_url or a registered lesson id. Read
+            # per-open (worker thread — the file may sit on slow storage), so a
+            # token replaced by the owner reaches the next session, no restart.
+            claude_token = await asyncio.to_thread(_read_claude_token)
+            if claude_token:
+                env[_CLAUDE_TOKEN_ENV] = claude_token
 
         # The SID is minted before the spawn because the capability binds to it and
         # the capability has to be in the child's environment (D-S2-2).

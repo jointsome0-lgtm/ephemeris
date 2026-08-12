@@ -24,6 +24,14 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
+- [ ] 2026-08-12 — merge of `fix/188-claude-oauth-token` (#188; hash recorded
+  on merge) — `app/sandbox.py`, `app/terminal.py` —
+  the lesson-agent profile no longer ro-binds `~/.claude/.credentials.json`
+  into the sandbox; instead the tutor shell's environment carries
+  `CLAUDE_CODE_OAUTH_TOKEN`, read at each session open from
+  `DATA_DIR/claude-token` (owner-created via `claude setup-token`;
+  lesson-agent role only; absent file leaves the variable unset).
+
 - [ ] 2026-08-09 — `5096a50` (squash of `feat/study-browser`, PR #177) and
   `514b363` (squash of `docs/playwright-browser-brief`, PR #178) —
   `app/services/lessons.py`, `app/services/bundle_schema.py`,
