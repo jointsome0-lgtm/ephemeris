@@ -82,18 +82,24 @@ _ALWAYS_HOME_ENTRIES = {
     "lesson-learner": set(),
     "lesson-runner": {"go"},
 }
+# Each name maps to EVERY `-try` source that would create it: one entry appears
+# as soon as any of its sources does, which is why these are tuples. `.local`
+# is the one that has more than one today.
 _OPTIONAL_HOME_ENTRIES = {
     "lesson-agent": {
-        ".cache": f"{USER_HOME}/.cache/go-build",
-        ".claude.json": f"{USER_HOME}/.claude.json",
-        ".local": f"{USER_HOME}/.local/bin",
-        ".nvm": f"{USER_HOME}/.nvm/versions",
-        "go": f"{USER_HOME}/go",
+        ".cache": (f"{USER_HOME}/.cache/go-build",),
+        ".claude.json": (f"{USER_HOME}/.claude.json",),
+        ".local": (
+            f"{USER_HOME}/.local/bin",
+            f"{USER_HOME}/.local/share/claude/versions",
+        ),
+        ".nvm": (f"{USER_HOME}/.nvm/versions",),
+        "go": (f"{USER_HOME}/go",),
     },
     "lesson-learner": {
-        ".cache": f"{USER_HOME}/.cache/go-build",
-        ".local": f"{USER_HOME}/.local/bin",
-        "go": f"{USER_HOME}/go",
+        ".cache": (f"{USER_HOME}/.cache/go-build",),
+        ".local": (f"{USER_HOME}/.local/bin",),
+        "go": (f"{USER_HOME}/go",),
     },
     "lesson-runner": {},
 }
@@ -101,8 +107,8 @@ _OPTIONAL_HOME_ENTRIES = {
 
 def expected_home_entries(profile: str) -> set[str]:
     return _ALWAYS_HOME_ENTRIES[profile] | {
-        name for name, source in _OPTIONAL_HOME_ENTRIES[profile].items()
-        if Path(source).exists()
+        name for name, sources in _OPTIONAL_HOME_ENTRIES[profile].items()
+        if any(Path(source).exists() for source in sources)
     }
 
 
