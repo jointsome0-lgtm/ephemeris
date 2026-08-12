@@ -40,12 +40,8 @@ _INSIDE_PROBE = r"""
 import json, os, socket, sys
 from pathlib import Path
 
-profile, bundle, repo, home = sys.argv[1:]
-expected_home = {
-    "lesson-agent": {".cache", ".claude", ".claude.json", ".codex", ".local", ".nvm", "go"},
-    "lesson-learner": {".cache", ".local", "go"},
-    "lesson-runner": {"go"},
-}[profile]
+profile, bundle, repo, home, expected = sys.argv[1:]
+expected_home = set(json.loads(expected))
 home_entries = {entry.name for entry in Path(home).iterdir()}
 probe_file = Path(bundle) / ".e1-write-probe"
 try:
@@ -74,6 +70,40 @@ print(json.dumps({
     "proxy_reachable": proxy_reachable,
 }, sort_keys=True))
 """
+
+
+# What the blanked home should contain, per profile. The unconditional entries
+# come from mounts that CREATE their target (`--tmpfs`, `--dir`); the optional
+# ones from `-try` mounts, which contribute nothing when their host source is
+# absent — so a clean account using only /usr/bin/bwrap is healthy with fewer
+# entries, not broken.
+_ALWAYS_HOME_ENTRIES = {
+    "lesson-agent": {".claude", ".codex"},
+    "lesson-learner": set(),
+    "lesson-runner": {"go"},
+}
+_OPTIONAL_HOME_ENTRIES = {
+    "lesson-agent": {
+        ".cache": f"{USER_HOME}/.cache/go-build",
+        ".claude.json": f"{USER_HOME}/.claude.json",
+        ".local": f"{USER_HOME}/.local/bin",
+        ".nvm": f"{USER_HOME}/.nvm/versions",
+        "go": f"{USER_HOME}/go",
+    },
+    "lesson-learner": {
+        ".cache": f"{USER_HOME}/.cache/go-build",
+        ".local": f"{USER_HOME}/.local/bin",
+        "go": f"{USER_HOME}/go",
+    },
+    "lesson-runner": {},
+}
+
+
+def expected_home_entries(profile: str) -> set[str]:
+    return _ALWAYS_HOME_ENTRIES[profile] | {
+        name for name, source in _OPTIONAL_HOME_ENTRIES[profile].items()
+        if Path(source).exists()
+    }
 
 
 def clean_env(*, proxy: bool) -> dict[str, str]:
@@ -107,6 +137,7 @@ def run_profile(
     command = [
         "/usr/bin/python3", "-c", _INSIDE_PROBE,
         profile, str(bundle), str(ROOT), USER_HOME,
+        json.dumps(sorted(expected_home_entries(profile))),
     ]
     module_cache_fd = (
         open_runner_module_cache_fd() if profile == "lesson-runner" else None

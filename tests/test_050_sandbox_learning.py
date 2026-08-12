@@ -343,6 +343,50 @@ def test_sandbox_learning(client, suite_state):
         "E1 bwrap discovery: ordered candidates, no $PATH, reasoned refusal"
     )
 
+    # The setuid gate: CVE-2026-41163 is a defect of setuid mode only, so the
+    # version floor applies only there. Driven with a stub that answers both
+    # queries — the kernel ignores the setuid bit on a script, but the bit is
+    # what is read here, so this needs no real bubblewrap and no privilege.
+    def _sb_fake_bwrap(directory, version, setuid):
+        path = Path(directory) / "bwrap"
+        path.write_text(
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            f'  --help) echo "{" ".join(_sandbox._REQUIRED_BWRAP_OPTIONS)}" ;;\n'
+            f'  --version) echo "bubblewrap {version}" ;;\n'
+            "esac\n",
+            encoding="utf-8",
+        )
+        path.chmod(0o4755 if setuid else 0o755)
+        return str(path)
+
+    _sb_gate = {}
+    with tempfile.TemporaryDirectory(prefix="ephemeris-bwrap-gate-") as _sb_gate_dir:
+        for _sb_label, _sb_version, _sb_setuid in (
+            ("plain-old", "0.9.0", False),
+            ("setuid-old", "0.9.0", True),
+            ("setuid-exact", "0.11.2", True),
+            ("setuid-newer", "0.12.0", True),
+            ("setuid-unknown", "unreleased", True),
+        ):
+            _sb_case_dir = Path(_sb_gate_dir) / _sb_label
+            _sb_case_dir.mkdir()
+            _sb_gate[_sb_label] = _sandbox._bwrap_rejection(
+                _sb_fake_bwrap(_sb_case_dir, _sb_version, _sb_setuid))
+    assert (
+        # Not setuid: the option vocabulary is the whole requirement.
+        _sb_gate["plain-old"] == ""
+        # Setuid below the fix: refused, and the reason names the version.
+        and "0.9.0" in _sb_gate["setuid-old"]
+        and "CVE-2026-41163" in _sb_gate["setuid-old"]
+        # The floor itself and above it pass; an unreadable version does not.
+        and _sb_gate["setuid-exact"] == ""
+        and _sb_gate["setuid-newer"] == ""
+        and "does not report a version" in _sb_gate["setuid-unknown"]
+    ), (
+        "E1 bwrap discovery: the version floor applies to setuid installs only"
+    )
+
     # That refusal is what the probe reports, without spawning anything.
     _sandbox._cached_runtime_probe.cache_clear()
     with _sandbox_mock.patch.object(

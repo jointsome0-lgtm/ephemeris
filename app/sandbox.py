@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import stat
 import subprocess
 from dataclasses import dataclass
 from functools import cache
@@ -49,18 +50,36 @@ USER_HOME = _resolve_user_home()
 # ships.
 _BWRAP_CANDIDATES = (f"{USER_HOME}/.local/bin/bwrap", "/usr/bin/bwrap")
 
-# Every long option this module passes, and the whole minimum-version
-# requirement — deliberately vocabulary rather than a number, so nobody
-# replaces it with one. Upstream records neither which release added which
-# option nor a version contract; the set below is already accepted by the 0.9.0
-# Ubuntu 24.04 ships (measured 2026-08-12); and CVE-2026-41163 (fixed 0.11.2)
-# affects only setuid installs, which neither candidate is.
+# Every long option this module passes. For a bubblewrap that builds the
+# sandbox from an unprivileged user namespace this is the whole minimum-version
+# requirement — deliberately vocabulary rather than a number, so nobody replaces
+# it with one: upstream records neither which release added which option nor a
+# version contract, and the set below is already accepted by the 0.9.0 Ubuntu
+# 24.04 ships (measured 2026-08-12).
 _REQUIRED_BWRAP_OPTIONS = (
     "--bind", "--bind-try", "--chdir", "--clearenv", "--dev",
     "--die-with-parent", "--dir", "--perms", "--proc", "--ro-bind",
     "--ro-bind-data", "--ro-bind-fd", "--ro-bind-try", "--setenv",
     "--share-net", "--size", "--tmpfs", "--unshare-all", "--unshare-user",
 )
+
+
+# The one case where a number IS the requirement. A setuid bubblewrap does its
+# own privilege handling instead of relying on an unprivileged user namespace,
+# and CVE-2026-41163 — the low-privileged setup left ptrace-able — is a defect
+# of exactly that mode, fixed in 0.11.2. Distributions that ship bubblewrap
+# setuid are the reason this is a version gate and not a blanket refusal: on a
+# host without unprivileged user namespaces it is the only mode that works.
+_SETUID_MIN_BWRAP = (0, 11, 2)
+
+
+def _bwrap_version(text: str) -> tuple[int, ...] | None:
+    """The numeric version from a ``bwrap --version`` line, if it parses."""
+    for token in text.split():
+        parts = token.split(".")
+        if len(parts) >= 2 and all(part.isdigit() for part in parts):
+            return tuple(int(part) for part in parts)
+    return None
 
 
 def _bwrap_rejection(path: str) -> str:
@@ -71,24 +90,50 @@ def _bwrap_rejection(path: str) -> str:
     """
     if not (os.path.isfile(path) and os.access(path, os.X_OK)):
         return "not an executable file"
-    try:
-        result = subprocess.run(
-            [path, "--help"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return f"cannot be asked for its options: {exc}"
-    listed = set(result.stdout.split())
+
+    def ask(*args: str) -> subprocess.CompletedProcess[str] | str:
+        try:
+            return subprocess.run(
+                [path, *args],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"cannot be asked for {args[0]}: {exc}"
+
+    help_result = ask("--help")
+    if isinstance(help_result, str):
+        return help_result
+    listed = set(help_result.stdout.split())
     missing = [
         option for option in _REQUIRED_BWRAP_OPTIONS if option not in listed
     ]
     if missing:
         return "does not accept " + " ".join(missing)
+
+    try:
+        setuid = bool(os.stat(path).st_mode & stat.S_ISUID)
+    except OSError as exc:
+        return f"cannot be inspected: {exc}"
+    if not setuid:
+        return ""
+    version_result = ask("--version")
+    if isinstance(version_result, str):
+        return version_result
+    version = _bwrap_version(version_result.stdout)
+    if version is None:
+        return "is setuid and does not report a version to check against"
+    if version < _SETUID_MIN_BWRAP:
+        shipped = ".".join(str(part) for part in version)
+        floor = ".".join(str(part) for part in _SETUID_MIN_BWRAP)
+        return (
+            f"is setuid at {shipped}, below the {floor} that fixes "
+            "CVE-2026-41163 for setuid installations"
+        )
     return ""
 
 

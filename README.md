@@ -124,9 +124,8 @@ AppArmor profile that grants them. Without one, every sandbox spawn dies at
 sysctl kernel.apparmor_restrict_unprivileged_userns
 ```
 
-`1` means you need the profile; `0` or "no such file" means you do not. To
-install the one this repository ships — it uses AppArmor's `@{HOME}` tunable,
-so it covers both `bwrap` locations for any user:
+`1` means you need the profile; `0` or "no such file" means you do not. Install
+the one this repository ships:
 
 ```bash
 sudo install -m 644 packaging/apparmor/bwrap /etc/apparmor.d/bwrap
@@ -135,6 +134,19 @@ sudo apparmor_parser -r /etc/apparmor.d/bwrap
 
 Then re-check with `bwrap --unshare-user --die-with-parent --ro-bind / / true`,
 which should exit `0` silently.
+
+The profile matches `/usr/bin/bwrap` and `@{HOME}/.local/bin/bwrap`. `@{HOME}`
+is AppArmor's own tunable, not your `$HOME`: by default it expands to `/home/*/`
+and `/root/` (see `/etc/apparmor.d/tunables/home`). A service account whose home
+is somewhere else — `/srv/ephemeris`, `/var/lib/ephemeris` — is **not** covered,
+and a `bwrap` under such a home stays denied even after installing the profile.
+Either use the distribution `/usr/bin/bwrap`, which is always covered, or add
+the home first:
+
+```bash
+echo '@{HOMEDIRS}+=/srv/' | sudo tee /etc/apparmor.d/tunables/home.d/ephemeris
+sudo apparmor_parser -r /etc/apparmor.d/bwrap
+```
 
 ### After fixing anything on this list, restart the service
 
