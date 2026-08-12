@@ -205,7 +205,7 @@ def test_role_runner(client, suite_state):
         and _sb_mounts(_external_learner_argv, "--bind")
             == [(_external_bundle, _external_bundle)]
     ), "E3 learner masks runtime sockets and external private instance root"
-    _nested_private = "/home/aina/go/invented-ephemeris-private"
+    _nested_private = f"{_sandbox.USER_HOME}/go/invented-ephemeris-private"
     _nested_lessons = f"{_nested_private}/lessons"
     _nested_bundle = f"{_nested_lessons}/invented-bundle"
     _db_override_root = "/opt/invented-ephemeris-db"
@@ -225,7 +225,7 @@ def test_role_runner(client, suite_state):
         _nested_private in _nested_tmpfs
         and _db_override_root in _nested_tmpfs
         and _checkout_root in _nested_tmpfs
-        and _nested_learner_argv.index("/home/aina/go")
+        and _nested_learner_argv.index(f"{_sandbox.USER_HOME}/go")
             < _nested_learner_argv.index(_nested_private)
         and _nested_learner_argv.index(_db_override_root)
             < _nested_learner_argv.index("--bind")
@@ -443,9 +443,9 @@ def test_role_runner(client, suite_state):
         ["--perms", "0444", "--ro-bind-data", "7",
          f"{_sandbox.RUNNER_WORKDIR}/main.py"]
             in [_f3_runner_argv[i:i + 5] for i in range(len(_f3_runner_argv) - 4)]
-        and ("8", "/home/aina/go/pkg/mod")
+        and ("8", f"{_sandbox.USER_HOME}/go/pkg/mod")
             in _sb_mounts(_f3_runner_argv, "--ro-bind-fd")
-        and "/home/aina/.cache/go-build" not in _f3_runner_argv
+        and f"{_sandbox.USER_HOME}/.cache/go-build" not in _f3_runner_argv
         and _sb_mounts(_f3_runner_argv, "--ro-bind")[-1]
             == (_f3_bundle, _f3_bundle)
         and _f3_runner_argv[-2:] == ["--chdir", _sandbox.RUNNER_WORKDIR]

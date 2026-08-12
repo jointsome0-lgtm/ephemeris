@@ -45,6 +45,9 @@ def test_sandbox_learning(client, suite_state):
     # local import resolves to.
     import resource as _resource_mod
 
+    # The home the sandbox resolved for THIS host (issue #182): the mounts
+    # below are built from it, so asserting a literal would only pass here.
+    _sb_userhome = _sandbox.USER_HOME
     _sb_root = "/tmp/ephemeris-e1-verify"
     _sb_bundle = f"{_sb_root}/invented-bundle"
     _sb_agent = _sandbox.build_sandbox_argv(
@@ -68,7 +71,7 @@ def test_sandbox_learning(client, suite_state):
           and ["--dev", "/dev"] == argv[argv.index("--dev"):argv.index("--dev") + 2]
           and argv.count("--tmpfs") >= 2
           and "/tmp" in [argv[i + 1] for i, x in enumerate(argv) if x == "--tmpfs"]
-          and "/home/aina" in [argv[i + 1] for i, x in enumerate(argv) if x == "--tmpfs"]
+          and _sb_userhome in [argv[i + 1] for i, x in enumerate(argv) if x == "--tmpfs"]
           for argv in (_sb_agent, _sb_learner, _sb_runner))
     ), (
         "E1 argv: every profile has the namespace/base-fs/die-with-parent contract"
@@ -82,26 +85,26 @@ def test_sandbox_learning(client, suite_state):
     )
 
     _sb_agent_try_ro = {
-        ("/home/aina/.nvm/versions", "/home/aina/.nvm/versions"),
-        ("/home/aina/.local/share/claude/versions", "/home/aina/.local/share/claude/versions"),
-        ("/home/aina/.codex/auth.json", "/home/aina/.codex/auth.json"),
-        ("/home/aina/.codex/config.toml", "/home/aina/.codex/config.toml"),
-        ("/home/aina/.claude/.credentials.json", "/home/aina/.claude/.credentials.json"),
-        ("/home/aina/.claude/settings.json", "/home/aina/.claude/settings.json"),
-        ("/home/aina/.claude.json", "/home/aina/.claude.json"),
+        (f"{_sb_userhome}/.nvm/versions", f"{_sb_userhome}/.nvm/versions"),
+        (f"{_sb_userhome}/.local/share/claude/versions", f"{_sb_userhome}/.local/share/claude/versions"),
+        (f"{_sb_userhome}/.codex/auth.json", f"{_sb_userhome}/.codex/auth.json"),
+        (f"{_sb_userhome}/.codex/config.toml", f"{_sb_userhome}/.codex/config.toml"),
+        (f"{_sb_userhome}/.claude/.credentials.json", f"{_sb_userhome}/.claude/.credentials.json"),
+        (f"{_sb_userhome}/.claude/settings.json", f"{_sb_userhome}/.claude/settings.json"),
+        (f"{_sb_userhome}/.claude.json", f"{_sb_userhome}/.claude.json"),
     }
     assert (
         set(_sb_mounts(_sb_agent, "--ro-bind")) == {
           ("/", "/"),
-          ("/home/aina/.local/bin", "/home/aina/.local/bin"),
+          (f"{_sb_userhome}/.local/bin", f"{_sb_userhome}/.local/bin"),
         }
         and set(_sb_mounts(_sb_agent, "--ro-bind-try")) == _sb_agent_try_ro
         and set(_sb_mounts(_sb_agent, "--bind-try")) == {
-          ("/home/aina/go", "/home/aina/go"),
-          ("/home/aina/.cache/go-build", "/home/aina/.cache/go-build"),
+          (f"{_sb_userhome}/go", f"{_sb_userhome}/go"),
+          (f"{_sb_userhome}/.cache/go-build", f"{_sb_userhome}/.cache/go-build"),
         }
         and _sb_mounts(_sb_agent, "--bind") == [(_sb_bundle, _sb_bundle)]
-        and {"/home/aina/.codex", "/home/aina/.claude"}.issubset(
+        and {f"{_sb_userhome}/.codex", f"{_sb_userhome}/.claude"}.issubset(
           {_sb_agent[i + 1] for i, x in enumerate(_sb_agent) if x == "--tmpfs"})
     ), (
         "E1 argv: lesson-agent exact home binds and ephemeral CLI state"
@@ -119,19 +122,19 @@ def test_sandbox_learning(client, suite_state):
     assert (
         set(_sb_mounts(_sb_agent_persist, "--bind")) == {
           (_sb_bundle, _sb_bundle),
-          (f"{_sb_home}/claude", "/home/aina/.claude"),
-          (f"{_sb_home}/codex", "/home/aina/.codex"),
+          (f"{_sb_home}/claude", f"{_sb_userhome}/.claude"),
+          (f"{_sb_home}/codex", f"{_sb_userhome}/.codex"),
         }
         and set(_sb_mounts(_sb_agent_persist, "--ro-bind-try")) == _sb_agent_try_ro
         and {_sb_agent_persist[i + 1]
              for i, x in enumerate(_sb_agent_persist) if x == "--tmpfs"} == {
-          "/tmp", "/home/aina",
+          "/tmp", _sb_userhome,
         }
         # The persistent binds land where the tmpfs entries were: before the
         # read-only credentials, which must keep winning over them.
         and all(
           _sb_agent_persist.index(f"{_sb_home}/{name}")
-          < _sb_agent_persist.index(f"/home/aina/.{cli}/{leaf}")
+          < _sb_agent_persist.index(f"{_sb_userhome}/.{cli}/{leaf}")
           for name, cli, leaf in (
             ("claude", "claude", ".credentials.json"),
             ("codex", "codex", "auth.json"),
@@ -236,11 +239,11 @@ def test_sandbox_learning(client, suite_state):
     assert (
         set(_sb_mounts(_sb_learner, "--ro-bind")) == {
           ("/", "/"),
-          ("/home/aina/.local/bin", "/home/aina/.local/bin"),
+          (f"{_sb_userhome}/.local/bin", f"{_sb_userhome}/.local/bin"),
         }
         and set(_sb_mounts(_sb_learner, "--ro-bind-try")) == {
-          ("/home/aina/go", "/home/aina/go"),
-          ("/home/aina/.cache/go-build", "/home/aina/.cache/go-build"),
+          (f"{_sb_userhome}/go", f"{_sb_userhome}/go"),
+          (f"{_sb_userhome}/.cache/go-build", f"{_sb_userhome}/.cache/go-build"),
         }
         and _sb_mounts(_sb_learner, "--bind") == [(_sb_bundle, _sb_bundle)]
         and _sb_learner[-2:] == ["--chdir", _sb_bundle]
@@ -253,7 +256,7 @@ def test_sandbox_learning(client, suite_state):
           (_sb_bundle, _sb_bundle),
         }
         and _sb_mounts(_sb_runner, "--ro-bind-fd") == [
-          ("7", "/home/aina/go/pkg/mod")
+          ("7", f"{_sb_userhome}/go/pkg/mod")
         ]
         and not _sb_mounts(_sb_runner, "--bind")
         and _sb_runner[-4:] == ["--dir", _sandbox.RUNNER_WORKDIR,

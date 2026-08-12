@@ -35,10 +35,19 @@ def _resolve_user_home() -> str:
     credential files bound read-only below. A caller-settable value would move
     that boundary, so the boundary is read from the passwd entry of the uid
     this process actually runs as.
+
+    ``app.main`` imports this module unconditionally, so a host that cannot
+    answer the question at all — no ``pwd``, or a uid with no passwd entry, as
+    a container running under an arbitrary numeric uid has — must not take the
+    whole tracker down with it. It gets a home that exists nowhere instead, and
+    Learn fails closed on the runtime probe like any other missing requirement.
     """
     if pwd is None:  # pragma: no cover - non-POSIX import path only
         return _UNRESOLVED_HOME
-    return pwd.getpwuid(os.getuid()).pw_dir
+    try:
+        return pwd.getpwuid(os.getuid()).pw_dir
+    except KeyError:  # pragma: no cover - uid without a passwd entry
+        return _UNRESOLVED_HOME
 
 
 USER_HOME = _resolve_user_home()
@@ -67,13 +76,16 @@ _REQUIRED_BWRAP_OPTIONS = (
 )
 
 
-def _missing_bwrap_options(path: str) -> tuple[str, ...]:
-    """Required options ``path`` does not list in its own usage text.
+def _bwrap_rejection(path: str) -> str:
+    """Why ``path`` cannot serve as this module's bubblewrap, or ``""``.
 
-    Empty when it lists them all — and also when the usage text cannot be read
-    at all, which proves nothing either way: the runtime probe runs the real
-    binary and reports its failure rather than a guess made here.
+    Every answer other than "yes" is a rejection, including a ``--help`` that
+    cannot be run or does not finish: a candidate this module cannot even ask
+    is a candidate it cannot vouch for, and rejecting it is what lets the next
+    one — a working distribution install behind a stale user build — be tried.
     """
+    if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+        return "not an executable file"
     try:
         result = subprocess.run(
             [path, "--help"],
@@ -84,31 +96,31 @@ def _missing_bwrap_options(path: str) -> tuple[str, ...]:
             check=False,
             timeout=5,
         )
-    except (OSError, subprocess.SubprocessError):
-        return ()
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"cannot be asked for its options: {exc}"
     listed = set(result.stdout.split())
-    return tuple(
+    missing = [
         option for option in _REQUIRED_BWRAP_OPTIONS if option not in listed
-    )
+    ]
+    if missing:
+        return "does not accept " + " ".join(missing)
+    return ""
 
 
 def _resolve_bwrap() -> tuple[str, str]:
-    """The first candidate executable that speaks this module's option set.
+    """The first candidate that speaks this module's whole option set.
 
     Returns the chosen path and an empty reason. When no candidate qualifies it
-    returns the preferred path — so the pure argv builders stay total — and the
-    reason every candidate was rejected, which the runtime probe below refuses
-    with instead of spawning anything.
+    returns the preferred path — so the pure argv builders stay total — and why
+    each was rejected, which the runtime probe below refuses with instead of
+    spawning anything.
     """
     reasons = []
     for candidate in _BWRAP_CANDIDATES:
-        if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):
-            reasons.append(f"{candidate}: not an executable file")
-            continue
-        missing = _missing_bwrap_options(candidate)
-        if not missing:
+        rejection = _bwrap_rejection(candidate)
+        if not rejection:
             return candidate, ""
-        reasons.append(f"{candidate}: does not accept {' '.join(missing)}")
+        reasons.append(f"{candidate}: {rejection}")
     return _BWRAP_CANDIDATES[0], "no usable bubblewrap — " + "; ".join(reasons)
 
 
