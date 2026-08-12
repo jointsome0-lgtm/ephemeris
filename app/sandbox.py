@@ -206,8 +206,12 @@ _AGENT_HOME_MOUNTS = (
                "Codex configuration, deliberately read-only"),
     _HomeMount("--tmpfs", f"{USER_HOME}/.claude",
                "ephemeral writable Claude session and cache state"),
-    _HomeMount("--ro-bind-try", f"{USER_HOME}/.claude/.credentials.json",
-               "Claude login material, deliberately read-only"),
+    # Deliberately NOT here: `~/.claude/.credentials.json`. Its refresh token
+    # is single-use — a sandboxed refresh consumes it server-side but cannot
+    # write the replacement back through a read-only bind, so sharing the file
+    # invalidates the host's own login (#188). The agent authenticates through
+    # `CLAUDE_CODE_OAUTH_TOKEN` in its environment instead, a long-lived token
+    # that never rotates on use (terminal.py, lesson-agent role only).
     _HomeMount("--ro-bind-try", f"{USER_HOME}/.claude/settings.json",
                "Claude configuration, deliberately read-only"),
     _HomeMount("--ro-bind-try", f"{USER_HOME}/.claude.json",

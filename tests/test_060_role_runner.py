@@ -407,7 +407,7 @@ def test_role_runner(client, suite_state):
     assert (
         _f3_argv_digest(_sandbox.build_sandbox_argv(
             "lesson-agent", _sb_bundle, bundle_root=_sb_root
-        )) == "a0a6b85c4d66389748fd17572dc7f5f2bbfb69c92414d9fb21732dde5a0acf5a"
+        )) == "52f6085fe52ef1192d6f366439b9a3ec3a34cb0f893f4bab110b41d0629aa797"
         and _f3_argv_digest(_sandbox.build_sandbox_argv(
             "lesson-learner", _sb_bundle, bundle_root=_sb_root
         )) == "06f6efba3398392f12dd547f0b05288e23d81a68a09988433f82308cbc5f895c"

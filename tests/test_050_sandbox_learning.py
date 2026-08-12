@@ -86,7 +86,6 @@ def test_sandbox_learning(client, suite_state):
         ("/home/aina/.local/share/claude/versions", "/home/aina/.local/share/claude/versions"),
         ("/home/aina/.codex/auth.json", "/home/aina/.codex/auth.json"),
         ("/home/aina/.codex/config.toml", "/home/aina/.codex/config.toml"),
-        ("/home/aina/.claude/.credentials.json", "/home/aina/.claude/.credentials.json"),
         ("/home/aina/.claude/settings.json", "/home/aina/.claude/settings.json"),
         ("/home/aina/.claude.json", "/home/aina/.claude.json"),
     }
@@ -133,9 +132,13 @@ def test_sandbox_learning(client, suite_state):
           _sb_agent_persist.index(f"{_sb_home}/{name}")
           < _sb_agent_persist.index(f"/home/aina/.{cli}/{leaf}")
           for name, cli, leaf in (
-            ("claude", "claude", ".credentials.json"),
             ("codex", "codex", "auth.json"),
           )
+        )
+        # The host's rotating Claude login material never enters the profile;
+        # the tutor authenticates via CLAUDE_CODE_OAUTH_TOKEN instead (#188).
+        and not any(
+          ".credentials.json" in arg for arg in _sb_agent + _sb_agent_persist
         )
     ), "E1 argv: a persistent agent home replaces only the ephemeral state dirs"
     assert (
@@ -713,6 +716,28 @@ def test_sandbox_learning(client, suite_state):
         results["learner_gets_nothing"] = not (_S3_VARS & set(learner_env))
         await learner.close()
 
+        # --- #188: Claude auth is a long-lived token variable, agent-only ----
+        results["no_token_file_no_var"] = (
+            "CLAUDE_CODE_OAUTH_TOKEN" not in agent_env
+            and "CLAUDE_CODE_OAUTH_TOKEN" not in learner_env
+        )
+        with tempfile.TemporaryDirectory() as _tok_dir:
+            _tok_file = Path(_tok_dir) / "claude-token"
+            _tok_file.write_text("demo-long-lived-token\n", encoding="utf-8")
+            with _sandbox_mock.patch.object(
+                    _terminal, "_CLAUDE_TOKEN_FILE", _tok_file):
+                tok_agent, tok_agent_env = await _sandboxed(
+                    None, "http://127.0.0.1:8765")
+                tok_learner, tok_learner_env = await _sandboxed(
+                    "lesson-learner", "http://127.0.0.1:8765", prepare=False)
+        results["token_env_agent_only"] = (
+            tok_agent_env.get("CLAUDE_CODE_OAUTH_TOKEN")
+            == "demo-long-lived-token"
+            and "CLAUDE_CODE_OAUTH_TOKEN" not in tok_learner_env
+        )
+        await tok_agent.close()
+        await tok_learner.close()
+
         with _sandbox_mock.patch.object(
                 _terminal, "_detect_proxy_env", return_value={}), \
                 _sandbox_mock.patch.object(
@@ -820,6 +845,12 @@ def test_sandbox_learning(client, suite_state):
         _s3.get("learner_gets_nothing") and _s3.get("plain_gets_nothing")
     ), (
         "S3 learner and plain shells receive neither capability variable"
+    )
+    assert (
+        _s3.get("no_token_file_no_var") and _s3.get("token_env_agent_only")
+    ), (
+        "#188 the Claude token variable exists iff the instance file does, "
+        "and only the lesson-agent shell receives it"
     )
     assert (
         _s3.get("no_url_no_token") and _s3.get("failed_spawn_leaves_no_token")
