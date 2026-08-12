@@ -56,11 +56,80 @@ data/lessons/<slug>/
   CLAUDE.md        app-generated shim for AGENTS.md — regenerated
   .claude/         app-generated agent-harness config for the bundle
     settings.json  constant `{"outputStyle": "Learning"}` — regenerated
+  .git/            per-lesson history — app-initialized, agent-committed
+    info/exclude   app-owned rules, written once at init
 ```
 
 Reserved names, which no page, block file, or artifact root may claim:
 `lesson.json`, `attempts.jsonl`, `assessments.jsonl`, `memory.jsonl`,
-`runs.jsonl`, `AGENTS.md`, `CLAUDE.md`, `.claude`, `node_modules`, `source`.
+`runs.jsonl`, `AGENTS.md`, `CLAUDE.md`, `.claude`, `node_modules`, `source`,
+`.git`.
+
+Each bundle is its own local git repository, set up on the read path unless
+something that is not a plain directory holds the `.git` name; the app
+guarantees only that the repository exists and is usable, and the tutor agent
+owns every commit. Setup has two shapes, because they are two problems. Where
+there is no `.git`, a whole repository is BUILT ELSEWHERE — in an app-private
+staging directory beside the bundles — and moved in by `rename`: atomic,
+following no link, unable to overwrite a non-empty directory, so the bundle
+sees a finished repository or none, and `git init`/`git config` never write to
+a path the lesson's own session could have replaced. Where a `.git` directory
+exists but is not ready, it is finished in place without git at all: a
+`mkdir` per missing directory, the identity where the repository carries none
+(git parses a COPY of `config` in staging and the result is renamed in — a
+value already configured is never overwritten), and the app's own rules.
+Nothing that would follow a name the session controls. Something that is no
+repository at all — `.git` was servable and unreserved until this change, so a
+bundle may hold an ordinary directory under the name — is left alone: no
+`HEAD`, no repair.
+
+Readiness, not existence, is the gate: `.git/objects` and `.git/refs` present,
+and the app's own rules found at `.git/info/exclude`, whose CONTENT is the
+marker — `git init` writes a template of its own at that name, so presence
+proves nothing, and a size mismatch is answered without reading the file. What
+this catches is a repository restored from a backup, which is an archive of
+FILES: a never-committed bundle comes back without its empty `objects/`, a
+packed one with its packs and `packed-refs` but without the `refs/` they
+emptied, and git refuses either. Setup is best-effort — a missing or failing
+`git` is logged and skipped, and the bundle read proceeds unchanged. It also
+means a later change to the rules re-applies itself. History is local: no
+remote, no push, and one repository per bundle rather than one over the
+`lessons/` tree, because the lesson-scoped sandbox only ever sees its own
+bundle directory.
+
+The build leaves the repository two things a commit made inside the sandbox
+cannot get anywhere else. A repository-local `user.name`/`user.email` — a
+non-personal identity, since nothing here is the owner's work and there is no
+remote — because the lesson-agent sandbox binds a blank `$HOME` with no
+`.gitconfig` and passes no `GIT_AUTHOR_*`, so an unconfigured commit would die
+on "unable to auto-detect email address". And app-owned exclude rules in
+`.git/info/exclude`, never `.gitignore`: that name is the agent's, so writing
+it would either overwrite the agent's rules or — for a bundle that already had
+one — silently lose the app's. The rules cover `node_modules` (the mount point
+described below, never bundle content, and unanchored because installed
+packages belong in no history at any depth) plus the app-owned `*.jsonl`
+projections and the regenerated briefs, each anchored to the bundle root: an
+unanchored pattern matches its name at any depth, and a learner's own
+`attempts/…/runs.jsonl` is authored work. Excluding the projections keeps
+rollback safe: they are read-only for the agent (§6), a tracked `runs.jsonl`
+would be rewritten by a learner's `git reset --hard`, and its output tails
+exist nowhere else. History therefore holds authored work — pages, assets, and
+the learner's files under the artifact roots. Git gives no ignore rule a
+bundle cannot override (`.gitignore` outranks `info/exclude`, and `git add -f`
+outranks everything), so the exclusions are a contract with the agent, not a
+boundary against it; the brief says so.
+
+What IS a boundary is that the app runs OUTSIDE the sandbox the bundle's own
+session is confined to, and a name that session controls must never decide
+where the app's bytes land — and that the session runs CONCURRENTLY, so
+inspecting a name before writing it narrows the window rather than closing it.
+Hence the shapes above: nothing the app writes into a bundle here goes through
+a name that session could have replaced. A `.git` that is not a plain
+directory is declined, the exclude file is written by opening every component
+`O_NOFOLLOW` and renaming it into place — a planted link is replaced, never
+followed, and the marker never exists half-written — and everything else is
+built where only the app can reach. (2026-08-12,
+[#186](https://github.com/jointsome0-lgtm/ephemeris/issues/186).)
 
 `source/` holds the raw material a lesson was built from — fetched pages and
 a `_fetched.json` recording each one's url, date and sha256 — so provenance
@@ -1001,7 +1070,7 @@ re-dumping cannot provide it. Additive evolution inside v2 means new
 OPTIONAL fields; any change to the meaning of an existing field requires
 v3.
 
-Three named exceptions, taken deliberately rather than through v3. Adding
+Four named exceptions, taken deliberately rather than through v3. Adding
 `.claude` to the §2 reserved names (2026-07-29,
 [#84](https://github.com/jointsome0-lgtm/ephemeris/issues/84)) narrows what
 `entry`, `pages[].path`, `blocks[].file` and `artifact_roots[]` accept
@@ -1010,7 +1079,9 @@ without a version bump. A v2 manifest declaring a path whose first segment is
 `invalid-entry`), and a manifest whose only page was such a path becomes
 rejected with `no-pages`. Adding `node_modules` (2026-08-09,
 [#161](https://github.com/jointsome0-lgtm/ephemeris/issues/161)) narrows the
-same four fields the same way, and so does adding `source` (2026-08-09).
+same four fields the same way, and so do adding `source` (2026-08-09) and
+`.git` (2026-08-12,
+[#186](https://github.com/jointsome0-lgtm/ephemeris/issues/186)).
 
 `source` differs from the other two in what happens on disk. The app writes
 nothing under it — the tutor stores fetched material there — so workspace

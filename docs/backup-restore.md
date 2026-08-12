@@ -89,6 +89,17 @@ Point-in-time consistency across the whole tree would need a filesystem snapshot
 the backup when nothing is editing lessons — the timer's small hours are already
 close to that.
 
+A lesson's own git repository (`lessons/<slug>/.git`, #186) is part of that tree
+and inherits the same seam, with one shape worth naming: a commit landing
+between enumeration and archiving can put an updated branch ref in the set while
+the objects it points at were never enumerated, and the restored repository then
+reports a bad object rather than a partial file. The lesson's content is intact
+— every page and learner file is a file of its own — so the fix is to drop the
+history and let the app build a fresh repository on the next read:
+`rm -rf <data-dir>/lessons/<slug>/.git`. Backups deliberately keep archiving
+these repositories: a rare broken history that can be discarded in one command
+is worth more than never restoring any history at all.
+
 Before a snapshot is allowed to claim a name it is opened and run through a full
 `PRAGMA integrity_check`. A backup that cannot be read fails the night it is
 written, while the source still exists, instead of on the day it is needed.

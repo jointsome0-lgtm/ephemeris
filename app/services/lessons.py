@@ -12,8 +12,10 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
 import sqlite3
 import stat as stat_module
+import subprocess
 import tempfile
 import textwrap
 from datetime import datetime, timezone
@@ -45,6 +47,65 @@ AGENT_HOMES_DIR = DATA_DIR / "agent-homes"
 # same reason, and bound over `<bundle>/node_modules` inside the agent sandbox
 # so the bundle on disk never carries them (see _ensure_build_workspace).
 BUILD_WORKSPACES_DIR = DATA_DIR / "lesson-builds"
+# Each bundle is its own local git repository (#186), initialized on the read
+# path and never served.
+GIT_DIR_NAME = ".git"
+GIT_INIT_TIMEOUT_SECONDS = 10
+# What history is for is authored work: the lesson's pages and the learner's
+# files. Everything the app itself writes into a bundle stays out of it, in the
+# repository's own exclude file rather than a `.gitignore` — that name belongs
+# to the agent, and a bundle that already has one must neither be overwritten
+# nor able to bypass these rules.
+#   node_modules  the mount point above; on-host package state and the
+#                 bundler's `out/` appear there inside the sandbox
+#   *.jsonl       app-owned projections, read-only for the agent. A checkpoint
+#                 that tracked them would let a learner's `git reset --hard`
+#                 roll them back too, and `runs.jsonl` output tails exist
+#                 nowhere else — rollback must not be able to destroy them.
+#   briefs        regenerated verbatim on every terminal open, so tracking them
+#                 buys a diff per session and no history worth reading
+# Anchored, every one of them: a pattern with no slash matches that NAME at any
+# depth, and the artifact roots hold learner-authored files this app has no
+# opinion about — an `attempts/parser/runs.jsonl` the learner wrote is exactly
+# the work history is for. `node_modules/` is the deliberate exception: it is
+# unanchored because installed packages belong in no lesson's history at any
+# depth, whoever created the directory.
+GIT_EXCLUDE_PATH = ("info", "exclude")
+# What git refuses to work without (gitrepository-layout), and what a restore
+# can therefore be missing — see _bundle_repo_is_ready.
+GIT_REQUIRED_DIRS = ("objects", "refs")
+# Where a new repository is built before it is moved into a bundle. A sibling
+# of the bundles, for the reason the other two siblings above exist and one
+# more: `git init` and `git config` follow a link at any name they write, and
+# a bundle is writable from inside its own session while this runs outside it.
+# Building here and renaming the finished `.git` in leaves no window at all —
+# no partial repository is ever visible, and no git process ever writes to a
+# path the session could have replaced a moment earlier.
+GIT_STAGING_DIR = DATA_DIR / "lesson-git-staging"
+BUNDLE_GIT_EXCLUDE = """\
+# Written by the Learn app when it set this repository up (#186).
+# App-owned paths only: rules of your own belong in .gitignore.
+node_modules/
+/attempts.jsonl
+/assessments.jsonl
+/memory.jsonl
+/runs.jsonl
+/AGENTS.md
+/CLAUDE.md
+/.claude/
+"""
+# A repository-local identity, because the lesson-agent sandbox gives the
+# session a blank `$HOME` with no `.gitconfig` bound and no `GIT_AUTHOR_*` in
+# its environment: without this, the first commit the brief asks for dies on
+# "unable to auto-detect email address". Deliberately not the owner's identity
+# — nothing here is authored by them, and these repositories have no remote.
+# An honest git config is a few hundred bytes; this is the ceiling on what the
+# app will read from a name a lesson session can write (see #186 review).
+GIT_CONFIG_MAX_BYTES = 256 * 1024
+BUNDLE_GIT_IDENTITY = (
+    ("user.name", "Ephemeris Learn"),
+    ("user.email", "lesson@ephemeris.invalid"),  # RFC 2606 reserved TLD
+)
 DEFAULT_ENTRY = bundle_schema.DEFAULT_ENTRY
 MANIFEST_NAME = "lesson.json"
 
@@ -360,6 +421,346 @@ def _mkdir_no_follow(path: Path) -> None:
         path.mkdir()
 
 
+def _is_regular_no_follow(path: Path) -> bool:
+    try:
+        return stat_module.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _read_bounded_no_follow(path, limit: int, dir_fd: int | None = None) -> str | None:
+    """`path` as text, only if it is a regular file no larger than `limit`.
+
+    Same §2 rule as `_read_regular_no_follow` and the same reason as
+    `_holds_exactly` for the bound: these names sit in a directory a lesson
+    session can write, and nothing on a read path may load whatever it finds
+    there. With `dir_fd`, `path` is a name resolved against that descriptor —
+    which is how a caller reads and later replaces the same name without the
+    directory underneath it being swapped in between."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+                     dir_fd=dir_fd)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat_module.S_ISREG(info.st_mode) or info.st_size > limit:
+            return None
+        with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as handle:
+            fd = -1
+            return handle.read(limit)
+    except OSError:
+        return None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _holds_exactly(path: Path, expected: str) -> bool:
+    """Whether `path` is a regular file whose bytes are exactly `expected`.
+
+    Bounded by the comparison itself: the size is checked on the descriptor
+    the bytes come from, and a file of any other length is answered without
+    reading it. The name belongs to a session that can put a multi-gigabyte
+    sparse file there in an instant, and this is asked on a read path.
+    """
+    want = expected.encode("utf-8")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except OSError:
+        return False
+    try:
+        info = os.fstat(fd)
+        if not stat_module.S_ISREG(info.st_mode) or info.st_size != len(want):
+            return False
+        return os.read(fd, len(want)) == want
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+
+
+def _write_git_exclude(git_dir: Path) -> None:
+    """Put the app-owned rules in `.git/info/exclude`, atomically and through
+    no link at all.
+
+    Both properties are load-bearing, and for the same reason: the bundle is
+    writable from inside the lesson's own session while this runs OUTSIDE that
+    sandbox, as the app. A plain `write_text` would follow whatever the name
+    points at — a session that replaced `exclude` (or `info`) with a link to a
+    file of the app user's would have this method write the app's bytes there.
+    So every component is opened `O_NOFOLLOW` from a descriptor on the one
+    directory already known to be real, and the file arrives by rename: the
+    marker never exists half-written, which is what lets the readiness gate
+    trust it, and a rename replaces a planted link rather than following it.
+    """
+    info_name, exclude_name = GIT_EXCLUDE_PATH
+    git_fd = os.open(git_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info_fd = os.open(info_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                          dir_fd=git_fd)
+    finally:
+        os.close(git_fd)
+    staged = f"{exclude_name}.{uuid4().hex}.tmp"
+    try:
+        fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o644, dir_fd=info_fd)
+        try:
+            with os.fdopen(os.dup(fd), "w", encoding="utf-8") as handle:
+                handle.write(BUNDLE_GIT_EXCLUDE)
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            os.close(fd)
+        os.replace(staged, exclude_name, src_dir_fd=info_fd, dst_dir_fd=info_fd)
+    except BaseException:
+        try:
+            os.unlink(staged, dir_fd=info_fd)
+        except OSError:
+            pass
+        raise
+    finally:
+        os.close(info_fd)
+
+
+def _bundle_repo_is_ready(git_dir: Path) -> bool:
+    """Three stats deciding whether the setup below has anything left to do.
+
+    `objects/` and `refs/` say git still considers this a repository — it
+    refuses one that is missing either, and both are directories a repository
+    can carry EMPTY. Empty directories are not files, so they do not survive
+    an instance backup/restore round trip (`scripts/backup_db.py`: the archive
+    is a list of files), and the two empty in practice are not the same
+    repository: a never-committed bundle restores without `objects/`, while a
+    packed one restores with its packs and `packed-refs` but without `refs/`,
+    every reference having moved into a file. Either way git calls what comes
+    back "not a git repository", so both are checked.
+
+    `info/exclude` is this app's completion marker, renamed into place last:
+    reaching it means the identity and the rules are in place, so a run that
+    died halfway through a transient error is retried rather than frozen
+    forever behind the directory it managed to create. Its CONTENT is the
+    marker, not its existence — `git init` writes a template of its own at
+    that name from the first moment, so mere presence would call every
+    half-finished setup, and every repository predating this app's rules,
+    finished. The read follows no link (§2) and takes a mismatch as unready,
+    which also means a later change to the rules re-applies itself.
+    """
+    return (
+        all(git_dir.joinpath(name).is_dir() for name in GIT_REQUIRED_DIRS)
+        and _holds_exactly(git_dir.joinpath(*GIT_EXCLUDE_PATH),
+                           BUNDLE_GIT_EXCLUDE)
+    )
+
+
+def _install_bundle_repo(git_dir: Path) -> None:
+    """Build a whole repository somewhere the session cannot reach, then move
+    it in.
+
+    `git init` and `git config` follow a link at every name they write —
+    `config`, `HEAD`, the template files — and the bundle is writable from
+    inside the lesson's own session while this runs outside it, as the app.
+    Checking those names first would only narrow the window: the session runs
+    concurrently and can plant a link between the check and the write.
+
+    So git is never pointed at the bundle at all. The repository is built in
+    an app-private directory and arrives by `rename`, which is atomic, follows
+    no link, and cannot overwrite a non-empty directory — if something took
+    the name meanwhile, this loses and leaves it alone. A half-built
+    repository is never visible either: what appears under the bundle is a
+    finished one or nothing.
+    """
+    staged: Path | None = None
+    try:
+        # Inside the guard, both of them: an occupied name, a read-only parent
+        # or a quota hiccup here is one more way this can fail, and none of
+        # them is a reason for a bundle to stop being readable.
+        GIT_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+        staged = Path(tempfile.mkdtemp(dir=GIT_STAGING_DIR))
+        work = staged / "repo"
+        work.mkdir()
+        subprocess.run(
+            ["git", "init", "--quiet", str(work)],
+            check=True, capture_output=True, timeout=GIT_INIT_TIMEOUT_SECONDS,
+        )
+        for key, value in BUNDLE_GIT_IDENTITY:
+            subprocess.run(
+                ["git", "-C", str(work), "config", key, value],
+                check=True, capture_output=True,
+                timeout=GIT_INIT_TIMEOUT_SECONDS,
+            )
+        built = work / GIT_DIR_NAME
+        built.joinpath(*GIT_EXCLUDE_PATH).write_text(
+            BUNDLE_GIT_EXCLUDE, encoding="utf-8"
+        )
+        os.rename(built, git_dir)
+    except (OSError, subprocess.SubprocessError) as exc:
+        _log.warning("lesson bundle git init skipped for %s: %s", git_dir, exc)
+    finally:
+        if staged is not None:
+            shutil.rmtree(staged, ignore_errors=True)
+
+
+def _repair_bundle_repo(git_dir: Path) -> None:
+    """Finish a repository that exists but is not ready — without git.
+
+    The one case that reaches here is a repository restored from a backup,
+    which is an archive of files and so comes back missing whichever of
+    `objects/` and `refs/` was empty. Recreating a directory is all that is
+    needed, and `mkdir` follows no link, so this asks nothing of git: running
+    `git init` over an existing repository would put the app back to writing
+    through names the session controls.
+
+    For the same reason the identity is not touched here. A restored
+    repository brings its `config` with it — a regular file, archived like any
+    other — and one this app never created is not its to configure.
+
+    What must NOT reach the repair is a `.git` that is no repository at all:
+    the name was servable and unreserved until this change, so a bundle may
+    hold an ordinary directory under it. Creating `objects/` and the marker
+    there would leave something this app calls ready and git calls "not a git
+    repository", permanently. `HEAD` is the cheap discriminator — every
+    repository has one, an authored directory does not — and its absence means
+    hands off, as it does for every other name the app did not write.
+    """
+    if not _is_regular_no_follow(git_dir / "HEAD"):
+        _log.warning("lesson bundle git repair skipped for %s: no HEAD, so "
+                     "this is not a repository to finish", git_dir)
+        return
+    try:
+        fd = os.open(git_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        _log.warning("lesson bundle git repair skipped for %s: %s", git_dir, exc)
+        return
+    try:
+        for name in (*GIT_REQUIRED_DIRS, GIT_EXCLUDE_PATH[0]):
+            try:
+                os.mkdir(name, 0o755, dir_fd=fd)
+            except FileExistsError:
+                pass
+            except OSError as exc:
+                _log.warning("lesson bundle git repair incomplete for %s: %s",
+                             git_dir, exc)
+                return
+    finally:
+        os.close(fd)
+    if not _ensure_repo_identity(git_dir):
+        # No marker, so the next read comes back: a repository recorded as
+        # finished while its commits still cannot name an author is the one
+        # outcome this whole path exists to prevent.
+        return
+    try:
+        _write_git_exclude(git_dir)
+    except OSError as exc:
+        _log.warning("lesson bundle git rules not written for %s: %s",
+                     git_dir, exc)
+
+
+def _ensure_repo_identity(git_dir: Path) -> bool:
+    """Give a repository the app did not build the identity a commit needs.
+
+    A repository that reaches the repair — restored from a backup, or one an
+    agent created itself in a session after an init the app could not do —
+    may carry no local `user.name`/`user.email`, and the sandbox supplies
+    neither. Without them the checkpoint the brief asks for dies on "unable to
+    auto-detect email address", and the marker written just after would make
+    that permanent.
+
+    Whatever is already configured is kept; only a missing value is filled.
+    Git parses the file, since a config is not something to edit by hand — but
+    it parses a COPY, in the app-private staging directory, and the result is
+    renamed in. Pointing `git config` at the bundle is the one thing this
+    module will not do, for the reason `_install_bundle_repo` gives.
+
+    Returns whether the repository can be called finished. A config that is
+    not a plain readable file is not a failure and not the app's to solve — a
+    session that replaced its own repository's config gets to live with it —
+    but anything that went wrong while filling one in is, because the caller
+    is about to write the marker that stops it ever looking again.
+
+    Read and rename both go through ONE descriptor on `.git`, opened before
+    either. A path resolved twice is a directory that can be swapped in
+    between: rename the whole `.git` aside, leave a link at the name, and a
+    path-based replace would land in whatever it points at.
+    """
+    try:
+        git_fd = os.open(git_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        _log.warning("lesson bundle git identity skipped for %s: %s",
+                     git_dir, exc)
+        return False
+    staged: Path | None = None
+    try:
+        current = _read_bounded_no_follow("config", GIT_CONFIG_MAX_BYTES,
+                                          dir_fd=git_fd)
+        if current is None:
+            return True
+        GIT_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+        staged = Path(tempfile.mkdtemp(dir=GIT_STAGING_DIR))
+        copy = staged / "config"
+        copy.write_text(current, encoding="utf-8")
+        filled = False
+        for key, value in BUNDLE_GIT_IDENTITY:
+            read = subprocess.run(
+                ["git", "config", "-f", str(copy), "--get", key],
+                capture_output=True, text=True, timeout=GIT_INIT_TIMEOUT_SECONDS,
+            )
+            if read.returncode == 0 and read.stdout.strip():
+                continue
+            subprocess.run(
+                ["git", "config", "-f", str(copy), key, value],
+                check=True, capture_output=True,
+                timeout=GIT_INIT_TIMEOUT_SECONDS,
+            )
+            filled = True
+        if filled:
+            # Relative to the pinned `.git`, so the name replaced is the one
+            # that was read. A config the session rewrote in this same instant
+            # loses — its own repository, and the alternative is the race.
+            staged_fd = os.open(staged, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.replace(copy.name, "config",
+                           src_dir_fd=staged_fd, dst_dir_fd=git_fd)
+            finally:
+                os.close(staged_fd)
+        return True
+    except (OSError, subprocess.SubprocessError) as exc:
+        _log.warning("lesson bundle git identity not set for %s: %s",
+                     git_dir, exc)
+        return False
+    finally:
+        os.close(git_fd)
+        if staged is not None:
+            shutil.rmtree(staged, ignore_errors=True)
+
+
+def _ensure_bundle_repo(lesson_dir: Path) -> None:
+    """Give the bundle a usable local git repository (#186).
+
+    Per-lesson history is what lets the learner roll a broken experiment back
+    and lets a later tutor session read `git log` instead of guessing what
+    earlier ones did. The app only guarantees the repository exists and works;
+    committing is the tutor agent's job (see the brief) — which is why setup
+    leaves behind the two things a commit from inside the sandbox needs and
+    cannot get anywhere else: the app-owned exclude rules and a local identity.
+
+    Two shapes, because they are two different problems: creating a repository
+    where there is none, and finishing one that came back from a backup
+    incomplete. Both are best-effort — a bundle read must never fail because
+    git is missing or refused — and neither writes through a link (§2), at the
+    `.git` name or below it. A `.git` that is not a plain directory is left
+    alone entirely.
+    """
+    git_dir = lesson_dir / GIT_DIR_NAME
+    if git_dir.is_symlink():
+        return
+    if not git_dir.exists():
+        _install_bundle_repo(git_dir)
+        return
+    if git_dir.is_dir() and not _bundle_repo_is_ready(git_dir):
+        _repair_bundle_repo(git_dir)
+
+
 def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:
     """Dual-read the bundle manifest (v1/v2), creating the standard dirs and —
     for a lesson that has none — the v2 skeleton. Creation, never repair: an
@@ -374,6 +775,7 @@ def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:
     lesson_dir.mkdir(parents=True, exist_ok=True)
     for name in ("related", "assets"):
         _mkdir_no_follow(lesson_dir / name)
+    _ensure_bundle_repo(lesson_dir)
 
     manifest_path = _manifest_path(lesson["slug"])
     read = bundle_schema.read_manifest_path(
@@ -1673,6 +2075,16 @@ learner with blank controls has thrown their work away on screen.
   rewrite it.
 - `AGENTS.md` / `CLAUDE.md` — app-generated briefs (this file); never
   author or repurpose these names.
+- `.git/` — this bundle is a local git repository, initialized by the app.
+  Commit at every checkpoint and at the end of each session, with a message
+  saying what the learner did and what changed; `git log`/`git diff` is how
+  your next session sees what this one actually did. The app's own files —
+  the projections above, these briefs, `node_modules` — are excluded in
+  `.git/info/exclude`, so `git add -A` stages authored work only. Keep it
+  that way: `.gitignore` is free for rules of your own, but a rule that
+  re-includes an app-owned path (a `!` negation, a `git add -f`) puts a file
+  in history that the app rewrites behind you and a rollback would then
+  destroy. History is local: there is no remote to push.
 
 Pages render with network access for everything except code: fetch, images,
 media, fonts and stylesheets may use remote URLs. Remote SCRIPTS are the one
