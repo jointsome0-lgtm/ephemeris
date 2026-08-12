@@ -126,6 +126,68 @@ def test_a_commit_from_a_bare_environment_holds_authored_work_only():
     )
 
 
+def test_learner_files_named_like_a_projection_are_still_history():
+    """The exclude rules are anchored on purpose: a pattern with no slash
+    matches that name at any depth, and `attempts/…/runs.jsonl` is the
+    learner's own file, not the app's projection of the same name."""
+    lesson = _lesson("anchored rules")
+    bundle = _bundle(lesson)
+    nested = bundle / "attempts" / "invented-parser"
+    nested.mkdir(parents=True, exist_ok=True)
+    for name in ("runs.jsonl", "memory.jsonl", "CLAUDE.md"):
+        (nested / name).write_text("{}\n", encoding="utf-8")
+
+    ignored = _git(
+        bundle, "check-ignore", *[f"attempts/invented-parser/{n}"
+                                 for n in ("runs.jsonl", "memory.jsonl",
+                                           "CLAUDE.md")]
+    )
+    assert ignored.returncode == 1 and ignored.stdout == "", (
+        "nothing under an artifact root is excluded by an app-owned rule, "
+        f"but git ignored: {ignored.stdout!r}"
+    )
+    assert _git(bundle, "check-ignore", "runs.jsonl").returncode == 0, (
+        "while the app's own projection at the bundle root still is"
+    )
+
+
+def test_a_repo_restored_without_its_empty_dirs_is_completed_in_place():
+    """An instance backup is a list of FILES, so a bundle backed up before its
+    first commit comes back with a `.git` git calls "not a git repository".
+    The gate is readiness, not existence, so the next read finishes the job."""
+    lesson = _lesson("restored repo")
+    bundle = _bundle(lesson)
+    for empty in ("objects", "refs"):
+        shutil.rmtree(bundle / ".git" / empty)
+    assert _git(bundle, "status", "--porcelain").returncode != 0, (
+        "the simulated restore really did leave git unable to read it"
+    )
+
+    lessons.lesson_file_info(lesson)
+
+    assert _git(bundle, "status", "--porcelain").returncode == 0, (
+        "a read repairs what the restore could not carry"
+    )
+
+
+def test_a_half_finished_setup_is_retried_not_frozen():
+    lesson = _lesson("partial setup")
+    bundle = _bundle(lesson)
+    # What a transient failure between `git init` and the exclude write leaves
+    # behind: a repository with none of this app's rules.
+    (bundle / ".git" / "info" / "exclude").unlink()
+    _git(bundle, "config", "--unset", "user.email")
+
+    lessons.lesson_file_info(lesson)
+
+    assert (bundle / ".git" / "info" / "exclude").read_text(
+        encoding="utf-8"
+    ) == lessons.BUNDLE_GIT_EXCLUDE, "the rules are written on the retry"
+    assert _git(bundle, "config", "user.email").stdout.strip() == (
+        "lesson@ephemeris.invalid"
+    ), "and so is the identity the sandbox cannot supply"
+
+
 def test_repeated_ensures_never_re_init(monkeypatch):
     lesson = _lesson("idempotent")
     bundle = _bundle(lesson)
@@ -213,6 +275,26 @@ def test_a_missing_git_leaves_the_bundle_readable(monkeypatch):
     info = lessons.lesson_file_info(lesson)
     assert info and (bundle / lessons.MANIFEST_NAME).is_file(), (
         "history is derived, best-effort state: the read path does not care"
+    )
+
+
+def test_repository_internals_are_not_build_input():
+    """The build refuses a bundle holding a symlink, because the bundler would
+    resolve one into the artifact. Git's own metadata is not bundle content and
+    is reachable from no import — a symlinked hook must not brick every build.
+    """
+    from app.services import lesson_build
+
+    lesson = _lesson("repo internals")
+    bundle = _bundle(lesson)
+    (bundle / ".git" / "hooks" / "invented-hook").symlink_to("/bin/true")
+
+    assert lesson_build._linked_paths(bundle) == [], (
+        "a link under .git is repository state, not a lesson source"
+    )
+    (bundle / "related" / "invented-link.html").symlink_to("/etc/hostname")
+    assert lesson_build._linked_paths(bundle) == ["related/invented-link.html"], (
+        "while a real bundle link is still refused"
     )
 
 

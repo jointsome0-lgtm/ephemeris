@@ -65,11 +65,17 @@ Reserved names, which no page, block file, or artifact root may claim:
 `runs.jsonl`, `AGENTS.md`, `CLAUDE.md`, `.claude`, `node_modules`, `source`,
 `.git`.
 
-Each bundle is its own local git repository, initialized on the read path when
-nothing already holds the name and never repaired afterwards; the app
+Each bundle is its own local git repository, set up on the read path unless
+something that is not a plain directory holds the `.git` name; the app
 guarantees only that the repository exists and is usable, and the tutor agent
-owns every commit. Init is best-effort — a missing or failing `git` is logged
-and skipped, and the bundle read proceeds unchanged. History is local: no
+owns every commit. The gate is readiness, not existence — `.git/objects`
+present, and the app's own `.git/info/exclude` written last as the completion
+marker — so a setup interrupted by a transient error is finished on the next
+read rather than frozen behind the directory it managed to create, and so is a
+never-committed repository restored from a backup, whose empty `objects/` and
+`refs/` an archive of files cannot carry. Every step is idempotent, `git init`
+included. Setup is best-effort — a missing or failing `git` is logged and
+skipped, and the bundle read proceeds unchanged. History is local: no
 remote, no push, and one repository per bundle rather than one over the
 `lessons/` tree, because the lesson-scoped sandbox only ever sees its own
 bundle directory.
@@ -83,12 +89,15 @@ on "unable to auto-detect email address". And app-owned exclude rules in
 `.git/info/exclude`, never `.gitignore`: that name is the agent's, so writing
 it would either overwrite the agent's rules or — for a bundle that already had
 one — silently lose the app's. The rules cover `node_modules` (the mount point
-described below, never bundle content), the app-owned `*.jsonl` projections,
-and the regenerated briefs. Excluding the projections is what keeps rollback
-safe: they are read-only for the agent (§6), a tracked `runs.jsonl` would be
-rewritten by a learner's `git reset --hard`, and its output tails exist nowhere
-else. History therefore holds authored work — pages, assets, and the learner's
-files under the artifact roots. (2026-08-12,
+described below, never bundle content, and unanchored because installed
+packages belong in no history at any depth) plus the app-owned `*.jsonl`
+projections and the regenerated briefs, each anchored to the bundle root: an
+unanchored pattern matches its name at any depth, and a learner's own
+`attempts/…/runs.jsonl` is authored work. Excluding the projections keeps
+rollback safe: they are read-only for the agent (§6), a tracked `runs.jsonl`
+would be rewritten by a learner's `git reset --hard`, and its output tails
+exist nowhere else. History therefore holds authored work — pages, assets, and
+the learner's files under the artifact roots. (2026-08-12,
 [#186](https://github.com/jointsome0-lgtm/ephemeris/issues/186).)
 
 `source/` holds the raw material a lesson was built from — fetched pages and

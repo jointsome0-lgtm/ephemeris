@@ -63,18 +63,24 @@ GIT_INIT_TIMEOUT_SECONDS = 10
 #                 nowhere else — rollback must not be able to destroy them.
 #   briefs        regenerated verbatim on every terminal open, so tracking them
 #                 buys a diff per session and no history worth reading
+# Anchored, every one of them: a pattern with no slash matches that NAME at any
+# depth, and the artifact roots hold learner-authored files this app has no
+# opinion about — an `attempts/parser/runs.jsonl` the learner wrote is exactly
+# the work history is for. `node_modules/` is the deliberate exception: it is
+# unanchored because installed packages belong in no lesson's history at any
+# depth, whoever created the directory.
 GIT_EXCLUDE_PATH = ("info", "exclude")
 BUNDLE_GIT_EXCLUDE = """\
-# Written once by the Learn app when it initialized this repository (#186).
-# App-owned paths only: your own rules belong in .gitignore.
+# Written by the Learn app when it set this repository up (#186).
+# App-owned paths only: rules of your own belong in .gitignore.
 node_modules/
-attempts.jsonl
-assessments.jsonl
-memory.jsonl
-runs.jsonl
-AGENTS.md
-CLAUDE.md
-.claude/
+/attempts.jsonl
+/assessments.jsonl
+/memory.jsonl
+/runs.jsonl
+/AGENTS.md
+/CLAUDE.md
+/.claude/
 """
 # A repository-local identity, because the lesson-agent sandbox gives the
 # session a blank `$HOME` with no `.gitconfig` bound and no `GIT_AUTHOR_*` in
@@ -400,22 +406,52 @@ def _mkdir_no_follow(path: Path) -> None:
         path.mkdir()
 
 
+def _bundle_repo_is_ready(git_dir: Path) -> bool:
+    """Two stats deciding whether the setup below has anything left to do.
+
+    `objects/` says git still considers this a repository — it is one of the
+    directories a fresh repo carries EMPTY, and empty directories are not
+    files, so they do not survive an instance backup/restore round trip
+    (`scripts/backup_db.py`: the archive is a list of files). A restored
+    never-committed bundle therefore arrives with a `.git` git itself calls
+    "not a git repository".
+
+    `info/exclude` is this app's completion marker, written last: reaching it
+    means the identity and the rules are in place, so a run that died halfway
+    through a transient error is retried rather than frozen forever behind the
+    directory it managed to create.
+    """
+    return (
+        git_dir.joinpath("objects").is_dir()
+        and git_dir.joinpath(*GIT_EXCLUDE_PATH).is_file()
+    )
+
+
 def _ensure_bundle_repo(lesson_dir: Path) -> None:
-    """Give the bundle its own local git repository, once (#186).
+    """Give the bundle a usable local git repository (#186).
 
     Per-lesson history is what lets the learner roll a broken experiment back
     and lets a later tutor session read `git log` instead of guessing what
-    earlier ones did. The app only guarantees the repo exists; committing is
-    the tutor agent's job (see the brief) — which is why init also leaves
-    behind the two things a commit from inside the sandbox needs and cannot
-    get anywhere else: the app-owned exclude rules and a local identity.
+    earlier ones did. The app only guarantees the repository exists and works;
+    committing is the tutor agent's job (see the brief) — which is why setup
+    also leaves behind the two things a commit from inside the sandbox needs
+    and cannot get anywhere else: the app-owned exclude rules and a local
+    identity.
+
+    Every step is idempotent, `git init` included (documented safe on an
+    existing repository: it restores what is missing and overwrites nothing),
+    so an unready repository is completed in place. That is what makes the
+    readiness gate above a gate and not a one-way door.
 
     Best-effort throughout — a bundle read must never fail because git is
-    absent or refused — and never through a link (§2): anything already
-    holding the `.git` name, symlink included, means hands off entirely.
+    absent or refused — and never through a link (§2): anything holding the
+    `.git` name that is not a plain directory, symlink included, means hands
+    off entirely.
     """
     git_dir = lesson_dir / GIT_DIR_NAME
-    if git_dir.is_symlink() or git_dir.exists():
+    if git_dir.is_symlink() or (git_dir.exists() and not git_dir.is_dir()):
+        return
+    if _bundle_repo_is_ready(git_dir):
         return
     try:
         subprocess.run(
@@ -428,14 +464,15 @@ def _ensure_bundle_repo(lesson_dir: Path) -> None:
                 check=True, capture_output=True,
                 timeout=GIT_INIT_TIMEOUT_SECONDS,
             )
-        # git init wrote this file itself (a comment-only template), so there
-        # is no foreign content here to preserve.
+        # App-owned, and git init leaves only its own comment template here,
+        # so there is never foreign content to preserve. Written last: see the
+        # completion marker above.
         git_dir.joinpath(*GIT_EXCLUDE_PATH).write_text(
             BUNDLE_GIT_EXCLUDE, encoding="utf-8"
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        _log.warning("lesson bundle git init incomplete for %s: %s",
-                     lesson_dir, exc)
+        _log.warning("lesson bundle git setup incomplete for %s (retried on "
+                     "the next read): %s", lesson_dir, exc)
 
 
 def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:
