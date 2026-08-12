@@ -469,19 +469,15 @@ def _linked_paths(lesson_dir: Path) -> list[str]:
     missing, full stop. So the target gets compiled into the artifact, and a
     link pointing outside the bundle gets content the bundle never held.
 
-    Two root names are skipped, neither of them bundle content and neither
-    reachable from an import: `node_modules` is this app's own bind of the
-    build workspace, which a package manager fills with links (`.bin` shims)
-    by design, and `.git` is the repository the app initializes for the
-    lesson's history (#186) — its hooks are symlinks on plenty of systems, and
-    a link in there is nothing for a build to refuse.
+    The mount point is skipped: `node_modules` is not bundle content but this
+    app's own bind of the build workspace, and a package manager fills it with
+    links (`.bin` shims) by design.
     """
-    skipped = {sandbox.BUILD_WORKSPACE_MOUNT, lessons.GIT_DIR_NAME}
     found: list[str] = []
     for parent, dirs, files in os.walk(lesson_dir, followlinks=False):
         here = Path(parent)
         if here == lesson_dir:
-            dirs[:] = [d for d in dirs if d not in skipped]
+            dirs[:] = [d for d in dirs if d != sandbox.BUILD_WORKSPACE_MOUNT]
         for name in list(dirs) + files:
             path = here / name
             if path.is_symlink():

@@ -406,6 +406,56 @@ def _mkdir_no_follow(path: Path) -> None:
         path.mkdir()
 
 
+def _is_regular_no_follow(path: Path) -> bool:
+    try:
+        return stat_module.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _write_git_exclude(git_dir: Path) -> None:
+    """Put the app-owned rules in `.git/info/exclude`, atomically and through
+    no link at all.
+
+    Both properties are load-bearing, and for the same reason: the bundle is
+    writable from inside the lesson's own session while this runs OUTSIDE that
+    sandbox, as the app. A plain `write_text` would follow whatever the name
+    points at — a session that replaced `exclude` (or `info`) with a link to a
+    file of the app user's would have this method write the app's bytes there.
+    So every component is opened `O_NOFOLLOW` from a descriptor on the one
+    directory already known to be real, and the file arrives by rename: the
+    marker never exists half-written, which is what lets the readiness gate
+    trust it, and a rename replaces a planted link rather than following it.
+    """
+    info_name, exclude_name = GIT_EXCLUDE_PATH
+    git_fd = os.open(git_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info_fd = os.open(info_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                          dir_fd=git_fd)
+    finally:
+        os.close(git_fd)
+    staged = f"{exclude_name}.{uuid4().hex}.tmp"
+    try:
+        fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o644, dir_fd=info_fd)
+        try:
+            with os.fdopen(os.dup(fd), "w", encoding="utf-8") as handle:
+                handle.write(BUNDLE_GIT_EXCLUDE)
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            os.close(fd)
+        os.replace(staged, exclude_name, src_dir_fd=info_fd, dst_dir_fd=info_fd)
+    except BaseException:
+        try:
+            os.unlink(staged, dir_fd=info_fd)
+        except OSError:
+            pass
+        raise
+    finally:
+        os.close(info_fd)
+
+
 def _bundle_repo_is_ready(git_dir: Path) -> bool:
     """Two stats deciding whether the setup below has anything left to do.
 
@@ -416,14 +466,17 @@ def _bundle_repo_is_ready(git_dir: Path) -> bool:
     never-committed bundle therefore arrives with a `.git` git itself calls
     "not a git repository".
 
-    `info/exclude` is this app's completion marker, written last: reaching it
-    means the identity and the rules are in place, so a run that died halfway
-    through a transient error is retried rather than frozen forever behind the
-    directory it managed to create.
+    `info/exclude` is this app's completion marker, renamed into place last:
+    reaching it means the identity and the rules are in place, so a run that
+    died halfway through a transient error is retried rather than frozen
+    forever behind the directory it managed to create. A REGULAR file, checked
+    without following links — a session that points the name at something else
+    has not satisfied anything, and must not be able to buy itself a pass out
+    of the rules by making the marker look present.
     """
     return (
         git_dir.joinpath("objects").is_dir()
-        and git_dir.joinpath(*GIT_EXCLUDE_PATH).is_file()
+        and _is_regular_no_follow(git_dir.joinpath(*GIT_EXCLUDE_PATH))
     )
 
 
@@ -467,9 +520,7 @@ def _ensure_bundle_repo(lesson_dir: Path) -> None:
         # App-owned, and git init leaves only its own comment template here,
         # so there is never foreign content to preserve. Written last: see the
         # completion marker above.
-        git_dir.joinpath(*GIT_EXCLUDE_PATH).write_text(
-            BUNDLE_GIT_EXCLUDE, encoding="utf-8"
-        )
+        _write_git_exclude(git_dir)
     except (OSError, subprocess.SubprocessError) as exc:
         _log.warning("lesson bundle git setup incomplete for %s (retried on "
                      "the next read): %s", lesson_dir, exc)
@@ -1793,9 +1844,12 @@ learner with blank controls has thrown their work away on screen.
   Commit at every checkpoint and at the end of each session, with a message
   saying what the learner did and what changed; `git log`/`git diff` is how
   your next session sees what this one actually did. The app's own files —
-  the projections above, these briefs, `node_modules` — are already excluded
-  from history, so `git add -A` stages authored work only; `.gitignore` is
-  free for rules of your own. History is local: there is no remote to push.
+  the projections above, these briefs, `node_modules` — are excluded in
+  `.git/info/exclude`, so `git add -A` stages authored work only. Keep it
+  that way: `.gitignore` is free for rules of your own, but a rule that
+  re-includes an app-owned path (a `!` negation, a `git add -f`) puts a file
+  in history that the app rewrites behind you and a rollback would then
+  destroy. History is local: there is no remote to push.
 
 Pages render with network access for everything except code: fetch, images,
 media, fonts and stylesheets may use remote URLs. Remote SCRIPTS are the one

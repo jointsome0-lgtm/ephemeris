@@ -278,23 +278,57 @@ def test_a_missing_git_leaves_the_bundle_readable(monkeypatch):
     )
 
 
-def test_repository_internals_are_not_build_input():
-    """The build refuses a bundle holding a symlink, because the bundler would
-    resolve one into the artifact. Git's own metadata is not bundle content and
-    is reachable from no import — a symlinked hook must not brick every build.
+def test_the_build_still_sees_every_link_the_repo_can_hold():
+    """The build refuses a bundle holding any symlink, because the bundler
+    resolves one into the artifact and `_graph_sources` compares paths lexically
+    on the strength of that. Adding `.git` adds nowhere for a link to hide: an
+    entry can `import "./.git/hooks/helper.js"` like any other relative path.
     """
     from app.services import lesson_build
 
     lesson = _lesson("repo internals")
     bundle = _bundle(lesson)
-    (bundle / ".git" / "hooks" / "invented-hook").symlink_to("/bin/true")
+    (bundle / ".git" / "hooks" / "invented-hook.js").symlink_to("/etc/hostname")
 
-    assert lesson_build._linked_paths(bundle) == [], (
-        "a link under .git is repository state, not a lesson source"
+    assert lesson_build._linked_paths(bundle) == [
+        ".git/hooks/invented-hook.js"
+    ], "a link inside the repository is a link inside the bundle"
+
+
+def test_the_app_writes_the_rules_through_no_link(tmp_path):
+    """The session that owns this bundle can write in it; this method runs
+    outside that sandbox, as the app. A planted link must move no bytes."""
+    lesson = _lesson("planted marker")
+    bundle = _bundle(lesson)
+    outside = tmp_path / "invented-host-file"
+    outside.write_text("untouched\n", encoding="utf-8")
+    exclude = bundle / ".git" / "info" / "exclude"
+    exclude.unlink()
+    exclude.symlink_to(outside)
+    shutil.rmtree(bundle / ".git" / "objects")  # so the setup runs again
+
+    lessons.lesson_file_info(lesson)
+
+    assert outside.read_text(encoding="utf-8") == "untouched\n", (
+        "the app never writes through a name the session controls"
     )
-    (bundle / "related" / "invented-link.html").symlink_to("/etc/hostname")
-    assert lesson_build._linked_paths(bundle) == ["related/invented-link.html"], (
-        "while a real bundle link is still refused"
+    assert not exclude.is_symlink() and exclude.read_text(
+        encoding="utf-8"
+    ) == lessons.BUNDLE_GIT_EXCLUDE, (
+        "the rename replaces the planted link with the real rules"
+    )
+
+
+def test_a_link_at_the_marker_is_not_a_finished_setup():
+    lesson = _lesson("marker link")
+    bundle = _bundle(lesson)
+    exclude = bundle / ".git" / "info" / "exclude"
+    exclude.unlink()
+    exclude.symlink_to(bundle / lessons.MANIFEST_NAME)
+
+    assert not lessons._bundle_repo_is_ready(bundle / ".git"), (
+        "a session cannot buy itself out of the rules by making the "
+        "completion marker merely look present"
     )
 
 

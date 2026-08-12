@@ -97,7 +97,14 @@ unanchored pattern matches its name at any depth, and a learner's own
 rollback safe: they are read-only for the agent (§6), a tracked `runs.jsonl`
 would be rewritten by a learner's `git reset --hard`, and its output tails
 exist nowhere else. History therefore holds authored work — pages, assets, and
-the learner's files under the artifact roots. (2026-08-12,
+the learner's files under the artifact roots. Git gives no ignore rule a
+bundle cannot override (`.gitignore` outranks `info/exclude`, and `git add -f`
+outranks everything), so the exclusions are a contract with the agent, not a
+boundary against it; the brief says so. What IS a boundary is how the file is
+written: the app writes it from outside the sandbox while the session can
+write inside the bundle, so every component is opened without following links
+and the file arrives by rename — a planted link is replaced, never followed,
+and the marker never exists half-written. (2026-08-12,
 [#186](https://github.com/jointsome0-lgtm/ephemeris/issues/186).)
 
 `source/` holds the raw material a lesson was built from — fetched pages and
