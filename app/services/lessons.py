@@ -409,11 +409,31 @@ def _mkdir_no_follow(path: Path) -> None:
         path.mkdir()
 
 
-def _is_regular_no_follow(path: Path) -> bool:
-    try:
-        return stat_module.S_ISREG(os.lstat(path).st_mode)
-    except OSError:
-        return False
+def _git_metadata_holds_no_link(git_dir: Path) -> bool:
+    """Whether it is safe to point `git` at an existing repository.
+
+    `git init` and `git config` write `config`, `HEAD`, `description` and the
+    template files, and they follow a link at any of those names — so a session
+    that replaced `.git/config` with a link to a file of the app user's would
+    have the app, running outside the sandbox, write there. No allowlist of
+    names, because the set belongs to git and moves with it: a link ANYWHERE
+    git writes disqualifies the repository, and the app leaves it alone.
+
+    Only the directories git init writes into are looked at, so this stays
+    bounded — it never walks `objects/`. Ordered, and returns at the first
+    link: `info` and `hooks` are opened only once they are known to be real
+    names in a real `.git`.
+    """
+    for parent in (git_dir, git_dir / "info", git_dir / "hooks"):
+        try:
+            with os.scandir(parent) as entries:
+                if any(entry.is_symlink() for entry in entries):
+                    return False
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return False
+    return True
 
 
 def _write_git_exclude(git_dir: Path) -> None:
@@ -475,14 +495,17 @@ def _bundle_repo_is_ready(git_dir: Path) -> bool:
     `info/exclude` is this app's completion marker, renamed into place last:
     reaching it means the identity and the rules are in place, so a run that
     died halfway through a transient error is retried rather than frozen
-    forever behind the directory it managed to create. A REGULAR file, checked
-    without following links — a session that points the name at something else
-    has not satisfied anything, and must not be able to buy itself a pass out
-    of the rules by making the marker look present.
+    forever behind the directory it managed to create. Its CONTENT is the
+    marker, not its existence — `git init` writes a template of its own at
+    that name from the first moment, so mere presence would call every
+    half-finished setup, and every repository predating this app's rules,
+    finished. The read follows no link (§2) and takes a mismatch as unready,
+    which also means a later change to the rules re-applies itself.
     """
     return (
         all(git_dir.joinpath(name).is_dir() for name in GIT_REQUIRED_DIRS)
-        and _is_regular_no_follow(git_dir.joinpath(*GIT_EXCLUDE_PATH))
+        and _read_regular_no_follow(git_dir.joinpath(*GIT_EXCLUDE_PATH))
+        == BUNDLE_GIT_EXCLUDE
     )
 
 
@@ -503,14 +526,20 @@ def _ensure_bundle_repo(lesson_dir: Path) -> None:
     readiness gate above a gate and not a one-way door.
 
     Best-effort throughout — a bundle read must never fail because git is
-    absent or refused — and never through a link (§2): anything holding the
-    `.git` name that is not a plain directory, symlink included, means hands
-    off entirely.
+    absent or refused — and never through a link (§2), at the `.git` name
+    itself or at any name git would write inside it. Either one means hands
+    off entirely: this runs as the app, outside the sandbox the bundle's own
+    session is confined to, so a name that session controls must never decide
+    where the app's bytes land.
     """
     git_dir = lesson_dir / GIT_DIR_NAME
     if git_dir.is_symlink() or (git_dir.exists() and not git_dir.is_dir()):
         return
     if _bundle_repo_is_ready(git_dir):
+        return
+    if not _git_metadata_holds_no_link(git_dir):
+        _log.warning("lesson bundle git setup skipped for %s: a link sits "
+                     "where git writes", lesson_dir)
         return
     try:
         subprocess.run(

@@ -69,9 +69,11 @@ Each bundle is its own local git repository, set up on the read path unless
 something that is not a plain directory holds the `.git` name; the app
 guarantees only that the repository exists and is usable, and the tutor agent
 owns every commit. The gate is readiness, not existence — `.git/objects` and
-`.git/refs` present, and the app's own `.git/info/exclude` written last as the
-completion marker — so a setup interrupted by a transient error is finished on
-the next read rather than frozen behind the directory it managed to create,
+`.git/refs` present, and the app's own rules found at `.git/info/exclude`,
+which is written last and whose CONTENT is the completion marker, since `git
+init` writes a template of its own at that name from the first moment — so a
+setup interrupted by a transient error is finished on the next read rather
+than frozen behind the directory it managed to create,
 and so is a repository restored from a backup, which is an archive of FILES:
 a never-committed bundle comes back without its empty `objects/`, a packed one
 with its packs and `packed-refs` but without the `refs/` they emptied, and git
@@ -102,11 +104,17 @@ exist nowhere else. History therefore holds authored work — pages, assets, and
 the learner's files under the artifact roots. Git gives no ignore rule a
 bundle cannot override (`.gitignore` outranks `info/exclude`, and `git add -f`
 outranks everything), so the exclusions are a contract with the agent, not a
-boundary against it; the brief says so. What IS a boundary is how the file is
-written: the app writes it from outside the sandbox while the session can
-write inside the bundle, so every component is opened without following links
-and the file arrives by rename — a planted link is replaced, never followed,
-and the marker never exists half-written. (2026-08-12,
+boundary against it; the brief says so.
+
+What IS a boundary is that the app runs OUTSIDE the sandbox the bundle's own
+session is confined to, and a name that session controls must never decide
+where the app's bytes land. So the setup touches nothing through a link: it
+declines a `.git` that is not a plain directory, declines a repository holding
+a link anywhere `git init`/`git config` write (`config`, `HEAD`, the template
+files), and writes the exclude file by opening every component `O_NOFOLLOW`
+and renaming it into place — which also means the marker never exists
+half-written. A sabotaged repository costs that lesson its history, logged,
+and nothing else: the app does not delete inside a bundle to get it back. (2026-08-12,
 [#186](https://github.com/jointsome0-lgtm/ephemeris/issues/186).)
 
 `source/` holds the raw material a lesson was built from — fetched pages and

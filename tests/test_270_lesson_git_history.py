@@ -299,9 +299,12 @@ def test_the_build_still_sees_every_link_the_repo_can_hold():
     ], "a link inside the repository is a link inside the bundle"
 
 
-def test_the_app_writes_the_rules_through_no_link(tmp_path):
-    """The session that owns this bundle can write in it; this method runs
-    outside that sandbox, as the app. A planted link must move no bytes."""
+def test_a_planted_link_costs_the_bundle_its_history_not_the_host(tmp_path):
+    """The session that owns this bundle can write in it; the setup runs
+    outside that sandbox, as the app. A name the session controls must never
+    decide where the app's bytes land — so a repository holding a link where
+    git writes is left alone, and the lesson simply goes without history.
+    """
     lesson = _lesson("planted marker")
     bundle = _bundle(lesson)
     outside = tmp_path / "invented-host-file"
@@ -309,30 +312,62 @@ def test_the_app_writes_the_rules_through_no_link(tmp_path):
     exclude = bundle / ".git" / "info" / "exclude"
     exclude.unlink()
     exclude.symlink_to(outside)
-    shutil.rmtree(bundle / ".git" / "objects")  # so the setup runs again
+    shutil.rmtree(bundle / ".git" / "objects")  # so the setup would run again
+
+    assert lessons.lesson_file_info(lesson), "and the bundle still reads"
+
+    assert outside.read_text(encoding="utf-8") == "untouched\n", (
+        "nothing was written through the planted name"
+    )
+    assert exclude.is_symlink(), (
+        "nor was the session's own file replaced — the app's answer to a "
+        "sabotaged repository is to stop, not to start deleting inside a bundle"
+    )
+
+
+def test_the_app_points_git_at_no_repository_holding_a_link(tmp_path):
+    """`git init` and `git config` write `config`, `HEAD` and the template
+    files, and they follow a link at any of those names. The session can plant
+    one; the app runs outside its sandbox, so it must not be the hand that
+    writes there."""
+    lesson = _lesson("planted config")
+    bundle = _bundle(lesson)
+    outside = tmp_path / "invented-host-gitconfig"
+    outside.write_text("[user]\n\tname = untouched\n", encoding="utf-8")
+    (bundle / ".git" / "config").unlink()
+    (bundle / ".git" / "config").symlink_to(outside)
+    shutil.rmtree(bundle / ".git" / "objects")  # so the setup would run again
 
     lessons.lesson_file_info(lesson)
 
-    assert outside.read_text(encoding="utf-8") == "untouched\n", (
-        "the app never writes through a name the session controls"
-    )
-    assert not exclude.is_symlink() and exclude.read_text(
-        encoding="utf-8"
-    ) == lessons.BUNDLE_GIT_EXCLUDE, (
-        "the rename replaces the planted link with the real rules"
+    assert outside.read_text(encoding="utf-8") == "[user]\n\tname = untouched\n", (
+        "neither git init nor git config was pointed at a repository whose "
+        "metadata the session had replaced with a link"
     )
 
 
-def test_a_link_at_the_marker_is_not_a_finished_setup():
-    lesson = _lesson("marker link")
-    bundle = _bundle(lesson)
-    exclude = bundle / ".git" / "info" / "exclude"
+def test_a_marker_git_wrote_itself_is_not_a_finished_setup():
+    """`git init` creates a template `info/exclude` from the first moment, so
+    presence proves nothing: a setup that died before the rules were written —
+    or a repository older than the rules — must still be finished."""
+    lesson = _lesson("template marker")
+    git_dir = _bundle(lesson) / ".git"
+    exclude = git_dir.joinpath(*lessons.GIT_EXCLUDE_PATH)
+
+    exclude.write_text("# git's own template, not the app's rules\n",
+                       encoding="utf-8")
+    assert not lessons._bundle_repo_is_ready(git_dir), (
+        "the marker is the content, not the name"
+    )
+
+    lessons.lesson_file_info(lesson)
+
+    assert lessons._bundle_repo_is_ready(git_dir), "the read finishes the job"
+
     exclude.unlink()
-    exclude.symlink_to(bundle / lessons.MANIFEST_NAME)
-
-    assert not lessons._bundle_repo_is_ready(bundle / ".git"), (
-        "a session cannot buy itself out of the rules by making the "
-        "completion marker merely look present"
+    exclude.symlink_to(_bundle(lesson) / lessons.MANIFEST_NAME)
+    assert not lessons._bundle_repo_is_ready(git_dir), (
+        "and a link at the name satisfies nothing, whatever it points at"
     )
 
 
