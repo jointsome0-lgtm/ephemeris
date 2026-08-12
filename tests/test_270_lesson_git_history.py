@@ -354,6 +354,36 @@ def test_the_app_writes_the_rules_through_no_link(tmp_path):
     )
 
 
+def test_an_identity_that_could_not_be_set_leaves_the_repo_unfinished(monkeypatch):
+    """The marker is what stops the app ever looking again, so it must not be
+    written over a repository whose commits still cannot name an author."""
+    lesson = _lesson("identity failed")
+    bundle = _bundle(lesson)
+    _git(bundle, "config", "--unset", "user.email")
+    exclude = bundle / ".git" / "info" / "exclude"
+    exclude.unlink()
+
+    def no_git(*args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory: 'git'")
+
+    monkeypatch.setattr(lessons.subprocess, "run", no_git)
+    lessons.lesson_file_info(lesson)
+    monkeypatch.undo()
+
+    assert not exclude.exists(), "no marker while the identity is missing"
+    assert not lessons._bundle_repo_is_ready(bundle / ".git"), (
+        "so the next read tries again instead of calling this finished"
+    )
+
+    lessons.lesson_file_info(lesson)
+
+    assert lessons._bundle_repo_is_ready(bundle / ".git") and _git(
+        bundle, "config", "user.email"
+    ).stdout.strip() == "lesson@ephemeris.invalid", (
+        "and the read that can finish the job does both halves"
+    )
+
+
 def test_an_authored_git_directory_is_not_mistaken_for_a_repository():
     """`.git` was servable and unreserved until this change, so a bundle may
     hold an ordinary directory under it. Finishing THAT would leave something

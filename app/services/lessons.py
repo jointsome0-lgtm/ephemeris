@@ -428,15 +428,18 @@ def _is_regular_no_follow(path: Path) -> bool:
         return False
 
 
-def _read_bounded_no_follow(path: Path, limit: int) -> str | None:
+def _read_bounded_no_follow(path, limit: int, dir_fd: int | None = None) -> str | None:
     """`path` as text, only if it is a regular file no larger than `limit`.
 
     Same §2 rule as `_read_regular_no_follow` and the same reason as
     `_holds_exactly` for the bound: these names sit in a directory a lesson
     session can write, and nothing on a read path may load whatever it finds
-    there."""
+    there. With `dir_fd`, `path` is a name resolved against that descriptor —
+    which is how a caller reads and later replaces the same name without the
+    directory underneath it being swapped in between."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+                     dir_fd=dir_fd)
     except OSError:
         return None
     try:
@@ -641,7 +644,11 @@ def _repair_bundle_repo(git_dir: Path) -> None:
                 return
     finally:
         os.close(fd)
-    _ensure_repo_identity(git_dir)
+    if not _ensure_repo_identity(git_dir):
+        # No marker, so the next read comes back: a repository recorded as
+        # finished while its commits still cannot name an author is the one
+        # outcome this whole path exists to prevent.
+        return
     try:
         _write_git_exclude(git_dir)
     except OSError as exc:
@@ -649,7 +656,7 @@ def _repair_bundle_repo(git_dir: Path) -> None:
                      git_dir, exc)
 
 
-def _ensure_repo_identity(git_dir: Path) -> None:
+def _ensure_repo_identity(git_dir: Path) -> bool:
     """Give a repository the app did not build the identity a commit needs.
 
     A repository that reaches the repair — restored from a backup, or one an
@@ -665,16 +672,29 @@ def _ensure_repo_identity(git_dir: Path) -> None:
     renamed in. Pointing `git config` at the bundle is the one thing this
     module will not do, for the reason `_install_bundle_repo` gives.
 
-    Best-effort like the rest, and deliberately silent about a config that is
-    not a plain readable file: a session that replaced its own repository's
-    config is not creating a problem the app should reach in to solve.
+    Returns whether the repository can be called finished. A config that is
+    not a plain readable file is not a failure and not the app's to solve — a
+    session that replaced its own repository's config gets to live with it —
+    but anything that went wrong while filling one in is, because the caller
+    is about to write the marker that stops it ever looking again.
+
+    Read and rename both go through ONE descriptor on `.git`, opened before
+    either. A path resolved twice is a directory that can be swapped in
+    between: rename the whole `.git` aside, leave a link at the name, and a
+    path-based replace would land in whatever it points at.
     """
-    config = git_dir / "config"
-    current = _read_bounded_no_follow(config, GIT_CONFIG_MAX_BYTES)
-    if current is None:
-        return
+    try:
+        git_fd = os.open(git_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        _log.warning("lesson bundle git identity skipped for %s: %s",
+                     git_dir, exc)
+        return False
     staged: Path | None = None
     try:
+        current = _read_bounded_no_follow("config", GIT_CONFIG_MAX_BYTES,
+                                          dir_fd=git_fd)
+        if current is None:
+            return True
         GIT_STAGING_DIR.mkdir(parents=True, exist_ok=True)
         staged = Path(tempfile.mkdtemp(dir=GIT_STAGING_DIR))
         copy = staged / "config"
@@ -694,14 +714,22 @@ def _ensure_repo_identity(git_dir: Path) -> None:
             )
             filled = True
         if filled:
-            # Replaces the name, following no link even if one appeared under
-            # it meanwhile. A config the session rewrote in this same instant
+            # Relative to the pinned `.git`, so the name replaced is the one
+            # that was read. A config the session rewrote in this same instant
             # loses — its own repository, and the alternative is the race.
-            os.replace(copy, config)
+            staged_fd = os.open(staged, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.replace(copy.name, "config",
+                           src_dir_fd=staged_fd, dst_dir_fd=git_fd)
+            finally:
+                os.close(staged_fd)
+        return True
     except (OSError, subprocess.SubprocessError) as exc:
         _log.warning("lesson bundle git identity not set for %s: %s",
                      git_dir, exc)
+        return False
     finally:
+        os.close(git_fd)
         if staged is not None:
             shutil.rmtree(staged, ignore_errors=True)
 
