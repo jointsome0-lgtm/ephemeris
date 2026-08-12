@@ -77,7 +77,9 @@ a path the lesson's own session could have replaced. Where a `.git` directory
 exists but is not ready, it is finished in place without git at all: a
 `mkdir` per missing directory and the app's own rules, nothing that would
 follow a name the session controls. A repository the app did not create keeps
-its `config`.
+its `config`, and something that is no repository at all — `.git` was servable
+and unreserved until this change, so a bundle may hold an ordinary directory
+under the name — is left alone: no `HEAD`, no repair.
 
 Readiness, not existence, is the gate: `.git/objects` and `.git/refs` present,
 and the app's own rules found at `.git/info/exclude`, whose CONTENT is the

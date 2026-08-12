@@ -418,6 +418,13 @@ def _mkdir_no_follow(path: Path) -> None:
         path.mkdir()
 
 
+def _is_regular_no_follow(path: Path) -> bool:
+    try:
+        return stat_module.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
 def _holds_exactly(path: Path, expected: str) -> bool:
     """Whether `path` is a regular file whose bytes are exactly `expected`.
 
@@ -532,9 +539,13 @@ def _install_bundle_repo(git_dir: Path) -> None:
     repository is never visible either: what appears under the bundle is a
     finished one or nothing.
     """
-    GIT_STAGING_DIR.mkdir(parents=True, exist_ok=True)
-    staged = Path(tempfile.mkdtemp(dir=GIT_STAGING_DIR))
+    staged: Path | None = None
     try:
+        # Inside the guard, both of them: an occupied name, a read-only parent
+        # or a quota hiccup here is one more way this can fail, and none of
+        # them is a reason for a bundle to stop being readable.
+        GIT_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+        staged = Path(tempfile.mkdtemp(dir=GIT_STAGING_DIR))
         work = staged / "repo"
         work.mkdir()
         subprocess.run(
@@ -555,7 +566,8 @@ def _install_bundle_repo(git_dir: Path) -> None:
     except (OSError, subprocess.SubprocessError) as exc:
         _log.warning("lesson bundle git init skipped for %s: %s", git_dir, exc)
     finally:
-        shutil.rmtree(staged, ignore_errors=True)
+        if staged is not None:
+            shutil.rmtree(staged, ignore_errors=True)
 
 
 def _repair_bundle_repo(git_dir: Path) -> None:
@@ -571,7 +583,19 @@ def _repair_bundle_repo(git_dir: Path) -> None:
     For the same reason the identity is not touched here. A restored
     repository brings its `config` with it — a regular file, archived like any
     other — and one this app never created is not its to configure.
+
+    What must NOT reach the repair is a `.git` that is no repository at all:
+    the name was servable and unreserved until this change, so a bundle may
+    hold an ordinary directory under it. Creating `objects/` and the marker
+    there would leave something this app calls ready and git calls "not a git
+    repository", permanently. `HEAD` is the cheap discriminator — every
+    repository has one, an authored directory does not — and its absence means
+    hands off, as it does for every other name the app did not write.
     """
+    if not _is_regular_no_follow(git_dir / "HEAD"):
+        _log.warning("lesson bundle git repair skipped for %s: no HEAD, so "
+                     "this is not a repository to finish", git_dir)
+        return
     try:
         fd = os.open(git_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError as exc:

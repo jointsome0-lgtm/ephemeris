@@ -326,6 +326,43 @@ def test_the_app_writes_the_rules_through_no_link(tmp_path):
     )
 
 
+def test_an_authored_git_directory_is_not_mistaken_for_a_repository():
+    """`.git` was servable and unreserved until this change, so a bundle may
+    hold an ordinary directory under it. Finishing THAT would leave something
+    the app calls ready and git calls "not a git repository", permanently."""
+    lesson = _lesson("authored git dir")
+    bundle = _bundle(lesson)
+    shutil.rmtree(bundle / ".git")
+    (bundle / ".git").mkdir()
+    (bundle / ".git" / "invented-notes.txt").write_text("mine\n", encoding="utf-8")
+
+    lessons.lesson_file_info(lesson)
+
+    assert list((bundle / ".git").iterdir()) == [
+        bundle / ".git" / "invented-notes.txt"
+    ], "nothing was created inside a directory that is not a repository"
+    assert not lessons._bundle_repo_is_ready(bundle / ".git"), (
+        "and it is not recorded as finished either"
+    )
+
+
+def test_a_staging_area_that_cannot_be_used_is_not_a_broken_bundle(monkeypatch):
+    """Repository setup is best-effort all the way out: the read path has no
+    handler for an OSError from here, so one would be a 500 on a bundle whose
+    only problem is that it has no history yet."""
+    lesson = _lesson("staging blocked")
+    bundle = _bundle(lesson)
+    shutil.rmtree(bundle / ".git")
+
+    def no_staging(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(lessons.tempfile, "mkdtemp", no_staging)
+
+    assert lessons.lesson_file_info(lesson), "the bundle reads regardless"
+    assert not (bundle / ".git").exists(), "it simply has no repository"
+
+
 def test_an_outsized_marker_is_answered_without_reading_it():
     """The name is the session's to fill, and this is asked on a read path: a
     sparse file of any size must cost a stat, not a load."""
