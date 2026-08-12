@@ -24,8 +24,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-08-12 — merge of `fix/188-claude-oauth-token` (#188; hash recorded
-  on merge) — `app/sandbox.py`, `app/terminal.py` —
+- [ ] 2026-08-12 — `0b4f2a2` (merge of `fix/188-claude-oauth-token`, PR #189) — `app/sandbox.py`, `app/terminal.py` —
   the lesson-agent profile no longer ro-binds `~/.claude/.credentials.json`
   into the sandbox; instead the tutor shell's environment carries
   `CLAUDE_CODE_OAUTH_TOKEN`, read at each session open from
