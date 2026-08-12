@@ -70,6 +70,9 @@ GIT_INIT_TIMEOUT_SECONDS = 10
 # unanchored because installed packages belong in no lesson's history at any
 # depth, whoever created the directory.
 GIT_EXCLUDE_PATH = ("info", "exclude")
+# What git refuses to work without (gitrepository-layout), and what a restore
+# can therefore be missing — see _bundle_repo_is_ready.
+GIT_REQUIRED_DIRS = ("objects", "refs")
 BUNDLE_GIT_EXCLUDE = """\
 # Written by the Learn app when it set this repository up (#186).
 # App-owned paths only: rules of your own belong in .gitignore.
@@ -457,14 +460,17 @@ def _write_git_exclude(git_dir: Path) -> None:
 
 
 def _bundle_repo_is_ready(git_dir: Path) -> bool:
-    """Two stats deciding whether the setup below has anything left to do.
+    """Three stats deciding whether the setup below has anything left to do.
 
-    `objects/` says git still considers this a repository — it is one of the
-    directories a fresh repo carries EMPTY, and empty directories are not
-    files, so they do not survive an instance backup/restore round trip
-    (`scripts/backup_db.py`: the archive is a list of files). A restored
-    never-committed bundle therefore arrives with a `.git` git itself calls
-    "not a git repository".
+    `objects/` and `refs/` say git still considers this a repository — it
+    refuses one that is missing either, and both are directories a repository
+    can carry EMPTY. Empty directories are not files, so they do not survive
+    an instance backup/restore round trip (`scripts/backup_db.py`: the archive
+    is a list of files), and the two empty in practice are not the same
+    repository: a never-committed bundle restores without `objects/`, while a
+    packed one restores with its packs and `packed-refs` but without `refs/`,
+    every reference having moved into a file. Either way git calls what comes
+    back "not a git repository", so both are checked.
 
     `info/exclude` is this app's completion marker, renamed into place last:
     reaching it means the identity and the rules are in place, so a run that
@@ -475,7 +481,7 @@ def _bundle_repo_is_ready(git_dir: Path) -> bool:
     of the rules by making the marker look present.
     """
     return (
-        git_dir.joinpath("objects").is_dir()
+        all(git_dir.joinpath(name).is_dir() for name in GIT_REQUIRED_DIRS)
         and _is_regular_no_follow(git_dir.joinpath(*GIT_EXCLUDE_PATH))
     )
 

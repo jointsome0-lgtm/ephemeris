@@ -155,19 +155,23 @@ def test_a_repo_restored_without_its_empty_dirs_is_completed_in_place():
     """An instance backup is a list of FILES, so a bundle backed up before its
     first commit comes back with a `.git` git calls "not a git repository".
     The gate is readiness, not existence, so the next read finishes the job."""
-    lesson = _lesson("restored repo")
-    bundle = _bundle(lesson)
-    for empty in ("objects", "refs"):
-        shutil.rmtree(bundle / ".git" / empty)
-    assert _git(bundle, "status", "--porcelain").returncode != 0, (
-        "the simulated restore really did leave git unable to read it"
-    )
+    for missing in ("objects", "refs"):
+        # Two different repositories: a never-committed one restores without
+        # `objects/`, a packed one keeps its packs and `packed-refs` but loses
+        # an emptied `refs/`. Git refuses either.
+        lesson = _lesson(f"restored repo {missing}")
+        bundle = _bundle(lesson)
+        shutil.rmtree(bundle / ".git" / missing)
+        assert _git(bundle, "status", "--porcelain").returncode != 0, (
+            f"a restore missing {missing}/ really does leave git unable to "
+            "read the repository"
+        )
 
-    lessons.lesson_file_info(lesson)
+        lessons.lesson_file_info(lesson)
 
-    assert _git(bundle, "status", "--porcelain").returncode == 0, (
-        "a read repairs what the restore could not carry"
-    )
+        assert _git(bundle, "status", "--porcelain").returncode == 0, (
+            f"a read repairs the {missing}/ the restore could not carry"
+        )
 
 
 def test_a_half_finished_setup_is_retried_not_frozen():

@@ -68,12 +68,14 @@ Reserved names, which no page, block file, or artifact root may claim:
 Each bundle is its own local git repository, set up on the read path unless
 something that is not a plain directory holds the `.git` name; the app
 guarantees only that the repository exists and is usable, and the tutor agent
-owns every commit. The gate is readiness, not existence — `.git/objects`
-present, and the app's own `.git/info/exclude` written last as the completion
-marker — so a setup interrupted by a transient error is finished on the next
-read rather than frozen behind the directory it managed to create, and so is a
-never-committed repository restored from a backup, whose empty `objects/` and
-`refs/` an archive of files cannot carry. Every step is idempotent, `git init`
+owns every commit. The gate is readiness, not existence — `.git/objects` and
+`.git/refs` present, and the app's own `.git/info/exclude` written last as the
+completion marker — so a setup interrupted by a transient error is finished on
+the next read rather than frozen behind the directory it managed to create,
+and so is a repository restored from a backup, which is an archive of FILES:
+a never-committed bundle comes back without its empty `objects/`, a packed one
+with its packs and `packed-refs` but without the `refs/` they emptied, and git
+refuses either. Every step is idempotent, `git init`
 included. Setup is best-effort — a missing or failing `git` is logged and
 skipped, and the bundle read proceeds unchanged. History is local: no
 remote, no push, and one repository per bundle rather than one over the
