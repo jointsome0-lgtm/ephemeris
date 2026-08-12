@@ -32,7 +32,11 @@ import pytest
 from app import sandbox
 from app.services import lesson_build, render_check
 
-HAVE_SANDBOX = Path(sandbox.BWRAP).exists() and Path(sandbox.BUN_BINARY).exists()
+HAVE_SANDBOX = (
+    not sandbox._BWRAP_UNUSABLE
+    and Path(sandbox.BWRAP).exists()
+    and Path(sandbox.BUN_BINARY).exists()
+)
 needs_sandbox = pytest.mark.skipif(
     not HAVE_SANDBOX, reason="the build step needs this host's bubblewrap and bun"
 )

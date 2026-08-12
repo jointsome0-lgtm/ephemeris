@@ -7,17 +7,156 @@ from __future__ import annotations
 
 import asyncio
 import os
+import stat
 import subprocess
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path, PurePosixPath
 from typing import Callable, Literal, Mapping, Sequence
 
+try:
+    import pwd
+except ImportError:  # pragma: no cover - POSIX-only; see _resolve_user_home
+    pwd = None  # type: ignore[assignment]
+
 
 SandboxProfile = Literal["lesson-agent", "lesson-learner", "lesson-runner"]
 
-BWRAP = "/home/aina/.local/bin/bwrap"
-USER_HOME = "/home/aina"
+_UNRESOLVED_HOME = "/nonexistent"
+
+
+def _resolve_user_home() -> str:
+    """The process owner's home from passwd, deliberately not from ``$HOME``.
+
+    ``$HOME`` is caller-settable and this path decides what the sandbox masks
+    (`~/.claude`, `~/.codex`, the credentials bound read-only below), so it is
+    read from the passwd entry of the uid this process runs as. A uid with no
+    passwd entry gets a home that exists nowhere rather than an exception:
+    ``app.main`` imports this module unconditionally, and Learn failing closed
+    on the runtime probe beats taking the whole tracker down at import.
+    """
+    if pwd is None:  # pragma: no cover - non-POSIX import path only
+        return _UNRESOLVED_HOME
+    try:
+        return pwd.getpwuid(os.getuid()).pw_dir
+    except KeyError:  # pragma: no cover - uid without a passwd entry
+        return _UNRESOLVED_HOME
+
+
+USER_HOME = _resolve_user_home()
+
+# Not ``$PATH``, for the reason ``$HOME`` is not consulted above. A
+# user-installed build wins so a host can carry a newer one than its release
+# ships.
+_BWRAP_CANDIDATES = (f"{USER_HOME}/.local/bin/bwrap", "/usr/bin/bwrap")
+
+# Every long option this module passes. For a bubblewrap that builds the
+# sandbox from an unprivileged user namespace this is the whole minimum-version
+# requirement — deliberately vocabulary rather than a number, so nobody replaces
+# it with one: upstream records neither which release added which option nor a
+# version contract, and the set below is already accepted by the 0.9.0 Ubuntu
+# 24.04 ships (measured 2026-08-12).
+_REQUIRED_BWRAP_OPTIONS = (
+    "--bind", "--bind-try", "--chdir", "--clearenv", "--dev",
+    "--die-with-parent", "--dir", "--perms", "--proc", "--ro-bind",
+    "--ro-bind-data", "--ro-bind-fd", "--ro-bind-try", "--setenv",
+    "--share-net", "--size", "--tmpfs", "--unshare-all", "--unshare-user",
+)
+
+
+# The one case where a number IS the requirement. A setuid bubblewrap does its
+# own privilege handling instead of relying on an unprivileged user namespace,
+# and CVE-2026-41163 — the low-privileged setup left ptrace-able — is a defect
+# of exactly that mode, fixed in 0.11.2. Distributions that ship bubblewrap
+# setuid are the reason this is a version gate and not a blanket refusal: on a
+# host without unprivileged user namespaces it is the only mode that works.
+_SETUID_MIN_BWRAP = (0, 11, 2)
+
+
+def _bwrap_version(text: str) -> tuple[int, ...] | None:
+    """The numeric version from a ``bwrap --version`` line, if it parses."""
+    for token in text.split():
+        parts = token.split(".")
+        if len(parts) >= 2 and all(part.isdigit() for part in parts):
+            return tuple(int(part) for part in parts)
+    return None
+
+
+def _bwrap_rejection(path: str) -> str:
+    """Why ``path`` cannot serve as this module's bubblewrap, or ``""``.
+
+    A ``--help`` that cannot be run or does not finish is a rejection too, so
+    a stale user build cannot mask a working distribution install behind it.
+    """
+    if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+        return "not an executable file"
+
+    def ask(*args: str) -> subprocess.CompletedProcess[str] | str:
+        try:
+            return subprocess.run(
+                [path, *args],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"cannot be asked for {args[0]}: {exc}"
+
+    help_result = ask("--help")
+    if isinstance(help_result, str):
+        return help_result
+    listed = set(help_result.stdout.split())
+    missing = [
+        option for option in _REQUIRED_BWRAP_OPTIONS if option not in listed
+    ]
+    if missing:
+        return "does not accept " + " ".join(missing)
+
+    try:
+        setuid = bool(os.stat(path).st_mode & stat.S_ISUID)
+    except OSError as exc:
+        return f"cannot be inspected: {exc}"
+    if not setuid:
+        return ""
+    version_result = ask("--version")
+    if isinstance(version_result, str):
+        return version_result
+    version = _bwrap_version(version_result.stdout)
+    if version is None:
+        return "is setuid and does not report a version to check against"
+    if version < _SETUID_MIN_BWRAP:
+        shipped = ".".join(str(part) for part in version)
+        floor = ".".join(str(part) for part in _SETUID_MIN_BWRAP)
+        return (
+            f"is setuid at {shipped}, below the {floor} that fixes "
+            "CVE-2026-41163 for setuid installations"
+        )
+    return ""
+
+
+def _resolve_bwrap() -> tuple[str, str]:
+    """The first candidate that speaks this module's whole option set.
+
+    With nothing usable it returns the preferred path, keeping the pure argv
+    builders total, and why each candidate was rejected — which the runtime
+    probe refuses with instead of spawning.
+    """
+    reasons = []
+    for candidate in _BWRAP_CANDIDATES:
+        rejection = _bwrap_rejection(candidate)
+        if not rejection:
+            return candidate, ""
+        reasons.append(f"{candidate}: {rejection}")
+    return _BWRAP_CANDIDATES[0], "no usable bubblewrap — " + "; ".join(reasons)
+
+
+# Resolved once, at import: a bubblewrap installed later needs the same
+# `systemctl --user restart ephemeris` the cached runtime probe already does.
+BWRAP, _BWRAP_UNUSABLE = _resolve_bwrap()
+
 RUNNER_WORKDIR = "/tmp/ephemeris-runner"
 RUNTIME_DIR = "/run"
 SYSTEMD_RUN = "/usr/bin/systemd-run"
@@ -189,7 +328,9 @@ class _HomeMount:
 
 # Every path re-exposed below the blank home is listed here with its reason.
 _COMMON_HOME_MOUNTS = (
-    _HomeMount("--ro-bind", f"{USER_HOME}/.local/bin",
+    # `-try`: an account whose bubblewrap came from the distribution need not
+    # have this directory, and a strict bind would fail every spawn over it.
+    _HomeMount("--ro-bind-try", f"{USER_HOME}/.local/bin",
                "user-installed command shims used by every lesson role"),
 )
 
@@ -763,6 +904,8 @@ def require_user_scope_runtime() -> None:
 @cache
 def _cached_runtime_probe() -> _ProbeResult:
     """Run bubblewrap's process-lifetime probe once, caching failures too."""
+    if _BWRAP_UNUSABLE:
+        return _ProbeResult(False, _BWRAP_UNUSABLE)
     argv = [
         BWRAP,
         "--unshare-user",

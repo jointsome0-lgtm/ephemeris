@@ -45,6 +45,8 @@ def test_sandbox_learning(client, suite_state):
     # local import resolves to.
     import resource as _resource_mod
 
+    # Issue #182: the mounts below are built from the resolved home.
+    _sb_userhome = _sandbox.USER_HOME
     _sb_root = "/tmp/ephemeris-e1-verify"
     _sb_bundle = f"{_sb_root}/invented-bundle"
     _sb_agent = _sandbox.build_sandbox_argv(
@@ -68,7 +70,7 @@ def test_sandbox_learning(client, suite_state):
           and ["--dev", "/dev"] == argv[argv.index("--dev"):argv.index("--dev") + 2]
           and argv.count("--tmpfs") >= 2
           and "/tmp" in [argv[i + 1] for i, x in enumerate(argv) if x == "--tmpfs"]
-          and "/home/aina" in [argv[i + 1] for i, x in enumerate(argv) if x == "--tmpfs"]
+          and _sb_userhome in [argv[i + 1] for i, x in enumerate(argv) if x == "--tmpfs"]
           for argv in (_sb_agent, _sb_learner, _sb_runner))
     ), (
         "E1 argv: every profile has the namespace/base-fs/die-with-parent contract"
@@ -82,26 +84,27 @@ def test_sandbox_learning(client, suite_state):
     )
 
     _sb_agent_try_ro = {
-        ("/home/aina/.nvm/versions", "/home/aina/.nvm/versions"),
-        ("/home/aina/.local/share/claude/versions", "/home/aina/.local/share/claude/versions"),
-        ("/home/aina/.codex/auth.json", "/home/aina/.codex/auth.json"),
-        ("/home/aina/.codex/config.toml", "/home/aina/.codex/config.toml"),
-        ("/home/aina/.claude/.credentials.json", "/home/aina/.claude/.credentials.json"),
-        ("/home/aina/.claude/settings.json", "/home/aina/.claude/settings.json"),
-        ("/home/aina/.claude.json", "/home/aina/.claude.json"),
+        (f"{_sb_userhome}/.nvm/versions", f"{_sb_userhome}/.nvm/versions"),
+        (f"{_sb_userhome}/.local/share/claude/versions", f"{_sb_userhome}/.local/share/claude/versions"),
+        (f"{_sb_userhome}/.codex/auth.json", f"{_sb_userhome}/.codex/auth.json"),
+        (f"{_sb_userhome}/.codex/config.toml", f"{_sb_userhome}/.codex/config.toml"),
+        (f"{_sb_userhome}/.claude/.credentials.json", f"{_sb_userhome}/.claude/.credentials.json"),
+        (f"{_sb_userhome}/.claude/settings.json", f"{_sb_userhome}/.claude/settings.json"),
+        (f"{_sb_userhome}/.claude.json", f"{_sb_userhome}/.claude.json"),
+    }
+    _sb_common_try_ro = {
+        (f"{_sb_userhome}/.local/bin", f"{_sb_userhome}/.local/bin"),
     }
     assert (
-        set(_sb_mounts(_sb_agent, "--ro-bind")) == {
-          ("/", "/"),
-          ("/home/aina/.local/bin", "/home/aina/.local/bin"),
-        }
-        and set(_sb_mounts(_sb_agent, "--ro-bind-try")) == _sb_agent_try_ro
+        set(_sb_mounts(_sb_agent, "--ro-bind")) == {("/", "/")}
+        and set(_sb_mounts(_sb_agent, "--ro-bind-try"))
+        == _sb_agent_try_ro | _sb_common_try_ro
         and set(_sb_mounts(_sb_agent, "--bind-try")) == {
-          ("/home/aina/go", "/home/aina/go"),
-          ("/home/aina/.cache/go-build", "/home/aina/.cache/go-build"),
+          (f"{_sb_userhome}/go", f"{_sb_userhome}/go"),
+          (f"{_sb_userhome}/.cache/go-build", f"{_sb_userhome}/.cache/go-build"),
         }
         and _sb_mounts(_sb_agent, "--bind") == [(_sb_bundle, _sb_bundle)]
-        and {"/home/aina/.codex", "/home/aina/.claude"}.issubset(
+        and {f"{_sb_userhome}/.codex", f"{_sb_userhome}/.claude"}.issubset(
           {_sb_agent[i + 1] for i, x in enumerate(_sb_agent) if x == "--tmpfs"})
     ), (
         "E1 argv: lesson-agent exact home binds and ephemeral CLI state"
@@ -119,19 +122,20 @@ def test_sandbox_learning(client, suite_state):
     assert (
         set(_sb_mounts(_sb_agent_persist, "--bind")) == {
           (_sb_bundle, _sb_bundle),
-          (f"{_sb_home}/claude", "/home/aina/.claude"),
-          (f"{_sb_home}/codex", "/home/aina/.codex"),
+          (f"{_sb_home}/claude", f"{_sb_userhome}/.claude"),
+          (f"{_sb_home}/codex", f"{_sb_userhome}/.codex"),
         }
-        and set(_sb_mounts(_sb_agent_persist, "--ro-bind-try")) == _sb_agent_try_ro
+        and set(_sb_mounts(_sb_agent_persist, "--ro-bind-try"))
+        == _sb_agent_try_ro | _sb_common_try_ro
         and {_sb_agent_persist[i + 1]
              for i, x in enumerate(_sb_agent_persist) if x == "--tmpfs"} == {
-          "/tmp", "/home/aina",
+          "/tmp", _sb_userhome,
         }
         # The persistent binds land where the tmpfs entries were: before the
         # read-only credentials, which must keep winning over them.
         and all(
           _sb_agent_persist.index(f"{_sb_home}/{name}")
-          < _sb_agent_persist.index(f"/home/aina/.{cli}/{leaf}")
+          < _sb_agent_persist.index(f"{_sb_userhome}/.{cli}/{leaf}")
           for name, cli, leaf in (
             ("claude", "claude", ".credentials.json"),
             ("codex", "codex", "auth.json"),
@@ -234,13 +238,10 @@ def test_sandbox_learning(client, suite_state):
             raise AssertionError(
                 f"E1 argv: {_sb_other} must refuse a build workspace")
     assert (
-        set(_sb_mounts(_sb_learner, "--ro-bind")) == {
-          ("/", "/"),
-          ("/home/aina/.local/bin", "/home/aina/.local/bin"),
-        }
-        and set(_sb_mounts(_sb_learner, "--ro-bind-try")) == {
-          ("/home/aina/go", "/home/aina/go"),
-          ("/home/aina/.cache/go-build", "/home/aina/.cache/go-build"),
+        set(_sb_mounts(_sb_learner, "--ro-bind")) == {("/", "/")}
+        and set(_sb_mounts(_sb_learner, "--ro-bind-try")) == _sb_common_try_ro | {
+          (f"{_sb_userhome}/go", f"{_sb_userhome}/go"),
+          (f"{_sb_userhome}/.cache/go-build", f"{_sb_userhome}/.cache/go-build"),
         }
         and _sb_mounts(_sb_learner, "--bind") == [(_sb_bundle, _sb_bundle)]
         and _sb_learner[-2:] == ["--chdir", _sb_bundle]
@@ -253,7 +254,7 @@ def test_sandbox_learning(client, suite_state):
           (_sb_bundle, _sb_bundle),
         }
         and _sb_mounts(_sb_runner, "--ro-bind-fd") == [
-          ("7", "/home/aina/go/pkg/mod")
+          ("7", f"{_sb_userhome}/go/pkg/mod")
         ]
         and not _sb_mounts(_sb_runner, "--bind")
         and _sb_runner[-4:] == ["--dir", _sandbox.RUNNER_WORKDIR,
@@ -291,9 +292,15 @@ def test_sandbox_learning(client, suite_state):
         "E1 argv builder rejects unknown profiles and unsafe bundle authorities"
     )
 
+    # Discovery short-circuits the probe, so these blocks stub it as resolved:
+    # a mocked probe must not need a host bubblewrap to run.
+    _sb_resolved = lambda: _sandbox_mock.patch.object(  # noqa: E731
+        _sandbox, "_BWRAP_UNUSABLE", "")
+
     _sandbox._cached_runtime_probe.cache_clear()
     _sb_probe_ok = _types.SimpleNamespace(returncode=0, stderr="")
-    with _sandbox_mock.patch.object(_sandbox.subprocess, "run", return_value=_sb_probe_ok) as _run:
+    with _sb_resolved(), \
+            _sandbox_mock.patch.object(_sandbox.subprocess, "run", return_value=_sb_probe_ok) as _run:
         _sandbox.require_sandbox_runtime()
         _sandbox.require_sandbox_runtime()
     assert (
@@ -306,11 +313,101 @@ def test_sandbox_learning(client, suite_state):
         "E1 runtime probe: exact command succeeds once and is process-cached"
     )
 
+    # Discovery (issue #182), written to run on a host with no bubblewrap.
+    _sb_rejected_missing = _sandbox._bwrap_rejection("/invented/nowhere/bwrap")
+    _sb_rejected_wrong = _sandbox._bwrap_rejection(sys.executable)
+    with _sandbox_mock.patch.object(
+            _sandbox, "_bwrap_rejection",
+            side_effect=lambda path: "" if path == "/second/bwrap"
+            else "invented rejection"), \
+            _sandbox_mock.patch.object(
+                _sandbox, "_BWRAP_CANDIDATES",
+                ("/first/bwrap", "/second/bwrap")):
+        _sb_fell_through = _sandbox._resolve_bwrap()
+    with _sandbox_mock.patch.object(
+            _sandbox, "_BWRAP_CANDIDATES",
+            ("/invented/nowhere/bwrap", sys.executable)):
+        _sb_chosen, _sb_reason = _sandbox._resolve_bwrap()
+    assert (
+        _sb_rejected_missing == "not an executable file"
+        and _sb_rejected_wrong.startswith("does not accept ")
+        # An unusable first candidate must not hide a usable second one.
+        and _sb_fell_through == ("/second/bwrap", "")
+        # Nothing usable: the preferred path is kept so the pure argv builders
+        # stay total, and every candidate's reason reaches the refusal.
+        and _sb_chosen == "/invented/nowhere/bwrap"
+        and _sb_reason.startswith("no usable bubblewrap")
+        and "/invented/nowhere/bwrap: not an executable file" in _sb_reason
+        and f"{sys.executable}: does not accept " in _sb_reason
+    ), (
+        "E1 bwrap discovery: ordered candidates, no $PATH, reasoned refusal"
+    )
+
+    # The setuid gate: CVE-2026-41163 is a defect of setuid mode only, so the
+    # version floor applies only there. Driven with a stub that answers both
+    # queries — the kernel ignores the setuid bit on a script, but the bit is
+    # what is read here, so this needs no real bubblewrap and no privilege.
+    def _sb_fake_bwrap(directory, version, setuid):
+        path = Path(directory) / "bwrap"
+        path.write_text(
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            f'  --help) echo "{" ".join(_sandbox._REQUIRED_BWRAP_OPTIONS)}" ;;\n'
+            f'  --version) echo "bubblewrap {version}" ;;\n'
+            "esac\n",
+            encoding="utf-8",
+        )
+        path.chmod(0o4755 if setuid else 0o755)
+        return str(path)
+
+    _sb_gate = {}
+    with tempfile.TemporaryDirectory(prefix="ephemeris-bwrap-gate-") as _sb_gate_dir:
+        for _sb_label, _sb_version, _sb_setuid in (
+            ("plain-old", "0.9.0", False),
+            ("setuid-old", "0.9.0", True),
+            ("setuid-exact", "0.11.2", True),
+            ("setuid-newer", "0.12.0", True),
+            ("setuid-unknown", "unreleased", True),
+        ):
+            _sb_case_dir = Path(_sb_gate_dir) / _sb_label
+            _sb_case_dir.mkdir()
+            _sb_gate[_sb_label] = _sandbox._bwrap_rejection(
+                _sb_fake_bwrap(_sb_case_dir, _sb_version, _sb_setuid))
+    assert (
+        # Not setuid: the option vocabulary is the whole requirement.
+        _sb_gate["plain-old"] == ""
+        # Setuid below the fix: refused, and the reason names the version.
+        and "0.9.0" in _sb_gate["setuid-old"]
+        and "CVE-2026-41163" in _sb_gate["setuid-old"]
+        # The floor itself and above it pass; an unreadable version does not.
+        and _sb_gate["setuid-exact"] == ""
+        and _sb_gate["setuid-newer"] == ""
+        and "does not report a version" in _sb_gate["setuid-unknown"]
+    ), (
+        "E1 bwrap discovery: the version floor applies to setuid installs only"
+    )
+
+    # That refusal is what the probe reports, without spawning anything.
+    _sandbox._cached_runtime_probe.cache_clear()
+    with _sandbox_mock.patch.object(
+            _sandbox, "_BWRAP_UNUSABLE", "invented discovery failure"), \
+            _sandbox_mock.patch.object(_sandbox.subprocess, "run") as _no_run:
+        try:
+            _sandbox.require_sandbox_runtime()
+            _sb_unusable_refused = False
+        except _sandbox.SandboxUnavailableError as exc:
+            _sb_unusable_refused = "invented discovery failure" in str(exc)
+    _sandbox._cached_runtime_probe.cache_clear()
+    assert _sb_unusable_refused and _no_run.call_count == 0, (
+        "E1 runtime probe: an unresolvable bwrap refuses before any spawn"
+    )
+
     async def _sb_no_fallback_contract():
         results = {}
         _sandbox._cached_runtime_probe.cache_clear()
         failed = _types.SimpleNamespace(returncode=1, stderr="userns denied")
-        with _sandbox_mock.patch.object(_sandbox.subprocess, "run", return_value=failed), \
+        with _sb_resolved(), \
+                _sandbox_mock.patch.object(_sandbox.subprocess, "run", return_value=failed), \
                 _sandbox_mock.patch.object(_sandbox.asyncio, "create_subprocess_exec") as spawn:
             for _ in range(2):
                 try:
@@ -323,8 +420,9 @@ def test_sandbox_learning(client, suite_state):
             results["probe_never_spawned"] = spawn.call_count == 0
 
         _sandbox._cached_runtime_probe.cache_clear()
-        with _sandbox_mock.patch.object(
-                _sandbox.subprocess, "run", return_value=_sb_probe_ok), \
+        with _sb_resolved(), \
+                _sandbox_mock.patch.object(
+                    _sandbox.subprocess, "run", return_value=_sb_probe_ok), \
                 _sandbox_mock.patch.object(
                     _sandbox.asyncio, "create_subprocess_exec",
                     side_effect=OSError("exec refused")) as spawn:
