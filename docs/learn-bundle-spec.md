@@ -56,11 +56,25 @@ data/lessons/<slug>/
   CLAUDE.md        app-generated shim for AGENTS.md — regenerated
   .claude/         app-generated agent-harness config for the bundle
     settings.json  constant `{"outputStyle": "Learning"}` — regenerated
+  .git/            per-lesson history — app-initialized, agent-committed
+  .gitignore       written once at init; ignores the `node_modules` mount
 ```
 
 Reserved names, which no page, block file, or artifact root may claim:
 `lesson.json`, `attempts.jsonl`, `assessments.jsonl`, `memory.jsonl`,
-`runs.jsonl`, `AGENTS.md`, `CLAUDE.md`, `.claude`, `node_modules`, `source`.
+`runs.jsonl`, `AGENTS.md`, `CLAUDE.md`, `.claude`, `node_modules`, `source`,
+`.git`.
+
+Each bundle is its own local git repository, initialized on the read path when
+nothing already holds the name and never repaired afterwards; the app
+guarantees only that the repo and its `.gitignore` exist, and the tutor agent
+owns every commit. Init is best-effort — a missing or failing `git` is logged
+and skipped, and the bundle read proceeds unchanged. History is local: no
+remote, no push, and one repository per bundle rather than one over the
+`lessons/` tree, because the lesson-scoped sandbox only ever sees its own
+bundle directory. `.gitignore` names `node_modules/`, which is the mount point
+described below and never bundle content. (2026-08-12,
+[#186](https://github.com/jointsome0-lgtm/ephemeris/issues/186).)
 
 `source/` holds the raw material a lesson was built from — fetched pages and
 a `_fetched.json` recording each one's url, date and sha256 — so provenance
@@ -1001,7 +1015,7 @@ re-dumping cannot provide it. Additive evolution inside v2 means new
 OPTIONAL fields; any change to the meaning of an existing field requires
 v3.
 
-Three named exceptions, taken deliberately rather than through v3. Adding
+Four named exceptions, taken deliberately rather than through v3. Adding
 `.claude` to the §2 reserved names (2026-07-29,
 [#84](https://github.com/jointsome0-lgtm/ephemeris/issues/84)) narrows what
 `entry`, `pages[].path`, `blocks[].file` and `artifact_roots[]` accept
@@ -1010,7 +1024,9 @@ without a version bump. A v2 manifest declaring a path whose first segment is
 `invalid-entry`), and a manifest whose only page was such a path becomes
 rejected with `no-pages`. Adding `node_modules` (2026-08-09,
 [#161](https://github.com/jointsome0-lgtm/ephemeris/issues/161)) narrows the
-same four fields the same way, and so does adding `source` (2026-08-09).
+same four fields the same way, and so do adding `source` (2026-08-09) and
+`.git` (2026-08-12,
+[#186](https://github.com/jointsome0-lgtm/ephemeris/issues/186)).
 
 `source` differs from the other two in what happens on disk. The app writes
 nothing under it — the tutor stores fetched material there — so workspace

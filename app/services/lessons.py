@@ -14,6 +14,7 @@ import os
 import re
 import sqlite3
 import stat as stat_module
+import subprocess
 import tempfile
 import textwrap
 from datetime import datetime, timezone
@@ -45,6 +46,15 @@ AGENT_HOMES_DIR = DATA_DIR / "agent-homes"
 # same reason, and bound over `<bundle>/node_modules` inside the agent sandbox
 # so the bundle on disk never carries them (see _ensure_build_workspace).
 BUILD_WORKSPACES_DIR = DATA_DIR / "lesson-builds"
+# Each bundle is its own local git repository (#186), initialized on the read
+# path and never served. The only ignore that matters is the mount point above:
+# the build workspace (packages and the bundler's `out/`) appears at
+# `<bundle>/node_modules` inside the sandbox, and on-host state must not enter
+# a lesson's history.
+GIT_DIR_NAME = ".git"
+GITIGNORE_NAME = ".gitignore"
+BUNDLE_GITIGNORE = "node_modules/\n"
+GIT_INIT_TIMEOUT_SECONDS = 10
 DEFAULT_ENTRY = bundle_schema.DEFAULT_ENTRY
 MANIFEST_NAME = "lesson.json"
 
@@ -360,6 +370,37 @@ def _mkdir_no_follow(path: Path) -> None:
         path.mkdir()
 
 
+def _ensure_bundle_repo(lesson_dir: Path) -> None:
+    """Give the bundle its own local git repository, once (#186).
+
+    Per-lesson history is what lets the learner roll a broken experiment back
+    and lets a later tutor session read `git log` instead of guessing what
+    earlier ones did. The app only guarantees the repo exists; committing is
+    the tutor agent's job (see the brief). Best-effort throughout — a bundle
+    read must never fail because git is absent or refused to init — and never
+    through a link (§2): anything already holding the name, symlink included,
+    means hands off entirely.
+    """
+    git_dir = lesson_dir / GIT_DIR_NAME
+    if git_dir.is_symlink() or git_dir.exists():
+        return
+    try:
+        subprocess.run(
+            ["git", "init", "--quiet", str(lesson_dir)],
+            check=True, capture_output=True, timeout=GIT_INIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        _log.warning("lesson bundle git init skipped for %s: %s", lesson_dir, exc)
+        return
+    ignore = lesson_dir / GITIGNORE_NAME
+    if not ignore.is_symlink() and not ignore.exists():
+        try:
+            ignore.write_text(BUNDLE_GITIGNORE, encoding="utf-8")
+        except OSError as exc:
+            _log.warning("lesson bundle .gitignore not written for %s: %s",
+                         lesson_dir, exc)
+
+
 def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:
     """Dual-read the bundle manifest (v1/v2), creating the standard dirs and —
     for a lesson that has none — the v2 skeleton. Creation, never repair: an
@@ -374,6 +415,7 @@ def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:
     lesson_dir.mkdir(parents=True, exist_ok=True)
     for name in ("related", "assets"):
         _mkdir_no_follow(lesson_dir / name)
+    _ensure_bundle_repo(lesson_dir)
 
     manifest_path = _manifest_path(lesson["slug"])
     read = bundle_schema.read_manifest_path(
@@ -1673,6 +1715,10 @@ learner with blank controls has thrown their work away on screen.
   rewrite it.
 - `AGENTS.md` / `CLAUDE.md` — app-generated briefs (this file); never
   author or repurpose these names.
+- `.git/` — this bundle is a local git repository, initialized by the app.
+  Commit at every checkpoint and at the end of each session, with a message
+  saying what the learner did and what changed; `git log`/`git diff` is how
+  your next session sees what this one actually did.
 
 Pages render with network access for everything except code: fetch, images,
 media, fonts and stylesheets may use remote URLs. Remote SCRIPTS are the one

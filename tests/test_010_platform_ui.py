@@ -1102,7 +1102,7 @@ def test_002_ui_and_workspace(client, suite_state):
     ), "the v1 preview surface serves an ordinary file but not .claude/"
     _spec_84 = (ROOT / "docs" / "learn-bundle-spec.md").read_text(encoding="utf-8")
     assert (
-        "`CLAUDE.md`, `.claude`, `node_modules`, `source`." in _spec_84
+        "`CLAUDE.md`, `.claude`, `node_modules`, `source`,\n`.git`." in _spec_84
         and ".claude/         app-generated agent-harness config" in _spec_84
         and 'constant `{"outputStyle": "Learning"}`' in _spec_84
         and "regenerated, never authored: the app rewrites them" in _spec_84
