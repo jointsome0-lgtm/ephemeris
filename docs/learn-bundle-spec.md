@@ -68,24 +68,33 @@ Reserved names, which no page, block file, or artifact root may claim:
 Each bundle is its own local git repository, set up on the read path unless
 something that is not a plain directory holds the `.git` name; the app
 guarantees only that the repository exists and is usable, and the tutor agent
-owns every commit. The gate is readiness, not existence — `.git/objects` and
-`.git/refs` present, and the app's own rules found at `.git/info/exclude`,
-which is written last and whose CONTENT is the completion marker, since `git
-init` writes a template of its own at that name from the first moment — so a
-setup interrupted by a transient error is finished on the next read rather
-than frozen behind the directory it managed to create,
-and so is a repository restored from a backup, which is an archive of FILES:
-a never-committed bundle comes back without its empty `objects/`, a packed one
-with its packs and `packed-refs` but without the `refs/` they emptied, and git
-refuses either. Every step is idempotent, `git init`
-included. Setup is best-effort — a missing or failing `git` is logged and
-skipped, and the bundle read proceeds unchanged. History is local: no
+owns every commit. Setup has two shapes, because they are two problems. Where
+there is no `.git`, a whole repository is BUILT ELSEWHERE — in an app-private
+staging directory beside the bundles — and moved in by `rename`: atomic,
+following no link, unable to overwrite a non-empty directory, so the bundle
+sees a finished repository or none, and `git init`/`git config` never write to
+a path the lesson's own session could have replaced. Where a `.git` directory
+exists but is not ready, it is finished in place without git at all: a
+`mkdir` per missing directory and the app's own rules, nothing that would
+follow a name the session controls. A repository the app did not create keeps
+its `config`.
+
+Readiness, not existence, is the gate: `.git/objects` and `.git/refs` present,
+and the app's own rules found at `.git/info/exclude`, whose CONTENT is the
+marker — `git init` writes a template of its own at that name, so presence
+proves nothing, and a size mismatch is answered without reading the file. What
+this catches is a repository restored from a backup, which is an archive of
+FILES: a never-committed bundle comes back without its empty `objects/`, a
+packed one with its packs and `packed-refs` but without the `refs/` they
+emptied, and git refuses either. Setup is best-effort — a missing or failing
+`git` is logged and skipped, and the bundle read proceeds unchanged. It also
+means a later change to the rules re-applies itself. History is local: no
 remote, no push, and one repository per bundle rather than one over the
 `lessons/` tree, because the lesson-scoped sandbox only ever sees its own
 bundle directory.
 
-Init leaves the repository two things a commit made inside the sandbox cannot
-get anywhere else. A repository-local `user.name`/`user.email` — a
+The build leaves the repository two things a commit made inside the sandbox
+cannot get anywhere else. A repository-local `user.name`/`user.email` — a
 non-personal identity, since nothing here is the owner's work and there is no
 remote — because the lesson-agent sandbox binds a blank `$HOME` with no
 `.gitconfig` and passes no `GIT_AUTHOR_*`, so an unconfigured commit would die
@@ -108,13 +117,14 @@ boundary against it; the brief says so.
 
 What IS a boundary is that the app runs OUTSIDE the sandbox the bundle's own
 session is confined to, and a name that session controls must never decide
-where the app's bytes land. So the setup touches nothing through a link: it
-declines a `.git` that is not a plain directory, declines a repository holding
-a link anywhere `git init`/`git config` write (`config`, `HEAD`, the template
-files), and writes the exclude file by opening every component `O_NOFOLLOW`
-and renaming it into place — which also means the marker never exists
-half-written. A sabotaged repository costs that lesson its history, logged,
-and nothing else: the app does not delete inside a bundle to get it back. (2026-08-12,
+where the app's bytes land — and that the session runs CONCURRENTLY, so
+inspecting a name before writing it narrows the window rather than closing it.
+Hence the shapes above: nothing the app writes into a bundle here goes through
+a name that session could have replaced. A `.git` that is not a plain
+directory is declined, the exclude file is written by opening every component
+`O_NOFOLLOW` and renaming it into place — a planted link is replaced, never
+followed, and the marker never exists half-written — and everything else is
+built where only the app can reach. (2026-08-12,
 [#186](https://github.com/jointsome0-lgtm/ephemeris/issues/186).)
 
 `source/` holds the raw material a lesson was built from — fetched pages and

@@ -12,6 +12,7 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
 import sqlite3
 import stat as stat_module
 import subprocess
@@ -73,6 +74,14 @@ GIT_EXCLUDE_PATH = ("info", "exclude")
 # What git refuses to work without (gitrepository-layout), and what a restore
 # can therefore be missing — see _bundle_repo_is_ready.
 GIT_REQUIRED_DIRS = ("objects", "refs")
+# Where a new repository is built before it is moved into a bundle. A sibling
+# of the bundles, for the reason the other two siblings above exist and one
+# more: `git init` and `git config` follow a link at any name they write, and
+# a bundle is writable from inside its own session while this runs outside it.
+# Building here and renaming the finished `.git` in leaves no window at all —
+# no partial repository is ever visible, and no git process ever writes to a
+# path the session could have replaced a moment earlier.
+GIT_STAGING_DIR = DATA_DIR / "lesson-git-staging"
 BUNDLE_GIT_EXCLUDE = """\
 # Written by the Learn app when it set this repository up (#186).
 # App-owned paths only: rules of your own belong in .gitignore.
@@ -409,31 +418,28 @@ def _mkdir_no_follow(path: Path) -> None:
         path.mkdir()
 
 
-def _git_metadata_holds_no_link(git_dir: Path) -> bool:
-    """Whether it is safe to point `git` at an existing repository.
+def _holds_exactly(path: Path, expected: str) -> bool:
+    """Whether `path` is a regular file whose bytes are exactly `expected`.
 
-    `git init` and `git config` write `config`, `HEAD`, `description` and the
-    template files, and they follow a link at any of those names — so a session
-    that replaced `.git/config` with a link to a file of the app user's would
-    have the app, running outside the sandbox, write there. No allowlist of
-    names, because the set belongs to git and moves with it: a link ANYWHERE
-    git writes disqualifies the repository, and the app leaves it alone.
-
-    Only the directories git init writes into are looked at, so this stays
-    bounded — it never walks `objects/`. Ordered, and returns at the first
-    link: `info` and `hooks` are opened only once they are known to be real
-    names in a real `.git`.
+    Bounded by the comparison itself: the size is checked on the descriptor
+    the bytes come from, and a file of any other length is answered without
+    reading it. The name belongs to a session that can put a multi-gigabyte
+    sparse file there in an instant, and this is asked on a read path.
     """
-    for parent in (git_dir, git_dir / "info", git_dir / "hooks"):
-        try:
-            with os.scandir(parent) as entries:
-                if any(entry.is_symlink() for entry in entries):
-                    return False
-        except FileNotFoundError:
-            continue
-        except OSError:
+    want = expected.encode("utf-8")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except OSError:
+        return False
+    try:
+        info = os.fstat(fd)
+        if not stat_module.S_ISREG(info.st_mode) or info.st_size != len(want):
             return False
-    return True
+        return os.read(fd, len(want)) == want
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
 
 
 def _write_git_exclude(git_dir: Path) -> None:
@@ -504,9 +510,90 @@ def _bundle_repo_is_ready(git_dir: Path) -> bool:
     """
     return (
         all(git_dir.joinpath(name).is_dir() for name in GIT_REQUIRED_DIRS)
-        and _read_regular_no_follow(git_dir.joinpath(*GIT_EXCLUDE_PATH))
-        == BUNDLE_GIT_EXCLUDE
+        and _holds_exactly(git_dir.joinpath(*GIT_EXCLUDE_PATH),
+                           BUNDLE_GIT_EXCLUDE)
     )
+
+
+def _install_bundle_repo(git_dir: Path) -> None:
+    """Build a whole repository somewhere the session cannot reach, then move
+    it in.
+
+    `git init` and `git config` follow a link at every name they write —
+    `config`, `HEAD`, the template files — and the bundle is writable from
+    inside the lesson's own session while this runs outside it, as the app.
+    Checking those names first would only narrow the window: the session runs
+    concurrently and can plant a link between the check and the write.
+
+    So git is never pointed at the bundle at all. The repository is built in
+    an app-private directory and arrives by `rename`, which is atomic, follows
+    no link, and cannot overwrite a non-empty directory — if something took
+    the name meanwhile, this loses and leaves it alone. A half-built
+    repository is never visible either: what appears under the bundle is a
+    finished one or nothing.
+    """
+    GIT_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    staged = Path(tempfile.mkdtemp(dir=GIT_STAGING_DIR))
+    try:
+        work = staged / "repo"
+        work.mkdir()
+        subprocess.run(
+            ["git", "init", "--quiet", str(work)],
+            check=True, capture_output=True, timeout=GIT_INIT_TIMEOUT_SECONDS,
+        )
+        for key, value in BUNDLE_GIT_IDENTITY:
+            subprocess.run(
+                ["git", "-C", str(work), "config", key, value],
+                check=True, capture_output=True,
+                timeout=GIT_INIT_TIMEOUT_SECONDS,
+            )
+        built = work / GIT_DIR_NAME
+        built.joinpath(*GIT_EXCLUDE_PATH).write_text(
+            BUNDLE_GIT_EXCLUDE, encoding="utf-8"
+        )
+        os.rename(built, git_dir)
+    except (OSError, subprocess.SubprocessError) as exc:
+        _log.warning("lesson bundle git init skipped for %s: %s", git_dir, exc)
+    finally:
+        shutil.rmtree(staged, ignore_errors=True)
+
+
+def _repair_bundle_repo(git_dir: Path) -> None:
+    """Finish a repository that exists but is not ready — without git.
+
+    The one case that reaches here is a repository restored from a backup,
+    which is an archive of files and so comes back missing whichever of
+    `objects/` and `refs/` was empty. Recreating a directory is all that is
+    needed, and `mkdir` follows no link, so this asks nothing of git: running
+    `git init` over an existing repository would put the app back to writing
+    through names the session controls.
+
+    For the same reason the identity is not touched here. A restored
+    repository brings its `config` with it — a regular file, archived like any
+    other — and one this app never created is not its to configure.
+    """
+    try:
+        fd = os.open(git_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        _log.warning("lesson bundle git repair skipped for %s: %s", git_dir, exc)
+        return
+    try:
+        for name in (*GIT_REQUIRED_DIRS, GIT_EXCLUDE_PATH[0]):
+            try:
+                os.mkdir(name, 0o755, dir_fd=fd)
+            except FileExistsError:
+                pass
+            except OSError as exc:
+                _log.warning("lesson bundle git repair incomplete for %s: %s",
+                             git_dir, exc)
+                return
+    finally:
+        os.close(fd)
+    try:
+        _write_git_exclude(git_dir)
+    except OSError as exc:
+        _log.warning("lesson bundle git rules not written for %s: %s",
+                     git_dir, exc)
 
 
 def _ensure_bundle_repo(lesson_dir: Path) -> None:
@@ -516,49 +603,24 @@ def _ensure_bundle_repo(lesson_dir: Path) -> None:
     and lets a later tutor session read `git log` instead of guessing what
     earlier ones did. The app only guarantees the repository exists and works;
     committing is the tutor agent's job (see the brief) — which is why setup
-    also leaves behind the two things a commit from inside the sandbox needs
-    and cannot get anywhere else: the app-owned exclude rules and a local
-    identity.
+    leaves behind the two things a commit from inside the sandbox needs and
+    cannot get anywhere else: the app-owned exclude rules and a local identity.
 
-    Every step is idempotent, `git init` included (documented safe on an
-    existing repository: it restores what is missing and overwrites nothing),
-    so an unready repository is completed in place. That is what makes the
-    readiness gate above a gate and not a one-way door.
-
-    Best-effort throughout — a bundle read must never fail because git is
-    absent or refused — and never through a link (§2), at the `.git` name
-    itself or at any name git would write inside it. Either one means hands
-    off entirely: this runs as the app, outside the sandbox the bundle's own
-    session is confined to, so a name that session controls must never decide
-    where the app's bytes land.
+    Two shapes, because they are two different problems: creating a repository
+    where there is none, and finishing one that came back from a backup
+    incomplete. Both are best-effort — a bundle read must never fail because
+    git is missing or refused — and neither writes through a link (§2), at the
+    `.git` name or below it. A `.git` that is not a plain directory is left
+    alone entirely.
     """
     git_dir = lesson_dir / GIT_DIR_NAME
-    if git_dir.is_symlink() or (git_dir.exists() and not git_dir.is_dir()):
+    if git_dir.is_symlink():
         return
-    if _bundle_repo_is_ready(git_dir):
+    if not git_dir.exists():
+        _install_bundle_repo(git_dir)
         return
-    if not _git_metadata_holds_no_link(git_dir):
-        _log.warning("lesson bundle git setup skipped for %s: a link sits "
-                     "where git writes", lesson_dir)
-        return
-    try:
-        subprocess.run(
-            ["git", "init", "--quiet", str(lesson_dir)],
-            check=True, capture_output=True, timeout=GIT_INIT_TIMEOUT_SECONDS,
-        )
-        for key, value in BUNDLE_GIT_IDENTITY:
-            subprocess.run(
-                ["git", "-C", str(lesson_dir), "config", key, value],
-                check=True, capture_output=True,
-                timeout=GIT_INIT_TIMEOUT_SECONDS,
-            )
-        # App-owned, and git init leaves only its own comment template here,
-        # so there is never foreign content to preserve. Written last: see the
-        # completion marker above.
-        _write_git_exclude(git_dir)
-    except (OSError, subprocess.SubprocessError) as exc:
-        _log.warning("lesson bundle git setup incomplete for %s (retried on "
-                     "the next read): %s", lesson_dir, exc)
+    if git_dir.is_dir() and not _bundle_repo_is_ready(git_dir):
+        _repair_bundle_repo(git_dir)
 
 
 def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:

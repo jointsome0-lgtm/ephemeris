@@ -174,22 +174,24 @@ def test_a_repo_restored_without_its_empty_dirs_is_completed_in_place():
         )
 
 
-def test_a_half_finished_setup_is_retried_not_frozen():
-    lesson = _lesson("partial setup")
+def test_a_repository_without_the_rules_gets_them_but_keeps_its_config():
+    lesson = _lesson("rules missing")
     bundle = _bundle(lesson)
-    # What a transient failure between `git init` and the exclude write leaves
-    # behind: a repository with none of this app's rules.
     (bundle / ".git" / "info" / "exclude").unlink()
-    _git(bundle, "config", "--unset", "user.email")
+    _git(bundle, "config", "user.email", "invented-somebody@example.invalid")
 
     lessons.lesson_file_info(lesson)
 
     assert (bundle / ".git" / "info" / "exclude").read_text(
         encoding="utf-8"
-    ) == lessons.BUNDLE_GIT_EXCLUDE, "the rules are written on the retry"
+    ) == lessons.BUNDLE_GIT_EXCLUDE, "app-owned rules are app-owned: rewritten"
     assert _git(bundle, "config", "user.email").stdout.strip() == (
-        "lesson@ephemeris.invalid"
-    ), "and so is the identity the sandbox cannot supply"
+        "invented-somebody@example.invalid"
+    ), (
+        "while the config of a repository the app did not create is not the "
+        "app's to rewrite — and reaching for `git config` here is exactly the "
+        "hand-off to a session-controlled path the staged build avoids"
+    )
 
 
 def test_repeated_ensures_never_re_init(monkeypatch):
@@ -299,12 +301,10 @@ def test_the_build_still_sees_every_link_the_repo_can_hold():
     ], "a link inside the repository is a link inside the bundle"
 
 
-def test_a_planted_link_costs_the_bundle_its_history_not_the_host(tmp_path):
+def test_the_app_writes_the_rules_through_no_link(tmp_path):
     """The session that owns this bundle can write in it; the setup runs
     outside that sandbox, as the app. A name the session controls must never
-    decide where the app's bytes land — so a repository holding a link where
-    git writes is left alone, and the lesson simply goes without history.
-    """
+    decide where the app's bytes land."""
     lesson = _lesson("planted marker")
     bundle = _bundle(lesson)
     outside = tmp_path / "invented-host-file"
@@ -312,37 +312,83 @@ def test_a_planted_link_costs_the_bundle_its_history_not_the_host(tmp_path):
     exclude = bundle / ".git" / "info" / "exclude"
     exclude.unlink()
     exclude.symlink_to(outside)
-    shutil.rmtree(bundle / ".git" / "objects")  # so the setup would run again
+    shutil.rmtree(bundle / ".git" / "objects")  # so the setup runs again
 
-    assert lessons.lesson_file_info(lesson), "and the bundle still reads"
+    lessons.lesson_file_info(lesson)
 
     assert outside.read_text(encoding="utf-8") == "untouched\n", (
         "nothing was written through the planted name"
     )
-    assert exclude.is_symlink(), (
-        "nor was the session's own file replaced — the app's answer to a "
-        "sabotaged repository is to stop, not to start deleting inside a bundle"
+    assert not exclude.is_symlink() and exclude.read_text(
+        encoding="utf-8"
+    ) == lessons.BUNDLE_GIT_EXCLUDE, (
+        "the rename replaced the link rather than following it"
     )
 
 
-def test_the_app_points_git_at_no_repository_holding_a_link(tmp_path):
+def test_an_outsized_marker_is_answered_without_reading_it():
+    """The name is the session's to fill, and this is asked on a read path: a
+    sparse file of any size must cost a stat, not a load."""
+    lesson = _lesson("outsized marker")
+    exclude = _bundle(lesson) / ".git" / "info" / "exclude"
+    exclude.unlink()
+    with open(exclude, "wb") as handle:
+        handle.truncate(8 * 1024 * 1024 * 1024)
+
+    assert not lessons._bundle_repo_is_ready(_bundle(lesson) / ".git"), (
+        "8 GiB is not the marker, and finding that out reads nothing"
+    )
+
+
+def test_git_is_never_pointed_at_an_existing_bundle_repository(tmp_path,
+                                                               monkeypatch):
     """`git init` and `git config` write `config`, `HEAD` and the template
-    files, and they follow a link at any of those names. The session can plant
-    one; the app runs outside its sandbox, so it must not be the hand that
-    writes there."""
+    files, and follow a link at any of those names. The session runs
+    concurrently and can plant one at any moment, so checking first would only
+    narrow the window: git is simply never run against a bundle that already
+    holds a repository.
+    """
     lesson = _lesson("planted config")
     bundle = _bundle(lesson)
     outside = tmp_path / "invented-host-gitconfig"
     outside.write_text("[user]\n\tname = untouched\n", encoding="utf-8")
     (bundle / ".git" / "config").unlink()
     (bundle / ".git" / "config").symlink_to(outside)
-    shutil.rmtree(bundle / ".git" / "objects")  # so the setup would run again
+    shutil.rmtree(bundle / ".git" / "objects")  # so the repair runs
+
+    calls: list = []
+    monkeypatch.setattr(lessons.subprocess, "run", _counting_run(calls))
+    lessons.lesson_file_info(lesson)
+
+    assert calls == [], (
+        "the repair recreates a directory and rewrites the app's own rules; "
+        "it asks git for nothing"
+    )
+    assert outside.read_text(encoding="utf-8") == "[user]\n\tname = untouched\n", (
+        "so no link the session planted decided where the app's bytes landed"
+    )
+    assert (bundle / ".git" / "objects").is_dir(), "and the repair happened"
+
+
+def test_a_repository_arrives_whole_or_not_at_all():
+    """It is built outside the bundle and renamed in, so a session watching
+    the directory never sees a repository without the rules or the identity —
+    and a failed build leaves nothing behind, in the bundle or the staging
+    area."""
+    lesson = _lesson("staged install")
+    bundle = _bundle(lesson)
+    shutil.rmtree(bundle / ".git")
+    assert not list(lessons.GIT_STAGING_DIR.iterdir()), (
+        "the staging area is cleaned up after every build"
+    )
 
     lessons.lesson_file_info(lesson)
 
-    assert outside.read_text(encoding="utf-8") == "[user]\n\tname = untouched\n", (
-        "neither git init nor git config was pointed at a repository whose "
-        "metadata the session had replaced with a link"
+    assert lessons._bundle_repo_is_ready(bundle / ".git"), (
+        "what appears under the bundle is a finished repository"
+    )
+    assert not list(lessons.GIT_STAGING_DIR.iterdir()), (
+        "and the staging area is empty again"
     )
 
 
