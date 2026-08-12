@@ -30,6 +30,14 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `CLAUDE_CODE_OAUTH_TOKEN`, read at each session open from
   `DATA_DIR/claude-token` (owner-created via `claude setup-token`;
   lesson-agent role only; absent file leaves the variable unset).
+  Reviewed 2026-08-12 in the overlapping lesson-source/token batch →
+  `docs/reviews/2026-08-12-lesson-source-and-claude-token-review.md`:
+  0 Critical, 2 High, 0 Medium, 0 Low, 1 Info. The entry stays Pending on
+  H2: the reusable token is placed in the same model-controlled process tree
+  that consumes explicitly untrusted source material and has outbound access;
+  prompt compliance can disclose it. The repair must keep reusable credential
+  bytes outside every command environment the model can inspect or spawn,
+  through a broker or equivalent OS/process boundary.
 
 - [ ] 2026-08-09 — `5096a50` (squash of `feat/study-browser`, PR #177) and
   `514b363` (squash of `docs/playwright-browser-brief`, PR #178) —
@@ -76,6 +84,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   origin limits are defence in depth on top, not the repair. The Info item — the unreferenced
   `lesson-profile` directory still present on the host — is private host
   cleanup, outside Git. The deploy gate stays closed until the repair PR.
+  Re-reviewed 2026-08-12 with the overlapping Claude-token entry →
+  `docs/reviews/2026-08-12-lesson-source-and-claude-token-review.md`:
+  0 Critical, 2 High, 0 Medium, 0 Low, 1 Info. The existing unrestricted
+  Playwright High remains live, and the batch confirms the separate reusable-
+  token disclosure High described on the 2026-08-12 entry. This entry remains
+  Pending.
 
 - [ ] 2026-08-11 — `c83c093` (squash of `lesson-network`, PR #181) —
   `app/sandbox.py`, `app/terminal.py`, `app/routers/learn.py`,
