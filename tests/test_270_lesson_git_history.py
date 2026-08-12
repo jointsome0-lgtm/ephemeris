@@ -174,7 +174,7 @@ def test_a_repo_restored_without_its_empty_dirs_is_completed_in_place():
         )
 
 
-def test_a_repository_without_the_rules_gets_them_but_keeps_its_config():
+def test_a_repository_without_the_rules_gets_them_and_keeps_its_own_identity():
     lesson = _lesson("rules missing")
     bundle = _bundle(lesson)
     (bundle / ".git" / "info" / "exclude").unlink()
@@ -187,10 +187,38 @@ def test_a_repository_without_the_rules_gets_them_but_keeps_its_config():
     ) == lessons.BUNDLE_GIT_EXCLUDE, "app-owned rules are app-owned: rewritten"
     assert _git(bundle, "config", "user.email").stdout.strip() == (
         "invented-somebody@example.invalid"
+    ), "a value the repository already carries is never overwritten"
+
+
+def test_a_repository_missing_an_identity_is_given_one(monkeypatch):
+    """The repair also reaches repositories the app did not build — one an
+    agent made itself in a session, say. The sandbox supplies no identity, so
+    without this the checkpoint the brief asks for dies on "unable to
+    auto-detect email address", and the marker written right after would make
+    that permanent."""
+    lesson = _lesson("identity missing")
+    bundle = _bundle(lesson)
+    _git(bundle, "config", "--unset", "user.email")
+    _git(bundle, "config", "user.name", "Invented Somebody")
+    (bundle / ".git" / "info" / "exclude").unlink()
+
+    seen: list = []
+    monkeypatch.setattr(lessons.subprocess, "run", _counting_run(seen))
+    lessons.lesson_file_info(lesson)
+    during_setup = list(seen)  # before this test's own git calls join them
+    monkeypatch.undo()
+
+    assert _git(bundle, "config", "user.email").stdout.strip() == (
+        "lesson@ephemeris.invalid"
+    ), "the missing half is filled"
+    assert _git(bundle, "config", "user.name").stdout.strip() == (
+        "Invented Somebody"
+    ), "and only the missing half"
+    assert during_setup and not any(
+        str(bundle) in " ".join(argv) for argv in during_setup
     ), (
-        "while the config of a repository the app did not create is not the "
-        "app's to rewrite — and reaching for `git config` here is exactly the "
-        "hand-off to a session-controlled path the staged build avoids"
+        "git parsed a COPY in the app's own staging area; it was never "
+        f"pointed at the bundle — ran: {during_setup}"
     )
 
 

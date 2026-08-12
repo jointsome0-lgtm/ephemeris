@@ -99,6 +99,9 @@ node_modules/
 # its environment: without this, the first commit the brief asks for dies on
 # "unable to auto-detect email address". Deliberately not the owner's identity
 # — nothing here is authored by them, and these repositories have no remote.
+# An honest git config is a few hundred bytes; this is the ceiling on what the
+# app will read from a name a lesson session can write (see #186 review).
+GIT_CONFIG_MAX_BYTES = 256 * 1024
 BUNDLE_GIT_IDENTITY = (
     ("user.name", "Ephemeris Learn"),
     ("user.email", "lesson@ephemeris.invalid"),  # RFC 2606 reserved TLD
@@ -425,6 +428,31 @@ def _is_regular_no_follow(path: Path) -> bool:
         return False
 
 
+def _read_bounded_no_follow(path: Path, limit: int) -> str | None:
+    """`path` as text, only if it is a regular file no larger than `limit`.
+
+    Same §2 rule as `_read_regular_no_follow` and the same reason as
+    `_holds_exactly` for the bound: these names sit in a directory a lesson
+    session can write, and nothing on a read path may load whatever it finds
+    there."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat_module.S_ISREG(info.st_mode) or info.st_size > limit:
+            return None
+        with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as handle:
+            fd = -1
+            return handle.read(limit)
+    except OSError:
+        return None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
 def _holds_exactly(path: Path, expected: str) -> bool:
     """Whether `path` is a regular file whose bytes are exactly `expected`.
 
@@ -613,11 +641,69 @@ def _repair_bundle_repo(git_dir: Path) -> None:
                 return
     finally:
         os.close(fd)
+    _ensure_repo_identity(git_dir)
     try:
         _write_git_exclude(git_dir)
     except OSError as exc:
         _log.warning("lesson bundle git rules not written for %s: %s",
                      git_dir, exc)
+
+
+def _ensure_repo_identity(git_dir: Path) -> None:
+    """Give a repository the app did not build the identity a commit needs.
+
+    A repository that reaches the repair — restored from a backup, or one an
+    agent created itself in a session after an init the app could not do —
+    may carry no local `user.name`/`user.email`, and the sandbox supplies
+    neither. Without them the checkpoint the brief asks for dies on "unable to
+    auto-detect email address", and the marker written just after would make
+    that permanent.
+
+    Whatever is already configured is kept; only a missing value is filled.
+    Git parses the file, since a config is not something to edit by hand — but
+    it parses a COPY, in the app-private staging directory, and the result is
+    renamed in. Pointing `git config` at the bundle is the one thing this
+    module will not do, for the reason `_install_bundle_repo` gives.
+
+    Best-effort like the rest, and deliberately silent about a config that is
+    not a plain readable file: a session that replaced its own repository's
+    config is not creating a problem the app should reach in to solve.
+    """
+    config = git_dir / "config"
+    current = _read_bounded_no_follow(config, GIT_CONFIG_MAX_BYTES)
+    if current is None:
+        return
+    staged: Path | None = None
+    try:
+        GIT_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+        staged = Path(tempfile.mkdtemp(dir=GIT_STAGING_DIR))
+        copy = staged / "config"
+        copy.write_text(current, encoding="utf-8")
+        filled = False
+        for key, value in BUNDLE_GIT_IDENTITY:
+            read = subprocess.run(
+                ["git", "config", "-f", str(copy), "--get", key],
+                capture_output=True, text=True, timeout=GIT_INIT_TIMEOUT_SECONDS,
+            )
+            if read.returncode == 0 and read.stdout.strip():
+                continue
+            subprocess.run(
+                ["git", "config", "-f", str(copy), key, value],
+                check=True, capture_output=True,
+                timeout=GIT_INIT_TIMEOUT_SECONDS,
+            )
+            filled = True
+        if filled:
+            # Replaces the name, following no link even if one appeared under
+            # it meanwhile. A config the session rewrote in this same instant
+            # loses — its own repository, and the alternative is the race.
+            os.replace(copy, config)
+    except (OSError, subprocess.SubprocessError) as exc:
+        _log.warning("lesson bundle git identity not set for %s: %s",
+                     git_dir, exc)
+    finally:
+        if staged is not None:
+            shutil.rmtree(staged, ignore_errors=True)
 
 
 def _ensure_bundle_repo(lesson_dir: Path) -> None:

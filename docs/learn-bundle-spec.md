@@ -75,11 +75,13 @@ following no link, unable to overwrite a non-empty directory, so the bundle
 sees a finished repository or none, and `git init`/`git config` never write to
 a path the lesson's own session could have replaced. Where a `.git` directory
 exists but is not ready, it is finished in place without git at all: a
-`mkdir` per missing directory and the app's own rules, nothing that would
-follow a name the session controls. A repository the app did not create keeps
-its `config`, and something that is no repository at all — `.git` was servable
-and unreserved until this change, so a bundle may hold an ordinary directory
-under the name — is left alone: no `HEAD`, no repair.
+`mkdir` per missing directory, the identity where the repository carries none
+(git parses a COPY of `config` in staging and the result is renamed in — a
+value already configured is never overwritten), and the app's own rules.
+Nothing that would follow a name the session controls. Something that is no
+repository at all — `.git` was servable and unreserved until this change, so a
+bundle may hold an ordinary directory under the name — is left alone: no
+`HEAD`, no repair.
 
 Readiness, not existence, is the gate: `.git/objects` and `.git/refs` present,
 and the app's own rules found at `.git/info/exclude`, whose CONTENT is the
