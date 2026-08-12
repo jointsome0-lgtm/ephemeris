@@ -422,10 +422,10 @@ def test_role_runner(client, suite_state):
     assert (
         _f3_argv_digest(_sandbox.build_sandbox_argv(
             "lesson-agent", _sb_bundle, bundle_root=_sb_root
-        )) == "7e3f50f81781fadced31e9706f51290ffdebb4aefc01d4400683dd213bdf18f9"
+        )) == "ae4f2139f5e6a3a80ff17f7f64597837665951d36981ae57663cd063e2cfc374"
         and _f3_argv_digest(_sandbox.build_sandbox_argv(
             "lesson-learner", _sb_bundle, bundle_root=_sb_root
-        )) == "55ae65c04226053faee3373c1ae2f599ad21e7ddfbc0eb713fc5147fe5380f9f"
+        )) == "b7a29165edaa85e2d423b17a1272768723c1becfba414d0c46e8adc9f8c141fe"
     ), "F3 sandbox amendments keep agent/learner argv byte-identical"
     _f3_private = "/srv/invented-private"
     _f3_root = f"{_f3_private}/lessons"

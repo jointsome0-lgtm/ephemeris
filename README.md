@@ -102,8 +102,14 @@ Ephemeris looks for `bwrap` at `~/.local/bin/bwrap` first and `/usr/bin/bwrap`
 second — deliberately not through `$PATH`, which whoever starts the service
 controls. Any build that accepts the options `app/sandbox.py` uses will do;
 there is no version floor to memorise, because the app asks each candidate what
-it accepts and refuses at startup, by name, if the answer is short. The
-bubblewrap 0.9.0 in Ubuntu 24.04 is enough.
+it accepts and names the missing options in its refusal. The bubblewrap 0.9.0
+in Ubuntu 24.04 is enough.
+
+Note **when** that refusal appears: the service starts either way. Nothing on
+this list is checked at startup — it is checked the first time a lesson
+terminal, build, or run asks for a sandbox, and surfaces there. A running
+Ephemeris is not evidence that the requirements below are met; an opened lesson
+terminal is.
 
 Install it with `sudo apt install bubblewrap` (Debian/Ubuntu),
 `sudo dnf install bubblewrap` (Fedora), or `sudo pacman -S bubblewrap` (Arch).

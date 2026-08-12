@@ -45,8 +45,7 @@ def test_sandbox_learning(client, suite_state):
     # local import resolves to.
     import resource as _resource_mod
 
-    # The home the sandbox resolved for THIS host (issue #182): the mounts
-    # below are built from it, so asserting a literal would only pass here.
+    # Issue #182: the mounts below are built from the resolved home.
     _sb_userhome = _sandbox.USER_HOME
     _sb_root = "/tmp/ephemeris-e1-verify"
     _sb_bundle = f"{_sb_root}/invented-bundle"
@@ -93,12 +92,13 @@ def test_sandbox_learning(client, suite_state):
         (f"{_sb_userhome}/.claude/settings.json", f"{_sb_userhome}/.claude/settings.json"),
         (f"{_sb_userhome}/.claude.json", f"{_sb_userhome}/.claude.json"),
     }
+    _sb_common_try_ro = {
+        (f"{_sb_userhome}/.local/bin", f"{_sb_userhome}/.local/bin"),
+    }
     assert (
-        set(_sb_mounts(_sb_agent, "--ro-bind")) == {
-          ("/", "/"),
-          (f"{_sb_userhome}/.local/bin", f"{_sb_userhome}/.local/bin"),
-        }
-        and set(_sb_mounts(_sb_agent, "--ro-bind-try")) == _sb_agent_try_ro
+        set(_sb_mounts(_sb_agent, "--ro-bind")) == {("/", "/")}
+        and set(_sb_mounts(_sb_agent, "--ro-bind-try"))
+        == _sb_agent_try_ro | _sb_common_try_ro
         and set(_sb_mounts(_sb_agent, "--bind-try")) == {
           (f"{_sb_userhome}/go", f"{_sb_userhome}/go"),
           (f"{_sb_userhome}/.cache/go-build", f"{_sb_userhome}/.cache/go-build"),
@@ -125,7 +125,8 @@ def test_sandbox_learning(client, suite_state):
           (f"{_sb_home}/claude", f"{_sb_userhome}/.claude"),
           (f"{_sb_home}/codex", f"{_sb_userhome}/.codex"),
         }
-        and set(_sb_mounts(_sb_agent_persist, "--ro-bind-try")) == _sb_agent_try_ro
+        and set(_sb_mounts(_sb_agent_persist, "--ro-bind-try"))
+        == _sb_agent_try_ro | _sb_common_try_ro
         and {_sb_agent_persist[i + 1]
              for i, x in enumerate(_sb_agent_persist) if x == "--tmpfs"} == {
           "/tmp", _sb_userhome,
@@ -237,11 +238,8 @@ def test_sandbox_learning(client, suite_state):
             raise AssertionError(
                 f"E1 argv: {_sb_other} must refuse a build workspace")
     assert (
-        set(_sb_mounts(_sb_learner, "--ro-bind")) == {
-          ("/", "/"),
-          (f"{_sb_userhome}/.local/bin", f"{_sb_userhome}/.local/bin"),
-        }
-        and set(_sb_mounts(_sb_learner, "--ro-bind-try")) == {
+        set(_sb_mounts(_sb_learner, "--ro-bind")) == {("/", "/")}
+        and set(_sb_mounts(_sb_learner, "--ro-bind-try")) == _sb_common_try_ro | {
           (f"{_sb_userhome}/go", f"{_sb_userhome}/go"),
           (f"{_sb_userhome}/.cache/go-build", f"{_sb_userhome}/.cache/go-build"),
         }
@@ -294,10 +292,8 @@ def test_sandbox_learning(client, suite_state):
         "E1 argv builder rejects unknown profiles and unsafe bundle authorities"
     )
 
-    # Discovery is resolved at import (issue #182) and short-circuits the probe
-    # when no bubblewrap qualifies. These blocks are about the probe COMMAND and
-    # its caching, so they stub discovery as "resolved" — otherwise the suite
-    # would silently require a host bubblewrap to exercise a mocked probe.
+    # Discovery short-circuits the probe, so these blocks stub it as resolved:
+    # a mocked probe must not need a host bubblewrap to run.
     _sb_resolved = lambda: _sandbox_mock.patch.object(  # noqa: E731
         _sandbox, "_BWRAP_UNUSABLE", "")
 
@@ -317,11 +313,7 @@ def test_sandbox_learning(client, suite_state):
         "E1 runtime probe: exact command succeeds once and is process-cached"
     )
 
-    # Discovery (issue #182): candidates are tried in fixed order, never via
-    # $PATH, and anything that is not an executable speaking the WHOLE option
-    # set is rejected with a reason. A binary this module cannot ask counts as
-    # rejected too, so a stale user build cannot mask a working system one.
-    # Deliberately independent of whether this host has bubblewrap at all.
+    # Discovery (issue #182), written to run on a host with no bubblewrap.
     _sb_rejected_missing = _sandbox._bwrap_rejection("/invented/nowhere/bwrap")
     _sb_rejected_wrong = _sandbox._bwrap_rejection(sys.executable)
     with _sandbox_mock.patch.object(

@@ -21,26 +21,18 @@ except ImportError:  # pragma: no cover - POSIX-only; see _resolve_user_home
 
 SandboxProfile = Literal["lesson-agent", "lesson-learner", "lesson-runner"]
 
-# A path that exists nowhere, for the one case where the process owner's home
-# cannot be looked up. Such a host has no bubblewrap either, so the runtime
-# probe refuses before any mount built from it is used.
 _UNRESOLVED_HOME = "/nonexistent"
 
 
 def _resolve_user_home() -> str:
     """The process owner's home from passwd, deliberately not from ``$HOME``.
 
-    ``$HOME`` is whatever the caller that launched this service exported, and
-    this path decides what the sandbox masks — `~/.claude`, `~/.codex`, the
-    credential files bound read-only below. A caller-settable value would move
-    that boundary, so the boundary is read from the passwd entry of the uid
-    this process actually runs as.
-
-    ``app.main`` imports this module unconditionally, so a host that cannot
-    answer the question at all — no ``pwd``, or a uid with no passwd entry, as
-    a container running under an arbitrary numeric uid has — must not take the
-    whole tracker down with it. It gets a home that exists nowhere instead, and
-    Learn fails closed on the runtime probe like any other missing requirement.
+    ``$HOME`` is caller-settable and this path decides what the sandbox masks
+    (`~/.claude`, `~/.codex`, the credentials bound read-only below), so it is
+    read from the passwd entry of the uid this process runs as. A uid with no
+    passwd entry gets a home that exists nowhere rather than an exception:
+    ``app.main`` imports this module unconditionally, and Learn failing closed
+    on the runtime probe beats taking the whole tracker down at import.
     """
     if pwd is None:  # pragma: no cover - non-POSIX import path only
         return _UNRESOLVED_HOME
@@ -52,22 +44,17 @@ def _resolve_user_home() -> str:
 
 USER_HOME = _resolve_user_home()
 
-# Where bubblewrap is looked for, in order, and never through ``$PATH``: the
-# search path is caller-settable for the same reason ``$HOME`` is, and the
-# binary resolved here is the one thing standing between a lesson session and
-# the host. A user-installed build wins over the distribution one so a host can
-# carry a newer bubblewrap than its release ships.
+# Not ``$PATH``, for the reason ``$HOME`` is not consulted above. A
+# user-installed build wins so a host can carry a newer one than its release
+# ships.
 _BWRAP_CANDIDATES = (f"{USER_HOME}/.local/bin/bwrap", "/usr/bin/bwrap")
 
-# Every long option this module puts on a bubblewrap command line. This is the
-# whole minimum-version requirement, stated as vocabulary rather than as a
-# number: upstream records neither which release introduced which option nor a
-# `--version` contract to compare against, the set below is already accepted by
-# the bubblewrap 0.9.0 Ubuntu 24.04 ships (measured 2026-08-12), and the one
-# recent advisory — CVE-2026-41163, fixed in 0.11.2 — affects only setuid
-# installations, which neither candidate is. A numeric floor would therefore be
-# a guess; asking each candidate what it accepts is not, and it turns "too old"
-# into a startup refusal instead of an "unknown option" at the first spawn.
+# Every long option this module passes, and the whole minimum-version
+# requirement — deliberately vocabulary rather than a number, so nobody
+# replaces it with one. Upstream records neither which release added which
+# option nor a version contract; the set below is already accepted by the 0.9.0
+# Ubuntu 24.04 ships (measured 2026-08-12); and CVE-2026-41163 (fixed 0.11.2)
+# affects only setuid installs, which neither candidate is.
 _REQUIRED_BWRAP_OPTIONS = (
     "--bind", "--bind-try", "--chdir", "--clearenv", "--dev",
     "--die-with-parent", "--dir", "--perms", "--proc", "--ro-bind",
@@ -79,10 +66,8 @@ _REQUIRED_BWRAP_OPTIONS = (
 def _bwrap_rejection(path: str) -> str:
     """Why ``path`` cannot serve as this module's bubblewrap, or ``""``.
 
-    Every answer other than "yes" is a rejection, including a ``--help`` that
-    cannot be run or does not finish: a candidate this module cannot even ask
-    is a candidate it cannot vouch for, and rejecting it is what lets the next
-    one — a working distribution install behind a stale user build — be tried.
+    A ``--help`` that cannot be run or does not finish is a rejection too, so
+    a stale user build cannot mask a working distribution install behind it.
     """
     if not (os.path.isfile(path) and os.access(path, os.X_OK)):
         return "not an executable file"
@@ -110,10 +95,9 @@ def _bwrap_rejection(path: str) -> str:
 def _resolve_bwrap() -> tuple[str, str]:
     """The first candidate that speaks this module's whole option set.
 
-    Returns the chosen path and an empty reason. When no candidate qualifies it
-    returns the preferred path — so the pure argv builders stay total — and why
-    each was rejected, which the runtime probe below refuses with instead of
-    spawning anything.
+    With nothing usable it returns the preferred path, keeping the pure argv
+    builders total, and why each candidate was rejected — which the runtime
+    probe refuses with instead of spawning.
     """
     reasons = []
     for candidate in _BWRAP_CANDIDATES:
@@ -124,9 +108,8 @@ def _resolve_bwrap() -> tuple[str, str]:
     return _BWRAP_CANDIDATES[0], "no usable bubblewrap — " + "; ".join(reasons)
 
 
-# Resolved once, at import: a bubblewrap installed or upgraded while the
-# service is running is not picked up until `systemctl --user restart
-# ephemeris`, the same restart the cached runtime probe already needs.
+# Resolved once, at import: a bubblewrap installed later needs the same
+# `systemctl --user restart ephemeris` the cached runtime probe already does.
 BWRAP, _BWRAP_UNUSABLE = _resolve_bwrap()
 
 RUNNER_WORKDIR = "/tmp/ephemeris-runner"
@@ -300,7 +283,9 @@ class _HomeMount:
 
 # Every path re-exposed below the blank home is listed here with its reason.
 _COMMON_HOME_MOUNTS = (
-    _HomeMount("--ro-bind", f"{USER_HOME}/.local/bin",
+    # `-try`: an account whose bubblewrap came from the distribution need not
+    # have this directory, and a strict bind would fail every spawn over it.
+    _HomeMount("--ro-bind-try", f"{USER_HOME}/.local/bin",
                "user-installed command shims used by every lesson role"),
 )
 
