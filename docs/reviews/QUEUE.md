@@ -96,6 +96,29 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   repair lands (`docs/security-model.md` records the same dependency and
   the pasta/slirp4netns fallback if the listener cannot be restricted).
 
+- [ ] 2026-08-12 — branch `fix/182-sandbox-paths` (squash hash recorded on
+  merge) — `app/sandbox.py`, `scripts/probe_sandbox_profiles.py` —
+  issues #182 and #183: `USER_HOME` is no longer the literal `/home/aina` but
+  `pwd.getpwuid(os.getuid()).pw_dir`, read once at module import; `BWRAP` is no
+  longer the literal `/home/aina/.local/bin/bwrap` but the first of
+  `<USER_HOME>/.local/bin/bwrap` and `/usr/bin/bwrap` that is an executable
+  file whose `--help` output lists every long option this module passes
+  (`_REQUIRED_BWRAP_OPTIONS`, 19 entries); `$PATH` is not consulted, and
+  resolving a candidate now runs `bwrap --help` up to twice at import. When no
+  candidate qualifies, `BWRAP` keeps the first candidate's path,
+  `_cached_runtime_probe` returns unavailable with the per-candidate reason
+  without spawning anything, and `require_sandbox_runtime` raises
+  `SandboxUnavailableError` as before. Mount, mask and argv construction are
+  unchanged: on this host the argv built for all three profiles and both build
+  steps is byte-identical before and after (760-line JSON dump of every argv
+  shape, diffed empty). `scripts/probe_sandbox_profiles.py` takes the home it
+  lists, the user name it exports and its `PATH` from the same passwd entry
+  instead of `/home/aina` and `aina` literals. The same branch also adds, with
+  no application code, a "What the host must provide" README section and
+  `packaging/apparmor/bwrap` — an AppArmor profile granting `userns` to
+  `/{usr/bin,@{HOME}/.local/bin}/bwrap`, for hosts where
+  `kernel.apparmor_restrict_unprivileged_userns` is `1`.
+
 ## Done
 
 - [x] 2026-08-09 — `8a4e3ee` (squash of `feat/161-build-step`, PR #165) —

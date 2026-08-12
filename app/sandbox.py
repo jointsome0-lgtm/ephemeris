@@ -13,11 +13,110 @@ from functools import cache
 from pathlib import Path, PurePosixPath
 from typing import Callable, Literal, Mapping, Sequence
 
+try:
+    import pwd
+except ImportError:  # pragma: no cover - POSIX-only; see _resolve_user_home
+    pwd = None  # type: ignore[assignment]
+
 
 SandboxProfile = Literal["lesson-agent", "lesson-learner", "lesson-runner"]
 
-BWRAP = "/home/aina/.local/bin/bwrap"
-USER_HOME = "/home/aina"
+# A path that exists nowhere, for the one case where the process owner's home
+# cannot be looked up. Such a host has no bubblewrap either, so the runtime
+# probe refuses before any mount built from it is used.
+_UNRESOLVED_HOME = "/nonexistent"
+
+
+def _resolve_user_home() -> str:
+    """The process owner's home from passwd, deliberately not from ``$HOME``.
+
+    ``$HOME`` is whatever the caller that launched this service exported, and
+    this path decides what the sandbox masks — `~/.claude`, `~/.codex`, the
+    credential files bound read-only below. A caller-settable value would move
+    that boundary, so the boundary is read from the passwd entry of the uid
+    this process actually runs as.
+    """
+    if pwd is None:  # pragma: no cover - non-POSIX import path only
+        return _UNRESOLVED_HOME
+    return pwd.getpwuid(os.getuid()).pw_dir
+
+
+USER_HOME = _resolve_user_home()
+
+# Where bubblewrap is looked for, in order, and never through ``$PATH``: the
+# search path is caller-settable for the same reason ``$HOME`` is, and the
+# binary resolved here is the one thing standing between a lesson session and
+# the host. A user-installed build wins over the distribution one so a host can
+# carry a newer bubblewrap than its release ships.
+_BWRAP_CANDIDATES = (f"{USER_HOME}/.local/bin/bwrap", "/usr/bin/bwrap")
+
+# Every long option this module puts on a bubblewrap command line. This is the
+# whole minimum-version requirement, stated as vocabulary rather than as a
+# number: upstream records neither which release introduced which option nor a
+# `--version` contract to compare against, the set below is already accepted by
+# the bubblewrap 0.9.0 Ubuntu 24.04 ships (measured 2026-08-12), and the one
+# recent advisory — CVE-2026-41163, fixed in 0.11.2 — affects only setuid
+# installations, which neither candidate is. A numeric floor would therefore be
+# a guess; asking each candidate what it accepts is not, and it turns "too old"
+# into a startup refusal instead of an "unknown option" at the first spawn.
+_REQUIRED_BWRAP_OPTIONS = (
+    "--bind", "--bind-try", "--chdir", "--clearenv", "--dev",
+    "--die-with-parent", "--dir", "--perms", "--proc", "--ro-bind",
+    "--ro-bind-data", "--ro-bind-fd", "--ro-bind-try", "--setenv",
+    "--share-net", "--size", "--tmpfs", "--unshare-all", "--unshare-user",
+)
+
+
+def _missing_bwrap_options(path: str) -> tuple[str, ...]:
+    """Required options ``path`` does not list in its own usage text.
+
+    Empty when it lists them all — and also when the usage text cannot be read
+    at all, which proves nothing either way: the runtime probe runs the real
+    binary and reports its failure rather than a guess made here.
+    """
+    try:
+        result = subprocess.run(
+            [path, "--help"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    listed = set(result.stdout.split())
+    return tuple(
+        option for option in _REQUIRED_BWRAP_OPTIONS if option not in listed
+    )
+
+
+def _resolve_bwrap() -> tuple[str, str]:
+    """The first candidate executable that speaks this module's option set.
+
+    Returns the chosen path and an empty reason. When no candidate qualifies it
+    returns the preferred path — so the pure argv builders stay total — and the
+    reason every candidate was rejected, which the runtime probe below refuses
+    with instead of spawning anything.
+    """
+    reasons = []
+    for candidate in _BWRAP_CANDIDATES:
+        if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):
+            reasons.append(f"{candidate}: not an executable file")
+            continue
+        missing = _missing_bwrap_options(candidate)
+        if not missing:
+            return candidate, ""
+        reasons.append(f"{candidate}: does not accept {' '.join(missing)}")
+    return _BWRAP_CANDIDATES[0], "no usable bubblewrap — " + "; ".join(reasons)
+
+
+# Resolved once, at import: a bubblewrap installed or upgraded while the
+# service is running is not picked up until `systemctl --user restart
+# ephemeris`, the same restart the cached runtime probe already needs.
+BWRAP, _BWRAP_UNUSABLE = _resolve_bwrap()
+
 RUNNER_WORKDIR = "/tmp/ephemeris-runner"
 RUNTIME_DIR = "/run"
 SYSTEMD_RUN = "/usr/bin/systemd-run"
@@ -763,6 +862,8 @@ def require_user_scope_runtime() -> None:
 @cache
 def _cached_runtime_probe() -> _ProbeResult:
     """Run bubblewrap's process-lifetime probe once, caching failures too."""
+    if _BWRAP_UNUSABLE:
+        return _ProbeResult(False, _BWRAP_UNUSABLE)
     argv = [
         BWRAP,
         "--unshare-user",

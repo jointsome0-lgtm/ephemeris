@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pwd
 import subprocess
 import sys
 import tempfile
@@ -20,10 +21,15 @@ sys.path.insert(0, str(ROOT))
 
 from app.sandbox import (  # noqa: E402
     RUNNER_WORKDIR,
+    USER_HOME,
     build_sandbox_argv,
     open_runner_module_cache_fd,
     require_sandbox_runtime,
 )
+
+# The same passwd entry the sandbox resolves its home from, so this probe
+# describes the host it runs on rather than the one it was written on.
+OWNER = pwd.getpwuid(os.getuid())
 
 
 PROXY_HTTP = "http://127.0.0.1:10809"
@@ -34,13 +40,13 @@ _INSIDE_PROBE = r"""
 import json, os, socket, sys
 from pathlib import Path
 
-profile, bundle, repo = sys.argv[1:]
+profile, bundle, repo, home = sys.argv[1:]
 expected_home = {
     "lesson-agent": {".cache", ".claude", ".claude.json", ".codex", ".local", ".nvm", "go"},
     "lesson-learner": {".cache", ".local", "go"},
     "lesson-runner": {"go"},
 }[profile]
-home_entries = {entry.name for entry in Path("/home/aina").iterdir()}
+home_entries = {entry.name for entry in Path(home).iterdir()}
 probe_file = Path(bundle) / ".e1-write-probe"
 try:
     probe_file.write_text("scratch", encoding="utf-8")
@@ -72,15 +78,15 @@ print(json.dumps({
 
 def clean_env(*, proxy: bool) -> dict[str, str]:
     env = {
-        "HOME": "/home/aina",
-        "USER": "aina",
-        "LOGNAME": "aina",
+        "HOME": USER_HOME,
+        "USER": OWNER.pw_name,
+        "LOGNAME": OWNER.pw_name,
         "SHELL": "/bin/bash",
         "TERM": "xterm-256color",
         "LANG": "C.UTF-8",
         "PATH": (
-            "/home/aina/.local/bin:"
-            "/home/aina/.nvm/versions/node/v24.14.0/bin:"
+            f"{USER_HOME}/.local/bin:"
+            f"{USER_HOME}/.nvm/versions/node/v24.14.0/bin:"
             "/usr/local/bin:/usr/bin:/bin"
         ),
     }
@@ -100,7 +106,7 @@ def run_profile(
 ) -> dict[str, object]:
     command = [
         "/usr/bin/python3", "-c", _INSIDE_PROBE,
-        profile, str(bundle), str(ROOT),
+        profile, str(bundle), str(ROOT), USER_HOME,
     ]
     module_cache_fd = (
         open_runner_module_cache_fd() if profile == "lesson-runner" else None

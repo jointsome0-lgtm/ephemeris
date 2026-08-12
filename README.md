@@ -32,7 +32,9 @@ configured private path outside the public checkout.
 Platform: the app itself runs anywhere Python does. The terminal drawer is the
 one exception — it needs a Unix PTY, so it is Unix-only, and it stays off unless
 `EPHEMERIS_ENABLE_TERMINAL` is set. Opting it in without a PTY fails at startup
-with an explicit message rather than breaking the rest of the app.
+with an explicit message rather than breaking the rest of the app. Learn's
+*lesson* terminals ask for more than a PTY — see
+[what the host must provide](#what-the-host-must-provide).
 
 ```bash
 uv sync                      # build .venv from uv.lock
@@ -77,6 +79,64 @@ python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 export ACTIVITY_DATA_DIR=~/.local/share/ephemeris
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers
+```
+
+## What the host must provide
+
+The tracker itself runs anywhere Python does. **Learn** does not: a lesson
+terminal, and the build and run steps behind it, execute somebody else's code
+inside a [bubblewrap](https://github.com/containers/bubblewrap) sandbox and a
+systemd user scope. Neither exists on macOS or Windows, so Learn is
+**Linux-only** — and it fails closed, refusing to open a shell rather than
+opening an unsandboxed one, so a missing requirement shows up as
+`[terminal: lesson sandbox unavailable ...]` and nothing worse.
+
+| Requirement | Why | Check |
+| --- | --- | --- |
+| Linux | bubblewrap and systemd user scopes | `uname -s` |
+| `bubblewrap` installed | the sandbox itself | `bwrap --version` |
+| a systemd **user** session | per-run memory/task/time limits | `systemctl --user is-system-running` |
+| unprivileged user namespaces permitted | bubblewrap needs one to build the sandbox | see below |
+
+Ephemeris looks for `bwrap` at `~/.local/bin/bwrap` first and `/usr/bin/bwrap`
+second — deliberately not through `$PATH`, which whoever starts the service
+controls. Any build that accepts the options `app/sandbox.py` uses will do;
+there is no version floor to memorise, because the app asks each candidate what
+it accepts and refuses at startup, by name, if the answer is short. The
+bubblewrap 0.9.0 in Ubuntu 24.04 is enough.
+
+Install it with `sudo apt install bubblewrap` (Debian/Ubuntu),
+`sudo dnf install bubblewrap` (Fedora), or `sudo pacman -S bubblewrap` (Arch).
+
+### Ubuntu 24.04 and newer: allow bubblewrap a user namespace
+
+Ubuntu 24.04 restricts unprivileged user namespaces to programs with an
+AppArmor profile that grants them. Without one, every sandbox spawn dies at
+`bwrap: setting up uid map: Permission denied`. Check whether it applies:
+
+```bash
+sysctl kernel.apparmor_restrict_unprivileged_userns
+```
+
+`1` means you need the profile; `0` or "no such file" means you do not. To
+install the one this repository ships — it uses AppArmor's `@{HOME}` tunable,
+so it covers both `bwrap` locations for any user:
+
+```bash
+sudo install -m 644 packaging/apparmor/bwrap /etc/apparmor.d/bwrap
+sudo apparmor_parser -r /etc/apparmor.d/bwrap
+```
+
+Then re-check with `bwrap --unshare-user --die-with-parent --ro-bind / / true`,
+which should exit `0` silently.
+
+### After fixing anything on this list, restart the service
+
+The sandbox probe and the `bwrap` path are resolved **once per process** and
+cached, so a host-side fix does not reach a running Ephemeris:
+
+```bash
+systemctl --user restart ephemeris
 ```
 
 ## Open from your phone (same Wi-Fi)
