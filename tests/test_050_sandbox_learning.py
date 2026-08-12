@@ -294,9 +294,17 @@ def test_sandbox_learning(client, suite_state):
         "E1 argv builder rejects unknown profiles and unsafe bundle authorities"
     )
 
+    # Discovery is resolved at import (issue #182) and short-circuits the probe
+    # when no bubblewrap qualifies. These blocks are about the probe COMMAND and
+    # its caching, so they stub discovery as "resolved" — otherwise the suite
+    # would silently require a host bubblewrap to exercise a mocked probe.
+    _sb_resolved = lambda: _sandbox_mock.patch.object(  # noqa: E731
+        _sandbox, "_BWRAP_UNUSABLE", "")
+
     _sandbox._cached_runtime_probe.cache_clear()
     _sb_probe_ok = _types.SimpleNamespace(returncode=0, stderr="")
-    with _sandbox_mock.patch.object(_sandbox.subprocess, "run", return_value=_sb_probe_ok) as _run:
+    with _sb_resolved(), \
+            _sandbox_mock.patch.object(_sandbox.subprocess, "run", return_value=_sb_probe_ok) as _run:
         _sandbox.require_sandbox_runtime()
         _sandbox.require_sandbox_runtime()
     assert (
@@ -309,11 +317,61 @@ def test_sandbox_learning(client, suite_state):
         "E1 runtime probe: exact command succeeds once and is process-cached"
     )
 
+    # Discovery (issue #182): candidates are tried in fixed order, never via
+    # $PATH, and anything that is not an executable speaking the WHOLE option
+    # set is rejected with a reason. A binary this module cannot ask counts as
+    # rejected too, so a stale user build cannot mask a working system one.
+    # Deliberately independent of whether this host has bubblewrap at all.
+    _sb_rejected_missing = _sandbox._bwrap_rejection("/invented/nowhere/bwrap")
+    _sb_rejected_wrong = _sandbox._bwrap_rejection(sys.executable)
+    with _sandbox_mock.patch.object(
+            _sandbox, "_bwrap_rejection",
+            side_effect=lambda path: "" if path == "/second/bwrap"
+            else "invented rejection"), \
+            _sandbox_mock.patch.object(
+                _sandbox, "_BWRAP_CANDIDATES",
+                ("/first/bwrap", "/second/bwrap")):
+        _sb_fell_through = _sandbox._resolve_bwrap()
+    with _sandbox_mock.patch.object(
+            _sandbox, "_BWRAP_CANDIDATES",
+            ("/invented/nowhere/bwrap", sys.executable)):
+        _sb_chosen, _sb_reason = _sandbox._resolve_bwrap()
+    assert (
+        _sb_rejected_missing == "not an executable file"
+        and _sb_rejected_wrong.startswith("does not accept ")
+        # An unusable first candidate must not hide a usable second one.
+        and _sb_fell_through == ("/second/bwrap", "")
+        # Nothing usable: the preferred path is kept so the pure argv builders
+        # stay total, and every candidate's reason reaches the refusal.
+        and _sb_chosen == "/invented/nowhere/bwrap"
+        and _sb_reason.startswith("no usable bubblewrap")
+        and "/invented/nowhere/bwrap: not an executable file" in _sb_reason
+        and f"{sys.executable}: does not accept " in _sb_reason
+    ), (
+        "E1 bwrap discovery: ordered candidates, no $PATH, reasoned refusal"
+    )
+
+    # That refusal is what the probe reports, without spawning anything.
+    _sandbox._cached_runtime_probe.cache_clear()
+    with _sandbox_mock.patch.object(
+            _sandbox, "_BWRAP_UNUSABLE", "invented discovery failure"), \
+            _sandbox_mock.patch.object(_sandbox.subprocess, "run") as _no_run:
+        try:
+            _sandbox.require_sandbox_runtime()
+            _sb_unusable_refused = False
+        except _sandbox.SandboxUnavailableError as exc:
+            _sb_unusable_refused = "invented discovery failure" in str(exc)
+    _sandbox._cached_runtime_probe.cache_clear()
+    assert _sb_unusable_refused and _no_run.call_count == 0, (
+        "E1 runtime probe: an unresolvable bwrap refuses before any spawn"
+    )
+
     async def _sb_no_fallback_contract():
         results = {}
         _sandbox._cached_runtime_probe.cache_clear()
         failed = _types.SimpleNamespace(returncode=1, stderr="userns denied")
-        with _sandbox_mock.patch.object(_sandbox.subprocess, "run", return_value=failed), \
+        with _sb_resolved(), \
+                _sandbox_mock.patch.object(_sandbox.subprocess, "run", return_value=failed), \
                 _sandbox_mock.patch.object(_sandbox.asyncio, "create_subprocess_exec") as spawn:
             for _ in range(2):
                 try:
@@ -326,8 +384,9 @@ def test_sandbox_learning(client, suite_state):
             results["probe_never_spawned"] = spawn.call_count == 0
 
         _sandbox._cached_runtime_probe.cache_clear()
-        with _sandbox_mock.patch.object(
-                _sandbox.subprocess, "run", return_value=_sb_probe_ok), \
+        with _sb_resolved(), \
+                _sandbox_mock.patch.object(
+                    _sandbox.subprocess, "run", return_value=_sb_probe_ok), \
                 _sandbox_mock.patch.object(
                     _sandbox.asyncio, "create_subprocess_exec",
                     side_effect=OSError("exec refused")) as spawn:

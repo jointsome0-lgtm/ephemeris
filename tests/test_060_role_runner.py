@@ -400,17 +400,32 @@ def test_role_runner(client, suite_state):
     assert _ensure_source.count("runner_registry=RUNNER_REGISTRY") == 2, "F3 lesson manifest reads use the real registry at both call sites"
 
     def _f3_argv_digest(argv):
+        # The bwrap path and the home are both resolved from the host (issue
+        # #182), so they are normalised out before hashing: this guard is about
+        # the argv SHAPE staying byte-identical, not about which machine last
+        # froze it. Both resolved values have their own assertions elsewhere —
+        # `argv[0] == _sandbox.BWRAP` and the exact home mounts in test_050.
+        # BWRAP is substituted first: it normally lives under the home.
+        def _f3_host_neutral(arg):
+            return (
+                arg.replace(_sandbox.BWRAP, "<BWRAP>")
+                .replace(_sandbox.USER_HOME, "<HOME>")
+            )
+
         return hashlib.sha256(
-            json.dumps(argv, separators=(",", ":")).encode("utf-8")
+            json.dumps(
+                [_f3_host_neutral(arg) for arg in argv],
+                separators=(",", ":"),
+            ).encode("utf-8")
         ).hexdigest()
 
     assert (
         _f3_argv_digest(_sandbox.build_sandbox_argv(
             "lesson-agent", _sb_bundle, bundle_root=_sb_root
-        )) == "a0a6b85c4d66389748fd17572dc7f5f2bbfb69c92414d9fb21732dde5a0acf5a"
+        )) == "7e3f50f81781fadced31e9706f51290ffdebb4aefc01d4400683dd213bdf18f9"
         and _f3_argv_digest(_sandbox.build_sandbox_argv(
             "lesson-learner", _sb_bundle, bundle_root=_sb_root
-        )) == "06f6efba3398392f12dd547f0b05288e23d81a68a09988433f82308cbc5f895c"
+        )) == "55ae65c04226053faee3373c1ae2f599ad21e7ddfbc0eb713fc5147fe5380f9f"
     ), "F3 sandbox amendments keep agent/learner argv byte-identical"
     _f3_private = "/srv/invented-private"
     _f3_root = f"{_f3_private}/lessons"
