@@ -205,7 +205,7 @@ def test_role_runner(client, suite_state):
         and _sb_mounts(_external_learner_argv, "--bind")
             == [(_external_bundle, _external_bundle)]
     ), "E3 learner masks runtime sockets and external private instance root"
-    _nested_private = "/home/aina/go/invented-ephemeris-private"
+    _nested_private = f"{_sandbox.USER_HOME}/go/invented-ephemeris-private"
     _nested_lessons = f"{_nested_private}/lessons"
     _nested_bundle = f"{_nested_lessons}/invented-bundle"
     _db_override_root = "/opt/invented-ephemeris-db"
@@ -225,7 +225,7 @@ def test_role_runner(client, suite_state):
         _nested_private in _nested_tmpfs
         and _db_override_root in _nested_tmpfs
         and _checkout_root in _nested_tmpfs
-        and _nested_learner_argv.index("/home/aina/go")
+        and _nested_learner_argv.index(f"{_sandbox.USER_HOME}/go")
             < _nested_learner_argv.index(_nested_private)
         and _nested_learner_argv.index(_db_override_root)
             < _nested_learner_argv.index("--bind")
@@ -400,17 +400,32 @@ def test_role_runner(client, suite_state):
     assert _ensure_source.count("runner_registry=RUNNER_REGISTRY") == 2, "F3 lesson manifest reads use the real registry at both call sites"
 
     def _f3_argv_digest(argv):
+        # The bwrap path and the home are both resolved from the host (issue
+        # #182), so they are normalised out before hashing: this guard is about
+        # the argv SHAPE staying byte-identical, not about which machine last
+        # froze it. Both resolved values have their own assertions elsewhere —
+        # `argv[0] == _sandbox.BWRAP` and the exact home mounts in test_050.
+        # BWRAP is substituted first: it normally lives under the home.
+        def _f3_host_neutral(arg):
+            return (
+                arg.replace(_sandbox.BWRAP, "<BWRAP>")
+                .replace(_sandbox.USER_HOME, "<HOME>")
+            )
+
         return hashlib.sha256(
-            json.dumps(argv, separators=(",", ":")).encode("utf-8")
+            json.dumps(
+                [_f3_host_neutral(arg) for arg in argv],
+                separators=(",", ":"),
+            ).encode("utf-8")
         ).hexdigest()
 
     assert (
         _f3_argv_digest(_sandbox.build_sandbox_argv(
             "lesson-agent", _sb_bundle, bundle_root=_sb_root
-        )) == "52f6085fe52ef1192d6f366439b9a3ec3a34cb0f893f4bab110b41d0629aa797"
+        )) == "2cee3bbe89a16e20c59b6ffe8fee4aa0e27dea51528b78e7412e7348f5eb963a"
         and _f3_argv_digest(_sandbox.build_sandbox_argv(
             "lesson-learner", _sb_bundle, bundle_root=_sb_root
-        )) == "06f6efba3398392f12dd547f0b05288e23d81a68a09988433f82308cbc5f895c"
+        )) == "b7a29165edaa85e2d423b17a1272768723c1becfba414d0c46e8adc9f8c141fe"
     ), "F3 sandbox amendments keep agent/learner argv byte-identical"
     _f3_private = "/srv/invented-private"
     _f3_root = f"{_f3_private}/lessons"
@@ -443,9 +458,9 @@ def test_role_runner(client, suite_state):
         ["--perms", "0444", "--ro-bind-data", "7",
          f"{_sandbox.RUNNER_WORKDIR}/main.py"]
             in [_f3_runner_argv[i:i + 5] for i in range(len(_f3_runner_argv) - 4)]
-        and ("8", "/home/aina/go/pkg/mod")
+        and ("8", f"{_sandbox.USER_HOME}/go/pkg/mod")
             in _sb_mounts(_f3_runner_argv, "--ro-bind-fd")
-        and "/home/aina/.cache/go-build" not in _f3_runner_argv
+        and f"{_sandbox.USER_HOME}/.cache/go-build" not in _f3_runner_argv
         and _sb_mounts(_f3_runner_argv, "--ro-bind")[-1]
             == (_f3_bundle, _f3_bundle)
         and _f3_runner_argv[-2:] == ["--chdir", _sandbox.RUNNER_WORKDIR]
