@@ -54,6 +54,9 @@ Never add to Git:
 
 Do not copy real task titles, habit names, notes, dates, screenshots, export rows, or database rows into docs, tests, prompts, fixtures, review reports, or issue text. If an example is needed, invent it from scratch.
 
+Diary content (sec35) stays out of agent context by default (selfos AGENTS.md
+→ "Cloud-context data boundary"); `private` entries are an absolute deny.
+
 ## Automated Fix Passes (/simplify, review --fix, and similar)
 
 - `app/agent/` is learning code, written by the user by hand. Report findings there as explanations; never auto-edit the files.

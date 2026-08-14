@@ -70,6 +70,25 @@ FOCUS_NOTE = 10_000
 DAILY_NOTE = 20_000
 """`daily_notes.text` — the whole day's journal, so twice a per-item note."""
 
+DIARY_TEXT = 20_000
+"""`diary_entries.text` — one journal entry; same shape of writing as the day
+note, so the same bound. Several entries may share a day, which is exactly why
+this is per-entry and not per-day (docs/diary-spec.md)."""
+
+DIARY_TAG = 100
+"""One diary tag. Tags are opaque routing/organization strings (selfos
+docs/tags.md); the contract-bearing ones are single kebab-case words, and a
+hundred characters is past any personal label typed on purpose."""
+
+DIARY_TAGS_MAX = 20
+"""How many tags one diary entry may carry. Not a vocabulary opinion — the
+line past which a tag list stops being labels and starts being a paste."""
+
+DIARY_ATLAS_REF = 500
+"""`diary_entries.atlas_ref` — an opaque pass-through string whose meaning
+belongs to the atlas intake; bounded only so it stays a reference, not a
+payload."""
+
 # --- request body ----------------------------------------------------------
 
 MAX_BODY_BYTES = 2 * 1024 * 1024

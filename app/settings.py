@@ -71,6 +71,12 @@ class Settings:
     timezone: str | None
     """`APP_TIMEZONE` as typed, or None to mean 'host local zone' (sec13.3)."""
 
+    exp2res_url: str | None
+    """`SELFOS_EXP2RES_URL` — the exp2res gap-questions view the Diary tab
+    embeds by URL (sec35), or None to render no strip. Config-only coupling:
+    the value is rendered, never fetched or parsed, and the only supported
+    topology is same-machine loopback (exp2res §30 refuses anything else)."""
+
 
 def load(env: dict[str, str] | None = None) -> Settings:
     """Resolve settings from `env` (default: the real environment).
@@ -89,6 +95,7 @@ def load(env: dict[str, str] | None = None) -> Settings:
         exports_dir=root / "exports",
         backups_dir=root / "backups",
         timezone=env.get("APP_TIMEZONE"),
+        exp2res_url=(env.get("SELFOS_EXP2RES_URL") or "").strip() or None,
     )
 
 

@@ -454,6 +454,14 @@ Bind `0.0.0.0` ONLY on a network you trust: the app has no auth (sec20), so on
 warning on startup when it binds `0.0.0.0`. Committed scripts/README default to
 `127.0.0.1`.
 
+A diary-bearing instance (sec35) raises what that trust decision covers: the
+diary concentrates the most sensitive personal text in the app, and a LAN bind
+hands reading and writing it to every device on that Wi-Fi. Keep such an
+instance on `127.0.0.1` unless every device on the network is yours; the
+diary's export lines are a full unfiltered ledger replay (private entries
+included — the selfos adapter is the privacy gate), so the same caution covers
+`data/exports/`.
+
 Open on Linux:
 
 ```text
@@ -1391,6 +1399,10 @@ do not commit TickTick screenshots if they contain private data
 do not commit the SQLite DB or raw exports (sec9)
 verify same-origin / Origin header on state-changing POSTs (lightweight CSRF guard; the app has no auth)
 render user text (titles/notes) via Jinja autoescape only — never |safe, never disable autoescape
+treat a diary-bearing instance (sec35) as holding the most sensitive data class: prefer 127.0.0.1; a LAN bind exposes diary read/write to the whole network (sec10.2)
+never filter the JSONL export: it stays a full ledger replay, private diary entries included — the selfos adapter is the routing/privacy gate, ephemeris carries the flags opaquely
+diary content stays out of cloud agent context by default (selfos AGENTS.md → cloud-context data boundary; repo note in AGENTS.md)
+embed peer views (atlas, exp2res gap questions) by configured URL over same-machine loopback only, in a sandboxed iframe; ephemeris never fetches or parses them (sec35)
 back up the SQLite file with `sqlite3 .backup` or `VACUUM INTO` (consistent under WAL), not a raw cp mid-write
 (optional) set owner-only permissions on data/ if the Linux host is shared
 ```
@@ -1717,6 +1729,11 @@ Ephemeris does, however, *capture* retrospectives locally — journaled
 `retro_entries` a future selfos adapter converts for Exp2Res import; see
 [docs/retro-spec.md](retro-spec.md) (sec33). The boundary holds: ephemeris
 never parses or calls Exp2Res, it only exports its own ledger.
+
+The Diary tab (sec35, [docs/diary-spec.md](diary-spec.md)) is the second
+capture surface on the same boundary: entries journal locally and ride the
+export, and when `SELFOS_EXP2RES_URL` is set the tab renders the Exp2Res
+gap-questions view by URL — nothing more; answers are ordinary diary entries.
 
 Integration v1 embeds peer views on the same machine over loopback. Phone/LAN
 gateway support is deferred, and Ephemeris remains usable when either peer URL
