@@ -1402,6 +1402,7 @@ render user text (titles/notes) via Jinja autoescape only — never |safe, never
 treat a diary-bearing instance (sec35) as holding the most sensitive data class: prefer 127.0.0.1; a LAN bind exposes diary read/write to the whole network (sec10.2)
 never filter the JSONL export: it stays a full ledger replay, private diary entries included — the selfos adapter is the routing/privacy gate, ephemeris carries the flags opaquely
 diary content stays out of cloud agent context by default (selfos AGENTS.md → cloud-context data boundary; repo note in AGENTS.md)
+accepted risk (owner, 2026-08-14, #191): the boundary above is convention, not enforcement — lesson-agent shells share the host network and can read /diary and the export over loopback; no egress block or route gate is planned
 embed peer views (atlas, exp2res gap questions) by configured URL over same-machine loopback only, in a sandboxed iframe; ephemeris never fetches or parses them (sec35)
 back up the SQLite file with `sqlite3 .backup` or `VACUUM INTO` (consistent under WAL), not a raw cp mid-write
 (optional) set owner-only permissions on data/ if the Linux host is shared
