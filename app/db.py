@@ -286,7 +286,7 @@ def snapshot(conn: sqlite3.Connection):
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -1048,6 +1048,36 @@ def _migrate_to_19(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA_V19_RUNS)
 
 
+# v20 — diary_entries (docs/diary-spec.md, issue #2): per-entry dated journal,
+# the capture surface for the future selfos→exp2res diary feed. Distinct from
+# daily_notes (the habits-page one-text-per-day widget with upsert semantics):
+# a diary entry is entry-granular because the selfos tags contract is —
+# per-entry `private`, per-entry routing tags, several entries per day. tags /
+# private / atlas_ref are opaque here: stored, journaled and exported unchanged;
+# the selfos adapter is the routing and privacy gate (selfos docs/tags.md).
+# Soft-archived, never hard-deleted (sec14.1 joinability), retro idiom.
+_SCHEMA_V20 = """
+CREATE TABLE IF NOT EXISTS diary_entries (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  uuid        TEXT NOT NULL UNIQUE,
+  entry_date  TEXT NOT NULL,              -- YYYY-MM-DD, the day the entry belongs to
+  text        TEXT NOT NULL CHECK(length(text) > 0),
+  tags_json   TEXT NOT NULL DEFAULT '[]', -- JSON array of opaque strings
+  private     INTEGER NOT NULL DEFAULT 0 CHECK(private IN (0,1)),
+  atlas_ref   TEXT,                       -- opaque; meaning belongs to atlas intake
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT,
+  archived_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_diary_date ON diary_entries(entry_date);
+"""
+
+
+def _migrate_to_20(conn: sqlite3.Connection) -> None:
+    conn.executescript(_SCHEMA_V20)
+
+
 # Ordered, idempotent steps. A schema change must NEVER require deleting the
 # ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
 _MIGRATIONS = [
@@ -1070,6 +1100,7 @@ _MIGRATIONS = [
     (17, _migrate_to_17),
     (18, _migrate_to_18),
     (19, _migrate_to_19),
+    (20, _migrate_to_20),
 ]
 
 

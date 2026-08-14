@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Diary · Ephemeris{% endblock %}
+{% block content %}
+<header class="page-head"><h1>Diary</h1></header>
+
+{% if flash %}<p class="flash" role="status">{{ flash }}</p>{% endif %}
+
+{# Gap-questions strip (issue #2 item 2): config-only coupling. The exp2res
+   /questions view is embedded by URL and nothing else — no gap IDs, no
+   link-back tokens, no answer callback; answering happens as an ordinary
+   entry below. Loopback-only topology (exp2res §30); the iframe is fully
+   sandboxed because the questions page is inert self-contained HTML. #}
+{% if exp2res_url %}
+<section class="diary-questions" style="background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:18px">
+  <div class="section-title" style="margin-top:0">Questions of the day</div>
+  <iframe src="{{ exp2res_url }}" title="Exp2Res gap questions" sandbox
+          referrerpolicy="no-referrer" loading="lazy"
+          style="width:100%;height:180px;border:1px solid var(--border);border-radius:8px;background:transparent"></iframe>
+  <p class="muted" style="margin:6px 0 0;color:var(--faint);font-size:12px">
+    Served by Exp2Res on this machine. If the frame stays empty, Exp2Res isn’t
+    running right now — the diary works fine without it. Answer a question as an
+    ordinary entry below; it reaches Exp2Res later through the normal export.
+  </p>
+</section>
+{% endif %}
+
+<section class="diary-form" style="background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:18px">
+  <div class="section-title" style="margin-top:0">{{ 'Edit entry' if editing else 'New entry' }}</div>
+  <form method="post" action="{{ '/diary/' ~ editing.id ~ '/edit' if editing else '/diary' }}" autocomplete="off" style="display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <input type="date" name="entry_date" class="text-input" style="min-width:150px"
+             aria-label="Entry day" max="{{ today }}"
+             value="{{ editing.entry_date if editing else today }}">
+      <input type="text" name="tags" class="text-input" style="flex:1;min-width:180px"
+             placeholder="Tags, comma-separated (optional)" aria-label="Tags"
+             value="{{ editing_tags }}">
+      <input type="text" name="atlas_ref" class="text-input" style="min-width:150px"
+             placeholder="Atlas ref (optional)" aria-label="Atlas ref"
+             value="{{ editing.atlas_ref or '' if editing else '' }}">
+      {% if editing and editing.private %}
+      {# One-way latch (selfos tags contract): once private, never cleared —
+         no checkbox to uncheck, because unchecking would change nothing
+         downstream. De-privatize by writing a new non-private entry. #}
+      <span class="muted" style="font-size:12px;border:1px solid var(--border);border-radius:9px;padding:2px 8px" title="Once private, always private — write a new non-private entry instead">Private — can’t be cleared</span>
+      {% else %}
+      <label class="muted" style="display:flex;gap:6px;align-items:center;font-size:13px">
+        <input type="checkbox" name="private" value="on"> Private
+      </label>
+      {% endif %}
+    </div>
+    <textarea name="text" class="text-input" rows="5" required
+              placeholder="What happened? What are you thinking?"
+              style="resize:vertical;min-height:90px">{{ editing.text if editing else '' }}</textarea>
+    <p class="muted" style="margin:0;color:var(--faint);font-size:12px">
+      Private is permanent for this entry: the selfos adapter never ships it to
+      any other system or agent context. It still rides your local JSONL export —
+      that file is private-instance data. Tags are yours; only <em>atlas</em>
+      routes the entry’s knowledge aspect to Atlas.
+    </p>
+    <div style="display:flex;gap:8px">
+      <button type="submit" class="btn-primary" style="height:36px">{{ 'Save changes' if editing else 'Add entry' }}</button>
+      {% if editing %}<a class="btn-text" href="/diary" style="align-self:center">Cancel</a>{% endif %}
+    </div>
+  </form>
+</section>
+
+<div class="section-title" style="display:flex;align-items:baseline;gap:10px">
+  <span>{{ 'Archived' if show_archived else 'Entries' }} · {{ count }}</span>
+  <a class="btn-text" style="font-size:12px" href="{{ '/diary' if show_archived else '/diary?archived=1' }}">
+    {{ 'show active' if show_archived else 'show archived' }}</a>
+</div>
+
+{% if days %}
+<div class="items-list">
+  {% for day in days %}
+  <div class="diary-day">
+    <div class="section-title" style="font-size:13px;margin:14px 0 2px">{{ day.label }}</div>
+    {% for e in day.entries %}
+    {% set r = e.row %}
+    <div class="manage-row" style="display:block;border-bottom:1px solid var(--border);padding:10px 4px">
+      <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+        {% if r.private %}<span class="muted" style="font-size:12px;border:1px solid var(--border);border-radius:9px;padding:0 8px">private</span>{% endif %}
+        {% for tag in e.tags %}<span class="muted" style="font-size:12px;border:1px solid var(--border);border-radius:9px;padding:0 8px">{{ tag }}</span>{% endfor %}
+        {% if r.atlas_ref %}<span class="muted" style="color:var(--faint);font-size:12px">→ {{ r.atlas_ref }}</span>{% endif %}
+        <span style="flex:1"></span>
+        <span style="display:flex;gap:10px;align-items:baseline;white-space:nowrap">
+          {% if not show_archived %}
+          <a class="btn-text" style="font-size:12px" href="/diary?edit={{ r.id }}">Edit</a>
+          <form method="post" action="/diary/{{ r.id }}/archive" style="display:inline;margin:0">
+            <button type="submit" class="btn-text" style="font-size:12px">Archive</button>
+          </form>
+          {% else %}
+          <form method="post" action="/diary/{{ r.id }}/unarchive" style="display:inline;margin:0">
+            <button type="submit" class="btn-text" style="font-size:12px">Unarchive</button>
+          </form>
+          {% endif %}
+        </span>
+      </div>
+      <p style="margin:6px 0 0;white-space:pre-wrap">{{ r.text }}</p>
+      <p class="muted" style="margin:4px 0 0;color:var(--faint);font-size:11px">
+        recorded {{ r.created_at }}{% if r.updated_at %} · edited {{ r.updated_at }}{% endif %}
+      </p>
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+  <p class="empty">{{ 'Nothing archived.' if show_archived else 'No diary entries yet. What happened today?' }}</p>
+{% endif %}
+{% endblock %}

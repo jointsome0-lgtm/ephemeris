@@ -287,6 +287,12 @@ def due_label(date_str: str | None, today: str | None = None) -> str:
 # guards board-only chrome.
 TASKS_HOME = "/board"
 
+# Where the Diary rail icon points (#2). A global for the same live-skew
+# reason as TASKS_HOME: the running pre-#2 service renders base.html from the
+# working tree without this module's update, resolves `diary_home` as
+# undefined, and the template hides the link instead of serving a 404.
+DIARY_HOME = "/diary"
+
 
 # The mass of a Learn cluster is the rolled-up lesson count #166 computes, and
 # it picks the spectral class its branch is drawn in. The thresholds are far
@@ -327,6 +333,7 @@ def star_body(total: int | None) -> dict:
 templates.env.globals.update(
     static_url=static_url,
     tasks_home=TASKS_HOME,
+    diary_home=DIARY_HOME,
     star_body=star_body,
     avatar=item_avatar,
     status_glyph=status_glyph,

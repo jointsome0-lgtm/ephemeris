@@ -39,6 +39,7 @@ _PALETTE_VIEWS = [
     {"label": "Habits", "href": "/habits", "icon": "habit"},
     {"label": "Learn", "href": "/learn", "icon": "learn"},
     {"label": "Retro", "href": "/retro", "icon": "retro"},
+    {"label": "Diary", "href": "/diary", "icon": "diary"},
     {"label": "Search", "href": "/search", "icon": "search"},
     {"label": "Export", "href": "/export", "icon": "download"},
 ]
