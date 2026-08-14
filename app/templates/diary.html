@@ -52,9 +52,10 @@
               placeholder="What happened? What are you thinking?"
               style="resize:vertical;min-height:90px">{{ editing.text if editing else '' }}</textarea>
     <p class="muted" style="margin:0;color:var(--faint);font-size:12px">
-      Private is permanent for this entry: it never ships anywhere or enters any
-      agent context. Tags are yours; only <em>atlas</em> routes the entry’s
-      knowledge aspect to Atlas.
+      Private is permanent for this entry: the selfos adapter never ships it to
+      any other system or agent context. It still rides your local JSONL export —
+      that file is private-instance data. Tags are yours; only <em>atlas</em>
+      routes the entry’s knowledge aspect to Atlas.
     </p>
     <div style="display:flex;gap:8px">
       <button type="submit" class="btn-primary" style="height:36px">{{ 'Save changes' if editing else 'Add entry' }}</button>
