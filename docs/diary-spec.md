@@ -50,7 +50,9 @@ is the canonical contract — this spec does not restate it):
   is #27's scope.
 - `private` — a boolean, opaque here. **Set-only in the UI and in the
   service:** it can be set at creation or added later, and an edit can never
-  clear it (`update_entry` ORs the stored value in). The contract makes
+  clear it — the latch rides inside the UPDATE (`MAX(private, ?)` against the
+  stored value), so a concurrent privatization can't be overwritten by a
+  stale-read edit. The contract makes
   de-privatization a one-way latch — authoring a new non-private entry — so
   a clearable checkbox would promise a routing effect that doesn't exist.
 - `atlas_ref` — an optional opaque string passed through untouched; its

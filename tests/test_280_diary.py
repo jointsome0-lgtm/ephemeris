@@ -153,6 +153,36 @@ def test_diary(client, suite_state, monkeypatch):
         "private can be added on an existing entry"
     )
 
+    # The latch must ride the UPDATE itself, not a pre-read row: an edit that
+    # raced a concurrent privatization (its existence check read private=0,
+    # then the other request committed private=1) must still land private=1.
+    from app.services import diary as diary_svc
+    conn = get_conn()
+    try:
+        conn.execute("UPDATE diary_entries SET private = 0 WHERE id = ?", (rid_p,))
+        conn.commit()
+        stale = diary_svc.get_entry(conn, rid_p)
+        assert stale["private"] == 0
+        conn.execute("UPDATE diary_entries SET private = 1 WHERE id = ?", (rid_p,))
+        conn.commit()
+        real_get = diary_svc.get_entry
+        calls = {"n": 0}
+
+        def stale_first(inner_conn, entry_id):
+            calls["n"] += 1
+            return stale if calls["n"] == 1 else real_get(inner_conn, entry_id)
+
+        monkeypatch.setattr(diary_svc, "get_entry", stale_first)
+        diary_svc.update_entry(conn, rid_p, text="Race probe — still private.")
+        monkeypatch.setattr(diary_svc, "get_entry", real_get)
+        assert diary_svc.get_entry(conn, rid_p)["private"] == 1, (
+            "stale-read edit cannot clear a concurrently set private flag"
+        )
+        assert json.loads(events_of("diary_entry_updated")[-1]["payload_json"])[
+            "private"] is True, "the raced update journals private=true"
+    finally:
+        conn.close()
+
     # --- archive / unarchive ------------------------------------------------
     n_arch = len(events_of("diary_entry_archived"))
     r = c.post(f"/diary/{rid_b}/archive", follow_redirects=False)

@@ -67,16 +67,20 @@ def parse_tags(raw: str | None) -> list[str]:
     cross-system meaning is the selfos adapter's business, not ours.
     """
     tags: list[str] = []
+    seen: set[str] = set()
     for part in (raw or "").split(","):
         tag = part.strip()
-        if not tag or tag in tags:
+        if not tag or tag in seen:
             continue
+        # Enforced per tag, not after the whole field: a pasted multi-kilobyte
+        # value must fail on its 21st distinct tag, not after quadratic work.
+        if len(tags) >= limits.DIARY_TAGS_MAX:
+            raise DiaryError(f"too many tags ({limits.DIARY_TAGS_MAX} max)")
         limits.check(tag, limits.DIARY_TAG, "diary tag", DiaryError)
         if _CONTROL_RE.search(tag):
             raise DiaryError("diary tag contains control characters")
+        seen.add(tag)
         tags.append(tag)
-    if len(tags) > limits.DIARY_TAGS_MAX:
-        raise DiaryError(f"too many tags ({limits.DIARY_TAGS_MAX} max)")
     return tags
 
 
@@ -141,23 +145,25 @@ def update_entry(conn: sqlite3.Connection, entry_id: int, *, text: str,
     """Full-form re-submit; the uuid never changes, so downstream latest-wins
     consumers follow the edit. `private` is a one-way latch: an already-private
     entry stays private whatever the form says (selfos docs/tags.md — clearing
-    the flag would have no routing effect, so offering it would be a lie)."""
-    existing = get_entry(conn, entry_id)
-    if existing is None:
+    the flag would have no routing effect, so offering it would be a lie).
+    The latch is applied inside the UPDATE itself (MAX against the stored
+    value), never against a pre-read row: a concurrent privatization landing
+    between a stale read and this write must not be overwritten back to 0."""
+    if get_entry(conn, entry_id) is None:
         raise DiaryError("unknown diary entry")
     ts = now_iso()
     values = (
         _clean_date(entry_date),
         _clean_text(text),
         json.dumps(parse_tags(tags), ensure_ascii=False),
-        1 if (existing["private"] or private) else 0,
+        1 if private else 0,
         _clean_atlas_ref(atlas_ref),
         ts,
     )
     with conn:
         conn.execute(
             "UPDATE diary_entries SET entry_date=?, text=?, tags_json=?, "
-            "private=?, atlas_ref=?, updated_at=? WHERE id=?",
+            "private=MAX(private, ?), atlas_ref=?, updated_at=? WHERE id=?",
             (*values, entry_id),
         )
         row = get_entry(conn, entry_id)
