@@ -335,6 +335,8 @@ _COMMON_HOME_MOUNTS = (
                "user-installed command shims used by every lesson role"),
 )
 
+CODEX_CONFIG_PATH = f"{USER_HOME}/.codex/config.toml"
+
 _AGENT_HOME_MOUNTS = (
     _HomeMount("--ro-bind-try", f"{USER_HOME}/.nvm/versions",
                "the installed Codex Node runtime and package"),
@@ -344,7 +346,7 @@ _AGENT_HOME_MOUNTS = (
                "ephemeral writable Codex session and app-server state"),
     _HomeMount("--ro-bind-try", f"{USER_HOME}/.codex/auth.json",
                "Codex login material, deliberately read-only"),
-    _HomeMount("--ro-bind-try", f"{USER_HOME}/.codex/config.toml",
+    _HomeMount("--ro-bind-try", CODEX_CONFIG_PATH,
                "Codex configuration, deliberately read-only"),
     _HomeMount("--tmpfs", f"{USER_HOME}/.claude",
                "ephemeral writable Claude session and cache state"),
@@ -369,8 +371,8 @@ _AGENT_HOME_MOUNTS = (
 # `history.jsonl`. Blank above, they die with the PTY — so `claude --continue`
 # and `codex resume` find nothing the next time a lesson terminal opens. A
 # caller that supplies a persistent agent home swaps each tmpfs for a bind of
-# that home's matching subdirectory; the login and configuration files bound
-# read-only AFTER them in the same tuple stay read-only either way.
+# that home's matching subdirectory. Login material stays read-only; its Codex
+# configuration is a per-lesson copy that Codex can update with workspace trust.
 AGENT_STATE_SUBDIRS = {
     f"{USER_HOME}/.claude": "claude",
     f"{USER_HOME}/.codex": "codex",
@@ -422,6 +424,7 @@ def _agent_home_mounts(agent_home: str | None) -> tuple[_HomeMount, ...]:
         if mount.flag == "--tmpfs" and mount.target in AGENT_STATE_SUBDIRS
         else mount
         for mount in _AGENT_HOME_MOUNTS
+        if mount.target != CODEX_CONFIG_PATH
     )
 
 

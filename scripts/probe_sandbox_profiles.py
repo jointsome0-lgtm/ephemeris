@@ -8,6 +8,7 @@ one minimal, non-persistent Codex API call through the local xray proxy; pass
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pwd
@@ -69,6 +70,25 @@ print(json.dumps({
     "network": "host" if proxy_reachable else "none",
     "proxy_reachable": proxy_reachable,
 }, sort_keys=True))
+"""
+
+
+_INSIDE_CODEX_CONFIG_PROBE = r"""
+import json, os
+from pathlib import Path
+
+config = Path(os.environ["HOME"]) / ".codex" / "config.toml"
+temporary = config.with_name(".config.toml.invented-write")
+temporary.write_text(
+    '[projects."/invented/lesson"]\ntrust_level = "trusted"\n',
+    encoding="utf-8",
+)
+os.replace(temporary, config)
+print(json.dumps({
+    "config_replaced": config.read_text(encoding="utf-8").endswith(
+        'trust_level = "trusted"\n'
+    ),
+}))
 """
 
 
@@ -208,6 +228,50 @@ def run_agent_api(bundle: Path, bundle_root: Path) -> None:
     print("agent_api codex=ok via=http://127.0.0.1:10809")
 
 
+def run_persistent_agent_config(
+    bundle: Path, bundle_root: Path, private_root: Path
+) -> dict[str, object]:
+    agent_home = private_root / "agent-homes" / "invented-demo-bundle"
+    codex_home = agent_home / "codex"
+    codex_home.mkdir(parents=True)
+    (agent_home / "claude").mkdir()
+    config = codex_home / "config.toml"
+    config.write_text('model = "invented-model"\n', encoding="utf-8")
+    config.chmod(0o600)
+    host_config = Path(USER_HOME) / ".codex" / "config.toml"
+    host_before = (
+        hashlib.sha256(host_config.read_bytes()).digest()
+        if host_config.is_file() else None
+    )
+    result = subprocess.run(
+        build_sandbox_argv(
+            "lesson-agent", bundle, bundle_root=bundle_root,
+            private_root=private_root, agent_home=agent_home,
+        ) + ["--", "/usr/bin/python3", "-c", _INSIDE_CODEX_CONFIG_PROBE],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        env=clean_env(proxy=True),
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SystemExit(
+            f"lesson-agent persistent config: probe failed: {result.stderr.strip()}"
+        )
+    payload = json.loads(result.stdout)
+    host_after = (
+        hashlib.sha256(host_config.read_bytes()).digest()
+        if host_config.is_file() else None
+    )
+    if not payload["config_replaced"] or host_before != host_after:
+        raise SystemExit(
+            "lesson-agent persistent config: invariant mismatch: "
+            + json.dumps(payload, sort_keys=True)
+        )
+    payload["host_config_unchanged"] = True
+    return payload
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--skip-agent-api", action="store_true")
@@ -215,12 +279,17 @@ def main() -> int:
 
     require_sandbox_runtime()
     with tempfile.TemporaryDirectory(prefix="ephemeris-e1-probe-", dir="/tmp") as raw:
-        bundle_root = Path(raw)
+        private_root = Path(raw)
+        bundle_root = private_root / "lessons"
         bundle = bundle_root / "invented-demo-bundle"
-        bundle.mkdir()
+        bundle.mkdir(parents=True)
         for profile in ("lesson-agent", "lesson-learner", "lesson-runner"):
             payload = run_profile(profile, bundle, bundle_root)
             print(json.dumps(payload, sort_keys=True))
+        print(json.dumps(
+            run_persistent_agent_config(bundle, bundle_root, private_root),
+            sort_keys=True,
+        ))
         if not args.skip_agent_api:
             run_agent_api(bundle, bundle_root)
     print("E1 sandbox profile probe: PASS")
