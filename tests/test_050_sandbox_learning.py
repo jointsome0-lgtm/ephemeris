@@ -112,12 +112,16 @@ def test_sandbox_learning(client, suite_state):
     # A persistent agent home swaps exactly the two ephemeral state directories
     # for binds of its own subdirectories, so `claude --continue` / `codex
     # resume` still find the last conversation after the PTY is gone. Every
-    # other mount — including the read-only login material layered on top of
-    # them — is untouched, and the blank $HOME above them stays blank.
+    # other mount except the Codex config is untouched, and the blank $HOME
+    # above them stays blank. The persistent config must remain writable so
+    # Codex can save this lesson's workspace-trust decision.
     _sb_home = "/tmp/agent-homes/some-lesson"
     _sb_agent_persist = _sandbox.build_sandbox_argv(
         "lesson-agent", _sb_bundle, bundle_root=_sb_root,
         private_root="/tmp", agent_home=_sb_home)
+    _sb_agent_persist_try_ro = _sb_agent_try_ro - {
+        (f"{_sb_userhome}/.codex/config.toml", f"{_sb_userhome}/.codex/config.toml")
+    }
     assert (
         set(_sb_mounts(_sb_agent_persist, "--bind")) == {
           (_sb_bundle, _sb_bundle),
@@ -125,13 +129,13 @@ def test_sandbox_learning(client, suite_state):
           (f"{_sb_home}/codex", f"{_sb_userhome}/.codex"),
         }
         and set(_sb_mounts(_sb_agent_persist, "--ro-bind-try"))
-        == _sb_agent_try_ro | _sb_common_try_ro
+        == _sb_agent_persist_try_ro | _sb_common_try_ro
         and {_sb_agent_persist[i + 1]
              for i, x in enumerate(_sb_agent_persist) if x == "--tmpfs"} == {
           "/tmp", _sb_userhome,
         }
-        # The persistent binds land where the tmpfs entries were: before the
-        # read-only credentials, which must keep winning over them.
+        # The persistent binds land where the tmpfs entries were. Login material
+        # stays read-only; the per-lesson config remains writable for trust.
         and all(
           _sb_agent_persist.index(f"{_sb_home}/{name}")
           < _sb_agent_persist.index(f"{_sb_userhome}/.{cli}/{leaf}")

@@ -2667,6 +2667,34 @@ def _ensure_source_dir(lesson_dir: Path) -> Path | None:
 
 
 AGENT_HOME_SUBDIRS = ("claude", "codex")
+HOST_CODEX_CONFIG = Path(sandbox.CODEX_CONFIG_PATH)
+
+
+def _ensure_agent_codex_config(home: Path) -> None:
+    """Seed one writable Codex config without replacing lesson-local state."""
+    path = home / "codex" / "config.toml"
+    try:
+        current = os.lstat(path)
+    except FileNotFoundError:
+        current = None
+    legacy_placeholder = (
+        current is not None
+        and stat_module.S_ISREG(current.st_mode)
+        and current.st_nlink == 1
+        and current.st_size == 0
+        and stat_module.S_IMODE(current.st_mode) == 0o444
+    )
+    if current is not None and not legacy_placeholder:
+        if stat_module.S_ISREG(current.st_mode):
+            return
+        _preserve_foreign(path)
+    try:
+        source = HOST_CODEX_CONFIG.read_bytes()
+    except FileNotFoundError:
+        if legacy_placeholder:
+            path.unlink()
+        return
+    _replace_file(path, source)
 
 
 def _ensure_agent_home(slug: str) -> Path:
@@ -2700,6 +2728,7 @@ def _ensure_agent_home(slug: str) -> Path:
         except FileExistsError:
             if path.is_symlink() or not path.is_dir():
                 raise NotADirectoryError(f"{path.name} is not a directory")
+    _ensure_agent_codex_config(home)
     return home
 
 
