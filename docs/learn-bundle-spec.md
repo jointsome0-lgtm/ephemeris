@@ -56,6 +56,9 @@ data/lessons/<slug>/
   CLAUDE.md        app-generated shim for AGENTS.md — regenerated
   .claude/         app-generated agent-harness config for the bundle
     settings.json  constant `{"outputStyle": "Learning"}` — regenerated
+  reference/       app-generated reference companions to AGENTS.md —
+                   regenerated, never authored (constant templates, like
+                   settings.json)
   .git/            per-lesson history — app-initialized, agent-committed
     info/exclude   app-owned rules, written once at init
 ```
@@ -63,7 +66,7 @@ data/lessons/<slug>/
 Reserved names, which no page, block file, or artifact root may claim:
 `lesson.json`, `attempts.jsonl`, `assessments.jsonl`, `memory.jsonl`,
 `runs.jsonl`, `AGENTS.md`, `CLAUDE.md`, `.claude`, `node_modules`, `source`,
-`.git`.
+`.git`, `reference`.
 
 Each bundle is its own local git repository, set up on the read path unless
 something that is not a plain directory holds the `.git` name; the app
@@ -1070,7 +1073,7 @@ re-dumping cannot provide it. Additive evolution inside v2 means new
 OPTIONAL fields; any change to the meaning of an existing field requires
 v3.
 
-Four named exceptions, taken deliberately rather than through v3. Adding
+Five named exceptions, taken deliberately rather than through v3. Adding
 `.claude` to the §2 reserved names (2026-07-29,
 [#84](https://github.com/jointsome0-lgtm/ephemeris/issues/84)) narrows what
 `entry`, `pages[].path`, `blocks[].file` and `artifact_roots[]` accept
@@ -1079,9 +1082,11 @@ without a version bump. A v2 manifest declaring a path whose first segment is
 `invalid-entry`), and a manifest whose only page was such a path becomes
 rejected with `no-pages`. Adding `node_modules` (2026-08-09,
 [#161](https://github.com/jointsome0-lgtm/ephemeris/issues/161)) narrows the
-same four fields the same way, and so do adding `source` (2026-08-09) and
+same four fields the same way, and so do adding `source` (2026-08-09),
 `.git` (2026-08-12,
-[#186](https://github.com/jointsome0-lgtm/ephemeris/issues/186)).
+[#186](https://github.com/jointsome0-lgtm/ephemeris/issues/186)) and
+`reference` (2026-08-16,
+[#195](https://github.com/jointsome0-lgtm/ephemeris/issues/195)).
 
 `source` differs from the other two in what happens on disk. The app writes
 nothing under it — the tutor stores fetched material there — so workspace

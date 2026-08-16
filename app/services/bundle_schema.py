@@ -33,7 +33,7 @@ DEFAULT_ARTIFACT_ROOT = "attempts"
 RESERVED_NAMES = (
     "lesson.json", "attempts.jsonl", "assessments.jsonl", "memory.jsonl",
     "runs.jsonl", "AGENTS.md", "CLAUDE.md", ".claude", "node_modules", "source",
-    ".git",
+    ".git", "reference",
 )
 
 MAX_MANIFEST_BYTES = 256 * 1024
