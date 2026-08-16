@@ -2685,6 +2685,28 @@ def _source_brief(template: str, source_dir: Path | None) -> str:
     )
 
 
+# Half the 32 KiB harness cap each: tests pin the template core under one
+# half, this budget bounds STATE to the other, so the whole rendered brief
+# always loads however many artifacts or questions a lesson accumulates.
+_STATE_MAX_BYTES = 16 * 1024
+
+_STATE_TRUNCATION_NOTE = (
+    "  - …STATE hit its size budget and was cut here; the omitted lines\n"
+    "    mirror data you can read directly — `lesson.json`, `attempts/`,\n"
+    "    and the record files are the primary sources."
+)
+
+
+def _cap_state(state: str) -> str:
+    data = state.encode("utf-8")
+    if len(data) <= _STATE_MAX_BYTES:
+        return state
+    note = _STATE_TRUNCATION_NOTE.encode("utf-8")
+    keep = data[: _STATE_MAX_BYTES - len(note)]
+    keep = keep[: keep.rfind(b"\n") + 1]
+    return (keep + note).decode("utf-8")
+
+
 def _render_agents_brief(source_dir: Path | None, state: str) -> str:
     """The one brief a session gets: source slots filled, STATE injected.
 
@@ -2692,11 +2714,15 @@ def _render_agents_brief(source_dir: Path | None, state: str) -> str:
     being appended at the end — agent harnesses cap how much project brief
     they load (Codex reads the first `project_doc_max_bytes` = 32 KiB by
     default and silently drops the rest, #195), and the tail is the wrong
-    place for the one part that changes every session. The template scan
-    happens before the insertion, so token-shaped learner data inside STATE
-    is never itself substituted.
+    place for the one part that changes every session. STATE itself is
+    capped to half that budget so the fixed sections after it load whole
+    no matter how the lesson grows. The template scan happens before the
+    insertion, so token-shaped learner data inside STATE is never itself
+    substituted.
     """
-    return _source_brief(_AGENTS_TEMPLATE, source_dir).replace("%STATE%", state, 1)
+    return _source_brief(_AGENTS_TEMPLATE, source_dir).replace(
+        "%STATE%", _cap_state(state), 1
+    )
 
 
 def _ensure_source_dir(lesson_dir: Path) -> Path | None:

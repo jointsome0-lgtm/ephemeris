@@ -46,6 +46,29 @@ def test_core_brief_stays_far_under_the_codex_cap():
     assert len(bare.encode("utf-8")) < CODEX_PROJECT_DOC_CAP // 2
 
 
+def test_state_is_capped_so_the_core_tail_always_loads():
+    small = "\n## STATE (generated; refreshed on every terminal open)\n\n- x"
+    assert lessons._cap_state(small) == small, "an ordinary STATE passes as-is"
+
+    filler = "".join(
+        f'  - "attempts/blk_x/{i:04d}-{"f" * 160}.txt": mtime=…\n'
+        for i in range(400)
+    )
+    state = "\n## STATE (generated; refreshed on every terminal open)\n\n" + filler
+    assert len(state.encode("utf-8")) > CODEX_PROJECT_DOC_CAP, (
+        "the fixture must be worse than the harness cap on its own"
+    )
+    brief = lessons._render_agents_brief(Path("made"), state)
+    assert len(brief.encode("utf-8")) < CODEX_PROJECT_DOC_CAP, (
+        "an artifact-heavy STATE must never push the core past what the "
+        "harness loads (#197 round 2)"
+    )
+    assert "## Mission" in brief and "## Bundle map and git" in brief
+    cut = brief.index("  - …STATE hit its size budget")
+    assert brief[cut - 1] == "\n", "the cap cuts at a whole line"
+    assert brief.index("## Data boundary") < brief.index("## STATE (generated")
+
+
 def test_every_reference_pointer_in_the_core_names_a_written_file():
     pointed = set(re.findall(r"`reference/([a-z-]+\.md)`", lessons._AGENTS_TEMPLATE))
     assert pointed == set(lessons._REFERENCE_FILES), (
