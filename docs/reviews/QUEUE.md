@@ -24,7 +24,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-08-12 — `0b4f2a2` (merge of `fix/188-claude-oauth-token`, PR #189) — `app/sandbox.py`, `app/terminal.py` —
+_None._
+
+## Done
+
+- [x] 2026-08-12 — `0b4f2a2` (merge of `fix/188-claude-oauth-token`, PR #189) — `app/sandbox.py`, `app/terminal.py` —
   the lesson-agent profile no longer ro-binds `~/.claude/.credentials.json`
   into the sandbox; instead the tutor shell's environment carries
   `CLAUDE_CODE_OAUTH_TOKEN`, read at each session open from
@@ -42,8 +46,13 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `docs/reviews/2026-08-16-pending-queue-batch-review.md`:
   0 Critical, 2 High, 0 Medium, 0 Low, 1 Info. H2 remains confirmed on the
   current tree and host posture, so this entry remains Pending.
+  Owner closure 2026-08-17: the reusable-token exposure High is accepted as
+  an architecture risk (`docs/system-design.md` §20 accepted-risk record,
+  alongside the shared-browser record — the accepted host-side code
+  execution capability would reach the token file past any broker anyway).
+  Closed without a repair PR.
 
-- [ ] 2026-08-09 — `5096a50` (squash of `feat/study-browser`, PR #177) and
+- [x] 2026-08-09 — `5096a50` (squash of `feat/study-browser`, PR #177) and
   `514b363` (squash of `docs/playwright-browser-brief`, PR #178) —
   `app/services/lessons.py`, `app/services/bundle_schema.py`,
   `docs/learn-bundle-spec.md`, `docs/reviews/QUEUE.md` —
@@ -98,8 +107,13 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `docs/reviews/2026-08-16-pending-queue-batch-review.md`:
   0 Critical, 2 High, 0 Medium, 0 Low, 1 Info. The unrestricted general
   Playwright capability remains confirmed, so this entry remains Pending.
+  Owner closure 2026-08-17: the unrestricted-listener High is accepted as
+  architecture — recorded as an accepted risk in `docs/system-design.md` §20;
+  no per-lesson capability or restricted server is planned. The Info item
+  (the stale host `lesson-profile` directory) stays private host cleanup.
+  Closed without a repair PR.
 
-- [ ] 2026-08-11 — `c83c093` (squash of `lesson-network`, PR #181) —
+- [x] 2026-08-11 — `c83c093` (squash of `lesson-network`, PR #181) —
   `app/sandbox.py`, `app/terminal.py`, `app/routers/learn.py`,
   `app/services/lessons.py`, `app/services/render_check.py`,
   `app/templates/learn.html`, `scripts/verify_e3_sessions.py`,
@@ -128,8 +142,10 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `docs/reviews/2026-08-16-pending-queue-batch-review.md`:
   0 Critical, 2 High, 0 Medium, 0 Low, 1 Info. The shared namespace still
   reaches the unrestricted Playwright listener, so this entry remains Pending.
-
-## Done
+  Owner closure 2026-08-17: the coupled Playwright-listener High is accepted
+  as architecture (`docs/system-design.md` §20 accepted-risk record), so the
+  dependency on the 2026-08-09 repair dissolves with it. Closed without a
+  repair PR.
 
 - [x] 2026-08-16 — `d987ec1` + review fixes (PR #197; landed as `50feb27`) —
   `app/services/lessons.py`, `app/services/bundle_schema.py` — lesson workspace
