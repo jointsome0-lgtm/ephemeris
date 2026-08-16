@@ -85,13 +85,22 @@ def test_open_question_excerpts_are_byte_bounded_so_the_cap_never_eats_them():
         "ASCII excerpts inside the byte bound pass through untouched"
     )
 
-    # The full surfaced set plus generous per-line overhead must fit the
-    # STATE budget with room to spare — the section the core says to answer
-    # FIRST can never be the part the tail cap removes.
+    # A v1 manifest `entry` has no length ceiling short of the manifest size
+    # limit, and its line renders BEFORE the open questions (#197 round 4).
+    long_path = "related/" + "p" * 3000 + ".html"
+    dumped, cut = lessons._state_json_excerpt(long_path)
+    assert cut and len(dumped) <= lessons._STATE_LINE_MAX_BYTES
+
+    # Everything rendered before the open-question section (title, slug,
+    # current page) is byte-bounded, and the full surfaced set plus generous
+    # per-line overhead fits the STATE budget with room to spare — so the
+    # section the core says to answer FIRST can never be the part the tail
+    # cap removes.
+    worst_head = 2 * (lessons._STATE_LINE_MAX_BYTES + 120) + 200
     worst_section = attempts.OPEN_QUESTIONS_SHOWN * (
         lessons._STATE_LINE_MAX_BYTES + 200
     )
-    assert worst_section < lessons._STATE_MAX_BYTES - 4096
+    assert worst_head + worst_section < lessons._STATE_MAX_BYTES - 2048
 
 
 def test_every_reference_pointer_in_the_core_names_a_written_file():

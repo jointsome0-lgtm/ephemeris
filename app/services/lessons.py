@@ -1615,12 +1615,14 @@ def _render_lesson_state(
     except LessonError:
         current = read.entry
     title, title_cut = _state_json_excerpt(lesson["title"])
+    page_ref, page_cut = _state_json_excerpt(current or "unavailable")
     lines = [
         "\n## STATE (generated; refreshed on every terminal open)\n",
         f"- Lesson title (data): {title}"
         + (" (cut here; the full title is in `lesson.json`)" if title_cut else ""),
         f"- Lesson slug: `{lesson['slug']}`",
-        f"- Current page (data): {json.dumps(current or 'unavailable')}",
+        f"- Current page (data): {page_ref}"
+        + (" (cut here; the full path is in `lesson.json`)" if page_cut else ""),
     ]
     if open_questions:
         lines.append(
