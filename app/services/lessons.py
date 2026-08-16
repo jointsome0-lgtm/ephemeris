@@ -1554,6 +1554,27 @@ def tutor_launch_command() -> str | None:
     return None
 
 
+# Per-excerpt byte bound for STATE's learner-text lines. The upstream cut
+# (STATE_QUESTION_CHARS) is char-based, and json.dumps sextuples non-ASCII
+# via \uXXXX — 12 CJK questions alone would outgrow _STATE_MAX_BYTES and the
+# tail cap would eat the very section the brief says to answer first (#197
+# round 3). Bounding the DUMPED form keeps the whole open-question section
+# inside the budget: 12 × (700 + line overhead) stays far under 16 KiB.
+_STATE_LINE_MAX_BYTES = 700
+
+
+def _state_json_excerpt(text: str) -> tuple[str, bool]:
+    """json.dumps bounded by output BYTES (== len: ensure_ascii is ASCII)."""
+    dumped = json.dumps(text)
+    if len(dumped) <= _STATE_LINE_MAX_BYTES:
+        return dumped, False
+    keep = text
+    while len(dumped) > _STATE_LINE_MAX_BYTES:
+        keep = keep[: max(1, (len(keep) * _STATE_LINE_MAX_BYTES) // len(dumped))]
+        dumped = json.dumps(keep)
+    return dumped, True
+
+
 def _render_lesson_state(
     conn: sqlite3.Connection,
     lesson: dict,
@@ -1593,9 +1614,11 @@ def _render_lesson_state(
         current = None if read.rejected else _resolve_entry(lesson, read, None)
     except LessonError:
         current = read.entry
+    title, title_cut = _state_json_excerpt(lesson["title"])
     lines = [
         "\n## STATE (generated; refreshed on every terminal open)\n",
-        f"- Lesson title (data): {json.dumps(lesson['title'])}",
+        f"- Lesson title (data): {title}"
+        + (" (cut here; the full title is in `lesson.json`)" if title_cut else ""),
         f"- Lesson slug: `{lesson['slug']}`",
         f"- Current page (data): {json.dumps(current or 'unavailable')}",
     ]
@@ -1608,8 +1631,8 @@ def _render_lesson_state(
             "marks the question closed:"
         )
         for row in open_questions:
-            asked = json.dumps(row["asked"])
-            if row["asked_truncated"]:
+            asked, byte_cut = _state_json_excerpt(row["asked"])
+            if row["asked_truncated"] or byte_cut:
                 asked += " (cut here; the whole text is the record with this "
                 asked += 'attempt id in `attempts.jsonl`)'
             lines.append(

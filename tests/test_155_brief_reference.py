@@ -69,6 +69,31 @@ def test_state_is_capped_so_the_core_tail_always_loads():
     assert brief.index("## Data boundary") < brief.index("## STATE (generated")
 
 
+def test_open_question_excerpts_are_byte_bounded_so_the_cap_never_eats_them():
+    import json
+
+    from app.services import attempts
+
+    # json.dumps sextuples non-ASCII via \uXXXX; the upstream char bound
+    # alone let 12 CJK questions outgrow the whole STATE budget.
+    dumped, cut = lessons._state_json_excerpt("問" * attempts.STATE_QUESTION_CHARS)
+    assert cut and len(dumped) <= lessons._STATE_LINE_MAX_BYTES
+    json.loads(dumped)
+
+    plain = "e" * attempts.STATE_QUESTION_CHARS
+    assert lessons._state_json_excerpt(plain) == (json.dumps(plain), False), (
+        "ASCII excerpts inside the byte bound pass through untouched"
+    )
+
+    # The full surfaced set plus generous per-line overhead must fit the
+    # STATE budget with room to spare — the section the core says to answer
+    # FIRST can never be the part the tail cap removes.
+    worst_section = attempts.OPEN_QUESTIONS_SHOWN * (
+        lessons._STATE_LINE_MAX_BYTES + 200
+    )
+    assert worst_section < lessons._STATE_MAX_BYTES - 4096
+
+
 def test_every_reference_pointer_in_the_core_names_a_written_file():
     pointed = set(re.findall(r"`reference/([a-z-]+\.md)`", lessons._AGENTS_TEMPLATE))
     assert pointed == set(lessons._REFERENCE_FILES), (
