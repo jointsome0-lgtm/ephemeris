@@ -24,14 +24,6 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-08-16 — `d987ec1` + review fixes (PR #197) — `app/services/lessons.py`,
-  `app/services/bundle_schema.py` — lesson workspace prep now also writes four
-  constant reference companions (`reference/record.md`, `bridge.md`,
-  `packages.md`, `manifest.md`) that the generated AGENTS.md directs lesson
-  agents to read; templates carry no lesson-data interpolation and go through
-  the existing preserve/replace writer stack; `reference` reserved (spec §2)
-  and git-excluded.
-
 - [ ] 2026-08-12 — `0b4f2a2` (merge of `fix/188-claude-oauth-token`, PR #189) — `app/sandbox.py`, `app/terminal.py` —
   the lesson-agent profile no longer ro-binds `~/.claude/.credentials.json`
   into the sandbox; instead the tutor shell's environment carries
@@ -46,6 +38,10 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   prompt compliance can disclose it. The repair must keep reusable credential
   bytes outside every command environment the model can inspect or spawn,
   through a broker or equivalent OS/process boundary.
+  Re-reviewed 2026-08-16 with every Pending entry →
+  `docs/reviews/2026-08-16-pending-queue-batch-review.md`:
+  0 Critical, 2 High, 0 Medium, 0 Low, 1 Info. H2 remains confirmed on the
+  current tree and host posture, so this entry remains Pending.
 
 - [ ] 2026-08-09 — `5096a50` (squash of `feat/study-browser`, PR #177) and
   `514b363` (squash of `docs/playwright-browser-brief`, PR #178) —
@@ -98,6 +94,10 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   Playwright High remains live, and the batch confirms the separate reusable-
   token disclosure High described on the 2026-08-12 entry. This entry remains
   Pending.
+  Re-reviewed 2026-08-16 with every Pending entry →
+  `docs/reviews/2026-08-16-pending-queue-batch-review.md`:
+  0 Critical, 2 High, 0 Medium, 0 Low, 1 Info. The unrestricted general
+  Playwright capability remains confirmed, so this entry remains Pending.
 
 - [ ] 2026-08-11 — `c83c093` (squash of `lesson-network`, PR #181) —
   `app/sandbox.py`, `app/terminal.py`, `app/routers/learn.py`,
@@ -124,8 +124,25 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   entry does not close — nor does any restart carry it — before that
   repair lands (`docs/security-model.md` records the same dependency and
   the pasta/slirp4netns fallback if the listener cannot be restricted).
+  Re-reviewed 2026-08-16 with every Pending entry →
+  `docs/reviews/2026-08-16-pending-queue-batch-review.md`:
+  0 Critical, 2 High, 0 Medium, 0 Low, 1 Info. The shared namespace still
+  reaches the unrestricted Playwright listener, so this entry remains Pending.
 
 ## Done
+
+- [x] 2026-08-16 — `d987ec1` + review fixes (PR #197; landed as `50feb27`) —
+  `app/services/lessons.py`, `app/services/bundle_schema.py` — lesson workspace
+  prep now also writes four constant reference companions
+  (`reference/record.md`, `bridge.md`, `packages.md`, `manifest.md`) that the
+  generated AGENTS.md directs lesson agents to read; templates carry no
+  lesson-data interpolation and go through the existing preserve/replace
+  writer stack; `reference` reserved (spec §2) and git-excluded.
+  Reviewed 2026-08-16 →
+  `docs/reviews/2026-08-16-pending-queue-batch-review.md`:
+  no finding attributable to PR #197; its entry is Done. The batch's two
+  pre-existing Highs remain attached to the older Pending entries, so the
+  deploy gate remains closed.
 
 - [x] 2026-08-09 — `8a4e3ee` (squash of `feat/161-build-step`, PR #165) —
   `app/sandbox.py`, `app/services/lesson_build.py`,
