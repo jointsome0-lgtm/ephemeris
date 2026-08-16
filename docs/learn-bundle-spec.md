@@ -1060,6 +1060,15 @@ was landed against: 16 bundles, one already carrying a `source/` directory
 of fetched course steps (the convention this reservation formalizes), and
 no manifest referencing the name.
 
+The fifth is the `reference` reservation (§2, 2026-08-16,
+[#195](https://github.com/jointsome0-lgtm/ephemeris/issues/195)), on the
+same terms as `.claude`: the app owns the name and rewrites its contents on
+every terminal open, so a file under `reference/` that a v1 bundle
+previously served is no longer servable, and a v1 `entry` or `related[]`
+entry pointing there still reads but no longer renders. No bundle is
+migrated. Surveyed on the instance this was landed against: 16 bundles,
+none carrying a `reference` name in a manifest or on disk.
+
 Everything else about what a v1 bundle renders is unchanged.
 
 ### 9.3 Unknown fields

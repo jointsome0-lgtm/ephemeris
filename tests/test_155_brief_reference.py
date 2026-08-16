@@ -76,9 +76,14 @@ def test_prepare_writes_state_up_top_and_the_companions(client):
     brief = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
     assert brief.startswith("# Lesson workspace")
     assert "%STATE%" not in brief
-    assert brief.index("## STATE (generated") < brief.index("## Mission"), (
-        "STATE sits near the top so a harness that truncates the tail "
-        "still sees this session's facts"
+    assert (
+        brief.index("## Data boundary")
+        < brief.index("## STATE (generated")
+        < brief.index("## Mission")
+    ), (
+        "the boundary precedes STATE (learner-controlled excerpts are never "
+        "read before the rule that frames them), and STATE still sits near "
+        "the top so a truncating harness sees this session's facts"
     )
     assert len(brief.encode("utf-8")) < CODEX_PROJECT_DOC_CAP, (
         "a fresh lesson's whole AGENTS.md must fit what Codex actually reads"
