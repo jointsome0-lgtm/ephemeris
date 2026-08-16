@@ -343,15 +343,22 @@ def test_state_asks_for_the_unanswered_questions_first(client):
         and f"`{ANSWER_ID}`: answered; verdict=none" in retired
     ), "an answered question stays answered once its control is retired"
 
-    # And the contract the brief teaches is the one the app implements: the
-    # kind literal a page must declare, the literal the projection then
-    # carries, and the reply that clears the debt above.
+    # And the contract the companions teach is the one the app implements:
+    # the kind literal a page must declare, the literal the projection then
+    # carries, and the reply that clears the debt above (#195: the wiring
+    # lives in reference/bridge.md, the record semantics in record.md).
+    bridge_text = (
+        lesson_dir / lessons.REFERENCE_DIR_NAME / "bridge.md"
+    ).read_text(encoding="utf-8")
+    record_text = (
+        lesson_dir / lessons.REFERENCE_DIR_NAME / "record.md"
+    ).read_text(encoding="utf-8")
     assert (
-        '"kind": "ask_tutor"' in retired
-        and "## Let the learner ask you back" in retired
-        and f'`kind` is `"{attempts.RECORD_KIND}"` for an answer' in retired
-        and f'`"{attempts.RECORD_KIND_QUESTION}"` for' in retired
-        and "the same call is your REPLY" in retired
+        '"kind": "ask_tutor"' in bridge_text
+        and "## Let the learner ask you back" in bridge_text
+        and f'`kind` is `"{attempts.RECORD_KIND}"` for an answer' in record_text
+        and f'`"{attempts.RECORD_KIND_QUESTION}"` for' in record_text
+        and "the same call is your REPLY" in record_text
     ), "the pedagogy contract carries the control it now asks pages to build"
 
 

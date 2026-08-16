@@ -133,7 +133,11 @@ def test_state_regenerates_from_current_db_and_never_serializes_token(
     assert "- Summary exists: yes" in second
     assert secret not in second
     assert first != second
-    assert "write one early provisional resume brief" in second
+    assert "write one early provisional resume brief" in (
+        lesson_dir / lessons.REFERENCE_DIR_NAME / "record.md"
+    ).read_text(encoding="utf-8"), (
+        "the verdict-writing contract rides along as a companion (#195)"
+    )
 
 
 def test_starter_flag_survives_a_page_that_also_holds_answer_textareas(client):
@@ -169,7 +173,11 @@ def test_starter_flag_survives_a_page_that_also_holds_answer_textareas(client):
     assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
     text = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
     assert "equal_to_starter=false" in text
-    assert 'data-block="blk_<id>"' in text
+    assert 'data-block="blk_<id>"' in (
+        lesson_dir / lessons.REFERENCE_DIR_NAME / "bridge.md"
+    ).read_text(encoding="utf-8"), (
+        "the starter-marker convention rides along as a companion (#195)"
+    )
 
 
 def test_record_panel_keeps_the_shared_snapshot_counts_and_rendering(client):

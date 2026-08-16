@@ -2592,10 +2592,10 @@ def test_assessment_artifact_migration(client, suite_state):
         and "**not** call cancel" in _d5_abi
     ), "ABI §3.3 freezes composite run, relay ownership, and reconnect"
     assert (
-        '{"op": "attempt", "v": 1' in lessons_svc._AGENTS_TEMPLATE
+        '{"op": "attempt", "v": 1' in lessons_svc._REF_BRIDGE
         and "retry an unanswered submission with the SAME id"
-        in lessons_svc._AGENTS_TEMPLATE
-    ), "lesson brief teaches the frozen attempt call"
+        in lessons_svc._REF_BRIDGE
+    ), "the bridge companion teaches the frozen attempt call (#195)"
 
     # §2 symlink policy: a page that resolves through a symlink is missing
     _symp_conn = get_conn()
