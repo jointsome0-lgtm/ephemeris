@@ -35,8 +35,10 @@ failure mode rather than just tidy one:
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 _MISSING_DATA_DIR = (
     "ACTIVITY_DATA_DIR is required: the destination must be an explicitly "
@@ -77,6 +79,36 @@ class Settings:
     the value is rendered, never fetched or parsed, and the only supported
     topology is same-machine loopback (exp2res §30 refuses anything else)."""
 
+    exp2res_mirror_url: str | None
+    """`SELFOS_EXP2RES_MIRROR_URL` — the exp2res global Mirror view the
+    /mirror surface embeds by URL (#128), or None for no surface at all.
+    Same config-only coupling and loopback-only topology as `exp2res_url`."""
+
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def _loopback_embed_url(raw: str | None, var: str) -> str | None:
+    """The configured embed URL, or None when it is unset or not loopback.
+
+    The only supported topology is same-machine loopback (exp2res §30), so a
+    URL whose host is anything else is treated as unset — one warning line,
+    then the surface simply doesn't render — rather than handed to an iframe.
+    """
+    url = (raw or "").strip()
+    if not url:
+        return None
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+    except ValueError:
+        parts = None
+        host = None
+    if parts is None or parts.scheme not in ("http", "https") or host not in _LOOPBACK_HOSTS:
+        print(f"{var} ignored: not a loopback http(s) URL: {url!r}", file=sys.stderr)
+        return None
+    return url
+
 
 def load(env: dict[str, str] | None = None) -> Settings:
     """Resolve settings from `env` (default: the real environment).
@@ -95,7 +127,10 @@ def load(env: dict[str, str] | None = None) -> Settings:
         exports_dir=root / "exports",
         backups_dir=root / "backups",
         timezone=env.get("APP_TIMEZONE"),
-        exp2res_url=(env.get("SELFOS_EXP2RES_URL") or "").strip() or None,
+        exp2res_url=_loopback_embed_url(
+            env.get("SELFOS_EXP2RES_URL"), "SELFOS_EXP2RES_URL"),
+        exp2res_mirror_url=_loopback_embed_url(
+            env.get("SELFOS_EXP2RES_MIRROR_URL"), "SELFOS_EXP2RES_MIRROR_URL"),
     )
 
 

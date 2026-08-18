@@ -212,6 +212,27 @@ def browser_origin_rejection(headers: Headers, scheme: str) -> str | None:
     return _write_rejection(headers, own, scheme)
 
 
+def embed_frame_csp(embed_url: str) -> str:
+    """CSP value for a page that embeds `embed_url` in an iframe (#128).
+
+    The middleware below stamps `frame-ancestors 'none'` only on responses
+    that carry no CSP of their own, so a route that embeds sets this instead:
+    the same frame-ancestors statement plus a deliberate `frame-src` limited
+    to the embedded URL's exact origin. On every other page frame-src stays
+    absent (framing unrestricted by CSP, as before); on the embedding pages
+    this is strictly tighter, never wider. Callers pass a URL that already
+    survived app.settings' loopback check, so the origin here is loopback.
+    """
+    parts = urlsplit(embed_url)
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    origin = f"{parts.scheme}://{host}"
+    if parts.port is not None:
+        origin += f":{parts.port}"
+    return f"frame-ancestors 'none'; frame-src {origin}"
+
+
 def _declared_length(headers: Headers) -> int | None:
     """A Content-Length this middleware is willing to act on, else None.
 
