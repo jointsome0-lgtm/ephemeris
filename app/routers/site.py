@@ -14,21 +14,45 @@ from __future__ import annotations
 
 import sqlite3
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
+from .. import settings
 from ..db import get_db
+from ..security import embed_frame_csp
 from ..services import items, lessons, lists
-from ..templating import TASKS_HOME
+from ..templating import TASKS_HOME, mirror_home, templates
 from .learn import _learn_url
 
 favicon_router = APIRouter()  # GET /favicon.ico
 palette_router = APIRouter()  # GET /palette.json
+mirror_router = APIRouter()   # GET /mirror
 
 
 @favicon_router.get("/favicon.ico")
 def favicon() -> Response:
     return Response(status_code=204)
+
+
+# --- exp2res Mirror embed (#128) --------------------------------------------
+# The Diary questions strip a second time, as its own surface: one configured
+# peer URL in a fully sandboxed iframe, nothing built and nothing parsed here
+# (Integration v1, selfos#25). Config-gated end to end: without the URL the
+# route 404s and the nav never shows it.
+
+
+@mirror_router.get("/mirror")
+def get_mirror(request: Request):
+    url = settings.settings.exp2res_mirror_url
+    if url is None:
+        raise HTTPException(status_code=404)
+    response = templates.TemplateResponse(request, "mirror.html", {
+        "request": request,
+        "rail": "mirror",
+        "mirror_url": url,
+    })
+    response.headers["Content-Security-Policy"] = embed_frame_csp(url)
+    return response
 
 
 # --- command palette (Ctrl/⌘K) index ----------------------------------------
@@ -53,6 +77,17 @@ _PALETTE_ACTIONS = [
 ]
 
 
+def _palette_views() -> list[dict]:
+    """The rail's destinations in rail order. Mirror rides the same render-time
+    config gate as its rail icon (#128): listed only while a URL is set."""
+    views = []
+    for view in _PALETTE_VIEWS:
+        views.append(view)
+        if view["label"] == "Diary" and mirror_home():
+            views.append({"label": "Mirror", "href": mirror_home(), "icon": "mirror"})
+    return views
+
+
 @palette_router.get("/palette.json")
 def get_palette(conn: sqlite3.Connection = Depends(get_db)):
     """Index the command palette pulls at open: views, lists, habits, lessons, actions."""
@@ -63,7 +98,7 @@ def get_palette(conn: sqlite3.Connection = Depends(get_db)):
     except lessons.LessonError:
         lesson_rows = []
     return JSONResponse({
-        "views": _PALETTE_VIEWS,
+        "views": _palette_views(),
         "lists": [{"label": r["name"], "href": f"/list/{r['id']}",
                    "emoji": r["emoji"], "count": r["open_count"]} for r in list_rows],
         "habits": [{"label": r["title"], "href": f"/habit/{r['id']}",

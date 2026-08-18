@@ -18,6 +18,7 @@ from urllib.parse import quote
 from fastapi import HTTPException, Request
 from fastapi.templating import Jinja2Templates
 
+from . import settings
 from .db import is_not_future, is_valid_date, pretty_date, today_str
 from .services import checkins, focus, lists, stats, tasks
 
@@ -294,6 +295,15 @@ TASKS_HOME = "/board"
 DIARY_HOME = "/diary"
 
 
+def mirror_home() -> str | None:
+    """Where the Mirror rail icon points (#128), or None when no exp2res
+    mirror URL is configured — the nav entry disappears entirely instead of
+    linking a 404. A callable, unlike TASKS_HOME/DIARY_HOME, because this
+    gate is runtime config, not just deploy skew; the `is defined` guard in
+    base.html still covers the live pre-#128 process the same way."""
+    return "/mirror" if settings.settings.exp2res_mirror_url else None
+
+
 # The mass of a Learn cluster is the rolled-up lesson count #166 computes, and
 # it picks the spectral class its branch is drawn in. The thresholds are far
 # apart deliberately (owner, 2026-08-09): a platform root sums every course
@@ -334,6 +344,7 @@ templates.env.globals.update(
     static_url=static_url,
     tasks_home=TASKS_HOME,
     diary_home=DIARY_HOME,
+    mirror_home=mirror_home,
     star_body=star_body,
     avatar=item_avatar,
     status_glyph=status_glyph,

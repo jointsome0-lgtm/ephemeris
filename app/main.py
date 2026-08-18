@@ -29,7 +29,7 @@ from .routers.habits import (
 from .routers.learn import router as learn_router
 from .routers.diary import router as diary_router
 from .routers.retro import router as retro_router
-from .routers.site import favicon_router, palette_router
+from .routers.site import favicon_router, mirror_router, palette_router
 from .routers.tasks import (
     history_router as tasks_history_router, views_router as tasks_views_router,
     write_router as tasks_write_router,
@@ -123,3 +123,4 @@ app.include_router(habit_write_router)    # app/routers/habits.py   (#24 cut 2)
 app.include_router(items_router)          # app/routers/habits.py   (#24 cut 2)
 app.include_router(retro_router)          # app/routers/retro.py    (#24 cut 4)
 app.include_router(diary_router)          # app/routers/diary.py    (#2)
+app.include_router(mirror_router)         # app/routers/site.py     (#128)

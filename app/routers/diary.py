@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from .. import settings
 from ..db import get_db, pretty_date, today_str
+from ..security import embed_frame_csp
 from ..services import diary
 from ..templating import _wants_json, _with_flash, templates
 
@@ -56,7 +57,7 @@ def get_diary(request: Request, archived: int = 0, edit: int | None = None,
                          "label": _day_label(r["entry_date"], today),
                          "entries": []})
         days[-1]["entries"].append({"row": r, "tags": diary.entry_tags(r)})
-    return templates.TemplateResponse(request, "diary.html", {
+    response = templates.TemplateResponse(request, "diary.html", {
         "request": request,
         "rail": "diary",
         "days": days,
@@ -68,6 +69,10 @@ def get_diary(request: Request, archived: int = 0, edit: int | None = None,
         "flash": flash,
         "exp2res_url": settings.settings.exp2res_url,
     })
+    if settings.settings.exp2res_url:
+        response.headers["Content-Security-Policy"] = embed_frame_csp(
+            settings.settings.exp2res_url)
+    return response
 
 
 def _write_args(entry_date: str, text: str, tags: str, private: str,
