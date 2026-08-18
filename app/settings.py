@@ -101,6 +101,7 @@ def _loopback_embed_url(raw: str | None, var: str) -> str | None:
     try:
         parts = urlsplit(url)
         host = parts.hostname
+        parts.port  # a junk or out-of-range port raises here, not at render
     except ValueError:
         parts = None
         host = None

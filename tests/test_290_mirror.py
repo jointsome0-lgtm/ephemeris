@@ -36,6 +36,8 @@ def test_settings_three_states(tmp_path, capsys):
     for bad in ("http://192.168.0.7:8731/mirror?scope=global",
                 "http://mirror.example/mirror?scope=global",
                 "https://127.0.0.2:8731/mirror?scope=global",
+                "http://127.0.0.1:not-a-port/mirror?scope=global",
+                "http://127.0.0.1:99999/mirror?scope=global",
                 "javascript:alert(1)",
                 "not a url"):
         assert _load(tmp_path, SELFOS_EXP2RES_MIRROR_URL=bad).exp2res_mirror_url is None, bad
