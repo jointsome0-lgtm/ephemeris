@@ -72,7 +72,7 @@ def test_bundle_ensure_inits_one_usable_repo():
     )
     assert _git(bundle, "config", "user.email").stdout.strip().endswith(
         "@ephemeris.invalid"
-    ), "a local identity, because the sandbox has no .gitconfig and no remote"
+    ), "a local identity, because the session may have no .gitconfig and has no remote"
 
 
 def test_a_commit_from_a_bare_environment_holds_authored_work_only():
@@ -88,9 +88,12 @@ def test_a_commit_from_a_bare_environment_holds_authored_work_only():
                                                           encoding="utf-8")
     (bundle / "runs.jsonl").write_text('{"invented": "app-owned"}\n',
                                        encoding="utf-8")
-    (bundle / "node_modules").mkdir(exist_ok=True)
-    (bundle / "node_modules" / "invented-package.js").write_text("//\n",
-                                                                 encoding="utf-8")
+    # The link the app places at this name, not a directory: git's own
+    # `node_modules/` rule would match only a directory and track the link.
+    packages = bundle / "invented-packages"
+    packages.mkdir(exist_ok=True)
+    (packages / "invented-package.js").write_text("//\n", encoding="utf-8")
+    (bundle / "node_modules").symlink_to(packages)
     bare = {"PATH": "/usr/bin:/bin", "HOME": str(bundle / "invented-empty-home")}
 
     add = subprocess.run(["git", "-C", str(bundle), "add", "-A"],
@@ -117,7 +120,7 @@ def test_a_commit_from_a_bare_environment_holds_authored_work_only():
     assert "attempts/invented-work.go" in tracked, "authored work is history"
     assert not {
         name for name in tracked
-        if name.startswith("node_modules/")
+        if name == "node_modules" or name.startswith("node_modules/")
         or name.endswith(".jsonl")
         or name in ("AGENTS.md", "CLAUDE.md")
     }, (
@@ -192,7 +195,7 @@ def test_a_repository_without_the_rules_gets_them_and_keeps_its_own_identity():
 
 def test_a_repository_missing_an_identity_is_given_one(monkeypatch):
     """The repair also reaches repositories the app did not build — one an
-    agent made itself in a session, say. The sandbox supplies no identity, so
+    agent made itself in a session, say. The session supplies no identity, so
     without this the checkpoint the brief asks for dies on "unable to
     auto-detect email address", and the marker written right after would make
     that permanent."""
@@ -331,7 +334,7 @@ def test_the_build_still_sees_every_link_the_repo_can_hold():
 
 def test_the_app_writes_the_rules_through_no_link(tmp_path):
     """The session that owns this bundle can write in it; the setup runs
-    outside that sandbox, as the app. A name the session controls must never
+    outside that session, as the app. A name the session controls must never
     decide where the app's bytes land."""
     lesson = _lesson("planted marker")
     bundle = _bundle(lesson)

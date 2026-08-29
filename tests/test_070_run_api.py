@@ -31,7 +31,7 @@ def test_run_api(client, suite_state):
     _f1_id = suite_state["_f1_id"]
     _f1_url = suite_state["_f1_url"]
     _runner = suite_state["_runner"]
-    _sandbox_mock = suite_state["_sandbox_mock"]
+    _mock = suite_state["_mock"]
     _time = suite_state["_time"]
     # --- F4: revision-bound run API, replay, SSE, cancel, event -------------
     from app.services import runs as _runs
@@ -280,7 +280,7 @@ def test_run_api(client, suite_state):
                     job.process.finish, -9
                 )
 
-        with _sandbox_mock.patch.object(
+        with _mock.patch.object(
                 _runner.RunnerService, "_kill_tree",
                 side_effect=_f4_finish_on_kill):
             _f4_cancel = c.post(f"/learn/runs/{_f4_cancel_id}/cancel")
@@ -316,7 +316,7 @@ def test_run_api(client, suite_state):
                 "file_rev": "bad",
                 "idempotency_key": "invented-rate-invalid",
             })
-            with _sandbox_mock.patch.object(
+            with _mock.patch.object(
                     _runs.artifacts, "get_run_snapshot",
                     wraps=_runs.artifacts.get_run_snapshot) as snapshot_read:
                 _f4_rate_hit = c.post(_f4_run_url, json={

@@ -2,10 +2,10 @@
 
 Three layers, gated separately so each runs wherever it can:
 
-- the command lines and the mount views, which are pure functions and always run;
+- the command lines, which are pure functions and always run;
 - the render gate, which needs a browser but nothing else, and so runs in CI;
-- the real install-and-bundle, which needs this host's bubblewrap and bun and
-  therefore skips anywhere else — the same posture the other sandbox tests take.
+- the real install-and-bundle, which needs this host's bun and therefore
+  skips anywhere else.
 
 What the first layer is really guarding is a pair of measured facts, both from
 2026-08-09 on bun 1.3.11. A `bunfig.toml` with `minimumReleaseAge = 0` beside
@@ -29,16 +29,11 @@ from pathlib import Path
 
 import pytest
 
-from app import sandbox
 from app.services import lesson_build, render_check
 
-HAVE_SANDBOX = (
-    not sandbox._BWRAP_UNUSABLE
-    and Path(sandbox.BWRAP).exists()
-    and Path(sandbox.BUN_BINARY).exists()
-)
-needs_sandbox = pytest.mark.skipif(
-    not HAVE_SANDBOX, reason="the build step needs this host's bubblewrap and bun"
+needs_bun = pytest.mark.skipif(
+    not os.access(lesson_build.BUN_BINARY, os.X_OK),
+    reason="the build step needs this host's bun",
 )
 CHROME = render_check.chrome_binary()
 needs_browser = pytest.mark.skipif(
@@ -237,20 +232,11 @@ def test_a_cancelled_step_does_not_leave_a_package_manager_running(monkeypatch):
 
     marker = f"ephemeris-cancel-probe-{os.getpid()}"
     monkeypatch.setattr(lesson_build, "_require_build_runtime", lambda: None)
-    monkeypatch.setattr(
-        sandbox, "build_step_argv",
-        lambda *a, **k: ["/bin/sh", "-c", f"# {marker}\nsleep 30"],
-    )
-    # And the scope around it: this test is about what `_run_step` does with a
-    # process it started, and CI has no systemd user session — `systemd-run
-    # --user` there exits with "Failed to connect to bus" before the probe can
-    # run, and the failure would read as a lifecycle bug that is not there.
-    monkeypatch.setattr(sandbox, "build_scope_prefix", lambda *a, **k: ())
 
     async def scenario():
         task = asyncio.ensure_future(lesson_build._run_step(
-            "install", workspace=Path("/nonexistent"), bundle_dir=None,
-            command=["/bin/true"], timeout=30,
+            "install", workspace=Path("/tmp"),
+            command=["/bin/sh", "-c", f"# {marker}\nsleep 30"], timeout=30,
         ))
         # Long enough for the shell to be up and running under the marker.
         await asyncio.sleep(0.5)
@@ -310,164 +296,26 @@ def test_a_noisy_step_costs_a_constant_not_its_own_noise():
     assert asyncio.run(tail_of([b"brief"], 512)) == b"brief"
 
 
-# --- the mount views ---------------------------------------------------------
+# --- the step process --------------------------------------------------------
 
-ROOTS = {
-    "build_workspace": "/data/lesson-builds/demo",
-    "bundle_root": "/data/lessons",
-    "private_root": "/data",
-}
+def test_a_step_runs_from_the_workspace_with_the_apps_environment(tmp_path, monkeypatch):
+    """cwd is the app-owned workspace — bun reads `bunfig.toml` from cwd, and
+    the bundle is writable from inside the agent's session — and the
+    environment is the app's own, not the service's."""
+    import asyncio
 
-
-def _pairs(argv: list[str], flag: str) -> list[tuple[str, str]]:
-    return [
-        (argv[i + 1], argv[i + 2])
-        for i, word in enumerate(argv) if word == flag and i + 2 < len(argv)
-    ]
-
-
-def _mount_at(argv: list[str], flag: str, source: str, target: str) -> int:
-    """Where one mount sits in the argv. Order decides which of two overlapping
-    binds wins, so it is part of the meaning, not of the formatting."""
-    for i, word in enumerate(argv):
-        if word == flag and argv[i + 1 : i + 3] == [source, target]:
-            return i
-    raise AssertionError(f"no {flag} {source} {target} in {argv}")
-
-
-def test_only_the_install_step_can_reach_the_network_or_the_package_cache():
-    install = sandbox.build_step_argv("install", command=["/bin/true"], **ROOTS)
-    bundle = sandbox.build_step_argv(
-        "bundle", bundle_dir="/data/lessons/demo", command=["/bin/true"], **ROOTS
-    )
-    assert "--share-net" in install and "--share-net" not in bundle
-    assert (sandbox.BUN_CACHE_DIR, sandbox.BUN_CACHE_DIR) in _pairs(install, "--bind")
-    assert sandbox.BUN_CACHE_DIR not in bundle, (
-        "the bundler reads node_modules, never the cache; a writable shared "
-        "cache in that view would be reach it does not need"
-    )
-
-
-def test_the_bundle_step_sees_the_packages_where_the_agent_sees_them():
-    argv = sandbox.build_step_argv(
-        "bundle", bundle_dir="/data/lessons/demo", command=["/bin/true"], **ROOTS
-    )
-    # bun resolves a bare specifier by walking up from the importer file, so
-    # the packages have to appear at the bundle path or nothing resolves.
-    assert ("/data/lesson-builds/demo/node_modules",
-            "/data/lessons/demo/node_modules") in _pairs(argv, "--ro-bind")
-    assert ("/data/lessons/demo", "/data/lessons/demo") in _pairs(argv, "--ro-bind"), (
-        "the bundle is an input; the artifact is placed by the app once the "
-        "size and render gates have passed"
-    )
-
-
-def test_a_build_time_macro_cannot_leave_config_for_the_next_install():
-    """`bun build` runs agent-authored code, in a view that must not persist.
-
-    A `with {type: "macro"}` import executes during the bundle. If it could
-    write the workspace it would leave a `bunfig.toml`, a `package.json` or a
-    lockfile for the NEXT install to read — the one step with the network and a
-    writable shared cache. A dependency rewritten to a tarball URL has no
-    release age, which is the 30-day quarantine gone.
-    """
-    workspace = ROOTS["build_workspace"]
-    install = sandbox.build_step_argv("install", command=["/bin/true"], **ROOTS)
-    bundle = sandbox.build_step_argv(
-        "bundle", bundle_dir="/data/lessons/demo", command=["/bin/true"], **ROOTS
-    )
-    # The step that fills the workspace has it writable; the step that runs
-    # somebody else's code does not.
-    assert (workspace, workspace) in _pairs(install, "--bind")
-    assert (workspace, workspace) not in _pairs(bundle, "--bind")
-    assert (workspace, workspace) in _pairs(bundle, "--ro-bind")
-    # One writable hole, holding the artifact and nothing bun reads config from.
-    out = f"{workspace}/{sandbox.BUILD_OUTPUT_DIR}"
-    assert (out, out) in _pairs(bundle, "--bind")
-    # …and it is bound AFTER the read-only cover, or it would not be writable.
-    assert _mount_at(bundle, "--ro-bind", workspace, workspace) < _mount_at(
-        bundle, "--bind", out, out
-    )
-
-
-def test_cwd_is_the_app_owned_workspace_and_never_the_bundle():
-    for step, extra in (("install", {}), ("bundle", {"bundle_dir": "/data/lessons/demo"})):
-        argv = sandbox.build_step_argv(step, command=["/bin/true"], **ROOTS, **extra)
-        assert argv[argv.index("--chdir") + 1] == ROOTS["build_workspace"], (
-            "bunfig.toml carries `preload`, which executes a script, and bun "
-            "reads it from cwd; the bundle is writable from inside its own "
-            "session, so it must never be cwd"
-        )
-
-
-def test_both_views_blank_the_home_the_agent_cannot_read_either():
-    for step, extra in (("install", {}), ("bundle", {"bundle_dir": "/data/lessons/demo"})):
-        argv = sandbox.build_step_argv(step, command=["/bin/true"], **ROOTS, **extra)
-        tmpfs = [argv[i + 1] for i, word in enumerate(argv) if word == "--tmpfs"]
-        assert sandbox.USER_HOME in tmpfs, (
-            "the entry is agent-authored: against the real home, a text import "
-            "of an absolute path would inline an owner-readable file into a "
-            "served artifact"
-        )
-        assert "--clearenv" in argv
-
-
-def test_neither_step_gets_unbounded_memory_or_an_unbounded_scratch():
-    """A timeout bounds wall time and nothing else.
-
-    `bun build` executes an agent-authored macro. Allocating or forking in a
-    loop takes the host down well inside a two-minute budget, and this app is
-    one worker on that host — so the limits have to be on the cgroup, not on
-    the clock.
-    """
-    for step, extra in (("install", {}), ("bundle", {"bundle_dir": "/data/lessons/demo"})):
-        argv = sandbox.build_step_argv(step, command=["/bin/true"], **ROOTS, **extra)
-        sized = [(argv[i - 1], argv[i + 1]) for i, word in enumerate(argv)
-                 if word == "--tmpfs" and i and argv[i - 2] == "--size"]
-        assert (str(sandbox.BUILD_SCRATCH_BYTES), "/tmp") in sized
-        assert (str(sandbox.BUILD_HOME_BYTES), sandbox.USER_HOME) in sized
-
-    for prefix, memory, tasks, grace, ceiling, make in (
-        (sandbox.build_scope_prefix(120), sandbox.BUILD_MEMORY_MAX,
-         sandbox.BUILD_TASKS_MAX, sandbox.BUILD_SCOPE_GRACE_SECONDS,
-         sandbox.BUILD_MAX_WALL_SECONDS, sandbox.build_scope_prefix),
-        # The gate's browser runs the artifact that build just produced, from
-        # the same author, and a browser is a process tree — so it needs the
-        # same bounds, torn down as a group.
-        (sandbox.render_scope_prefix(60), sandbox.RENDER_MEMORY_MAX,
-         sandbox.RENDER_TASKS_MAX, sandbox.RENDER_SCOPE_GRACE_SECONDS,
-         sandbox.RENDER_MAX_WALL_SECONDS, sandbox.render_scope_prefix),
-    ):
-        wall = 120 if make is sandbox.build_scope_prefix else 60
-        assert prefix[0] == sandbox.SYSTEMD_RUN and prefix[-1] == "--"
-        assert f"--property=MemoryMax={memory}" in prefix
-        assert f"--property=TasksMax={tasks}" in prefix
-        assert "--property=MemorySwapMax=0" in prefix
-        assert "--property=KillMode=control-group" in prefix
-        # The scope outlives the caller's own timeout, or work that took its
-        # full budget would be killed by the backstop and read as a failure.
-        assert f"--property=RuntimeMaxSec={wall + grace}s" in prefix
-        for bad in (0, -1, ceiling + 1):
-            with pytest.raises(ValueError):
-                make(bad)
-
-
-def test_a_build_view_refuses_a_workspace_the_bundle_could_choose():
-    for workspace in ("/data/lessons/demo/node_modules", "/elsewhere/demo", "relative"):
-        with pytest.raises(ValueError):
-            sandbox.build_step_argv(
-                "install", command=["/bin/true"],
-                build_workspace=workspace, bundle_root="/data/lessons",
-                private_root="/data",
-            )
-    with pytest.raises(ValueError):
-        sandbox.build_step_argv("bundle", command=["/bin/true"], **ROOTS)
-    with pytest.raises(ValueError):
-        sandbox.build_step_argv(
-            "install", bundle_dir="/data/lessons/demo", command=["/bin/true"], **ROOTS
-        )
-    with pytest.raises(ValueError):
-        sandbox.build_step_argv("polish", command=["/bin/true"], **ROOTS)
+    monkeypatch.setattr(lesson_build, "_require_build_runtime", lambda: None)
+    monkeypatch.setenv("EPHEMERIS_INVENTED_SECRET", "leak")
+    code, tail = asyncio.run(lesson_build._run_step(
+        "install", workspace=tmp_path,
+        command=["/bin/sh", "-c", "pwd -P; env"], timeout=10,
+    ))
+    cwd, *env = tail.splitlines()
+    names = {line.split("=", 1)[0] for line in env}
+    assert code == 0 and cwd == os.path.realpath(tmp_path)
+    assert {"PATH", "HOME", "TMPDIR"} <= names
+    assert "EPHEMERIS_INVENTED_SECRET" not in names
+    assert names <= {"PATH", "HOME", "TMPDIR", "PWD", "OLDPWD", "SHLVL", "_"}, names
 
 
 # --- the render gate ---------------------------------------------------------
@@ -953,7 +801,7 @@ def _no_render_errors(monkeypatch, errors=()):
     )
 
 
-@needs_sandbox
+@needs_bun
 def test_a_real_build_places_one_artifact_and_leaves_the_bundle_clean(
     built_lesson, monkeypatch
 ):
@@ -977,19 +825,19 @@ def test_a_real_build_places_one_artifact_and_leaves_the_bundle_clean(
     artifact = (bundle / "assets" / "page.js").read_bytes()
     assert artifact.startswith(b"(()"), "an IIFE, not a module"
     assert b"import" not in artifact[:64]
-    # The packages are build-time input. They are bound over this name inside
-    # the agent's session and must never reach the directory the app serves.
-    assert list((bundle / "node_modules").iterdir()) == []
-
+    # The packages are build-time input: the bundle carries a link to them and
+    # never a copy, so nothing installed reaches the directory the app serves.
     from app.services import lessons
     workspace = lessons.ensure_build_workspace(lesson["slug"])
+    assert (bundle / "node_modules").is_symlink()
+    assert os.readlink(bundle / "node_modules") == str(workspace / "node_modules")
     assert (workspace / "node_modules" / "d3").is_dir()
     assert not (workspace / "bunfig.toml").exists(), (
         "no config file beside cwd: every rule that matters is on the argv"
     )
 
 
-@needs_sandbox
+@needs_bun
 def test_a_stylesheet_import_still_produces_one_file(built_lesson, monkeypatch):
     """`--outfile` cannot hold two outputs, and a lesson cannot fetch the second.
 
@@ -1023,7 +871,7 @@ def test_a_stylesheet_import_still_produces_one_file(built_lesson, monkeypatch):
     )
 
 
-@needs_sandbox
+@needs_bun
 def test_a_stylesheet_that_is_gone_does_not_haunt_the_next_build(
     built_lesson, monkeypatch
 ):
@@ -1037,7 +885,7 @@ def test_a_stylesheet_that_is_gone_does_not_haunt_the_next_build(
         'document.title = "plain";\n', encoding="utf-8"
     )
     stale = (lessons.ensure_build_workspace(lesson["slug"])
-             / sandbox.BUILD_OUTPUT_DIR / f"{lesson_build._ARTIFACT_STEM}.css")
+             / lesson_build.BUILD_OUTPUT_DIR / f"{lesson_build._ARTIFACT_STEM}.css")
     stale.write_text(".invented-marker{color:red}\n", encoding="utf-8")
     _no_render_errors(monkeypatch)
     asyncio.run(lesson_build.build_lesson(
@@ -1050,7 +898,7 @@ def test_a_stylesheet_that_is_gone_does_not_haunt_the_next_build(
     ).read_text(encoding="utf-8")
 
 
-@needs_sandbox
+@needs_bun
 def test_a_page_too_heavy_for_a_learner_is_refused(built_lesson, monkeypatch):
     import asyncio
 
@@ -1072,7 +920,7 @@ def test_a_page_too_heavy_for_a_learner_is_refused(built_lesson, monkeypatch):
     )
 
 
-@needs_sandbox
+@needs_bun
 def test_a_page_that_fails_to_render_puts_the_last_good_artifact_back(
     built_lesson, monkeypatch
 ):
@@ -1094,30 +942,7 @@ def test_a_page_that_fails_to_render_puts_the_last_good_artifact_back(
     )
 
 
-@needs_sandbox
-def test_the_bundler_reads_no_more_of_the_home_than_the_agent_does(built_lesson):
-    """An agent-authored entry cannot inline an owner-readable file."""
-    import asyncio
-
-    lesson, bundle = built_lesson
-    secret = Path(sandbox.USER_HOME) / ".bashrc"
-    if not secret.exists():
-        pytest.skip("no file in the real home to try reading")
-    (bundle / "src" / "leak.ts").write_text(
-        f'import s from "{secret}" with {{ type: "text" }};\ndocument.title = s;\n',
-        encoding="utf-8",
-    )
-    with pytest.raises(lesson_build.BuildError) as caught:
-        asyncio.run(lesson_build.build_lesson(
-            lesson, add=[], entry="src/leak.ts", out="assets/leak.js",
-            page=None, page_url="http://127.0.0.1:1/unused",
-            artifact_url="http://127.0.0.1:1/unused.js",
-        ))
-    assert caught.value.code == "bundle-failed"
-    assert "could not resolve" in json.dumps(caught.value.fields).lower()
-
-
-@needs_sandbox
+@needs_bun
 def test_a_bunfig_the_agent_writes_into_the_bundle_is_not_read(
     built_lesson, monkeypatch
 ):
@@ -1149,7 +974,7 @@ def test_a_bunfig_the_agent_writes_into_the_bundle_is_not_read(
         (bundle / "evil.js").unlink(missing_ok=True)
 
 
-@needs_sandbox
+@needs_bun
 def test_an_authored_file_at_the_backup_name_survives_a_build(
     built_lesson, monkeypatch
 ):
@@ -1239,7 +1064,7 @@ def test_a_symlinked_entry_is_missing_rather_than_a_fault(
         link.unlink()
 
 
-@needs_sandbox
+@needs_bun
 def test_a_link_the_entry_could_import_stops_the_build(built_lesson, monkeypatch):
     """§2 covers the whole bundle, and the bundler honours none of it.
 
@@ -1267,18 +1092,20 @@ def test_a_link_the_entry_could_import_stops_the_build(built_lesson, monkeypatch
         link.unlink()
 
 
-def test_the_mount_this_app_makes_is_not_read_as_bundle_content(built_lesson):
-    """`node_modules` is a bind of the workspace, and a package manager fills
-    it with `.bin` links by design — refusing those would refuse every build."""
+def test_the_link_this_app_makes_is_not_read_as_bundle_content(built_lesson):
+    """`node_modules` is the app's link to the workspace, and a package manager
+    fills that with `.bin` links by design — refusing those would refuse every
+    build."""
     from app.services import lessons
 
     lesson, bundle = built_lesson
-    mount = bundle / sandbox.BUILD_WORKSPACE_MOUNT
-    mount.mkdir(exist_ok=True)
-    (mount / ".bin").mkdir(exist_ok=True)
-    shim = mount / ".bin" / "invented-shim"
+    workspace = lessons.ensure_build_workspace(lesson["slug"])
+    packages = workspace / lessons.BUILD_WORKSPACE_LINK
+    (packages / ".bin").mkdir(exist_ok=True)
+    shim = packages / ".bin" / "invented-shim"
     shim.symlink_to("../invented/cli.js")
     try:
+        assert (bundle / lessons.BUILD_WORKSPACE_LINK).is_symlink()
         assert lesson_build._linked_paths(lessons.lesson_bundle_dir(lesson["slug"])) == []
     finally:
         shim.unlink()
@@ -1309,7 +1136,7 @@ def test_an_artifact_the_bundler_did_not_write_is_never_read(tmp_path):
     assert lesson_build._read_artifact(outfile, []) == b"ok()"
 
 
-@needs_sandbox
+@needs_bun
 def test_a_directory_standing_where_the_artifact_goes_is_a_refusal(
     built_lesson, monkeypatch
 ):
@@ -1346,7 +1173,7 @@ def test_a_directory_standing_where_the_artifact_goes_is_a_refusal(
         shutil.rmtree(tree, ignore_errors=True)
 
 
-@needs_sandbox
+@needs_bun
 def test_an_output_the_build_itself_read_is_refused(built_lesson, monkeypatch):
     """`entry == out` is the obvious way to ask for this, and not the only one.
 
@@ -1383,7 +1210,7 @@ def test_an_output_the_build_itself_read_is_refused(built_lesson, monkeypatch):
         helper.unlink(missing_ok=True)
 
 
-@needs_sandbox
+@needs_bun
 def test_a_build_that_read_nothing_of_the_kind_still_places_its_artifact(
     built_lesson, monkeypatch
 ):
@@ -1479,7 +1306,7 @@ def test_a_name_no_filesystem_can_carry_is_a_bad_request(client, built_lesson):
         assert response.json()["error"] == "invalid-request", (field, response.json())
 
 
-@needs_sandbox
+@needs_bun
 def test_an_output_directory_that_refuses_the_write_is_a_refusal(
     built_lesson, monkeypatch
 ):
@@ -1504,7 +1331,7 @@ def test_an_output_directory_that_refuses_the_write_is_a_refusal(
         assets.chmod(before)
 
 
-@needs_sandbox
+@needs_bun
 def test_a_rebuild_moves_the_page_the_learner_is_watching(built_lesson, monkeypatch):
     """The preview token is the PAGE's mtime, and only the script changed.
 
@@ -1532,83 +1359,13 @@ def test_a_rebuild_moves_the_page_the_learner_is_watching(built_lesson, monkeypa
     )
 
 
-@needs_sandbox
-def test_build_time_code_cannot_write_the_config_the_next_install_reads(
-    built_lesson, monkeypatch
-):
-    """The P1, end to end: a macro runs during `bun build`, and must not persist.
-
-    Whether this particular macro compiles is bun's business; what is asserted
-    is the property underneath it — after any bundle step, the files the next
-    install reads are exactly the ones the app wrote.
-    """
-    import asyncio
-
-    lesson, bundle = built_lesson
-    from app.services import lessons
-
-    workspace = lessons.ensure_build_workspace(lesson["slug"])
-    (bundle / "src" / "macro.ts").write_text(
-        'import { plant } from "./plant.ts" with { type: "macro" };\n'
-        'export const x = plant();\n',
-        encoding="utf-8",
-    )
-    (bundle / "src" / "plant.ts").write_text(
-        "import { writeFileSync } from 'node:fs';\n"
-        "export function plant() {\n"
-        "  try {\n"
-        "    writeFileSync('bunfig.toml', '[install]\\nminimumReleaseAge = 0\\n');\n"
-        "  } catch (e) { return 'blocked'; }\n"
-        "  return 'planted';\n"
-        "}\n",
-        encoding="utf-8",
-    )
-    _no_render_errors(monkeypatch)
-    try:
-        asyncio.run(lesson_build.build_lesson(
-            lesson, add=[], entry="src/macro.ts", out="assets/macro.js",
-            page=None, page_url="http://127.0.0.1:1/unused",
-            artifact_url="http://127.0.0.1:1/unused.js",
-        ))
-    except lesson_build.BuildError:
-        pass  # refusing to compile it at all is also a pass
-    assert not (workspace / "bunfig.toml").exists(), (
-        "a build-time macro reached the config the next install reads, in the "
-        "one view that has the network and a writable shared package cache"
-    )
-    assert json.loads((workspace / "package.json").read_text())["name"] == (
-        f"lesson-{lesson['slug']}"
-    ), "the workspace manifest is the app's, and stays the app's"
-
-
+@needs_bun
 def test_a_host_without_the_package_manager_says_so(built_lesson, monkeypatch):
-    """bwrap fails at mount setup for a missing bind source, and a nonzero exit
-    during setup is indistinguishable from a package that would not resolve."""
+    """No bun is a 503 the agent can read, not an install failure it cannot."""
     import asyncio
 
     lesson, _bundle = built_lesson
-    monkeypatch.setattr(sandbox, "BUN_BINARY", "/nonexistent/bin/bun")
-    with pytest.raises(lesson_build.BuildError) as caught:
-        asyncio.run(lesson_build.build_lesson(
-            lesson, add=[], entry="src/page.ts", out="assets/page.js",
-            page=None, page_url="http://127.0.0.1:1/unused",
-            artifact_url="http://127.0.0.1:1/unused.js",
-        ))
-    assert caught.value.code == "build-unavailable" and caught.value.status == 503
-
-
-def test_a_host_that_cannot_sandbox_refuses_in_the_documented_shape(
-    built_lesson, monkeypatch
-):
-    """No bubblewrap is a 503 the agent can read, not a 500 it cannot."""
-    import asyncio
-
-    lesson, _bundle = built_lesson
-
-    def no_runtime() -> None:
-        raise sandbox.SandboxUnavailableError("invented: no user namespaces here")
-
-    monkeypatch.setattr(sandbox, "require_sandbox_runtime", no_runtime)
+    monkeypatch.setattr(lesson_build, "BUN_BINARY", "/nonexistent/bin/bun")
     with pytest.raises(lesson_build.BuildError) as caught:
         asyncio.run(lesson_build.build_lesson(
             lesson, add=[], entry="src/page.ts", out="assets/page.js",
@@ -1754,7 +1511,7 @@ def _replace_output_mid_check(path: Path, body: bytes, errors=()):
     return check
 
 
-@needs_sandbox
+@needs_bun
 def test_a_page_replaced_during_the_gate_is_not_deleted_by_the_rollback(
     built_lesson, monkeypatch
 ):
@@ -1803,7 +1560,7 @@ def test_a_page_replaced_during_the_gate_is_not_deleted_by_the_rollback(
     )
 
 
-@needs_sandbox
+@needs_bun
 def test_a_page_replaced_during_the_gate_is_not_reported_as_rendered(
     built_lesson, monkeypatch
 ):
@@ -1841,7 +1598,7 @@ def test_a_page_replaced_during_the_gate_is_not_reported_as_rendered(
     assert (bundle / "assets" / "page.js").read_bytes() == concurrent
 
 
-@needs_sandbox
+@needs_bun
 def test_an_untouched_gate_still_rolls_back_and_still_commits(
     built_lesson, monkeypatch
 ):
@@ -1887,7 +1644,7 @@ def test_an_untouched_gate_still_rolls_back_and_still_commits(
     assert set(os.listdir(bundle / "assets")) == before
 
 
-@needs_sandbox
+@needs_bun
 def test_a_refused_first_build_leaves_no_artifact_behind(built_lesson, monkeypatch):
     """The undo's other branch: there was nothing at the output name to restore.
 
@@ -1918,7 +1675,7 @@ def test_a_refused_first_build_leaves_no_artifact_behind(built_lesson, monkeypat
     assert not fresh.exists(), "the refused artifact stayed in the bundle"
 
 
-@needs_sandbox
+@needs_bun
 def test_a_page_deleted_during_the_gate_is_not_resurrected(built_lesson, monkeypatch):
     """Removed and replaced are the same answer: the agent spoke about that path.
 

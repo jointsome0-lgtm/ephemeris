@@ -16,7 +16,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .. import runner
-from ..db import DATA_DIR, DB_PATH, append_event, get_conn
+from ..db import DATA_DIR, append_event, get_conn
 from . import artifacts, bundle_schema, lessons
 
 
@@ -125,25 +125,6 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
-def _runner_private_masks(data_root: Path, db_path: Path) -> tuple[str, ...]:
-    """Mask an external DB override in addition to the runner's root mask."""
-    root_absolute = data_root.absolute()
-    root_resolved = root_absolute.resolve(strict=False)
-    db_absolute = db_path.absolute()
-    candidates = (
-        db_absolute.parent,
-        db_absolute.resolve(strict=False).parent,
-    )
-    masks: list[str] = []
-    for candidate in candidates:
-        if not (
-            _inside(candidate, root_absolute)
-            or _inside(candidate, root_resolved)
-        ):
-            masks.append(str(candidate))
-    return tuple(dict.fromkeys(masks))
-
-
 def prepare_request(
     lesson: dict,
     block_id: str,
@@ -151,9 +132,6 @@ def prepare_request(
     idempotency_key: str,
 ) -> runner.RunnerRequest:
     snapshot = artifacts.get_run_snapshot(lesson, block_id, file_rev)
-    data_root = DATA_DIR.absolute()
-    bundle_root = lessons.LESSONS_DIR.absolute()
-    bundle_dir = lessons._lesson_dir(lesson["slug"]).absolute()
     return runner.RunnerRequest(
         lesson_key=lesson["uid"],
         block_id=snapshot.block_id,
@@ -162,10 +140,8 @@ def prepare_request(
         runner_id=snapshot.runner_id,
         filename=snapshot.filename,
         snapshot=snapshot.data,
-        bundle_dir=str(bundle_dir),
-        bundle_root=str(bundle_root),
-        private_root=str(data_root),
-        private_masks=_runner_private_masks(data_root, DB_PATH),
+        bundle_dir=str(lessons._lesson_dir(lesson["slug"]).absolute()),
+        bundle_root=str(lessons.LESSONS_DIR.absolute()),
         lesson_uid=lesson["uid"],
         lesson_id=lesson["id"],
         slug=lesson["slug"],

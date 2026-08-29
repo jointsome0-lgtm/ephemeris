@@ -26,7 +26,6 @@ from threading import Lock
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from .. import sandbox
 from ..db import DATA_DIR, append_event, get_conn, now_iso
 from . import bundle_schema
 from .runner_registry import RUNNER_REGISTRY
@@ -39,14 +38,15 @@ STATUS_LABELS = {
     "studied": "Studied",
 }
 LESSONS_DIR = DATA_DIR / "lessons"
-# Where each lesson's agent memory outlives its PTY. A sibling of the bundles,
-# never a directory inside one: the sandbox binds these over `$HOME`, and a
-# bundle is writable from inside its own session (see _ensure_agent_home).
-AGENT_HOMES_DIR = DATA_DIR / "agent-homes"
-# Where each lesson's installed packages live. A sibling of the bundles for the
-# same reason, and bound over `<bundle>/node_modules` inside the agent sandbox
-# so the bundle on disk never carries them (see _ensure_build_workspace).
+# Where each lesson's installed packages live: a sibling of the bundles, linked
+# into each bundle as `node_modules` so the bundle on disk never carries them
+# (see _ensure_build_workspace).
 BUILD_WORKSPACES_DIR = DATA_DIR / "lesson-builds"
+# The one name a build workspace occupies inside the bundle: the link the
+# bundle carries and the directory it points at. Node resolution only looks
+# for this name, so naming it once keeps the link and the bundle spec's
+# reserved entry from drifting apart.
+BUILD_WORKSPACE_LINK = "node_modules"
 # Each bundle is its own local git repository (#186), initialized on the read
 # path and never served.
 GIT_DIR_NAME = ".git"
@@ -56,8 +56,7 @@ GIT_INIT_TIMEOUT_SECONDS = 10
 # repository's own exclude file rather than a `.gitignore` — that name belongs
 # to the agent, and a bundle that already has one must neither be overwritten
 # nor able to bypass these rules.
-#   node_modules  the mount point above; on-host package state and the
-#                 bundler's `out/` appear there inside the sandbox
+#   node_modules  the link to the build workspace above
 #   *.jsonl       app-owned projections, read-only for the agent. A checkpoint
 #                 that tracked them would let a learner's `git reset --hard`
 #                 roll them back too, and `runs.jsonl` output tails exist
@@ -67,9 +66,10 @@ GIT_INIT_TIMEOUT_SECONDS = 10
 # Anchored, every one of them: a pattern with no slash matches that NAME at any
 # depth, and the artifact roots hold learner-authored files this app has no
 # opinion about — an `attempts/parser/runs.jsonl` the learner wrote is exactly
-# the work history is for. `node_modules/` is the deliberate exception: it is
+# the work history is for. `node_modules` is the deliberate exception: it is
 # unanchored because installed packages belong in no lesson's history at any
-# depth, whoever created the directory.
+# depth, whoever created the directory — and carries no trailing slash, which
+# would match only a directory and leave the bundle's link itself untracked.
 GIT_EXCLUDE_PATH = ("info", "exclude")
 # What git refuses to work without (gitrepository-layout), and what a restore
 # can therefore be missing — see _bundle_repo_is_ready.
@@ -85,7 +85,7 @@ GIT_STAGING_DIR = DATA_DIR / "lesson-git-staging"
 BUNDLE_GIT_EXCLUDE = """\
 # Written by the Learn app when it set this repository up (#186).
 # App-owned paths only: rules of your own belong in .gitignore.
-node_modules/
+node_modules
 /attempts.jsonl
 /assessments.jsonl
 /memory.jsonl
@@ -95,9 +95,9 @@ node_modules/
 /.claude/
 /reference/
 """
-# A repository-local identity, because the lesson-agent sandbox gives the
-# session a blank `$HOME` with no `.gitconfig` bound and no `GIT_AUTHOR_*` in
-# its environment: without this, the first commit the brief asks for dies on
+# A repository-local identity, because the account running the agent need not
+# have a `.gitconfig` and the session gets no `GIT_AUTHOR_*` in its
+# environment: without this, the first commit the brief asks for dies on
 # "unable to auto-detect email address". Deliberately not the owner's identity
 # — nothing here is authored by them, and these repositories have no remote.
 # An honest git config is a few hundred bytes; this is the ceiling on what the
@@ -486,8 +486,8 @@ def _write_git_exclude(git_dir: Path) -> None:
     no link at all.
 
     Both properties are load-bearing, and for the same reason: the bundle is
-    writable from inside the lesson's own session while this runs OUTSIDE that
-    sandbox, as the app. A plain `write_text` would follow whatever the name
+    writable from inside the lesson's own session while this runs outside that
+    session, as the app. A plain `write_text` would follow whatever the name
     points at — a session that replaced `exclude` (or `info`) with a link to a
     file of the app user's would have this method write the app's bytes there.
     So every component is opened `O_NOFOLLOW` from a descriptor on the one
@@ -662,7 +662,7 @@ def _ensure_repo_identity(git_dir: Path) -> bool:
 
     A repository that reaches the repair — restored from a backup, or one an
     agent created itself in a session after an init the app could not do —
-    may carry no local `user.name`/`user.email`, and the sandbox supplies
+    may carry no local `user.name`/`user.email`, and the session is handed
     neither. Without them the checkpoint the brief asks for dies on "unable to
     auto-detect email address", and the marker written just after would make
     that permanent.
@@ -742,7 +742,7 @@ def _ensure_bundle_repo(lesson_dir: Path) -> None:
     and lets a later tutor session read `git log` instead of guessing what
     earlier ones did. The app only guarantees the repository exists and works;
     committing is the tutor agent's job (see the brief) — which is why setup
-    leaves behind the two things a commit from inside the sandbox needs and
+    leaves behind the two things a commit from inside the session needs and
     cannot get anywhere else: the app-owned exclude rules and a local identity.
 
     Two shapes, because they are two different problems: creating a repository
@@ -2737,84 +2737,17 @@ def _ensure_source_dir(lesson_dir: Path) -> Path | None:
     return path
 
 
-AGENT_HOME_SUBDIRS = ("claude", "codex")
-HOST_CODEX_CONFIG = Path(sandbox.CODEX_CONFIG_PATH)
-
-
-def _ensure_agent_codex_config(home: Path) -> None:
-    """Seed one writable Codex config without replacing lesson-local state."""
-    path = home / "codex" / "config.toml"
-    try:
-        current = os.lstat(path)
-    except FileNotFoundError:
-        current = None
-    legacy_placeholder = (
-        current is not None
-        and stat_module.S_ISREG(current.st_mode)
-        and current.st_nlink == 1
-        and current.st_size == 0
-        and stat_module.S_IMODE(current.st_mode) == 0o444
-    )
-    if current is not None and not legacy_placeholder:
-        if stat_module.S_ISREG(current.st_mode):
-            return
-        _preserve_foreign(path)
-    try:
-        source = HOST_CODEX_CONFIG.read_bytes()
-    except FileNotFoundError:
-        if legacy_placeholder:
-            path.unlink()
-        return
-    _replace_file(path, source)
-
-
-def _ensure_agent_home(slug: str) -> Path:
-    """Return this lesson's persistent agent home, creating it if needed.
-
-    What lives here is the agents' own memory — Claude's transcripts under
-    `.claude/projects/`, Codex's sessions and `history.jsonl` — which the
-    sandbox binds over the otherwise blank home so that reopening a lesson
-    terminal can still `claude --continue` the conversation the last PTY left
-    behind. Before this, both directories were tmpfs and every reopen started
-    an agent with no past.
-
-    Deliberately a sibling of the bundles rather than a directory inside one:
-    the bundle is writable from inside its own session, and an agent home
-    reached through it would let a lesson's files pick what gets mounted over
-    `$HOME` next time (`sandbox._pure_agent_home` refuses that layout outright).
-    Same posture as :func:`_ensure_settings_dir` on each name — a link or
-    special file is moved aside rather than followed — and the same failure
-    contract: an OSError here becomes "no workspace", so the caller refuses to
-    open a shell rather than quietly opening one with no memory.
-    """
-    if not _SLUG_RE.match(slug or ""):
-        raise LessonError("invalid lesson slug")
-    AGENT_HOMES_DIR.mkdir(parents=True, exist_ok=True)
-    home = AGENT_HOMES_DIR / slug
-    for path in (home, *(home / name for name in AGENT_HOME_SUBDIRS)):
-        if path.is_symlink() or (path.exists() and not path.is_dir()):
-            _preserve_foreign(path)  # incl. a dangling link: exists() follows, says False
-        try:
-            os.mkdir(path, 0o700)
-        except FileExistsError:
-            if path.is_symlink() or not path.is_dir():
-                raise NotADirectoryError(f"{path.name} is not a directory")
-    _ensure_agent_codex_config(home)
-    return home
-
-
 def _ensure_build_workspace(slug: str, lesson_dir: Path) -> Path:
     """Return this lesson's persistent build workspace, creating it if needed.
 
     What lives here is what the agent installs — the packages a lesson page is
-    built from. The sandbox binds the `node_modules` subdirectory over the same
-    name inside the bundle, so the agent works in an ordinary project layout
-    while the bundle on disk never carries a byte of it (`app/sandbox.py`,
-    `BUILD_WORKSPACE_MOUNT`).
+    built from. `<bundle>/node_modules` is a symlink to the workspace's
+    `node_modules`, so the agent and the bundler work in an ordinary project
+    layout while the bundle on disk never carries a byte of it.
 
     Kept out of the bundle because a bundle is served, walked by the manifest
     reader, and writable from inside its own session — none of which packages
-    want. Same posture as :func:`_ensure_agent_home` on each name — a link or
+    want. Same posture as :func:`_ensure_settings_dir` on each name — a link or
     special file is moved aside rather than followed — and the same failure
     contract: an OSError here becomes "no workspace", so the caller refuses to
     open a shell rather than opening one whose installs land in the bundle.
@@ -2827,51 +2760,48 @@ def _ensure_build_workspace(slug: str, lesson_dir: Path) -> Path:
     build step needs arrives with that step, which can force a copying backend
     on its own command line.
 
-    Both sides of the bind are created here, the bundle-side mount point
-    included. bwrap would create it anyway — a bind target inside a bind of the
-    real bundle directory is a real `mkdir` on disk — so the choice is between
-    an empty directory this function owns, at a known mode, and one that
-    appears as a side effect. `node_modules` is reserved in §2 of the bundle
-    spec for the same reason `.claude` is: the app owns the name, so no page,
-    block file or artifact root may claim it and the preview surface will not
-    serve through it.
-
-    On the bundle side a *populated* directory is moved aside as well, not only
-    a link: `node_modules` was an ordinary authorable name before this
-    reservation, and binding an empty workspace over a directory that already
-    held something would hide it from the agent while leaving it on disk. On
-    the workspace side a populated directory is exactly what is wanted — it is
-    the last install.
+    `node_modules` is reserved in §2 of the bundle spec for the same reason
+    `.claude` is: the app owns the name, so no page, block file or artifact
+    root may claim it and the preview surface will not serve through it. On
+    the bundle side anything that is not this link is moved aside — a
+    *populated* directory too: `node_modules` was an ordinary authorable name
+    before this reservation, and a link placed over a directory that already
+    held something would hide it from the agent while leaving it on disk. An
+    empty directory is simply replaced. On the workspace side a populated
+    directory is exactly what is wanted — it is the last install.
     """
     if not _SLUG_RE.match(slug or ""):
         raise LessonError("invalid lesson slug")
     BUILD_WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
     workspace = BUILD_WORKSPACES_DIR / slug
-    mount = sandbox.BUILD_WORKSPACE_MOUNT
-    for path, keep_contents in (
-        (workspace, True), (workspace / mount, True), (lesson_dir / mount, False),
-    ):
+    target = workspace / BUILD_WORKSPACE_LINK
+    for path in (workspace, target):
         # exists() follows links, so a dangling one reads as absent here; the
         # is_symlink() term is what catches it.
-        foreign = path.is_symlink() or (path.exists() and not path.is_dir())
-        populated = False
-        if not foreign and not keep_contents and path.is_dir():
-            populated = foreign = any(path.iterdir())
-        if foreign:
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
             _preserve_foreign(path)
-            if populated:
-                # Recoverable — the aside copy keeps the bytes and a reinstall
-                # rebuilds the tree — but not something to discover by noticing
-                # a directory is empty.
-                _log.warning(
-                    "moved a populated %s aside in %s; reinstall to restore it",
-                    path.name, path.parent,
-                )
         try:
             os.mkdir(path, 0o700)
         except FileExistsError:
             if path.is_symlink() or not path.is_dir():
                 raise NotADirectoryError(f"{path.name} is not a directory")
+    link = lesson_dir / BUILD_WORKSPACE_LINK
+    if link.is_symlink() and os.readlink(link) == str(target):
+        return workspace
+    if link.is_symlink() or link.exists():
+        if not link.is_symlink() and link.is_dir() and not any(link.iterdir()):
+            os.rmdir(link)
+        else:
+            if not link.is_symlink() and link.is_dir():
+                # Recoverable — the aside copy keeps the bytes and a reinstall
+                # rebuilds the tree — but not something to discover by noticing
+                # a directory is empty.
+                _log.warning(
+                    "moved a populated %s aside in %s; reinstall to restore it",
+                    link.name, lesson_dir,
+                )
+            _preserve_foreign(link)
+    os.symlink(target, link)
     return workspace
 
 
@@ -2886,7 +2816,7 @@ def lesson_bundle_dir(slug: str) -> Path:
 
 
 def ensure_build_workspace(slug: str) -> Path:
-    """This lesson's build workspace, both sides of the bind created."""
+    """This lesson's build workspace, linked from its bundle."""
     return _ensure_build_workspace(slug, _lesson_dir(slug))
 
 
@@ -2924,7 +2854,6 @@ def _workspace_view(
     slug: str,
     lesson: dict,
     lesson_dir: Path,
-    agent_home: Path | None = None,
     build_workspace: Path | None = None,
 ) -> dict:
     """What a PTY role learns about the lesson it opens on.
@@ -2934,9 +2863,8 @@ def _workspace_view(
     which is why they travel with the workspace rather than being re-resolved
     from the slug on the websocket path.
 
-    `agent_home` and `build_workspace` are None for every role but lesson-agent:
-    it is the only role that runs agents, so it is the only one whose home
-    carries their memory and the only one that installs packages.
+    `build_workspace` is None for every role but lesson-agent: it is the only
+    role that installs packages.
     """
     return {
         "slug": slug,
@@ -2944,7 +2872,6 @@ def _workspace_view(
         "dir": str(lesson_dir),
         "id": lesson["id"],
         "uid": lesson["uid"],
-        "agent_home": str(agent_home) if agent_home is not None else None,
         "build_workspace": (
             str(build_workspace) if build_workspace is not None else None
         ),
@@ -3072,20 +2999,19 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
     bundle safety are shared with the learner's no-regeneration entry point.
     Briefs are atomically replaced without following destination links.
 
-    The agent home is prepared here too, and on the same terms: this is the
-    only role that runs agents, and a home that cannot be created is a refusal
-    rather than a shell whose agents silently forget everything again. So is
-    the build workspace, which additionally waits for the bundle: its mount
-    point is a directory inside the bundle, and `_ensure_bundle_manifest` is
-    what recreates a bundle directory that went missing. Preparing it earlier
-    would turn that recoverable case into a refused terminal.
+    The build workspace is prepared here too, and on the same terms: this is
+    the only role that installs packages, and a workspace that cannot be
+    created is a refusal rather than a shell whose installs land in the bundle.
+    It waits for the bundle: its link lives inside the bundle, and
+    `_ensure_bundle_manifest` is what recreates a bundle directory that went
+    missing. Preparing it earlier would turn that recoverable case into a
+    refused terminal.
     """
     try:
         resolved = _resolve_terminal_lesson(slug)
         if resolved is None:
             return None
         slug, lesson, lesson_dir = resolved
-        agent_home = _ensure_agent_home(slug)
         read = _ensure_bundle_manifest(lesson)
         build_workspace = _ensure_build_workspace(slug, lesson_dir)
         # Before the brief: what the brief says about `source/` depends on
@@ -3119,7 +3045,7 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
     _reconcile_assessment_projection(lesson)
     _reconcile_learner_memory(lesson)
     _retire_foreign_run_projection(lesson)
-    return _workspace_view(slug, lesson, lesson_dir, agent_home, build_workspace)
+    return _workspace_view(slug, lesson, lesson_dir, build_workspace)
 
 
 def create_lesson(conn: sqlite3.Connection, title: str, source_url: str | None = None) -> int:

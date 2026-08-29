@@ -2240,7 +2240,6 @@ def test_core_surfaces(client, suite_state):
             master,
             role="plain",
             workspace=str(ROOT),
-            sandbox_profile=None,
         )
         _terminal._SESSIONS[sess.sid] = sess
         owner, stale = _FakeSock(), _FakeSock()
@@ -2296,7 +2295,6 @@ def test_core_surfaces(client, suite_state):
             master3,
             role="plain",
             workspace=str(ROOT),
-            sandbox_profile=None,
         )
         _terminal._SESSIONS[sess3.sid] = sess3
         old_sock, new_sock = _FakeSock(), _FakeSock()
@@ -2342,7 +2340,6 @@ def test_core_surfaces(client, suite_state):
             master2,
             role="plain",
             workspace=str(ROOT),
-            sandbox_profile=None,
         )
         _terminal._SESSIONS[sess2.sid] = sess2
         sess2.detached_at = _time.monotonic() - 2 * _terminal._SESSION_TTL

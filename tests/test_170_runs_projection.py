@@ -34,7 +34,6 @@ def _job(
         snapshot=b"print('invented')\n",
         bundle_dir=str(bundle_dir),
         bundle_root=str(bundle_dir.parent),
-        private_root=str(bundle_dir.parent.parent),
         # One bundle is one lesson: the projection state is keyed by the
         # lesson uid, so runs into the same directory must share it.
         lesson_uid=str(uuid5(NAMESPACE_URL, f"invented-lesson/{bundle_dir.name}")),

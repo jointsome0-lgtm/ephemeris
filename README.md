@@ -83,79 +83,23 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers
 
 ## What the host must provide
 
-The tracker itself runs anywhere Python does. **Learn** does not: a lesson
-terminal, and the build and run steps behind it, execute somebody else's code
-inside a [bubblewrap](https://github.com/containers/bubblewrap) sandbox and a
-systemd user scope. Neither exists on macOS or Windows, so Learn is
-**Linux-only** — and it fails closed, refusing to open a shell rather than
-opening an unsandboxed one, so a missing requirement shows up as
-`[terminal: lesson sandbox unavailable ...]` and nothing worse.
+The tracker itself runs anywhere Python does. **Learn** additionally needs
+four executables. A lesson terminal is a plain interactive shell started in
+the lesson's bundle directory, and the build, render, and run steps behind it
+are plain subprocesses; the app's generated `AGENTS.md` / `CLAUDE.md` in that
+directory are the agent's instructions, and nothing else isolates it from the
+host (see the [security model](docs/security-model.md)).
 
-| Requirement | Why | Check |
+| Requirement | Used by | Check |
 | --- | --- | --- |
-| Linux | bubblewrap and systemd user scopes | `uname -s` |
-| `bubblewrap` installed | the sandbox itself | `bwrap --version` |
-| a systemd **user** session | per-run memory/task/time limits | `systemctl --user is-system-running` |
-| unprivileged user namespaces permitted | bubblewrap needs one to build the sandbox | see below |
+| `bun` at `~/.bun/bin/bun` | the build step | `~/.bun/bin/bun --version` |
+| a Chrome/Chromium binary on `$PATH` (`google-chrome`, `chromium`, `chromium-browser`, or `chrome`; override with `EPHEMERIS_RENDER_CHECK_CHROME=/path`) | the render gate | `chromium --version` |
+| `/usr/bin/python3` | the Python runner | `/usr/bin/python3 --version` |
+| `/usr/local/go/bin/go` | the Go runner | `/usr/local/go/bin/go version` |
 
-Ephemeris looks for `bwrap` at `~/.local/bin/bwrap` first and `/usr/bin/bwrap`
-second — deliberately not through `$PATH`, which whoever starts the service
-controls. Any build that accepts the options `app/sandbox.py` uses will do;
-there is no version floor to memorise, because the app asks each candidate what
-it accepts and names the missing options in its refusal. The bubblewrap 0.9.0
-in Ubuntu 24.04 is enough.
-
-Note **when** that refusal appears: the service starts either way. Nothing on
-this list is checked at startup — it is checked the first time a lesson
-terminal, build, or run asks for a sandbox, and surfaces there. A running
-Ephemeris is not evidence that the requirements below are met; an opened lesson
-terminal is.
-
-Install it with `sudo apt install bubblewrap` (Debian/Ubuntu),
-`sudo dnf install bubblewrap` (Fedora), or `sudo pacman -S bubblewrap` (Arch).
-
-### Ubuntu 24.04 and newer: allow bubblewrap a user namespace
-
-Ubuntu 24.04 restricts unprivileged user namespaces to programs with an
-AppArmor profile that grants them. Without one, every sandbox spawn dies at
-`bwrap: setting up uid map: Permission denied`. Check whether it applies:
-
-```bash
-sysctl kernel.apparmor_restrict_unprivileged_userns
-```
-
-`1` means you need the profile; `0` or "no such file" means you do not. Install
-the one this repository ships:
-
-```bash
-sudo install -m 644 packaging/apparmor/bwrap /etc/apparmor.d/bwrap
-sudo apparmor_parser -r /etc/apparmor.d/bwrap
-```
-
-Then re-check with `bwrap --unshare-user --die-with-parent --ro-bind / / true`,
-which should exit `0` silently.
-
-The profile matches `/usr/bin/bwrap` and `@{HOME}/.local/bin/bwrap`. `@{HOME}`
-is AppArmor's own tunable, not your `$HOME`: by default it expands to `/home/*/`
-and `/root/` (see `/etc/apparmor.d/tunables/home`). A service account whose home
-is somewhere else — `/srv/ephemeris`, `/var/lib/ephemeris` — is **not** covered,
-and a `bwrap` under such a home stays denied even after installing the profile.
-Either use the distribution `/usr/bin/bwrap`, which is always covered, or add
-the home first:
-
-```bash
-echo '@{HOMEDIRS}+=/srv/' | sudo tee /etc/apparmor.d/tunables/home.d/ephemeris
-sudo apparmor_parser -r /etc/apparmor.d/bwrap
-```
-
-### After fixing anything on this list, restart the service
-
-The sandbox probe and the `bwrap` path are resolved **once per process** and
-cached, so a host-side fix does not reach a running Ephemeris:
-
-```bash
-systemctl --user restart ephemeris
-```
+None of these are checked at startup: a missing one surfaces the first time a
+build, render, or run asks for it, and runner health reports whether the two
+runner executables run.
 
 ## Security
 

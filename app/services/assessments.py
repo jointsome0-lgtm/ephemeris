@@ -8,7 +8,7 @@ ONE transaction — the repo's standard write idiom, with no filesystem work
 inside it (D-S1-5).
 
 Trust model: the caller is the lesson-agent terminal session (curl or any
-HTTP-capable tool inside the sandbox), admitted by the app perimeter
+HTTP-capable tool in that shell), admitted by the app perimeter
 (`app/security.py`). It supplies no identity it does not own: `lesson_uid`
 comes from the DB row, `question_id` is copied from the referenced attempt row,
 `seq` is the rowid, and `sitting_id` is resolved from the session's write

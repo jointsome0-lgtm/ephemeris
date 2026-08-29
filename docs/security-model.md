@@ -75,8 +75,8 @@ This reduces *accidental* propagation of service-side configuration into the
 shell and agents launched from it; it is **not** secret isolation. The shell is
 a same-user child of the service process and can still read the parent's live
 environment (for example via `/proc/<pid>/environ`), so anything that must stay
-hidden from the terminal user needs a real OS boundary (separate account /
-sandbox — tracked as the remaining scope of issue #16), not this list. One
+hidden from the terminal user needs a real OS boundary (a separate account),
+not this list. One
 deliberate pass-through to be aware of: `SSH_AUTH_SOCK` is on the allowlist,
 so shells and agents launched from them can use the user's live SSH identity
 (git-over-SSH) — acceptable only under the single-user loopback posture.
@@ -95,10 +95,9 @@ browser, running under a logged-in study profile whose material a lesson is
 built from, used when a plain fetch returns a login wall. Nothing in this
 repository starts it, configures it, or grants access to it. It exists when
 the operator runs a `@playwright/mcp` server on loopback and registers it in
-their own Claude configuration; the `lesson-agent` sandbox reaches it
-because that profile
-already shares the host network namespace, and sees it because
-`~/.claude.json` is bind-mounted read-only.
+their own Claude configuration; a lesson-agent shell reaches it because it
+runs on the host network, and sees it because the shell uses the real
+`~/.claude.json`.
 
 What that means for the trust boundary, stated plainly rather than implied
 by the brief:
@@ -204,23 +203,17 @@ These are documented limitations, not fixes made in this pass:
   see the spec §5 residual), and a page can read the app's unauthenticated
   GET routes via `connect-src 'self'` and relay the response out (writes
   still die on the origin guard's `Origin: null` refusal).
-- The `lesson-learner` terminal shares the host network (same 2026-08-11
-  decision), so commands in it can reach the unauthenticated loopback app —
-  read routes and, as an origin-less non-browser client, unsafe ones — the
-  same authority the `lesson-agent` shell and every other local process
-  already had. The filesystem masks still bound what the shell reads
-  directly; the durable fix for the HTTP path is the single-user
-  authentication already listed above, not a network carve-out.
-  The same shared namespace also reaches any other host-loopback listener —
-  concretely the Playwright MCP server on `localhost:9223`, whose tool set
-  includes arbitrary host-side code execution. That listener is already the
-  subject of an open review-queue High (2026-08-09 entry) whose repair —
-  mechanical refusal of state-changing and arbitrary-code tools, or an
-  equivalently restricted server — now gates the learner profile too: the
-  deploy gate holds until it lands, and this profile must not serve live
-  beside an unrestricted 9223. If the listener cannot be restricted, the
-  fallback carve-out is a filtered user-mode network (pasta/slirp4netns)
-  for the learner shell instead of `--share-net`.
+- Both lesson terminals (`lesson-agent` and `lesson-learner`) run on the
+  host network, so commands in them can reach the unauthenticated loopback
+  app — read routes and, as an origin-less non-browser client, unsafe ones —
+  the same authority every other local process already has. The durable fix
+  for the HTTP path is the single-user authentication already listed above,
+  not a network carve-out. The host network also reaches any other loopback
+  listener — concretely the Playwright MCP server on `localhost:9223`, whose
+  tool set includes arbitrary host-side code execution. The owner accepted
+  that reach (2026-08-17, [system-design.md](system-design.md) security
+  checklist): the brief's read-only rule stays prose, and no restricted
+  server or per-lesson capability is planned.
 
 Until those fixes exist, keep the documented deployment boundary on loopback
 and never expose it to the public internet.

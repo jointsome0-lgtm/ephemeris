@@ -40,13 +40,8 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 
-from .db import DATA_DIR, DB_PATH
-from .sandbox import SandboxError, SandboxProfile, USER_HOME, spawn_sandboxed
-from .services.lessons import (
-    LESSONS_DIR,
-    prepare_terminal_workspace,
-    resolve_terminal_workspace,
-)
+from .db import DATA_DIR
+from .services.lessons import prepare_terminal_workspace, resolve_terminal_workspace
 
 _log = logging.getLogger("activity_ledger")
 
@@ -104,13 +99,6 @@ class _LessonWorkspaceError(Exception):
     for a lesson-scoped shell and gets a visible refusal, not a silent rescope."""
 
 
-class _LessonSandboxError(Exception):
-    """A lesson workspace resolved, but its required sandbox could not spawn.
-
-    The caller must refuse visibly rather than retry the shell without isolation.
-    """
-
-
 class _SessionRequestError(Exception):
     """A create/attach query violates the server-owned role contract."""
 
@@ -120,7 +108,6 @@ _TERMINAL_ROLES: tuple[TerminalRole, ...] = (
     "plain", "lesson-agent", "lesson-learner",
 )
 _LEARNER_SID_PREFIX = "learner."
-_HOST_NETWORK_ROLES = frozenset(("plain", "lesson-agent", "lesson-learner"))
 
 
 def is_local_host(host: str | None) -> bool:
@@ -307,12 +294,9 @@ def _detect_proxy_env(role: TerminalRole) -> dict[str, str]:
     Contract: the return value is the COMPLETE set of proxy vars the child shell
     should have. The child env is built from _child_env(), whose allowlist admits
     no proxy vars, then this is applied on top — so an empty dict reliably means
-    "connect directly". Roles without host networking receive no proxy variables:
-    advertising an unreachable host-loopback proxy would only mislead their tools.
+    "connect directly". Every role gets the same answer; ``role`` is kept so the
+    call site reads as the per-role step it is.
     """
-    if role not in _HOST_NETWORK_ROLES:
-        return {}
-
     override = os.environ.get("EPHEMERIS_TERM_PROXY", "").strip()
     if override.lower() in {"off", "none", "0", "false"}:
         return {}
@@ -369,14 +353,10 @@ _ASSESS_CAPABILITIES: dict[str, dict] = {}
 # instance data is an environment variable" footing as the pair above.
 _BUILD_URL_ENV = "EPHEMERIS_BUILD_URL"
 
-# Claude auth for the tutor's shell, on the same env-variable footing (#188).
-# The host's `~/.claude/.credentials.json` must never enter the sandbox: its
-# refresh token is single-use, and a sandboxed refresh consumes it server-side
-# without being able to write the replacement back, killing the host's login.
-# What travels instead is a long-lived token (`claude setup-token`), which does
-# not rotate on use, read from the private instance so no lesson can serve or
-# edit it. Owner-created; absent file → the variable stays unset and the agent
-# CLI visibly asks for login instead of silently borrowing host credentials.
+# Claude auth for the tutor's shell, on the same env-variable footing (#188):
+# a long-lived token (`claude setup-token`), which does not rotate on use, read
+# from the private instance so no lesson can serve or edit it. Owner-created;
+# absent file → the variable stays unset and the agent CLI asks for login.
 _CLAUDE_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 _CLAUDE_TOKEN_FILE = DATA_DIR / "claude-token"
 
@@ -465,98 +445,34 @@ def _child_env(
     }
     env["TERM"] = "xterm-256color"
     if role != "plain" and os.path.basename(shell) == "bash":
-        # A lesson shell lives in a blanked home, so its own ~/.bashrc is not
-        # there and /etc/bash.bashrc wins with `\u@\h:\w\$` — a full hostname
-        # and the whole sandbox path on every line, in a drawer that is mostly
-        # one screen tall. PS1 from the environment would be overwritten by
-        # that same file; PROMPT_COMMAND runs after it, so this is where the
-        # last word on the prompt is. Both are bash's, which is why only bash
-        # is handed this: `lesson-agent` follows the service account's SHELL,
-        # and another shell neither reads that file nor obeys this variable.
+        # A prompt that fits a drawer that is mostly one screen tall: the
+        # bundle path is long, and `\u@\h:\w\$` would spend a line on it.
+        # PS1 from the environment is overwritten by the startup files;
+        # PROMPT_COMMAND runs after them, so this is where the last word on
+        # the prompt is. Both are bash's, which is why only bash is handed
+        # this: `lesson-agent` follows the service account's SHELL, and
+        # another shell neither reads those files nor obeys this variable.
         #
         # The two roles want different words. Nobody navigates the agent shell
         # by hand — the agent works there — so it names itself and nothing
         # else. The learner shell is walked with `cd`, so it keeps the current
-        # directory, as one component (`\W`) rather than the sandbox path.
+        # directory, as one component (`\W`) rather than the whole path.
         env["PROMPT_COMMAND"] = (
             "PS1='agent $ '" if role == "lesson-agent" else r"PS1='\W $ '"
         )
+    home = os.path.expanduser("~")
     if role == "lesson-learner":
-        # The sandbox blanks the runtime tree, but the service may still carry
-        # external HOME/XDG/PATH values. Give learner commands only normalized
-        # paths that the profile intentionally exposes.
-        for name in (
-            "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "XDG_DATA_HOME",
-            "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
-        ):
-            env.pop(name, None)
-        env["HOME"] = USER_HOME
         env["SHELL"] = "/bin/bash"
-        # The Go toolchain lives outside the default prefixes, and the sandbox
-        # ro-binds `/`, so it is visible inside — it was only missing from PATH.
         # The learner shell and the runner compile the same lesson code, so they
         # must resolve the same `go`: this mirrors runner.RUNNER_ENV's PATH.
         env["PATH"] = (
-            f"{USER_HOME}/.local/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin"
+            f"{home}/.local/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin"
         )
     else:
         # Help find user-installed agent CLIs even under a minimal service PATH.
-        home = os.path.expanduser("~")
         env["PATH"] = f"{home}/.local/bin:/usr/local/bin:" + env.get(
             "PATH", "/usr/bin:/bin")
     return env
-
-
-def _private_mask_spellings(*paths: Path) -> tuple[str, ...]:
-    """Return each private path's absolute spelling and resolved target."""
-    masks: list[str] = []
-    for path in paths:
-        absolute = path.absolute()
-        masks.extend((str(absolute), str(absolute.resolve(strict=False))))
-    return tuple(dict.fromkeys(masks))
-
-
-def _learner_private_mask_spellings(
-    *,
-    data_root: Path = LESSONS_DIR.parent,
-    lesson_root: Path = LESSONS_DIR,
-    db_path: Path = DB_PATH,
-    repo_root: Path = _REPO_ROOT,
-) -> tuple[str, ...]:
-    """Private directory spellings that a learner sandbox must blank."""
-    db_absolute = db_path.absolute()
-    return _private_mask_spellings(
-        data_root,
-        lesson_root,
-        db_absolute.parent,
-        db_absolute.resolve(strict=False).parent,
-        repo_root,
-    )
-
-
-def _learner_workspace_contains_db(
-    workspace_dir: str,
-    db_path: Path | None = None,
-) -> bool:
-    """Whether the learner's final writable bind would re-expose the DB.
-
-    Parent masks cannot protect a database stored inside the selected bundle:
-    bubblewrap must bind that bundle back last to make learner work writable.
-    Compare both lexical and resolved spellings so symlinked configuration does
-    not turn the documented ``ACTIVITY_DB`` override into a boundary bypass.
-    """
-    database = DB_PATH if db_path is None else db_path
-    workspaces = tuple(
-        Path(spelling) for spelling in _private_mask_spellings(Path(workspace_dir))
-    )
-    databases = tuple(
-        Path(spelling) for spelling in _private_mask_spellings(database)
-    )
-    return any(
-        db == workspace or db.is_relative_to(workspace)
-        for db in databases
-        for workspace in workspaces
-    )
 
 
 def _redact_userinfo(url: str) -> str:
@@ -596,14 +512,10 @@ class _TermSession:
         *,
         role: TerminalRole,
         workspace: str,
-        sandbox_profile: SandboxProfile | None,
         assess_token: str | None = None,
     ) -> None:
-        expected_profile = None if role == "plain" else role
         if role not in _TERMINAL_ROLES:
             raise ValueError(f"unknown terminal role: {role}")
-        if sandbox_profile != expected_profile:
-            raise ValueError("terminal role and sandbox profile disagree")
         if not Path(workspace).is_absolute():
             raise ValueError("terminal workspace must be absolute")
         if assess_token is not None and role != "lesson-agent":
@@ -616,7 +528,6 @@ class _TermSession:
         # these values, and the public properties intentionally have no setters.
         self._role = role
         self._workspace = workspace
-        self._sandbox_profile = sandbox_profile
         self._assess_token = assess_token
         self.ws: WebSocket | None = None
         self.rows = 24
@@ -639,10 +550,6 @@ class _TermSession:
     @property
     def workspace(self) -> str:
         return self._workspace
-
-    @property
-    def sandbox_profile(self) -> SandboxProfile | None:
-        return self._sandbox_profile
 
     def remember(self, data: bytes) -> None:
         self._chunks.append(data)
@@ -828,9 +735,9 @@ def _select_create_role(
     if role_selector not in _TERMINAL_ROLES:
         raise _SessionRequestError("unknown terminal role")
     if role_selector == "plain":
-        # E2 forbids client-selected unsandboxed lesson shells. ``plain`` remains
-        # part of the closed session-role enum but is selected only by omitting
-        # both role and lesson, preserving the existing owner-shell request.
+        # ``plain`` is the owner's repository shell, selected only by omitting
+        # both role and lesson; a lesson-scoped request always names a lesson
+        # role so its cwd, briefs and environment follow that role.
         raise _SessionRequestError("plain cannot be lesson-scoped")
     return role_selector
 
@@ -869,22 +776,11 @@ async def _create_session(
                 raise _LessonWorkspaceError(lesson)
 
         workspace_dir = workspace["dir"] if workspace is not None else str(_REPO_ROOT)
-        sandbox_profile: SandboxProfile | None = None if role == "plain" else role
-        if role == "lesson-learner" and _learner_workspace_contains_db(workspace_dir):
-            # The final rw bundle bind is intentional and necessarily wins over
-            # parent masks. Refuse a conflicting DB layout rather than exposing
-            # the ledger and its sidecars inside the learner boundary.
-            raise _LessonSandboxError(lesson)
-
         shell = (
             "/bin/bash" if role == "lesson-learner"
             else (os.environ.get("SHELL") or "/bin/bash")
         )
         env = _child_env(role, shell)
-        private_masks = (
-            await asyncio.to_thread(_learner_private_mask_spellings)
-            if role == "lesson-learner" else ()
-        )
         # Route agent CLIs around country-level blocks via the user's local proxy (if
         # any); the allowlisted base env has no proxy vars, so what _detect_proxy_env
         # returns is the whole story and EPHEMERIS_TERM_PROXY=off truly means direct.
@@ -918,10 +814,10 @@ async def _create_session(
             # The build step (#161). A URL and no token, unlike the pair above:
             # a verdict write needs the server's own answer to "which sitting
             # is this", while a build names its lesson in the path and claims
-            # nothing about who asked. The agent has no package manager of its
-            # own — `~/.bun` is not on this profile's mount list — because the
-            # 30-day quarantine and the copying cache backend live on a command
-            # line only the app writes.
+            # nothing about who asked. The brief sends the agent here rather
+            # than to its own package manager because the 30-day quarantine
+            # and the copying cache backend live on a command line the app
+            # writes.
             env[_BUILD_URL_ENV] = _build_url(workspace["id"], base_url)
             # Published BEFORE the spawn: the child can reach the endpoint from a
             # shell startup file, before this coroutine is resumed at all, and a
@@ -932,8 +828,7 @@ async def _create_session(
 
         try:
             return await _spawn_on_pty(
-                lesson, role, sid, shell, env, workspace, workspace_dir,
-                sandbox_profile, private_masks, proxy, capability,
+                role, sid, shell, env, workspace, workspace_dir, proxy, capability,
             )
         finally:
             if capability is not None and _SESSIONS.get(sid) is None:
@@ -943,15 +838,12 @@ async def _create_session(
 
 
 async def _spawn_on_pty(
-    lesson: str | None,
     role: TerminalRole,
     sid: str,
     shell: str,
     env: dict[str, str],
     workspace: dict | None,
     workspace_dir: str,
-    sandbox_profile: SandboxProfile | None,
-    private_masks: tuple[str, ...],
     proxy: dict[str, str],
     capability: dict | None,
 ) -> "_TermSession | None":
@@ -972,53 +864,22 @@ async def _spawn_on_pty(
         os.close(slave_fd)
         _log.warning("terminal: could not resolve the pty slave for %s", sid)
         return None
-    if sandbox_profile is not None:
-        try:
-            proc = await spawn_sandboxed(
-                sandbox_profile,
-                workspace_dir,
-                [shell, "-i"],
-                bundle_root=str(LESSONS_DIR),
-                private_root=str(LESSONS_DIR.parent),
-                private_masks=private_masks,
-                # Only the agent workspace carries one, and only that profile
-                # accepts one: this is what makes a reopened lesson terminal
-                # resumable (`claude --continue`) instead of amnesiac.
-                agent_home=workspace.get("agent_home") if workspace else None,
-                # Same shape, same reason: only the agent role installs
-                # packages, and they are bound over `<bundle>/node_modules`
-                # rather than living in the bundle.
-                build_workspace=(
-                    workspace.get("build_workspace") if workspace else None
-                ),
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                preexec_fn=child_setup,
-                env=env,
-            )
-        except (SandboxError, ValueError) as exc:
-            os.close(master_fd)
-            os.close(slave_fd)
-            raise _LessonSandboxError(lesson) from exc
-    else:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                shell, "-i",
-                stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-                preexec_fn=child_setup,
-                cwd=workspace_dir,
-                env=env,
-            )
-        # SubprocessError covers a child_setup that could not take the pty as its
-        # controlling terminal: the spawn dies here rather than handing back a
-        # shell with no job control. (The sandboxed branch above reports the same
-        # failure through SandboxSpawnError, which spawn_sandboxed raises for it.)
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            os.close(master_fd)  # no proc took ownership of the master end — don't leak it
-            os.close(slave_fd)
-            _log.warning("terminal: shell spawn failed for %s: %s", sid, exc)
-            return None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            shell, "-i",
+            stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+            preexec_fn=child_setup,
+            cwd=workspace_dir,
+            env=env,
+        )
+    # SubprocessError covers a child_setup that could not take the pty as its
+    # controlling terminal: the spawn dies here rather than handing back a
+    # shell with no job control.
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        os.close(master_fd)  # no proc took ownership of the master end — don't leak it
+        os.close(slave_fd)
+        _log.warning("terminal: shell spawn failed for %s: %s", sid, exc)
+        return None
     os.close(slave_fd)  # success: parent keeps only the master end
 
     sess = _TermSession(
@@ -1027,7 +888,6 @@ async def _spawn_on_pty(
         master_fd,
         role=role,
         workspace=workspace_dir,
-        sandbox_profile=sandbox_profile,
         assess_token=capability["token"] if capability else None,
     )
     # The session now owns the capability published before the spawn: its
@@ -1035,12 +895,12 @@ async def _spawn_on_pty(
     _SESSIONS[sess.sid] = sess
     # One informational line, replayed with the scrollback. It costs screen in a
     # drawer that is mostly one screen tall, so it carries only what the session
-    # cannot show otherwise: the sandbox is invisible, the proxy is invisible,
+    # cannot show otherwise: the role is invisible, the proxy is invisible,
     # and whether AGENTS.md was just rewritten is invisible. The cwd is not on
     # it — the prompt and `pwd` both answer that.
     facts: list[str] = []
     if workspace is not None:
-        facts.append(f"{role} sandbox")
+        facts.append(f"{role} shell")
     if proxy.get("HTTP_PROXY"):
         # Redact credentials, then defang control bytes.
         shown = "".join(c for c in _redact_userinfo(proxy["HTTP_PROXY"]) if c.isprintable())
@@ -1197,18 +1057,6 @@ async def _serve_ws(ws: WebSocket) -> None:
                 await ws.send_bytes(
                     b"\r\n\x1b[31m[terminal: lesson workspace unavailable - "
                     b"refusing to open a shell outside it]\x1b[0m\r\n"
-                )
-            except (RuntimeError, WebSocketDisconnect):
-                pass
-            await ws.close()
-            return
-        except _LessonSandboxError:
-            # The E1 launcher is mandatory for both sandboxed lesson roles: never
-            # retry the shell directly when its runtime probe or bwrap spawn fails.
-            try:
-                await ws.send_bytes(
-                    b"\r\n\x1b[31m[terminal: lesson sandbox unavailable - "
-                    b"refusing to open an unsandboxed shell]\x1b[0m\r\n"
                 )
             except (RuntimeError, WebSocketDisconnect):
                 pass

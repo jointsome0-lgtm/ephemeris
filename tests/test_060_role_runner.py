@@ -26,19 +26,14 @@ def test_role_runner(client, suite_state):
     _E2Sock = suite_state["_E2Sock"]
     _asyncio = suite_state["_asyncio"]
     _lt = suite_state["_lt"]
-    _resource_mod = suite_state["_resource_mod"]
-    _sandbox = suite_state["_sandbox"]
-    _sandbox_mock = suite_state["_sandbox_mock"]
-    _sb_bundle = suite_state["_sb_bundle"]
-    _sb_mounts = suite_state["_sb_mounts"]
-    _sb_root = suite_state["_sb_root"]
+    _mock = suite_state["_mock"]
     _terminal = suite_state["_terminal"]
-    _terminal_pty = suite_state["_terminal_pty"]
     _time = suite_state["_time"]
     _types = suite_state["_types"]
     bschema = suite_state["bschema"]
     lessons_svc = suite_state["lessons_svc"]
     ws_info = suite_state["ws_info"]
+    import resource as _resource_mod
     # --- E3: closed role selector + concurrent agent/learner integration -----
     assert (
         _terminal._TERMINAL_ROLES == (
@@ -52,7 +47,7 @@ def test_role_runner(client, suite_state):
         _terminal._select_create_role(_lt["slug"], "plain")
     except _terminal._SessionRequestError:
         _plain_lesson_refused = True
-    assert _plain_lesson_refused, "E3 explicit plain cannot bypass the sandboxed lesson boundary"
+    assert _plain_lesson_refused, "E3 explicit plain cannot be lesson-scoped"
     _selector_refusals = 0
     for _lesson_arg, _role_arg in (
         (None, "lesson-learner"),
@@ -67,12 +62,12 @@ def test_role_runner(client, suite_state):
         "lesson": _lt["slug"],
         "role": "lesson-learner",
     })
-    with _sandbox_mock.patch.object(_terminal, "_ws_is_trusted", return_value=True), \
-            _sandbox_mock.patch.object(_terminal, "_reap_idle"), \
-            _sandbox_mock.patch.object(_terminal, "_ensure_reaper"), \
-            _sandbox_mock.patch.object(
+    with _mock.patch.object(_terminal, "_ws_is_trusted", return_value=True), \
+            _mock.patch.object(_terminal, "_reap_idle"), \
+            _mock.patch.object(_terminal, "_ensure_reaper"), \
+            _mock.patch.object(
                 _terminal, "_create_session",
-                new=_sandbox_mock.AsyncMock()) as _sid_role_create:
+                new=_mock.AsyncMock()) as _sid_role_create:
         _asyncio.run(_terminal._serve_ws(_sid_role_ws))
     assert (
         _selector_refusals == 2
@@ -82,8 +77,8 @@ def test_role_runner(client, suite_state):
     ), "E3 selector validation refuses no-lesson, unknown, and sid attach"
 
     async def _e3_invalid_selector_at_capacity():
-        with _sandbox_mock.patch.object(_terminal, "_MAX_SESSIONS", 0), \
-                _sandbox_mock.patch.object(_terminal, "_reap_idle") as reap:
+        with _mock.patch.object(_terminal, "_MAX_SESSIONS", 0), \
+                _mock.patch.object(_terminal, "_reap_idle") as reap:
             try:
                 await _terminal._create_session(_lt["slug"], "unknown")
             except _terminal._SessionRequestError:
@@ -93,231 +88,66 @@ def test_role_runner(client, suite_state):
         return refused and reap.call_count == 0
 
     assert _asyncio.run(_e3_invalid_selector_at_capacity()), "E3 invalid selector cannot evict a detached session at capacity"
-    with _sandbox_mock.patch.dict(os.environ, {
+    with _mock.patch.dict(os.environ, {
         "SSH_AUTH_SOCK": "/run/user/1000/agent.sock",
-        "XDG_RUNTIME_DIR": "/run/user/1000",
         "HOME": "/root",
         "PATH": "/root/private-bin:/usr/bin",
         "SHELL": "/root/private-shell",
-        "XDG_CONFIG_HOME": "/srv/private-config",
-        "XDG_DATA_HOME": "/srv/private-data",
-        "XDG_CACHE_HOME": "/srv/private-cache",
-        "XDG_STATE_HOME": "/srv/private-state",
+        "EPHEMERIS_INVENTED_CONFIG": "leak",
     }):
-        _agent_socket_env = _terminal._child_env("lesson-agent")
-        _learner_socket_env = _terminal._child_env("lesson-learner")
+        _agent_env = _terminal._child_env("lesson-agent", "/root/private-shell")
+        _learner_env = _terminal._child_env("lesson-learner", "/bin/bash")
     from app import runner as _runner_toolchain
     assert (
-        _agent_socket_env.get("SSH_AUTH_SOCK") == "/run/user/1000/agent.sock"
-        and _agent_socket_env.get("XDG_RUNTIME_DIR") == "/run/user/1000"
-        and "SSH_AUTH_SOCK" not in _learner_socket_env
-        and "XDG_RUNTIME_DIR" not in _learner_socket_env
-        and _learner_socket_env.get("HOME") == _sandbox.USER_HOME
-        and _learner_socket_env.get("SHELL") == "/bin/bash"
-        and _learner_socket_env.get("PATH")
-            == f"{_sandbox.USER_HOME}/.local/bin:/usr/local/go/bin:"
-               "/usr/local/bin:/usr/bin:/bin"
+        _agent_env.get("SSH_AUTH_SOCK") == "/run/user/1000/agent.sock"
+        and _learner_env.get("SSH_AUTH_SOCK") == "/run/user/1000/agent.sock"
+        and "EPHEMERIS_INVENTED_CONFIG" not in _agent_env
+        and "EPHEMERIS_INVENTED_CONFIG" not in _learner_env
+        and _agent_env.get("HOME") == "/root" and _learner_env.get("HOME") == "/root"
+        and _agent_env.get("SHELL") == "/root/private-shell"
+        and _learner_env.get("SHELL") == "/bin/bash"
+        and _agent_env.get("PATH")
+            == "/root/.local/bin:/usr/local/bin:/root/private-bin:/usr/bin"
+        and _learner_env.get("PATH")
+            == "/root/.local/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin"
         # The learner shell resolves the same toolchain the runner compiles with.
         and "/usr/local/go/bin" in _runner_toolchain.RUNNER_ENV["PATH"]
-        and not any(name in _learner_socket_env for name in (
-            "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
-            "XDG_STATE_HOME",
-        ))
-    ), "E3 learner child env strips inherited host-socket discovery paths"
-    with tempfile.TemporaryDirectory(prefix="ephemeris-e3-mask-") as _mask_tmp:
-        _mask_base = Path(_mask_tmp)
-        _mask_target = _mask_base / "resolved-private"
-        _mask_target.mkdir()
-        _mask_link = _mask_base / "private-link"
-        _mask_link.symlink_to(_mask_target, target_is_directory=True)
-        _mask_spellings = _terminal._private_mask_spellings(_mask_link)
-        _lesson_store_target = _mask_base / "resolved-lesson-store"
-        _lesson_store_target.mkdir()
-        _lesson_store_link = _mask_base / "lessons-link"
-        _lesson_store_link.symlink_to(
-            _lesson_store_target, target_is_directory=True)
-        _db_target_dir = _mask_base / "resolved-db"
-        _db_target_dir.mkdir()
-        _db_target = _db_target_dir / "activity.sqlite"
-        _db_target.touch()
-        _db_link_dir = _mask_base / "db-link-dir"
-        _db_link_dir.mkdir()
-        _db_link = _db_link_dir / "activity.sqlite"
-        _db_link.symlink_to(_db_target)
-        _db_mask_spellings = _terminal._learner_private_mask_spellings(
-            data_root=_mask_link,
-            lesson_root=_lesson_store_link,
-            db_path=_db_link,
-            repo_root=_terminal._REPO_ROOT,
-        )
-    assert (
-        _mask_spellings == (str(_mask_link), str(_mask_target))
-        and str(_lesson_store_link) in _db_mask_spellings
-        and str(_lesson_store_target) in _db_mask_spellings
-        and str(_db_link_dir) in _db_mask_spellings
-        and str(_db_target_dir) in _db_mask_spellings
-    ), "E3 private masks include lexical symlinks and resolved targets"
-
-    async def _e3_db_in_bundle_refusal():
-        workspace = {"dir": ws_info["dir"], "slug": _lt["slug"], "title": "demo"}
-        bundle_db = Path(workspace["dir"]) / "invented-private.sqlite"
-        outside_db = Path(workspace["dir"]).parent / "invented-private.sqlite"
-        with _sandbox_mock.patch.object(
-                _terminal, "resolve_terminal_workspace", return_value=workspace), \
-                _sandbox_mock.patch.object(_terminal, "DB_PATH", bundle_db), \
-                _sandbox_mock.patch.object(_terminal_pty, "openpty") as openpty, \
-                _sandbox_mock.patch.object(
-                    _terminal, "spawn_sandboxed",
-                    new=_sandbox_mock.AsyncMock()) as spawn:
-            try:
-                await _terminal._create_session(_lt["slug"], "lesson-learner")
-            except _terminal._LessonSandboxError:
-                refused = True
-            else:
-                refused = False
-        return (
-            refused and openpty.call_count == 0 and spawn.call_count == 0
-            and _terminal._learner_workspace_contains_db(
-                workspace["dir"], bundle_db)
-            and not _terminal._learner_workspace_contains_db(
-                workspace["dir"], outside_db)
-        )
-
-    assert _asyncio.run(_e3_db_in_bundle_refusal()), "E3 learner refuses a DB override inside the writable bundle"
-    _external_private = "/srv/invented-ephemeris-private"
-    _external_lessons = f"{_external_private}/lessons"
-    _external_bundle = f"{_external_lessons}/invented-bundle"
-    _external_learner_argv = _sandbox.build_sandbox_argv(
-        "lesson-learner", _external_bundle,
-        bundle_root=_external_lessons,
-        private_root=_external_private,
-    )
-    _external_tmpfs = [
-        _external_learner_argv[i + 1]
-        for i, value in enumerate(_external_learner_argv)
-        if value == "--tmpfs"
-    ]
-    assert (
-        _sandbox.RUNTIME_DIR in _external_tmpfs
-        and _external_private in _external_tmpfs
-        and _external_learner_argv.index(_external_private)
-            < _external_learner_argv.index("--bind")
-        and _sb_mounts(_external_learner_argv, "--bind")
-            == [(_external_bundle, _external_bundle)]
-    ), "E3 learner masks runtime sockets and external private instance root"
-    _nested_private = f"{_sandbox.USER_HOME}/go/invented-ephemeris-private"
-    _nested_lessons = f"{_nested_private}/lessons"
-    _nested_bundle = f"{_nested_lessons}/invented-bundle"
-    _db_override_root = "/opt/invented-ephemeris-db"
-    _checkout_root = "/workspace/invented-ephemeris-checkout"
-    _nested_learner_argv = _sandbox.build_sandbox_argv(
-        "lesson-learner", _nested_bundle,
-        bundle_root=_nested_lessons,
-        private_root=_nested_private,
-        private_masks=(_db_override_root, _checkout_root),
-    )
-    _nested_tmpfs = [
-        _nested_learner_argv[i + 1]
-        for i, value in enumerate(_nested_learner_argv)
-        if value == "--tmpfs"
-    ]
-    assert (
-        _nested_private in _nested_tmpfs
-        and _db_override_root in _nested_tmpfs
-        and _checkout_root in _nested_tmpfs
-        and _nested_learner_argv.index(f"{_sandbox.USER_HOME}/go")
-            < _nested_learner_argv.index(_nested_private)
-        and _nested_learner_argv.index(_db_override_root)
-            < _nested_learner_argv.index("--bind")
-    ), "E3 learner masks cache-nested data, DB override, and external checkout"
+        and "PROMPT_COMMAND" not in _agent_env
+        and _learner_env.get("PROMPT_COMMAND") == r"PS1='\W $ '"
+    ), "E3 both lesson roles get the allowlisted service env, each with its own PATH and prompt"
 
     async def _e3_learner_plumbing():
         workspace = {"dir": ws_info["dir"], "slug": _lt["slug"], "title": "demo"}
         proc = _types.SimpleNamespace(returncode=0)
-        with _sandbox_mock.patch.object(
+        with _mock.patch.object(
                 _terminal, "resolve_terminal_workspace", return_value=workspace) as resolve, \
-                _sandbox_mock.patch.object(
+                _mock.patch.object(
                     _terminal, "prepare_terminal_workspace") as prepare, \
-                _sandbox_mock.patch.object(
+                _mock.patch.object(
                     _terminal, "_detect_proxy_env", return_value={}) as proxy, \
-                _sandbox_mock.patch.object(
-                    _terminal, "spawn_sandboxed",
-                    new=_sandbox_mock.AsyncMock(return_value=proc)) as spawn, \
-                _sandbox_mock.patch.object(_terminal._TermSession, "start"):
+                _mock.patch.object(
+                    _terminal.asyncio, "create_subprocess_exec",
+                    new=_mock.AsyncMock(return_value=proc)) as spawn, \
+                _mock.patch.object(_terminal._TermSession, "start"):
             session = await _terminal._create_session(
                 _lt["slug"], "lesson-learner")
         call = spawn.call_args
         result = (
             resolve.call_count == 1 and prepare.call_count == 0
             and proxy.call_args.args == ("lesson-learner",)
-            and call.args[:3] == (
-                "lesson-learner", workspace["dir"], ["/bin/bash", "-i"],
-            )
-            and call.kwargs["private_root"] == str(lessons_svc.LESSONS_DIR.parent)
-            and set(call.kwargs["private_masks"]) == set(
-                _terminal._learner_private_mask_spellings()
-            )
-            and not any(name in call.kwargs["env"] for name in (
-                *_terminal._PROXY_ENV_VARS, "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR",
-            ))
+            and call.args == ("/bin/bash", "-i")
+            and call.kwargs["cwd"] == workspace["dir"]
+            and session.role == "lesson-learner"
+            and session.sid.startswith(_terminal._LEARNER_SID_PREFIX)
+            and not any(name in call.kwargs["env"] for name in _terminal._PROXY_ENV_VARS)
         )
         _terminal._SESSIONS.pop(session.sid, None)
         os.close(session.master_fd)
         return result
 
-    assert _asyncio.run(_e3_learner_plumbing()), "E3 learner spawn plumbs only its private masks and no socket/proxy env"
+    assert _asyncio.run(_e3_learner_plumbing()), "E3 learner spawn is bash in the bundle, briefs untouched, no proxy env"
 
-    try:
-        _sandbox.require_sandbox_runtime()
-        _e3_host_runtime = True
-        _e3_runtime_detail = ""
-    except _sandbox.SandboxError as exc:
-        _e3_host_runtime = False
-        _e3_runtime_detail = str(exc)
-    if _e3_host_runtime:
-        _e3_override_sentinel = (
-            Path(os.environ["ACTIVITY_DATA_DIR"])
-            / "invented-e3-inherited-override.sqlite"
-        )
-        _e3_probe_env = os.environ.copy()
-        _e3_probe_env["ACTIVITY_DB"] = str(_e3_override_sentinel)
-        _e3_probe_run = subprocess.run(
-            [sys.executable, "scripts/verify_e3_sessions.py"],
-            cwd=ROOT,
-            env=_e3_probe_env,
-            text=True,
-            capture_output=True,
-        )
-        try:
-            _e3_probe = json.loads(_e3_probe_run.stdout)
-        except (TypeError, ValueError):
-            _e3_probe = {}
-        _e3_extra = _e3_probe_run.stderr.strip() or _e3_probe_run.stdout.strip()
-        assert (
-            _e3_probe_run.returncode == 0
-            and _e3_probe.get("wire_param") == "role"
-            and _e3_probe.get("selector_without_lesson_refused") is True
-            and _e3_probe.get("unknown_role_refused") is True
-            and _e3_probe.get("selector_with_sid_refused") is True
-            and not _e3_override_sentinel.exists()
-        ), f"E3 host probe: ?role= wire has all three required refusals: {_e3_extra}"
-        assert (
-            _e3_probe.get("agent_role_echoed") is True
-            and _e3_probe.get("learner_role_echoed") is True
-            and _e3_probe.get("both_shells_live") is True
-            and _e3_probe.get("stale_learner_sid_refused") is True
-        ), f"E3 host probe: concurrent WS sessions echo both roles: {_e3_extra}"
-        assert _e3_probe.get("briefs_unchanged") is True, f"E3 host probe: learner leaves both briefs untouched: {_e3_extra}"
-        assert (
-            _e3_probe.get("agent_network") is True
-            and _e3_probe.get("learner_network") is True
-            and _e3_probe.get("learner_proxy_matches_agent") is True
-            and _e3_probe.get("learner_no_socket_env") is True
-        ), f"E3 host probe: both shells network + agent-matching proxy; learner no socket env: {_e3_extra}"
-    else:
-        assert True, f"E3 host probe skipped when sandbox runtime is unavailable: {_e3_runtime_detail}"
-
-    # --- F3: fixed runner registry, sandbox limits, job owner, host matrix ---
+    # --- F3: fixed runner registry, process limits, job owner ---------------
     from app import runner as _runner
     from app.services import runner_registry as _runner_registry
 
@@ -399,344 +229,48 @@ def test_role_runner(client, suite_state):
     _ensure_source = _inspect.getsource(lessons_svc._ensure_bundle_manifest)
     assert _ensure_source.count("runner_registry=RUNNER_REGISTRY") == 2, "F3 lesson manifest reads use the real registry at both call sites"
 
-    def _f3_argv_digest(argv):
-        # The bwrap path and the home are both resolved from the host (issue
-        # #182), so they are normalised out before hashing: this guard is about
-        # the argv SHAPE staying byte-identical, not about which machine last
-        # froze it. Both resolved values have their own assertions elsewhere —
-        # `argv[0] == _sandbox.BWRAP` and the exact home mounts in test_050.
-        # BWRAP is substituted first: it normally lives under the home.
-        def _f3_host_neutral(arg):
-            return (
-                arg.replace(_sandbox.BWRAP, "<BWRAP>")
-                .replace(_sandbox.USER_HOME, "<HOME>")
-            )
-
-        return hashlib.sha256(
-            json.dumps(
-                [_f3_host_neutral(arg) for arg in argv],
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
-
-    assert (
-        _f3_argv_digest(_sandbox.build_sandbox_argv(
-            "lesson-agent", _sb_bundle, bundle_root=_sb_root
-        )) == "2cee3bbe89a16e20c59b6ffe8fee4aa0e27dea51528b78e7412e7348f5eb963a"
-        and _f3_argv_digest(_sandbox.build_sandbox_argv(
-            "lesson-learner", _sb_bundle, bundle_root=_sb_root
-        )) == "b7a29165edaa85e2d423b17a1272768723c1becfba414d0c46e8adc9f8c141fe"
-    ), "F3 sandbox amendments keep agent/learner argv byte-identical"
-    _f3_private = "/srv/invented-private"
-    _f3_root = f"{_f3_private}/lessons"
-    _f3_bundle = f"{_f3_root}/invented-bundle"
-    _f3_runner_argv = _sandbox.build_sandbox_argv(
-        "lesson-runner", _f3_bundle,
-        bundle_root=_f3_root,
-        private_root=_f3_private,
-        private_masks=("/opt/invented-private-db",),
-        snapshot_fd=7,
-        snapshot_name="main.py",
-        module_cache_fd=8,
-    )
-    _f3_tmpfs = [
-        _f3_runner_argv[i + 1] for i, arg in enumerate(_f3_runner_argv)
-        if arg == "--tmpfs"
-    ]
-    assert (
-        ["--size", str(_sandbox.RUNNER_SCRATCH_BYTES), "--tmpfs", "/tmp"]
-            == _f3_runner_argv[_f3_runner_argv.index("--size"):
-                               _f3_runner_argv.index("--size") + 4]
-        and ["--size", str(_sandbox.RUNNER_HOME_BYTES), "--tmpfs", _sandbox.USER_HOME]
-            in [_f3_runner_argv[i:i + 4] for i in range(len(_f3_runner_argv) - 3)]
-        and _sandbox.RUNTIME_DIR in _f3_tmpfs
-        and _f3_private in _f3_tmpfs
-        and "/opt/invented-private-db" in _f3_tmpfs
-        and _f3_runner_argv.index(_f3_private) < _f3_runner_argv.index(_f3_bundle)
-    ), "F3 runner argv has sized scratch/home, /run, and late private masks"
-    assert (
-        ["--perms", "0444", "--ro-bind-data", "7",
-         f"{_sandbox.RUNNER_WORKDIR}/main.py"]
-            in [_f3_runner_argv[i:i + 5] for i in range(len(_f3_runner_argv) - 4)]
-        and ("8", f"{_sandbox.USER_HOME}/go/pkg/mod")
-            in _sb_mounts(_f3_runner_argv, "--ro-bind-fd")
-        and f"{_sandbox.USER_HOME}/.cache/go-build" not in _f3_runner_argv
-        and _sb_mounts(_f3_runner_argv, "--ro-bind")[-1]
-            == (_f3_bundle, _f3_bundle)
-        and _f3_runner_argv[-2:] == ["--chdir", _sandbox.RUNNER_WORKDIR]
-    ), "F3 runner argv injects one 0444 fd snapshot and only the ro Go module cache"
-    try:
-        _sandbox.build_sandbox_argv(
-            "lesson-runner", _f3_bundle, bundle_root=_f3_root,
-            private_root=_f3_private,
-            private_masks=(f"{_f3_bundle}/invented-secret",),
-            module_cache_fd=8,
-        )
-        _f3_overlap_refused = False
-    except ValueError:
-        _f3_overlap_refused = True
-    assert _f3_overlap_refused, "F3 runner fails closed when a private mask is inside the mounted bundle"
-    try:
-        _sandbox.build_sandbox_argv(
-            "lesson-runner", _f3_bundle, bundle_root=_f3_root,
-        )
-        _f3_missing_private_refused = False
-    except ValueError:
-        _f3_missing_private_refused = True
-    with _sandbox_mock.patch.object(
-        _sandbox, "EPHEMERIS_CHECKOUT_ROOT", "/workspace/invented-checkout"
-    ):
-        _f3_external_checkout_argv = _sandbox.build_sandbox_argv(
-            "lesson-runner", _f3_bundle, bundle_root=_f3_root,
-            private_root=_f3_private,
-            module_cache_fd=8,
-        )
-    assert (
-        _f3_missing_private_refused
-        and "/workspace/invented-checkout" in [
-            _f3_external_checkout_argv[i + 1]
-            for i, arg in enumerate(_f3_external_checkout_argv)
-            if arg == "--tmpfs"
-        ]
-    ), "F3 runner requires private authority and masks an external checkout"
-    with tempfile.TemporaryDirectory(
-        prefix="ephemeris-f3-cache-link-", dir="/tmp"
-    ) as _f3_cache_raw:
-        _f3_cache_root = Path(_f3_cache_raw)
-        _f3_cache_target = _f3_cache_root / "invented-private"
-        _f3_cache_target.mkdir()
-        (_f3_cache_target / "mod").mkdir()
-        _f3_cache_link = _f3_cache_root / "module-cache"
-        _f3_cache_link.symlink_to(_f3_cache_target, target_is_directory=True)
-        with _sandbox_mock.patch.object(
-            _sandbox, "GO_MODULE_CACHE_ROOT", str(_f3_cache_link)
-        ):
-            try:
-                _f3_cache_fd = _sandbox.open_runner_module_cache_fd()
-                os.close(_f3_cache_fd)
-                _f3_cache_link_refused = False
-            except OSError:
-                _f3_cache_link_refused = True
-        _f3_cache_parent_link = _f3_cache_root / "cache-parent"
-        _f3_cache_parent_link.symlink_to(
-            _f3_cache_target, target_is_directory=True
-        )
-        with _sandbox_mock.patch.object(
-            _sandbox, "GO_MODULE_CACHE_ROOT", str(_f3_cache_parent_link / "mod")
-        ):
-            try:
-                _f3_cache_fd = _sandbox.open_runner_module_cache_fd()
-                os.close(_f3_cache_fd)
-                _f3_cache_parent_link_refused = False
-            except OSError:
-                _f3_cache_parent_link_refused = True
-    assert _f3_cache_link_refused and _f3_cache_parent_link_refused, "F3 runner refuses symlinks in the Go module-cache authority path"
-    with _sandbox_mock.patch.object(_sandbox, "RUNNER_FILE_BYTES", 8):
-        try:
-            _sandbox._snapshot_memfd(b"123456789")
-            _f3_oversized_memfd_refused = False
-        except ValueError:
-            _f3_oversized_memfd_refused = True
-    assert _f3_oversized_memfd_refused, "F3 snapshot creation enforces the file-size ceiling"
-
-    async def _f3_snapshot_spawn_contract():
-        observed = {}
-
-        def invented_module_cache_fd():
-            return os.open(
-                "/tmp", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
-            )
-
-        async def successful_spawn(*args, **kwargs):
-            fd = kwargs["pass_fds"][0]
-            observed["fd"] = fd
-            observed["module_cache_fd"] = kwargs["pass_fds"][1]
-            observed["mode"] = os.fstat(fd).st_mode & 0o777
-            observed["argv"] = list(args)
-            observed["new_session"] = kwargs.get("start_new_session")
-            observed["env"] = kwargs["env"]
-            return _types.SimpleNamespace(pid=999, stdout=None, stderr=None)
-
-        with _sandbox_mock.patch.object(_sandbox, "require_sandbox_runtime"), \
-                _sandbox_mock.patch.object(_sandbox, "require_user_scope_runtime"), \
-                _sandbox_mock.patch.object(
-                    _sandbox, "open_runner_module_cache_fd",
-                    side_effect=invented_module_cache_fd,
-                ), \
-                _sandbox_mock.patch.object(
-                    _sandbox, "_systemd_no_expand_option", return_value=()
-                ), \
-                _sandbox_mock.patch.object(
-                    _sandbox.asyncio, "create_subprocess_exec",
-                    side_effect=successful_spawn,
-                ):
-            await _sandbox.spawn_sandboxed(
-                "lesson-runner", _f3_bundle, ["python3", f"{_sandbox.RUNNER_WORKDIR}/main.py"],
-                bundle_root=_f3_root, private_root=_f3_private,
-                stdin=subprocess.DEVNULL, stdout=_asyncio.subprocess.PIPE,
-                stderr=_asyncio.subprocess.PIPE, env=_runner.RUNNER_ENV,
-                snapshot=b"print('invented')\n", snapshot_name="main.py",
-                runner_wall_seconds=30, runner_scope_unit="ephemeris-runner-test",
-            )
-        try:
-            os.fstat(observed["fd"])
-            observed["closed_success"] = False
-        except OSError:
-            observed["closed_success"] = True
-        try:
-            os.fstat(observed["module_cache_fd"])
-            observed["cache_closed_success"] = False
-        except OSError:
-            observed["cache_closed_success"] = True
-
-        failed_fd = {}
-
-        async def failed_spawn(*args, **kwargs):
-            failed_fd["fd"] = kwargs["pass_fds"][0]
-            raise OSError("invented spawn refusal")
-
-        with _sandbox_mock.patch.object(_sandbox, "require_sandbox_runtime"), \
-                _sandbox_mock.patch.object(_sandbox, "require_user_scope_runtime"), \
-                _sandbox_mock.patch.object(
-                    _sandbox, "open_runner_module_cache_fd",
-                    side_effect=invented_module_cache_fd,
-                ), \
-                _sandbox_mock.patch.object(
-                    _sandbox, "_systemd_no_expand_option", return_value=()
-                ), \
-                _sandbox_mock.patch.object(
-                    _sandbox.asyncio, "create_subprocess_exec",
-                    side_effect=failed_spawn,
-                ):
-            try:
-                await _sandbox.spawn_sandboxed(
-                    "lesson-runner", _f3_bundle, ["python3", f"{_sandbox.RUNNER_WORKDIR}/main.py"],
-                    bundle_root=_f3_root, private_root=_f3_private,
-                    env=_runner.RUNNER_ENV, snapshot=b"invented",
-                    snapshot_name="main.py", runner_wall_seconds=30,
-                    runner_scope_unit="ephemeris-runner-test",
-                )
-            except _sandbox.SandboxSpawnError:
-                pass
-        try:
-            os.fstat(failed_fd["fd"])
-            observed["closed_failure"] = False
-        except OSError:
-            observed["closed_failure"] = True
-        return observed
-
-    _f3_snapshot_spawn = _asyncio.run(_f3_snapshot_spawn_contract())
-
-    async def _f3_symlink_authority_contract():
-        with tempfile.TemporaryDirectory(
-            prefix="ephemeris-f3-symlink-", dir="/tmp"
-        ) as raw:
-            physical = Path(raw) / "physical"
-            bundle = physical / "lessons" / "invented-bundle"
-            bundle.mkdir(parents=True)
-            lexical = Path(raw) / "lexical"
-            lexical.symlink_to(physical, target_is_directory=True)
-            with _sandbox_mock.patch.object(_sandbox, "require_sandbox_runtime"), \
-                    _sandbox_mock.patch.object(
-                        _sandbox, "require_user_scope_runtime"
-                    ), _sandbox_mock.patch.object(
-                        _sandbox.asyncio, "create_subprocess_exec"
-                    ) as spawn:
-                try:
-                    await _sandbox.spawn_sandboxed(
-                        "lesson-runner",
-                        lexical / "lessons" / "invented-bundle",
-                        ["/usr/bin/python3", f"{_sandbox.RUNNER_WORKDIR}/main.py"],
-                        bundle_root=lexical / "lessons",
-                        private_root=lexical,
-                        env=_runner.RUNNER_ENV,
-                        snapshot=b"print('invented')\n",
-                        snapshot_name="main.py",
-                        runner_wall_seconds=30,
-                        runner_scope_unit="ephemeris-runner-symlink-test",
-                    )
-                    return False
-                except _sandbox.SandboxSpawnError:
-                    return spawn.call_count == 0
-
-    _f3_symlink_authority_refused = _asyncio.run(
-        _f3_symlink_authority_contract()
-    )
-    _f3_kill_job = _types.SimpleNamespace(
-        scope_unit="ephemeris-runner-invented", process=_types.SimpleNamespace(pid=778899)
-    )
-    with _sandbox_mock.patch.object(_runner.subprocess, "run") as _systemctl_kill, \
-            _sandbox_mock.patch.object(_runner.os, "killpg") as _killpg:
+    _f3_kill_job = _types.SimpleNamespace(process=_types.SimpleNamespace(pid=778899))
+    with _mock.patch.object(_runner.os, "killpg") as _killpg:
         _runner.RunnerService._kill_tree(_f3_kill_job)
-    _f3_scope_kill = (
-        _systemctl_kill.call_args.args[0] == [
-            _sandbox.SYSTEMCTL, "--user", "kill", "--kill-whom=all",
-            "--signal=SIGKILL", "ephemeris-runner-invented.scope",
-        ]
+        _runner.RunnerService._kill_tree(_types.SimpleNamespace(process=None))
+    assert (
+        _killpg.call_count == 1
         and _killpg.call_args.args == (778899, _runner.signal.SIGKILL)
-    )
-    assert (
-        _f3_snapshot_spawn["mode"] == 0o444
-        and _f3_snapshot_spawn["closed_success"]
-        and _f3_snapshot_spawn["cache_closed_success"]
-        and _f3_snapshot_spawn["closed_failure"]
-        and _f3_snapshot_spawn["new_session"] is True
-    ), "F3 snapshot fd is 0444, passed once, and closed on success/failure"
-    assert _f3_symlink_authority_refused, "F3 runner refuses symlinked bundle/private authorities before spawn"
-    assert (
-        _f3_snapshot_spawn["argv"][:len(_sandbox.RUNNER_SCOPE_PREFIX)]
-            == list(_sandbox.RUNNER_SCOPE_PREFIX)
-        and "--unit=ephemeris-runner-test" in _f3_snapshot_spawn["argv"]
-        and "--property=RuntimeMaxSec=35s" in _f3_snapshot_spawn["argv"]
-        and "--property=KillMode=control-group" in _f3_snapshot_spawn["argv"]
-        and _f3_scope_kill
-        and "--clearenv" in _f3_snapshot_spawn["argv"]
-        and ["--setenv", "PWD", _sandbox.RUNNER_WORKDIR]
-            in [_f3_snapshot_spawn["argv"][i:i + 3]
-                for i in range(len(_f3_snapshot_spawn["argv"]) - 2)]
-        and set(_f3_snapshot_spawn["env"]) <= {
-            *set(_runner.RUNNER_ENV), "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
-        }
-    ), "F3 spawn is scope-wrapped and clears wrapper-only environment in bwrap"
+    ), "F3 kill reaches the job's whole process group and skips a job that never spawned"
 
-    with _sandbox_mock.patch.object(
+    with _mock.patch.object(
             _resource_mod, "getrlimit",
             return_value=(0, _resource_mod.RLIM_INFINITY)), \
-            _sandbox_mock.patch.object(_resource_mod, "setrlimit") as _setlimit:
-        _sandbox.apply_profile_rlimits(
-            "lesson-runner", runner_wall_seconds=60
-        )
+            _mock.patch.object(_resource_mod, "setrlimit") as _setlimit:
+        _runner._runner_rlimits(60)()
     _f3_limit_calls = dict(call.args for call in _setlimit.call_args_list)
     assert (
         _f3_limit_calls == {
             _resource_mod.RLIMIT_CPU: (60, 60),
             _resource_mod.RLIMIT_AS: (
-                _sandbox.RUNNER_ADDRESS_SPACE_BYTES,
-                _sandbox.RUNNER_ADDRESS_SPACE_BYTES,
+                _runner.RUNNER_ADDRESS_SPACE_BYTES,
+                _runner.RUNNER_ADDRESS_SPACE_BYTES,
             ),
-            _resource_mod.RLIMIT_NOFILE: (256, 256),
-            _resource_mod.RLIMIT_NPROC: (
-                _sandbox.RUNNER_NPROC, _sandbox.RUNNER_NPROC,
+            _resource_mod.RLIMIT_NOFILE: (
+                _runner.RUNNER_NOFILE, _runner.RUNNER_NOFILE,
             ),
             _resource_mod.RLIMIT_FSIZE: (
-                _sandbox.RUNNER_FILE_BYTES, _sandbox.RUNNER_FILE_BYTES,
+                _runner.RUNNER_FILE_BYTES, _runner.RUNNER_FILE_BYTES,
             ),
         }
-    ), "F3 runner preexec applies CPU/AS/NOFILE/NPROC/FSIZE backstops"
+    ), "F3 runner preexec applies CPU/AS/NOFILE/FSIZE backstops"
 
     _runner._cached_runner_health.cache_clear()
-    with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
-            _sandbox_mock.patch.object(_runner.sandbox, "require_user_scope_runtime") as _scopeprobe, \
-            _sandbox_mock.patch.object(_runner, "_probe_ro_bind_data", return_value="") as _roprobe, \
-            _sandbox_mock.patch.object(_runner, "_probe_go_module_cache", return_value="") as _cacheprobe, \
-            _sandbox_mock.patch.object(_runner, "_probe_result", return_value="") as _allprobe:
+    with _mock.patch.object(_runner, "_probe_result", return_value="") as _allprobe:
         _f3_health_a = _runner.runner_health()
         _f3_health_b = _runner.runner_health()
+    _f3_probed = [call.args[0] for call in _allprobe.call_args_list]
     assert (
         _f3_health_a.available and _f3_health_b.available
-        and _scopeprobe.call_count == 1 and _roprobe.call_count == 1
-        and _cacheprobe.call_count == 1 and _allprobe.call_count == 2
-    ), "F3 health probes bwrap/ro-bind-data/scope/tools once per process"
+        and _f3_probed == [
+            ["/usr/bin/python3", "--version"], ["/usr/local/go/bin/go", "version"],
+        ]
+    ), "F3 health probes each registry executable once per process"
 
     _runner._cached_runner_health.cache_clear()
     _f3_health_workers = 4
@@ -746,7 +280,7 @@ def test_role_runner(client, suite_state):
     _f3_health_entries = []
     _f3_health_results = []
 
-    def _f3_blocking_ro_probe():
+    def _f3_blocking_probe(_argv, **_kw):
         _f3_health_entries.append(threading.get_ident())
         _f3_health_started.set()
         _f3_health_release.wait(timeout=2)
@@ -756,13 +290,7 @@ def test_role_runner(client, suite_state):
         _f3_health_gate.wait(timeout=2)
         _f3_health_results.append(_runner.runner_health())
 
-    with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
-            _sandbox_mock.patch.object(_runner.sandbox, "require_user_scope_runtime"), \
-            _sandbox_mock.patch.object(
-                _runner, "_probe_ro_bind_data", side_effect=_f3_blocking_ro_probe
-            ), _sandbox_mock.patch.object(
-                _runner, "_probe_go_module_cache", return_value=""
-            ), _sandbox_mock.patch.object(_runner, "_probe_result", return_value=""):
+    with _mock.patch.object(_runner, "_probe_result", side_effect=_f3_blocking_probe):
         _f3_health_threads = [
             threading.Thread(target=_f3_health_worker)
             for _ in range(_f3_health_workers)
@@ -775,32 +303,18 @@ def test_role_runner(client, suite_state):
         for _thread in _f3_health_threads:
             _thread.join(timeout=2)
     assert (
-        len(_f3_health_entries) == 1
+        len(set(_f3_health_entries)) == 1
         and len(_f3_health_results) == _f3_health_workers
         and all(result.available for result in _f3_health_results)
     ), "F3 concurrent cold health callers share one process-lifetime probe"
     _runner._cached_runner_health.cache_clear()
-    with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
-            _sandbox_mock.patch.object(_runner, "_probe_ro_bind_data", return_value="unsupported"):
+    with _mock.patch.object(_runner, "_probe_result", return_value="unsupported"):
         try:
             _runner.require_runner_health()
             _f3_health_refusal = False
         except _runner.RunnerUnavailableError as exc:
             _f3_health_refusal = "unsupported" in str(exc)
-    _runner._cached_runner_health.cache_clear()
-    with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
-            _sandbox_mock.patch.object(_runner, "_probe_ro_bind_data", return_value=""), \
-            _sandbox_mock.patch.object(_runner.sandbox, "require_user_scope_runtime"), \
-            _sandbox_mock.patch.object(_runner, "_probe_result", return_value=""), \
-            _sandbox_mock.patch.object(
-                _runner, "_probe_go_module_cache", return_value="module cache absent"
-            ):
-        try:
-            _runner.require_runner_health()
-            _f3_cache_refusal = False
-        except _runner.RunnerUnavailableError as exc:
-            _f3_cache_refusal = "module cache absent" in str(exc)
-    assert _f3_health_refusal and _f3_cache_refusal, "F3 unhealthy runner refuses visibly with no degraded spawn"
+    assert _f3_health_refusal, "F3 unhealthy runner refuses visibly with no degraded spawn"
     _runner._cached_runner_health.cache_clear()
 
     class _F3Process:
@@ -824,17 +338,122 @@ def test_role_runner(client, suite_state):
             if not self._result.done():
                 self._result.set_result(returncode)
 
+    async def _f3_spawn_contract():
+        observed = {}
+
+        async def fake_exec(*argv, **kwargs):
+            snapshot = Path(kwargs["cwd"]) / "main.py"
+            observed.update(
+                argv=argv, cwd=kwargs["cwd"], env=kwargs["env"],
+                new_session=kwargs.get("start_new_session"),
+                preexec=kwargs.get("preexec_fn"),
+                mode=stat_module.S_IMODE(snapshot.lstat().st_mode),
+                content=snapshot.read_bytes(),
+                entries=sorted(os.listdir(kwargs["cwd"])),
+            )
+            process = _F3Process()
+            process.finish(0)
+            return process
+
+        service = _runner.RunnerService(health_hook=lambda: None)
+        request = _runner.RunnerRequest(
+            "spawn", "blk_demo", "sha256:invented", "spawn-key",
+            "python-script-v1", "attempts/blk_demo/main.py",
+            b"print('invented')\n", "/tmp/private/lessons/demo",
+            "/tmp/private/lessons",
+        )
+        with _mock.patch.object(
+                _runner.asyncio, "create_subprocess_exec", side_effect=fake_exec):
+            job = (await service.admit(request)).job
+            await service.wait(job.job_id)
+        observed["workdir"] = job.workdir
+        observed["workdir_removed"] = not os.path.exists(job.workdir)
+        observed["exit_code"] = job.exit_code
+        return observed
+
+    _f3_spawn = _asyncio.run(_f3_spawn_contract())
+    assert (
+        _f3_spawn["argv"] == ("/usr/bin/python3", f"{_f3_spawn['workdir']}/main.py")
+        and _f3_spawn["cwd"] == _f3_spawn["workdir"]
+        and os.path.basename(_f3_spawn["workdir"]).startswith("ephemeris-runner-")
+        and _f3_spawn["entries"] == ["main.py"]
+        and _f3_spawn["mode"] == 0o444
+        and _f3_spawn["content"] == b"print('invented')\n"
+        and _f3_spawn["env"] == dict(_runner.RUNNER_ENV)
+        and _f3_spawn["new_session"] is True
+        and callable(_f3_spawn["preexec"])
+        and _f3_spawn["exit_code"] == 0
+        and _f3_spawn["workdir_removed"]
+    ), f"F3 a snapshot runs read-only from its own fresh directory, removed after the job: {_f3_spawn}"
+
+    async def _f3_real_execution():
+        from app.services.runner_registry import SNAPSHOT_PATH, RunnerSpec
+
+        registry = {
+            "py": RunnerSpec(("/usr/bin/python3", SNAPSHOT_PATH), (".py",), wall_seconds=1),
+        }
+        service = _runner.RunnerService(health_hook=lambda: None, registry=registry)
+
+        sleep_marker = f"300.{os.getpid()}"
+
+        def req(key, snapshot):
+            return _runner.RunnerRequest(
+                "real", "blk_demo", "sha256:invented", key, "py", "main.py",
+                snapshot, "/tmp/private/lessons/demo", "/tmp/private/lessons",
+            )
+
+        async def run(key, snapshot):
+            job = (await service.admit(req(key, snapshot))).job
+            await service.wait(job.job_id)
+            await job.event_attempted.wait()
+            output = "".join(
+                event["text"] for event in job.events if event["event"] == "output"
+            )
+            return job, output
+
+        printed, printed_output = await run(
+            "printed", b"import os, sys\nprint('invented', os.getcwd())\nsys.stderr.write('warned\\n')\n",
+        )
+        stuck, _ = await run(
+            "stuck",
+            f"import subprocess, time\nsubprocess.Popen(['/bin/sleep', '{sleep_marker}'])\n"
+            "while True: time.sleep(1)\n".encode(),
+        )
+        flood, _ = await run(
+            "flood", b"import sys\nwhile True: sys.stdout.write('x' * 65536)\n",
+        )
+        return printed, printed_output, stuck, flood, sleep_marker
+
+    _f3_printed, _f3_printed_output, _f3_stuck, _f3_flood, _f3_sleep_marker = (
+        _asyncio.run(_f3_real_execution())
+    )
+    assert (
+        _f3_printed.cause == "exit" and _f3_printed.exit_code == 0
+        and f"invented {_f3_printed.workdir}" in _f3_printed_output
+        and "warned" in _f3_printed_output
+        and not os.path.exists(_f3_printed.workdir)
+    ), f"F3 a real snapshot runs and its output comes back: {_f3_printed_output!r}"
+    assert (
+        _f3_stuck.cause == "timeout" and _f3_stuck.signal == 9
+        and subprocess.run(
+            ["pgrep", "-f", f"sleep {_f3_sleep_marker}"], capture_output=True, text=True,
+        ).returncode != 0
+    ), "F3 a snapshot over its wall limit is killed with the children it spawned"
+    assert (
+        _f3_flood.cause == "output-limit" and _f3_flood.truncated
+        and _f3_flood.output_bytes == _runner.OUTPUT_LIMIT_BYTES
+    ), "F3 a snapshot flooding stdout is stopped at the output cap"
+
     async def _f3_service_contracts():
         def req(
             lesson="lesson-a", key="key-a", block="blk_demo",
-            private_root="/tmp/private",
             snapshot=b"print('invented')\n",
         ):
             return _runner.RunnerRequest(
                 lesson, block, "sha256:invented", key,
                 "python-script-v1", "attempts/blk_demo/main.py",
                 snapshot, "/tmp/private/lessons/demo",
-                "/tmp/private/lessons", private_root,
+                "/tmp/private/lessons",
             )
 
         result = {}
@@ -846,7 +465,7 @@ def test_role_runner(client, suite_state):
             return process
 
         service = _runner.RunnerService(spawn_hook=spawn, health_hook=lambda: None)
-        with _sandbox_mock.patch.object(_runner.sandbox, "RUNNER_FILE_BYTES", 8):
+        with _mock.patch.object(_runner, "RUNNER_FILE_BYTES", 8):
             try:
                 await service.admit(req(key="oversized", snapshot=b"123456789"))
                 result["oversized_snapshot"] = False
@@ -854,11 +473,6 @@ def test_role_runner(client, suite_state):
                 result["oversized_snapshot"] = (
                     not processes and service.active_total == 0
                 )
-        try:
-            await service.admit(req(key="missing-private", private_root=None))
-            result["missing_private"] = False
-        except _runner.RunnerUnavailableError:
-            result["missing_private"] = not processes and service.active_total == 0
         admission = await service.admit(req())
         result["starting"] = admission.job.state == _runner.STARTING
         await _asyncio.sleep(0)
@@ -945,7 +559,7 @@ def test_role_runner(client, suite_state):
                 break
             await _asyncio.sleep(0.01)
         natural_processes[0].returncode = 0
-        with _sandbox_mock.patch.object(
+        with _mock.patch.object(
                 _runner.RunnerService, "_kill_tree") as natural_kill:
             natural_cancelled = await natural_service.cancel(natural.job_id)
         natural_processes[0].finish(0)
@@ -977,7 +591,7 @@ def test_role_runner(client, suite_state):
             kill_started.set()
             kill_release.wait(timeout=2)
 
-        with _sandbox_mock.patch.object(
+        with _mock.patch.object(
                 _runner.RunnerService, "_kill_tree",
                 side_effect=blocking_kill) as kill:
             cancel_task = _asyncio.create_task(
@@ -1282,7 +896,7 @@ def test_role_runner(client, suite_state):
         shutdown_job = (await shutdown_service.admit(req("shutdown", "shutdown-key"))).job
         await _asyncio.sleep(0)
         await _asyncio.sleep(0)
-        with _sandbox_mock.patch.object(_runner.RunnerService, "_kill_tree"):
+        with _mock.patch.object(_runner.RunnerService, "_kill_tree"):
             shutdown_task = _asyncio.create_task(shutdown_service.shutdown())
             await _asyncio.sleep(0)
             shutdown_processes[0].finish(-9)
@@ -1300,10 +914,7 @@ def test_role_runner(client, suite_state):
         _f3_service.get("starting") and _f3_service.get("running")
         and _f3_service.get("normal")
     ), f"F3 state machine reaches FINISHED only after reap/EOF with split UTF-8 intact: {str(_f3_service)}"
-    assert (
-        _f3_service.get("missing_private")
-        and _f3_service.get("oversized_snapshot")
-    ), f"F3 admission refuses a missing private authority before spawn: {str(_f3_service)}"
+    assert _f3_service.get("oversized_snapshot"), f"F3 admission refuses an oversized snapshot before spawn: {str(_f3_service)}"
     assert (
         _f3_service.get("first_cause_release")
           and _f3_service.get("spawn_failure")
@@ -1333,7 +944,6 @@ def test_role_runner(client, suite_state):
                 snapshot=b"print('invented')\n",
                 bundle_dir="/tmp/private/lessons/demo",
                 bundle_root="/tmp/private/lessons",
-                private_root="/tmp/private",
             )
             job = _runner.RunnerJob(
                 f"job-{cause}", request,
@@ -1390,7 +1000,7 @@ def test_role_runner(client, suite_state):
             file_rev="sha256:invented", idempotency_key="invented-disconnect-key",
             runner_id="python-script-v1", filename="main.py",
             snapshot=b"print('invented')\n", bundle_dir="/tmp/invented-bundle",
-            bundle_root="/tmp", private_root="/tmp/invented-private",
+            bundle_root="/tmp",
         )
         job = _runner.RunnerJob(
             "invented-disconnect-job", request_data,
@@ -1430,73 +1040,6 @@ def test_role_runner(client, suite_state):
 
     _f4_disconnect_readers = _asyncio.run(_f4_disconnect_before_body_contract())
     assert _f4_disconnect_readers == 0, f"F4 disconnect before SSE body iteration releases its reader lease: {str(_f4_disconnect_readers)}"
-
-    try:
-        _runner.require_runner_health()
-        _f3_host_runtime = True
-        _f3_runtime_detail = ""
-    except _runner.RunnerUnavailableError as exc:
-        _f3_host_runtime = False
-        _f3_runtime_detail = str(exc)
-    if _f3_host_runtime:
-        _f3_probe_run = subprocess.run(
-            [sys.executable, "scripts/probe_runner.py"],
-            cwd=ROOT,
-            env=os.environ.copy(),
-            text=True,
-            capture_output=True,
-            timeout=180,
-        )
-        try:
-            _f3_probe = json.loads(_f3_probe_run.stdout)
-        except (TypeError, ValueError):
-            _f3_probe = {}
-        _f3_probe_extra = _f3_probe_run.stderr.strip() or _f3_probe_run.stdout.strip()
-        assert (
-            _f3_probe_run.returncode == 0
-            and _f3_probe.get("success", {}).get("exit_code") == 0
-            and _f3_probe.get("syntax_error", {}).get("stderr_has_syntax_error") is True
-            and _f3_probe.get("timeout", {}).get("cause") == "timeout"
-            and _f3_probe.get("file_limit", {}).get("failed") is True
-        ), f"F3 host matrix: success, syntax error, timeout, and file backstop: {_f3_probe_extra}"
-        assert (
-            _f3_probe.get("output_overflow") == {
-                "cause": "output-limit", "output_bytes": 1024 * 1024,
-                "state": "FINISHED", "truncated": True,
-            }
-        ), f"F3 host matrix: raw-byte overflow kills at exactly 1 MiB: {_f3_probe_extra}"
-        assert (
-            _f3_probe.get("descendant_cleanup", {}).get("both_eof") is True
-            and _f3_probe.get("descendant_cleanup", {}).get("cause") == "cancelled"
-            and _f3_probe.get("shutdown", {}).get("cause") == "shutdown"
-            and _f3_probe.get("shutdown", {}).get("active_total") == 0
-        ), f"F3 host matrix: descendant cleanup and shutdown both reap to EOF: {_f3_probe_extra}"
-        _f3_isolation = _f3_probe.get("isolation", {})
-        assert (
-            all(_f3_isolation.get(name) is True for name in (
-                "repo_absent", "private_sentinel_absent", "other_bundle_absent",
-                "run_empty", "network_absent",
-            ))
-        ), f"F3 host isolation: repo/private/other bundles/run/network are absent: {_f3_probe_extra}"
-        assert (
-            all(_f3_isolation.get(name) is True for name in (
-                "bundle_readable", "bundle_read_only", "module_cache_read_only",
-                "scratch_writable", "gocache_writable",
-            ))
-            and _f3_isolation.get("snapshot_mode") == "0o444"
-            and _f3_isolation.get("home_entries") == [".cache", "go"]
-            and set(_f3_isolation.get("runner_env", ())) == set(_runner.RUNNER_ENV)
-        ), f"F3 host isolation: bundle/module cache ro; scratch/GOCACHE rw; snapshot 0444: {_f3_probe_extra}"
-        assert (
-            _f3_probe.get("cold_go", {}).get("exit_code") == 0
-            and _f3_probe.get("cold_go", {}).get("warm_child_reported") is True
-            and _f3_probe.get("cold_go", {}).get("wall_ms", 60001) < 60000
-            and _f3_probe.get("go_repeated_and_changed", {}).get("repeat_ok") is True
-            and _f3_probe.get("go_repeated_and_changed", {}).get("changed_source_observed") is True
-            and _f3_probe.get("go_compile_error", {}).get("stderr_has_undefined") is True
-        ), f"F3 cold Go and warm-within-job/repeat/change/compile-error matrix passes: {_f3_probe_extra}"
-    else:
-        assert True, f"F3 host matrix skipped when full runner runtime is unavailable: {_f3_runtime_detail}"
 
     suite_state.update({
         name: value for name, value in locals().items()
