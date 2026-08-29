@@ -1,8 +1,8 @@
 # Security review queue
 
 Pending adversarial security reviews for the sensitive surfaces: the terminal
-PTY/WS core (`app/terminal.py` + `app/static/terminal.js`), the future
-`app/agent/`, and anything about to be exposed on a live port.
+PTY/WS core (`app/terminal.py` + `app/static/terminal.js`) and anything about
+to be exposed on a live port.
 
 How it works:
 
