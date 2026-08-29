@@ -257,7 +257,7 @@ is activated; the iframe never receives raw HTTP status as authority.
 | 409 | `unsafe-file` | root, parent, or artifact descriptor is unsafe |
 | 409 | `file-missing` | declared run artifact does not exist |
 | 409 | `file-conflict` | save base or run revision differs/current identity changed |
-| 409 | `runner-unavailable` | health, lifecycle, sandbox, or scope prerequisite is unavailable |
+| 409 | `runner-unavailable` | health or lifecycle prerequisite is unavailable |
 | 409 | `busy` | lesson/global job cap or two-reader cap is full |
 | 409 | `idempotency-conflict` | key was used for another block/revision |
 | 413 | `payload-too-large`, `file-too-large` | request or artifact exceeds its byte cap |

@@ -9,8 +9,7 @@ for recording what the **tutor concluded** — the counterpart to
 D-S2-2 (issue [#4](https://github.com/jointsome0-lgtm/ephemeris/issues/4)).
 
 The caller is the lesson-agent terminal session — `curl` or any HTTP-capable
-tool from inside the sandbox, which has host-loopback reach by design — or the
-owner from a shell. Nothing here is reachable from a lesson page: the bridge
+tool from the lesson-agent shell — or the owner from a shell. Nothing here is reachable from a lesson page: the bridge
 ABI is the *learner's* channel and is untouched by phase S. Granting pages a
 verdict-writing operation would let lesson content grade itself.
 

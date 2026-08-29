@@ -1135,10 +1135,9 @@ def test_002_ui_and_workspace(client, suite_state):
     _brief_before = [(path.stat().st_mtime_ns, path.read_bytes()) for path in _brief_paths]
     _learner_ws = lessons_svc.resolve_terminal_workspace(_lt["slug"])
     _brief_after = [(path.stat().st_mtime_ns, path.read_bytes()) for path in _brief_paths]
-    # Identical to the agent's view but for the two agent-only directories: the
-    # learner role runs no agents, so it is handed no memory directory to bind
-    # over $HOME and no build workspace to install packages into.
-    _agent_only = ("agent_home", "build_workspace")
+    # Identical to the agent's view but for the build workspace: the learner
+    # role installs no packages.
+    _agent_only = ("build_workspace",)
     assert (
         {k: v for k, v in _learner_ws.items() if k not in _agent_only}
         == {k: v for k, v in ws_info.items() if k not in _agent_only}
@@ -1148,42 +1147,22 @@ def test_002_ui_and_workspace(client, suite_state):
         and lessons_svc.resolve_terminal_workspace("no-such-lesson-slug") is None
     ), "resolve_terminal_workspace validates the bundle without rewriting briefs"
 
-    # The agent home is real, per-lesson, outside the bundle, and persistent —
-    # the whole point of it (a reopened lesson terminal can `claude --continue`).
-    _agent_home = Path(ws_info["agent_home"])
-    _memory_probe = _agent_home / "claude" / "projects" / "probe.jsonl"
-    _memory_probe.parent.mkdir(parents=True, exist_ok=True)
-    _memory_probe.write_text("kept", encoding="utf-8")
-    assert (
-        _agent_home == lessons_svc.AGENT_HOMES_DIR / _lt["slug"]
-        and not _agent_home.is_relative_to(lessons_svc.LESSONS_DIR)
-        and all(
-            (_agent_home / name).is_dir()
-            for name in lessons_svc.AGENT_HOME_SUBDIRS
-        )
-    ), "prepare_terminal_workspace gives the lesson its own agent home outside the bundle"
-    assert (
-        lessons_svc.prepare_terminal_workspace(_lt["slug"])["agent_home"]
-        == str(_agent_home)
-        and _memory_probe.read_text(encoding="utf-8") == "kept"
-    ), "reopening a lesson terminal reuses the same agent home and keeps its memory"
-
-    # The build workspace, on the same terms and for a sharper reason: bun
-    # fills `node_modules` with hardlinks into one shared cache, so it must not
-    # be a real directory inside a bundle its own session can write (#161).
-    from app import sandbox as _sandbox_161
+    # The build workspace is real, per-lesson, outside the bundle, and
+    # persistent: bun fills `node_modules` with hardlinks into one shared cache,
+    # so it must not be a real directory inside a bundle its own session can
+    # write (#161). The bundle carries a link to it and nothing else.
     _build_ws = Path(ws_info["build_workspace"])
-    _mount = _sandbox_161.BUILD_WORKSPACE_MOUNT
+    _mount = lessons_svc.BUILD_WORKSPACE_LINK
     _pkg_probe = _build_ws / _mount / "left-by-an-install"
     _pkg_probe.write_text("kept", encoding="utf-8")
     assert (
         _build_ws == lessons_svc.BUILD_WORKSPACES_DIR / _lt["slug"]
         and not _build_ws.is_relative_to(lessons_svc.LESSONS_DIR)
         and (_build_ws / _mount).is_dir()
-        # The bundle carries the mount POINT and nothing else: bwrap makes a
-        # real directory of it on the host either way, so the app owns it.
-        and (Path(ws_info["dir"]) / _mount).is_dir()
-        and not any((Path(ws_info["dir"]) / _mount).iterdir())
+        and (Path(ws_info["dir"]) / _mount).is_symlink()
+        and os.readlink(Path(ws_info["dir"]) / _mount) == str(_build_ws / _mount)
+        and (Path(ws_info["dir"]) / _mount / "left-by-an-install").read_text(
+            encoding="utf-8") == "kept"
     ), "prepare_terminal_workspace gives the lesson a build workspace outside the bundle"
     assert (
         lessons_svc.prepare_terminal_workspace(_lt["slug"])["build_workspace"]
@@ -1197,9 +1176,11 @@ def test_002_ui_and_workspace(client, suite_state):
     ), "the build mount point must be a reserved bundle name"
 
     # `node_modules` was an ordinary authorable name before that reservation,
-    # so a bundle may already hold a populated one. Binding an empty workspace
-    # over it would hide it from the agent and leave it on disk: it is moved
-    # aside like any other foreign node instead.
+    # so a bundle may already hold a populated one. Linking the workspace over
+    # it would hide it from the agent and leave it on disk: it is moved aside
+    # like any other foreign node instead. An empty directory — the shape
+    # every bundle carried before the link — is simply replaced.
+    (Path(ws_info["dir"]) / _mount).unlink()
     _stale_pkgs = Path(ws_info["dir"]) / _mount / "left-by-an-older-bundle"
     _stale_pkgs.mkdir(parents=True, exist_ok=True)
     (_stale_pkgs / "index.js").write_text("older", encoding="utf-8")
@@ -1212,28 +1193,37 @@ def test_002_ui_and_workspace(client, suite_state):
         len(_asides) == 1
         and (_asides[0] / "left-by-an-older-bundle" / "index.js").read_text(
             encoding="utf-8") == "older"
-        and (Path(ws_info["dir"]) / _mount).is_dir()
-        and not any((Path(ws_info["dir"]) / _mount).iterdir())
+        and (Path(ws_info["dir"]) / _mount).is_symlink()
     ), "a populated bundle node_modules is preserved, not silently shadowed"
+    (Path(ws_info["dir"]) / _mount).unlink()
+    (Path(ws_info["dir"]) / _mount).mkdir()
+    assert (
+        lessons_svc.prepare_terminal_workspace(_lt["slug"]) is not None
+        and (Path(ws_info["dir"]) / _mount).is_symlink()
+        and len([
+            p for p in Path(ws_info["dir"]).iterdir()
+            if p.name.startswith(f"{_mount}.collision-")
+        ]) == 1
+    ), "an empty bundle node_modules becomes the link without an aside copy"
 
     # The bundle directory is what `_ensure_bundle_manifest` recreates when it
-    # goes missing. Preparing the mount point — a directory INSIDE it — before
-    # that recovery would turn a recoverable bundle into a refused terminal.
+    # goes missing. Preparing the link — INSIDE it — before that recovery
+    # would turn a recoverable bundle into a refused terminal.
     import shutil as _shutil_161
     _shutil_161.rmtree(Path(ws_info["dir"]))
     assert lessons_svc.prepare_terminal_workspace(_lt["slug"]) is not None, (
         "a missing bundle directory is rebuilt, not turned into a refusal"
     )
-    assert (Path(ws_info["dir"]) / _mount).is_dir(), (
-        "the rebuilt bundle carries its mount point"
+    assert (Path(ws_info["dir"]) / _mount).is_symlink(), (
+        "the rebuilt bundle carries its link"
     )
     term_py = (ROOT / "app" / "terminal.py").read_text(encoding="utf-8")
     assert (
         "prepare_terminal_workspace" in term_py
         and 'ws.query_params.get("lesson")' in term_py
-        and 'await spawn_sandboxed(' in term_py
+        and "cwd=workspace_dir," in term_py
         and 'return "lesson-agent" if lesson is not None else "plain"' in term_py
-    ), "terminal.py routes lesson sessions through the lesson-agent sandbox"
+    ), "terminal.py opens lesson sessions in the lesson's bundle directory"
     assert (
         "function openLessonTab" in terminal_js
         and "'lesson=' + encodeURIComponent(tab.lesson)" in terminal_js

@@ -33,14 +33,27 @@ import logging
 import os
 import re
 import shutil
+import signal
 import stat
 import time
 from pathlib import Path, PurePosixPath
 
-from .. import sandbox
 from . import bundle_schema, lessons, render_check
 
 _log = logging.getLogger(__name__)
+
+# The package manager the build steps drive. Addressed by absolute path: the
+# steps get a PATH of their own, not the service's.
+BUN_BINARY = os.path.expanduser("~/.bun/bin/bun")
+BUN_CACHE_DIR = os.path.expanduser("~/.bun/install/cache")
+# Where the bundle step writes its outputs, inside the workspace: nothing bun
+# reads configuration from lives under it, and the artifact is judged there
+# before the bundle is allowed to see it.
+BUILD_OUTPUT_DIR = "out"
+# Both steps run from an environment of the app's choosing rather than the
+# service's — proxy variables, tokens, whatever systemd handed it — so nothing
+# in it decides how a package name resolves.
+_STEP_ENV = {"PATH": "/usr/bin:/bin", "HOME": os.path.expanduser("~"), "TMPDIR": "/tmp"}
 
 # 30 days, in seconds — bun's unit, unlike npm's `min-release-age`, which
 # counted days. Long enough that a compromised release has been found by
@@ -189,12 +202,9 @@ def _seed_workspace(workspace: Path, slug: str) -> None:
     only step that needs it, and deliberately WITHOUT a `bunfig.toml`: every
     setting that matters is on the argv, and a config file beside cwd is one
     more place a future reader would have to check before believing the
-    quarantine holds. With no file here and a blank `$HOME` in the view, bun
-    finds no configuration at all — which is the state the argv assumes.
+    quarantine holds. With no file here, the argv is where the rules are.
     """
-    # The one directory the bundle step may write. It exists before the view is
-    # built because bubblewrap will not bind a source that is not there.
-    (workspace / sandbox.BUILD_OUTPUT_DIR).mkdir(mode=0o700, exist_ok=True)
+    (workspace / BUILD_OUTPUT_DIR).mkdir(mode=0o700, exist_ok=True)
     manifest = workspace / "package.json"
     if manifest.exists():
         return
@@ -220,74 +230,48 @@ def _atomic_write(path: Path, data: bytes, *, mode: int = 0o600) -> None:
 
 
 def _require_build_runtime() -> None:
-    """Everything the view needs, checked before bubblewrap is asked to mount it.
-
-    Not only the sandbox: bwrap fails at *setup* when a `--bind` source is
-    missing, and a nonzero exit during setup is indistinguishable from a
-    package manager that could not resolve a version. Without this, a host with
-    no bun installed answers a build request with `install-failed` 422 and the
-    output of a mount error — true, unactionable, and about the wrong thing.
-    """
-    try:
-        sandbox.require_sandbox_runtime()
-        # The step is not started outside its resource scope. A macro that
-        # allocates or forks in a loop takes the host down long before either
-        # step's timeout fires, and the app is a single worker on that host.
-        sandbox.require_user_scope_runtime()
-    except sandbox.SandboxUnavailableError as exc:
-        raise BuildError("build-unavailable", 503, str(exc)) from exc
-    if not os.access(sandbox.BUN_BINARY, os.X_OK):
+    """A host with no bun answers with a 503 that says so, not an install failure."""
+    if not os.access(BUN_BINARY, os.X_OK):
         raise BuildError(
             "build-unavailable", 503,
-            f"no executable package manager at {sandbox.BUN_BINARY}",
+            f"no executable package manager at {BUN_BINARY}",
         )
     # Created rather than demanded: bun makes it on first use anyway, and on a
     # host that has never installed anything its absence is not a fault.
     try:
-        os.makedirs(sandbox.BUN_CACHE_DIR, mode=0o700, exist_ok=True)
+        os.makedirs(BUN_CACHE_DIR, mode=0o700, exist_ok=True)
     except OSError as exc:
         raise BuildError(
             "build-unavailable", 503,
-            f"no usable package cache at {sandbox.BUN_CACHE_DIR}: {exc}",
+            f"no usable package cache at {BUN_CACHE_DIR}: {exc}",
         ) from exc
 
 
 async def _run_step(
-    step: sandbox.BuildStep,
+    step: str,
     *,
     workspace: Path,
-    bundle_dir: Path | None,
     command: list[str],
     timeout: float,
 ) -> tuple[int, str]:
-    """Run one step in its mount view; return its exit status and output tail."""
+    """Run one step from the workspace; return its exit status and output tail.
+
+    cwd is the app-owned workspace for both steps and the entry travels as an
+    absolute path: `bunfig.toml` carries `preload`, which executes a script,
+    and bun reads it from cwd — the bundle, writable from inside the agent's
+    own session, is never cwd.
+    """
     _require_build_runtime()
-    try:
-        argv = sandbox.build_step_argv(
-            step,
-            build_workspace=str(workspace),
-            bundle_root=str(lessons.LESSONS_DIR),
-            private_root=str(lessons.LESSONS_DIR.parent),
-            bundle_dir=str(bundle_dir) if bundle_dir is not None else None,
-            command=command,
-        )
-        argv = [*sandbox.build_scope_prefix(int(timeout)), *argv]
-    except ValueError as exc:
-        raise BuildError("build-unavailable", 500, f"could not build the step view: {exc}") from exc
     started = time.monotonic()
-    # `systemd-run --user` finds its bus through these two, and only these two:
-    # bwrap's `--clearenv` drops them again before the step's own command runs.
-    env = {
-        name: value for name in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
-        if (value := os.environ.get(name))
-    }
     try:
         process = await asyncio.create_subprocess_exec(
-            *argv,
+            *command,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env=env,
+            cwd=workspace,
+            env=_STEP_ENV,
+            start_new_session=True,
         )
     except OSError as exc:
         raise BuildError("build-unavailable", 503, f"could not start {step}: {exc}") from exc
@@ -323,19 +307,21 @@ async def _kill(process: asyncio.subprocess.Process) -> None:
 
     The guarantee owed to the caller is the *kill*, and it is taken before the
     first `await`: no bun keeps writing the workspace after the lock protecting
-    it is released, whatever happens to this coroutine next. The scope's
-    `KillMode=control-group` takes the children with it.
+    it is released, whatever happens to this coroutine next. The step was
+    started as a session leader, so the kill reaches its children too — and it
+    is sent whether or not the leader itself is still there: a child that
+    inherited the output pipe is exactly what keeps the tail read waiting
+    after the leader has gone.
 
     On the cancellation path the `await` raises again straight away, which is
     fine and deliberately not shielded — asyncio's child watcher reaps the
     process on SIGCHLD whether or not anyone is waiting, while a shielded task
     left running past the loop's own shutdown is a real leak.
     """
-    if process.returncode is None:
-        try:
-            process.kill()
-        except ProcessLookupError:  # pragma: no cover - it finished as we looked
-            pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
     # The output pipe outlives its reader. Measured on CPython 3.10: cancelling
     # the task inside `StreamReader.read` leaves the read transport open, so the
     # subprocess transport never finishes and its fd waits for the collector.
@@ -373,7 +359,7 @@ async def _tail_of(stream: asyncio.StreamReader, limit: int) -> bytes:
 def _install_argv(packages: list[str]) -> list[str]:
     """The install command line, with both rules on it and neither negotiable."""
     argv = [
-        sandbox.BUN_BINARY,
+        BUN_BINARY,
         "add" if packages else "install",
         # Isolate this lesson's files from the shared cache entry they were
         # copied out of; see the module docstring for the measurement.
@@ -398,7 +384,7 @@ def _install_argv(packages: list[str]) -> list[str]:
 
 def _bundle_argv(entry: Path, outdir: Path) -> list[str]:
     return [
-        sandbox.BUN_BINARY, "build", str(entry),
+        BUN_BINARY, "build", str(entry),
         "--target=browser",
         # One classic script, and the reason is the opaque origin: a lesson
         # renders inside `sandbox allow-scripts`, where an external MODULE
@@ -469,15 +455,15 @@ def _linked_paths(lesson_dir: Path) -> list[str]:
     missing, full stop. So the target gets compiled into the artifact, and a
     link pointing outside the bundle gets content the bundle never held.
 
-    The mount point is skipped: `node_modules` is not bundle content but this
-    app's own bind of the build workspace, and a package manager fills it with
-    links (`.bin` shims) by design.
+    `node_modules` is skipped: it is not bundle content but this app's own
+    link to the build workspace, and a package manager fills that with links
+    (`.bin` shims) by design.
     """
     found: list[str] = []
     for parent, dirs, files in os.walk(lesson_dir, followlinks=False):
         here = Path(parent)
         if here == lesson_dir:
-            dirs[:] = [d for d in dirs if d != sandbox.BUILD_WORKSPACE_MOUNT]
+            dirs[:] = [d for d in dirs if d != lessons.BUILD_WORKSPACE_LINK]
         for name in list(dirs) + files:
             path = here / name
             if path.is_symlink():
@@ -680,8 +666,7 @@ def _empty_outdir(outdir: Path, steps: list[dict]) -> None:
 
     Removed rather than emptied in place because `shutil.rmtree` refuses to
     descend through a symlink, and recreating the name afterwards costs one
-    syscall. Nothing is mounted here between steps; bwrap makes the bind each
-    time it starts one.
+    syscall.
     """
     shutil.rmtree(outdir, ignore_errors=True)
     try:
@@ -919,7 +904,7 @@ async def _build_locked(
 
     started = time.monotonic()
     code, output = await _run_step(
-        "install", workspace=workspace, bundle_dir=None,
+        "install", workspace=workspace,
         command=_install_argv(add), timeout=INSTALL_TIMEOUT_SECONDS,
     )
     steps.append({"step": "install", "ok": code == 0,
@@ -943,16 +928,15 @@ async def _build_locked(
         )
 
     # Straight into the workspace: the artifact is judged before the bundle is
-    # allowed to see it, and `<workspace>` is the one directory in the view
-    # that is writable and outside anything this app serves.
-    outdir = workspace / sandbox.BUILD_OUTPUT_DIR
+    # allowed to see it, and the workspace is outside anything this app serves.
+    outdir = workspace / BUILD_OUTPUT_DIR
     # Cleared first, so a bundler that exits 0 without writing cannot get the
     # previous run's bytes accepted as this run's result — and so a stylesheet
     # from a graph that no longer imports one cannot be carried forward.
     _empty_outdir(outdir, steps)
     started = time.monotonic()
     code, output = await _run_step(
-        "bundle", workspace=workspace, bundle_dir=lesson_dir,
+        "bundle", workspace=workspace,
         command=_bundle_argv(entry_path, outdir), timeout=BUNDLE_TIMEOUT_SECONDS,
     )
     steps.append({"step": "bundle", "ok": code == 0,

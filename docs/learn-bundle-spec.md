@@ -97,20 +97,21 @@ emptied, and git refuses either. Setup is best-effort — a missing or failing
 `git` is logged and skipped, and the bundle read proceeds unchanged. It also
 means a later change to the rules re-applies itself. History is local: no
 remote, no push, and one repository per bundle rather than one over the
-`lessons/` tree, because the lesson-scoped sandbox only ever sees its own
-bundle directory.
+`lessons/` tree, because a lesson session works in its own bundle directory
+and its history is that lesson's alone.
 
-The build leaves the repository two things a commit made inside the sandbox
-cannot get anywhere else. A repository-local `user.name`/`user.email` — a
-non-personal identity, since nothing here is the owner's work and there is no
-remote — because the lesson-agent sandbox binds a blank `$HOME` with no
-`.gitconfig` and passes no `GIT_AUTHOR_*`, so an unconfigured commit would die
-on "unable to auto-detect email address". And app-owned exclude rules in
+The build leaves the repository two things. A repository-local
+`user.name`/`user.email` — a non-personal identity, since nothing here is the
+owner's work and there is no remote — because the agent may have no global git
+identity configured and the shell passes no `GIT_AUTHOR_*`, so an unconfigured
+commit would die on "unable to auto-detect email address". And app-owned
+exclude rules in
 `.git/info/exclude`, never `.gitignore`: that name is the agent's, so writing
 it would either overwrite the agent's rules or — for a bundle that already had
-one — silently lose the app's. The rules cover `node_modules` (the mount point
-described below, never bundle content, and unanchored because installed
-packages belong in no history at any depth) plus the app-owned `*.jsonl`
+one — silently lose the app's. The rules cover `node_modules` (the build
+workspace link described below, never bundle content; unanchored because
+installed packages belong in no history at any depth, and without a trailing
+slash so the link itself is excluded) plus the app-owned `*.jsonl`
 projections and the regenerated briefs, each anchored to the bundle root: an
 unanchored pattern matches its name at any depth, and a learner's own
 `attempts/…/runs.jsonl` is authored work. Excluding the projections keeps
@@ -122,8 +123,8 @@ bundle cannot override (`.gitignore` outranks `info/exclude`, and `git add -f`
 outranks everything), so the exclusions are a contract with the agent, not a
 boundary against it; the brief says so.
 
-What IS a boundary is that the app runs OUTSIDE the sandbox the bundle's own
-session is confined to, and a name that session controls must never decide
+What IS a boundary is that the app writes from outside the session that owns
+the bundle, and a name that session controls must never decide
 where the app's bytes land — and that the session runs CONCURRENTLY, so
 inspecting a name before writing it narrows the window rather than closing it.
 Hence the shapes above: nothing the app writes into a bundle here goes through
@@ -142,16 +143,13 @@ from the manifest. Workspace prep creates it when the name is free, uses an
 existing directory as it stands, and renames nothing that holds the name,
 because the app writes nothing into it. (2026-08-09.)
 
-`node_modules` is a mount point, not bundle content. The packages an agent
+`node_modules` is a symlink, not bundle content. The packages an agent
 installs live outside the bundle, in that lesson's build workspace
-(`DATA_DIR/lesson-builds/<slug>/node_modules`), and the lesson-agent sandbox
-binds them over this name so the agent works in an ordinary project layout.
-The bind exists only in that mount namespace, so what a reader finds on disk
-is an empty directory — the app creates it deliberately rather than letting
-bwrap create it as a side effect of the bind. Packages are kept out of the
-bundle because a bundle is served, walked by the manifest reader, and writable
-from inside its own session, and installed packages want none of those three.
-(2026-08-09, issue #161.)
+(`DATA_DIR/lesson-builds/<slug>/node_modules`), and the app links that
+directory at this name so the agent works in an ordinary project layout.
+Packages are kept out of the bundle because a bundle is served, walked by the
+manifest reader, and writable from inside its own session, and installed
+packages want none of those three. (2026-08-09, issue #161.)
 
 Moving them out was not by itself enough to keep one lesson's packages out of
 another's. bun's default backend hardlinks out of a single shared cache, which
@@ -1110,9 +1108,9 @@ way the name stops being author-addressable, like the two reservations
 above.
 
 The reason a v3 would not serve either purpose: the app writes
-`.claude/settings.json` into every bundle it prepares, and the lesson-agent
-sandbox binds a build workspace over `<bundle>/node_modules`, so neither
-directory can stay author-addressable in any version a current reader opens.
+`.claude/settings.json` into every bundle it prepares and links a build
+workspace at `<bundle>/node_modules`, so neither name can stay
+author-addressable in any version a current reader opens.
 The app never destroys what it finds there — a foreign node at an app-owned
 name is moved aside as `<name>.collision-<hex>` (§6.5's rule, applied to
 `.claude` and `node_modules`), so a bundle carrying the older shape loses a
@@ -1252,7 +1250,7 @@ silently rewrites an agent's manifest to "fix" it.
 - Bridge ABI: handshake, `MessageChannel`, capability negotiation — D2,
   frozen in [lesson-bridge-abi.md](lesson-bridge-abi.md).
 - Attempt endpoint semantics, rate limits, responses — D4/D5.
-- Runner registry contents and sandbox profiles — F3/E1.
+- Runner registry contents — F3.
 - Teaching-contract wording in `_AGENTS_TEMPLATE` — #35 (C2), which cites
   the names frozen here.
 - Atlas viewer embedding — #38 / selfos#25 (URL-only, gated on a full

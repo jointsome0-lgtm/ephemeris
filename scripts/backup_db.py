@@ -230,7 +230,7 @@ def _flock():
     """`fcntl`, or None where the platform has no advisory locks.
 
     Imported at the point of use, like every other flock in this repository
-    (app/services/attempts.py, app/sandbox.py). A module-level import would make
+    (app/services/attempts.py). A module-level import would make
     the whole CLI — including `--verify` and `--restore`, which are the tools
     somebody reaches for on a bad day — fail to import over one guarantee that
     only matters when two backups overlap.

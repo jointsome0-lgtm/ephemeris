@@ -1,4 +1,4 @@
-"""Sandbox, lesson-agent, capability, and record-panel verification."""
+"""Lesson-agent terminal, capability, and record-panel verification."""
 from __future__ import annotations
 
 import hashlib
@@ -18,7 +18,7 @@ from conftest import ROOT, events_of, item_row
 
 
 
-def test_sandbox_learning(client, suite_state):
+def test_lesson_agent_learning(client, suite_state):
     from app.db import SCHEMA_VERSION, get_conn, pretty_date, today_str
     from app.main import app
 
@@ -35,444 +35,9 @@ def test_sandbox_learning(client, suite_state):
     bschema = suite_state["bschema"]
     lessons_svc = suite_state["lessons_svc"]
     ws_info = suite_state["ws_info"]
-    # --- E1: pure sandbox profiles + cached probe + no-fallback spawn seam ----
-    from app import sandbox as _sandbox
-    from app.services import bundle_schema as _bundle_schema
-    from unittest import mock as _sandbox_mock
+    from unittest import mock as _mock
 
-    # sandbox.py imports `resource` at the point of use (issue #25), so the rlimit
-    # checks below patch the stdlib module itself — the same object the function's
-    # local import resolves to.
-    import resource as _resource_mod
-
-    # Issue #182: the mounts below are built from the resolved home.
-    _sb_userhome = _sandbox.USER_HOME
-    _sb_root = "/tmp/ephemeris-e1-verify"
-    _sb_bundle = f"{_sb_root}/invented-bundle"
-    _sb_agent = _sandbox.build_sandbox_argv(
-        "lesson-agent", _sb_bundle, bundle_root=_sb_root)
-    _sb_learner = _sandbox.build_sandbox_argv(
-        "lesson-learner", _sb_bundle, bundle_root=_sb_root)
-    _sb_runner = _sandbox.build_sandbox_argv(
-        "lesson-runner", _sb_bundle, bundle_root=_sb_root,
-        private_root="/tmp", module_cache_fd=7)
-
-    def _sb_mounts(argv, flag):
-        return [(argv[i + 1], argv[i + 2]) for i, arg in enumerate(argv)
-                if arg == flag]
-
-    assert (
-        all(argv[0] == _sandbox.BWRAP
-          and "--unshare-all" in argv
-          and "--die-with-parent" in argv
-          and ("/", "/") in _sb_mounts(argv, "--ro-bind")
-          and ["--proc", "/proc"] == argv[argv.index("--proc"):argv.index("--proc") + 2]
-          and ["--dev", "/dev"] == argv[argv.index("--dev"):argv.index("--dev") + 2]
-          and argv.count("--tmpfs") >= 2
-          and "/tmp" in [argv[i + 1] for i, x in enumerate(argv) if x == "--tmpfs"]
-          and _sb_userhome in [argv[i + 1] for i, x in enumerate(argv) if x == "--tmpfs"]
-          for argv in (_sb_agent, _sb_learner, _sb_runner))
-    ), (
-        "E1 argv: every profile has the namespace/base-fs/die-with-parent contract"
-    )
-    assert (
-        "--share-net" in _sb_agent
-        and "--share-net" in _sb_learner
-        and "--share-net" not in _sb_runner
-    ), (
-        "E1 argv: both interactive shells share the host network; the runner does not"
-    )
-
-    _sb_agent_try_ro = {
-        (f"{_sb_userhome}/.nvm/versions", f"{_sb_userhome}/.nvm/versions"),
-        (f"{_sb_userhome}/.local/share/claude/versions", f"{_sb_userhome}/.local/share/claude/versions"),
-        (f"{_sb_userhome}/.codex/auth.json", f"{_sb_userhome}/.codex/auth.json"),
-        (f"{_sb_userhome}/.codex/config.toml", f"{_sb_userhome}/.codex/config.toml"),
-        (f"{_sb_userhome}/.claude/settings.json", f"{_sb_userhome}/.claude/settings.json"),
-        (f"{_sb_userhome}/.claude.json", f"{_sb_userhome}/.claude.json"),
-    }
-    _sb_common_try_ro = {
-        (f"{_sb_userhome}/.local/bin", f"{_sb_userhome}/.local/bin"),
-    }
-    assert (
-        set(_sb_mounts(_sb_agent, "--ro-bind")) == {("/", "/")}
-        and set(_sb_mounts(_sb_agent, "--ro-bind-try"))
-        == _sb_agent_try_ro | _sb_common_try_ro
-        and set(_sb_mounts(_sb_agent, "--bind-try")) == {
-          (f"{_sb_userhome}/go", f"{_sb_userhome}/go"),
-          (f"{_sb_userhome}/.cache/go-build", f"{_sb_userhome}/.cache/go-build"),
-        }
-        and _sb_mounts(_sb_agent, "--bind") == [(_sb_bundle, _sb_bundle)]
-        and {f"{_sb_userhome}/.codex", f"{_sb_userhome}/.claude"}.issubset(
-          {_sb_agent[i + 1] for i, x in enumerate(_sb_agent) if x == "--tmpfs"})
-    ), (
-        "E1 argv: lesson-agent exact home binds and ephemeral CLI state"
-    )
-
-    # A persistent agent home swaps exactly the two ephemeral state directories
-    # for binds of its own subdirectories, so `claude --continue` / `codex
-    # resume` still find the last conversation after the PTY is gone. Every
-    # other mount except the Codex config is untouched, and the blank $HOME
-    # above them stays blank. The persistent config must remain writable so
-    # Codex can save this lesson's workspace-trust decision.
-    _sb_home = "/tmp/agent-homes/some-lesson"
-    _sb_agent_persist = _sandbox.build_sandbox_argv(
-        "lesson-agent", _sb_bundle, bundle_root=_sb_root,
-        private_root="/tmp", agent_home=_sb_home)
-    _sb_agent_persist_try_ro = _sb_agent_try_ro - {
-        (f"{_sb_userhome}/.codex/config.toml", f"{_sb_userhome}/.codex/config.toml")
-    }
-    assert (
-        set(_sb_mounts(_sb_agent_persist, "--bind")) == {
-          (_sb_bundle, _sb_bundle),
-          (f"{_sb_home}/claude", f"{_sb_userhome}/.claude"),
-          (f"{_sb_home}/codex", f"{_sb_userhome}/.codex"),
-        }
-        and set(_sb_mounts(_sb_agent_persist, "--ro-bind-try"))
-        == _sb_agent_persist_try_ro | _sb_common_try_ro
-        and {_sb_agent_persist[i + 1]
-             for i, x in enumerate(_sb_agent_persist) if x == "--tmpfs"} == {
-          "/tmp", _sb_userhome,
-        }
-        # The persistent binds land where the tmpfs entries were. Login material
-        # stays read-only; the per-lesson config remains writable for trust.
-        and all(
-          _sb_agent_persist.index(f"{_sb_home}/{name}")
-          < _sb_agent_persist.index(f"{_sb_userhome}/.{cli}/{leaf}")
-          for name, cli, leaf in (
-            ("codex", "codex", "auth.json"),
-          )
-        )
-        # The host's rotating Claude login material never enters the profile;
-        # the tutor authenticates via CLAUDE_CODE_OAUTH_TOKEN instead (#188).
-        and not any(
-          ".credentials.json" in arg for arg in _sb_agent + _sb_agent_persist
-        )
-    ), "E1 argv: a persistent agent home replaces only the ephemeral state dirs"
-    assert (
-        set(_AGENT_TMPFS_TARGETS := {
-          m.target for m in _sandbox._AGENT_HOME_MOUNTS if m.flag == "--tmpfs"
-        }) == set(_sandbox.AGENT_STATE_SUBDIRS)
-    ), (
-        "E1 argv: every ephemeral agent state dir has a persistent counterpart "
-        "— a new tmpfs added without one would silently stay amnesiac"
-    )
-    for _sb_bad_home, _sb_bad_private, _sb_bad_why in (
-        (_sb_home, None, "no private root to answer to"),
-        ("relative/home", "/tmp", "not absolute"),
-        ("/tmp/../etc", "/tmp", "escapes via '..'"),
-        ("/tmp", "/tmp", "is the private root itself"),
-        ("/var/elsewhere", "/tmp", "outside the private root"),
-        (f"{_sb_bundle}/home", "/tmp", "inside the writable bundle root"),
-    ):
-        try:
-            _sandbox.build_sandbox_argv(
-                "lesson-agent", _sb_bundle, bundle_root=_sb_root,
-                private_root=_sb_bad_private, agent_home=_sb_bad_home)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(
-                f"E1 argv: agent home {_sb_bad_why} must be refused")
-    for _sb_other in ("lesson-learner", "lesson-runner"):
-        try:
-            _sandbox.build_sandbox_argv(
-                _sb_other, _sb_bundle, bundle_root=_sb_root,
-                private_root="/tmp", agent_home=_sb_home,
-                **({"module_cache_fd": 7} if _sb_other == "lesson-runner" else {}))
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(
-                f"E1 argv: {_sb_other} must refuse a persistent agent home")
-
-    # The build workspace: packages the agent installs, bound over a name
-    # INSIDE the bundle so the agent works in an ordinary project layout while
-    # the bundle on disk stays empty of them (#161).
-    _sb_build = "/tmp/lesson-builds/some-lesson"
-    _sb_agent_build = _sandbox.build_sandbox_argv(
-        "lesson-agent", _sb_bundle, bundle_root=_sb_root,
-        private_root="/tmp", build_workspace=_sb_build)
-    _sb_mount = _sandbox.BUILD_WORKSPACE_MOUNT
-    assert (
-        set(_sb_mounts(_sb_agent_build, "--bind")) == {
-          (_sb_bundle, _sb_bundle),
-          (f"{_sb_build}/{_sb_mount}", f"{_sb_bundle}/{_sb_mount}"),
-        }
-        # After the bundle bind, or the bundle would shadow it; before the
-        # --chdir that ends the prefix.
-        and _sb_agent_build.index(f"{_sb_build}/{_sb_mount}")
-        > _sb_agent_build.index(_sb_bundle)
-        and _sb_agent_build[-2:] == ["--chdir", _sb_bundle]
-        # A place for packages is not a package cache. Nothing here makes one
-        # writable: a shared cache with a hardlinking backend would let an edit
-        # in one lesson reach every other, which the mount cannot prevent and
-        # must not be read as preventing. That arrives with the build step.
-        and f"{_sandbox.USER_HOME}/.bun" not in _sb_agent_build
-    ), "E1 argv: the build workspace lands under the bundle, after it"
-    assert not any(_sb_mount in arg for arg in _sb_agent), (
-        "E1 argv: no build workspace, no mount — the bundle keeps its own name"
-    )
-    assert _sb_mount in _bundle_schema.RESERVED_NAMES, (
-        "E1 argv: the mount point must be reserved, or a page could claim it"
-    )
-    for _sb_bad_build, _sb_bad_private, _sb_bad_why in (
-        (_sb_build, None, "no private root to answer to"),
-        ("relative/build", "/tmp", "not absolute"),
-        ("/tmp/../etc", "/tmp", "escapes via '..'"),
-        ("/tmp", "/tmp", "is the private root itself"),
-        ("/var/elsewhere", "/tmp", "outside the private root"),
-        (f"{_sb_bundle}/build", "/tmp", "inside the writable bundle root"),
-    ):
-        try:
-            _sandbox.build_sandbox_argv(
-                "lesson-agent", _sb_bundle, bundle_root=_sb_root,
-                private_root=_sb_bad_private, build_workspace=_sb_bad_build)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(
-                f"E1 argv: build workspace {_sb_bad_why} must be refused")
-    for _sb_other in ("lesson-learner", "lesson-runner"):
-        try:
-            _sandbox.build_sandbox_argv(
-                _sb_other, _sb_bundle, bundle_root=_sb_root,
-                private_root="/tmp", build_workspace=_sb_build,
-                **({"module_cache_fd": 7} if _sb_other == "lesson-runner" else {}))
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(
-                f"E1 argv: {_sb_other} must refuse a build workspace")
-    assert (
-        set(_sb_mounts(_sb_learner, "--ro-bind")) == {("/", "/")}
-        and set(_sb_mounts(_sb_learner, "--ro-bind-try")) == _sb_common_try_ro | {
-          (f"{_sb_userhome}/go", f"{_sb_userhome}/go"),
-          (f"{_sb_userhome}/.cache/go-build", f"{_sb_userhome}/.cache/go-build"),
-        }
-        and _sb_mounts(_sb_learner, "--bind") == [(_sb_bundle, _sb_bundle)]
-        and _sb_learner[-2:] == ["--chdir", _sb_bundle]
-    ), (
-        "E1 argv: lesson-learner exact ro caches + rw bundle"
-    )
-    assert (
-        set(_sb_mounts(_sb_runner, "--ro-bind")) == {
-          ("/", "/"),
-          (_sb_bundle, _sb_bundle),
-        }
-        and _sb_mounts(_sb_runner, "--ro-bind-fd") == [
-          ("7", f"{_sb_userhome}/go/pkg/mod")
-        ]
-        and not _sb_mounts(_sb_runner, "--bind")
-        and _sb_runner[-4:] == ["--dir", _sandbox.RUNNER_WORKDIR,
-                              "--chdir", _sandbox.RUNNER_WORKDIR]
-    ), (
-        "E1 argv: lesson-runner ro bundle + isolated tmpfs cwd"
-    )
-    try:
-        _sandbox.build_sandbox_argv("plain", _sb_bundle, bundle_root=_sb_root)
-        _sb_bad_profile = False
-    except ValueError:
-        _sb_bad_profile = True
-    try:
-        _sandbox.build_sandbox_argv(
-            "lesson-agent", "relative/bundle", bundle_root=_sb_root)
-        _sb_bad_path = False
-    except ValueError:
-        _sb_bad_path = True
-    _sb_boundary_rejections = []
-    for _bad_bundle, _bad_root in (
-        ("/", _sb_root),
-        (_sb_root, _sb_root),
-        ("/tmp/invented-outside", _sb_root),
-        (_sb_bundle, "/"),
-    ):
-        try:
-            _sandbox.build_sandbox_argv(
-                "lesson-agent", _bad_bundle, bundle_root=_bad_root)
-            _sb_boundary_rejections.append(False)
-        except ValueError:
-            _sb_boundary_rejections.append(True)
-    assert (
-        _sb_bad_profile and _sb_bad_path and all(_sb_boundary_rejections)
-    ), (
-        "E1 argv builder rejects unknown profiles and unsafe bundle authorities"
-    )
-
-    # Discovery short-circuits the probe, so these blocks stub it as resolved:
-    # a mocked probe must not need a host bubblewrap to run.
-    _sb_resolved = lambda: _sandbox_mock.patch.object(  # noqa: E731
-        _sandbox, "_BWRAP_UNUSABLE", "")
-
-    _sandbox._cached_runtime_probe.cache_clear()
-    _sb_probe_ok = _types.SimpleNamespace(returncode=0, stderr="")
-    with _sb_resolved(), \
-            _sandbox_mock.patch.object(_sandbox.subprocess, "run", return_value=_sb_probe_ok) as _run:
-        _sandbox.require_sandbox_runtime()
-        _sandbox.require_sandbox_runtime()
-    assert (
-        _run.call_count == 1
-        and _run.call_args.args[0] == [
-          _sandbox.BWRAP, "--unshare-user", "--die-with-parent",
-          "--ro-bind", "/", "/", "true",
-        ]
-    ), (
-        "E1 runtime probe: exact command succeeds once and is process-cached"
-    )
-
-    # Discovery (issue #182), written to run on a host with no bubblewrap.
-    _sb_rejected_missing = _sandbox._bwrap_rejection("/invented/nowhere/bwrap")
-    _sb_rejected_wrong = _sandbox._bwrap_rejection(sys.executable)
-    with _sandbox_mock.patch.object(
-            _sandbox, "_bwrap_rejection",
-            side_effect=lambda path: "" if path == "/second/bwrap"
-            else "invented rejection"), \
-            _sandbox_mock.patch.object(
-                _sandbox, "_BWRAP_CANDIDATES",
-                ("/first/bwrap", "/second/bwrap")):
-        _sb_fell_through = _sandbox._resolve_bwrap()
-    with _sandbox_mock.patch.object(
-            _sandbox, "_BWRAP_CANDIDATES",
-            ("/invented/nowhere/bwrap", sys.executable)):
-        _sb_chosen, _sb_reason = _sandbox._resolve_bwrap()
-    assert (
-        _sb_rejected_missing == "not an executable file"
-        and _sb_rejected_wrong.startswith("does not accept ")
-        # An unusable first candidate must not hide a usable second one.
-        and _sb_fell_through == ("/second/bwrap", "")
-        # Nothing usable: the preferred path is kept so the pure argv builders
-        # stay total, and every candidate's reason reaches the refusal.
-        and _sb_chosen == "/invented/nowhere/bwrap"
-        and _sb_reason.startswith("no usable bubblewrap")
-        and "/invented/nowhere/bwrap: not an executable file" in _sb_reason
-        and f"{sys.executable}: does not accept " in _sb_reason
-    ), (
-        "E1 bwrap discovery: ordered candidates, no $PATH, reasoned refusal"
-    )
-
-    # The setuid gate: CVE-2026-41163 is a defect of setuid mode only, so the
-    # version floor applies only there. Driven with a stub that answers both
-    # queries — the kernel ignores the setuid bit on a script, but the bit is
-    # what is read here, so this needs no real bubblewrap and no privilege.
-    def _sb_fake_bwrap(directory, version, setuid):
-        path = Path(directory) / "bwrap"
-        path.write_text(
-            "#!/bin/sh\n"
-            'case "$1" in\n'
-            f'  --help) echo "{" ".join(_sandbox._REQUIRED_BWRAP_OPTIONS)}" ;;\n'
-            f'  --version) echo "bubblewrap {version}" ;;\n'
-            "esac\n",
-            encoding="utf-8",
-        )
-        path.chmod(0o4755 if setuid else 0o755)
-        return str(path)
-
-    _sb_gate = {}
-    with tempfile.TemporaryDirectory(prefix="ephemeris-bwrap-gate-") as _sb_gate_dir:
-        for _sb_label, _sb_version, _sb_setuid in (
-            ("plain-old", "0.9.0", False),
-            ("setuid-old", "0.9.0", True),
-            ("setuid-exact", "0.11.2", True),
-            ("setuid-newer", "0.12.0", True),
-            ("setuid-unknown", "unreleased", True),
-        ):
-            _sb_case_dir = Path(_sb_gate_dir) / _sb_label
-            _sb_case_dir.mkdir()
-            _sb_gate[_sb_label] = _sandbox._bwrap_rejection(
-                _sb_fake_bwrap(_sb_case_dir, _sb_version, _sb_setuid))
-    assert (
-        # Not setuid: the option vocabulary is the whole requirement.
-        _sb_gate["plain-old"] == ""
-        # Setuid below the fix: refused, and the reason names the version.
-        and "0.9.0" in _sb_gate["setuid-old"]
-        and "CVE-2026-41163" in _sb_gate["setuid-old"]
-        # The floor itself and above it pass; an unreadable version does not.
-        and _sb_gate["setuid-exact"] == ""
-        and _sb_gate["setuid-newer"] == ""
-        and "does not report a version" in _sb_gate["setuid-unknown"]
-    ), (
-        "E1 bwrap discovery: the version floor applies to setuid installs only"
-    )
-
-    # That refusal is what the probe reports, without spawning anything.
-    _sandbox._cached_runtime_probe.cache_clear()
-    with _sandbox_mock.patch.object(
-            _sandbox, "_BWRAP_UNUSABLE", "invented discovery failure"), \
-            _sandbox_mock.patch.object(_sandbox.subprocess, "run") as _no_run:
-        try:
-            _sandbox.require_sandbox_runtime()
-            _sb_unusable_refused = False
-        except _sandbox.SandboxUnavailableError as exc:
-            _sb_unusable_refused = "invented discovery failure" in str(exc)
-    _sandbox._cached_runtime_probe.cache_clear()
-    assert _sb_unusable_refused and _no_run.call_count == 0, (
-        "E1 runtime probe: an unresolvable bwrap refuses before any spawn"
-    )
-
-    async def _sb_no_fallback_contract():
-        results = {}
-        _sandbox._cached_runtime_probe.cache_clear()
-        failed = _types.SimpleNamespace(returncode=1, stderr="userns denied")
-        with _sb_resolved(), \
-                _sandbox_mock.patch.object(_sandbox.subprocess, "run", return_value=failed), \
-                _sandbox_mock.patch.object(_sandbox.asyncio, "create_subprocess_exec") as spawn:
-            for _ in range(2):
-                try:
-                    await _sandbox.spawn_sandboxed(
-                        "lesson-agent", _sb_bundle, ["/bin/bash", "-i"],
-                        bundle_root=_sb_root, env={})
-                except _sandbox.SandboxUnavailableError as exc:
-                    results["probe_visible"] = "userns denied" in str(exc)
-            results["probe_cached"] = _sandbox.subprocess.run.call_count == 1
-            results["probe_never_spawned"] = spawn.call_count == 0
-
-        _sandbox._cached_runtime_probe.cache_clear()
-        with _sb_resolved(), \
-                _sandbox_mock.patch.object(
-                    _sandbox.subprocess, "run", return_value=_sb_probe_ok), \
-                _sandbox_mock.patch.object(
-                    _sandbox.asyncio, "create_subprocess_exec",
-                    side_effect=OSError("exec refused")) as spawn:
-            try:
-                await _sandbox.spawn_sandboxed(
-                    "lesson-agent", _sb_bundle, ["/bin/bash", "-i"],
-                    bundle_root=_sb_root, env={})
-            except _sandbox.SandboxSpawnError as exc:
-                results["spawn_visible"] = "exec refused" in str(exc)
-            results["only_bwrap_attempted"] = (
-                spawn.call_count == 1 and spawn.call_args.args[0] == _sandbox.BWRAP
-            )
-        _sandbox._cached_runtime_probe.cache_clear()
-        return results
-
-    _sb_fail = _asyncio.run(_sb_no_fallback_contract())
-    assert (
-        _sb_fail.get("probe_visible") and _sb_fail.get("probe_cached")
-        and _sb_fail.get("probe_never_spawned")
-    ), (
-        "E1 no-fallback: failed cached probe visibly refuses before spawn"
-    )
-    assert (
-        _sb_fail.get("spawn_visible") and _sb_fail.get("only_bwrap_attempted")
-    ), (
-        "E1 no-fallback: bwrap spawn failure is visible, never a bare command retry"
-    )
-    try:
-        _sandbox.spawn_sandboxed(
-            "lesson-agent", _sb_bundle, ["/bin/true"], bundle_root=_sb_root)
-        _sb_env_required = False
-    except TypeError:
-        _sb_env_required = True
-    assert (
-        set(_sandbox._GENEROUS_LIMITS) == {"RLIMIT_NOFILE", "RLIMIT_NPROC"}
-        and _sandbox.profile_preexec_fn("lesson-agent") is not None
-        and _sandbox.profile_preexec_fn("lesson-runner") is not None
-        and _sb_env_required
-    ), (
-        "E1 rlimits and env: PTY caps hooked, explicit child env required"
-    )
-
-    # --- E2: lesson-agent is server-owned, sandboxed, immutable, fail-closed ---
+    # --- E2: lesson-agent is server-owned, opened in the bundle, immutable ----
     class _E2Sock:
         def __init__(self, query, scope=None):
             self.query_params = query
@@ -505,113 +70,87 @@ def test_sandbox_learning(client, suite_state):
     async def _e2_contract():
         results = {}
         workspace = {"dir": ws_info["dir"], "slug": _lt["slug"], "title": "demo"}
+        relative_workspace = dict(workspace, dir=os.path.relpath(workspace["dir"]))
+        expected_workspace = str(Path(relative_workspace["dir"]).absolute())
         proc = _types.SimpleNamespace(returncode=0)
 
-        # A lesson parameter is classified server-side and reaches only E1's
-        # lesson-agent launcher with the lesson root as the bind authority.
-        with _sandbox_mock.patch.object(
-                _terminal, "prepare_terminal_workspace", return_value=workspace), \
-                _sandbox_mock.patch.object(
+        # A lesson parameter is classified server-side: the shell is started in
+        # the bundle directory with the role's environment, nothing more.
+        with _mock.patch.object(
+                _terminal, "prepare_terminal_workspace",
+                return_value=relative_workspace), \
+                _mock.patch.object(
                     _terminal, "_detect_proxy_env", return_value={
                         "HTTP_PROXY": "http://127.0.0.1:10809",
                     }) as proxy_detect, \
-                _sandbox_mock.patch.object(
-                    _terminal, "spawn_sandboxed",
-                    new=_sandbox_mock.AsyncMock(return_value=proc)) as sandbox_spawn, \
-                _sandbox_mock.patch.object(
+                _mock.patch.object(
                     _terminal.asyncio, "create_subprocess_exec",
-                    new=_sandbox_mock.AsyncMock()) as bare_spawn, \
-                _sandbox_mock.patch.object(_terminal._TermSession, "start"):
+                    new=_mock.AsyncMock(return_value=proc)) as spawn, \
+                _mock.patch.object(_terminal._TermSession, "start"):
             lesson_sess = await _terminal._create_session(_lt["slug"])
-        spawn_args = sandbox_spawn.call_args
+        spawn_call = spawn.call_args
         results["lesson_launcher"] = (
             lesson_sess is not None
             and lesson_sess.role == "lesson-agent"
-            and lesson_sess.workspace == workspace["dir"]
-            and lesson_sess.sandbox_profile == "lesson-agent"
+            and lesson_sess.workspace == expected_workspace
             and proxy_detect.call_args.args == ("lesson-agent",)
-            and bare_spawn.call_count == 0
-            and spawn_args.args[:3] == (
-                "lesson-agent", workspace["dir"],
-                [os.environ.get("SHELL") or "/bin/bash", "-i"],
-            )
-            and spawn_args.kwargs["bundle_root"] == str(lessons_svc.LESSONS_DIR)
-            and spawn_args.kwargs["private_root"]
-                == str(lessons_svc.LESSONS_DIR.parent)
-            and spawn_args.kwargs["private_masks"] == ()
-            and spawn_args.kwargs["preexec_fn"].__qualname__.startswith(
+            and spawn_call.args == (os.environ.get("SHELL") or "/bin/bash", "-i")
+            and spawn_call.kwargs["cwd"] == expected_workspace
+            and spawn_call.kwargs["preexec_fn"].__qualname__.startswith(
                 "_child_setup_for")
-            and spawn_args.kwargs["env"]["HTTP_PROXY"]
+            and spawn_call.kwargs["env"]["HTTP_PROXY"]
                 == "http://127.0.0.1:10809"
+            and _terminal._child_env("lesson-agent", "/bin/bash")["PROMPT_COMMAND"]
+                == "PS1='agent $ '"
         )
         _terminal._SESSIONS.pop(lesson_sess.sid, None)
         os.close(lesson_sess.master_fd)
 
-        # Both E1 failure classes become the terminal's visible lesson refusal,
-        # and the direct subprocess path is never attempted as fallback.
-        refusal_kinds = []
-        fallback_calls = 0
-        for failure in (
-            _sandbox.SandboxUnavailableError("probe denied"),
-            _sandbox.SandboxSpawnError("bwrap exec denied"),
-        ):
-            with _sandbox_mock.patch.object(
-                    _terminal, "prepare_terminal_workspace", return_value=workspace), \
-                    _sandbox_mock.patch.object(
-                        _terminal, "_detect_proxy_env", return_value={}), \
-                    _sandbox_mock.patch.object(
-                        _terminal, "spawn_sandboxed",
-                        new=_sandbox_mock.AsyncMock(side_effect=failure)), \
-                    _sandbox_mock.patch.object(
-                        _terminal.asyncio, "create_subprocess_exec",
-                        new=_sandbox_mock.AsyncMock()) as direct:
-                try:
-                    await _terminal._create_session(_lt["slug"])
-                except _terminal._LessonSandboxError:
-                    refusal_kinds.append(type(failure))
-                fallback_calls += direct.call_count
+        # A shell that cannot be spawned is a refusal, never a shell elsewhere;
+        # so is a workspace that cannot be prepared, and the socket says so.
+        with _mock.patch.object(
+                _terminal, "prepare_terminal_workspace", return_value=workspace), \
+                _mock.patch.object(
+                    _terminal, "_detect_proxy_env", return_value={}), \
+                _mock.patch.object(
+                    _terminal.asyncio, "create_subprocess_exec",
+                    new=_mock.AsyncMock(side_effect=OSError("exec refused"))):
+            failed = await _terminal._create_session(_lt["slug"])
         refusal_ws = _E2Sock({"lesson": _lt["slug"]})
-        with _sandbox_mock.patch.object(_terminal, "_ws_is_trusted", return_value=True), \
-                _sandbox_mock.patch.object(_terminal, "_reap_idle"), \
-                _sandbox_mock.patch.object(_terminal, "_ensure_reaper"), \
-                _sandbox_mock.patch.object(
+        with _mock.patch.object(_terminal, "_ws_is_trusted", return_value=True), \
+                _mock.patch.object(_terminal, "_reap_idle"), \
+                _mock.patch.object(_terminal, "_ensure_reaper"), \
+                _mock.patch.object(
                     _terminal, "_create_session",
-                    new=_sandbox_mock.AsyncMock(
-                        side_effect=_terminal._LessonSandboxError(_lt["slug"]))):
+                    new=_mock.AsyncMock(
+                        side_effect=_terminal._LessonWorkspaceError(_lt["slug"]))):
             await _terminal._serve_ws(refusal_ws)
-        results["sandbox_refusal"] = (
-            refusal_kinds == [
-                _sandbox.SandboxUnavailableError, _sandbox.SandboxSpawnError,
-            ]
-            and fallback_calls == 0
+        results["refusals"] = (
+            failed is None
             and refusal_ws.accepted and refusal_ws.closed
-            and b"refusing to open an unsandboxed shell" in b"".join(
+            and b"refusing to open a shell outside it" in b"".join(
                 refusal_ws.sent_bytes)
         )
 
         # No lesson parameter keeps the owner's existing bare repo shell.
-        with _sandbox_mock.patch.object(
+        with _mock.patch.object(
                 _terminal, "_detect_proxy_env", return_value={}) as proxy_detect, \
-                _sandbox_mock.patch.object(
-                    _terminal, "spawn_sandboxed",
-                    new=_sandbox_mock.AsyncMock()) as sandbox_spawn, \
-                _sandbox_mock.patch.object(
+                _mock.patch.object(
                     _terminal.asyncio, "create_subprocess_exec",
-                    new=_sandbox_mock.AsyncMock(return_value=proc)) as bare_spawn, \
-                _sandbox_mock.patch.object(_terminal._TermSession, "start"):
+                    new=_mock.AsyncMock(return_value=proc)) as bare_spawn, \
+                _mock.patch.object(_terminal._TermSession, "start"):
             plain_sess = await _terminal._create_session()
         plain_call = bare_spawn.call_args
         results["plain_unchanged"] = (
             plain_sess is not None
             and plain_sess.role == "plain"
             and plain_sess.workspace == str(_terminal._REPO_ROOT)
-            and plain_sess.sandbox_profile is None
             and proxy_detect.call_args.args == ("plain",)
-            and sandbox_spawn.call_count == 0
             and plain_call.args == (os.environ.get("SHELL") or "/bin/bash", "-i")
             and plain_call.kwargs["cwd"] == str(_terminal._REPO_ROOT)
             and plain_call.kwargs["preexec_fn"].__qualname__.startswith(
                 "_child_setup_for")
+            and "PROMPT_COMMAND" not in plain_call.kwargs["env"]
         )
         _terminal._SESSIONS.pop(plain_sess.sid, None)
         os.close(plain_sess.master_fd)
@@ -621,41 +160,32 @@ def test_sandbox_learning(client, suite_state):
         attach_master, attach_slave = _pty.openpty()
         attach_sess = _terminal._TermSession(
             "verify-e2-attach", proc, attach_master,
-            role="lesson-agent", workspace=workspace["dir"],
-            sandbox_profile="lesson-agent")
+            role="lesson-agent", workspace=workspace["dir"])
         _terminal._SESSIONS[attach_sess.sid] = attach_sess
         attach_ws = _E2Sock({
             "sid": attach_sess.sid,
             "lesson": "conflicting-lesson",
         })
         immutable = True
-        for attr, value in (
-            ("role", "plain"), ("workspace", str(ROOT)),
-            ("sandbox_profile", None),
-        ):
+        for attr, value in (("role", "plain"), ("workspace", str(ROOT))):
             try:
                 setattr(attach_sess, attr, value)
                 immutable = False
             except AttributeError:
                 pass
-        before = (
-            attach_sess.role, attach_sess.workspace, attach_sess.sandbox_profile,
-        )
-        with _sandbox_mock.patch.object(_terminal, "_ws_is_trusted", return_value=True), \
-                _sandbox_mock.patch.object(_terminal, "_reap_idle"), \
-                _sandbox_mock.patch.object(_terminal, "_ensure_reaper"), \
-                _sandbox_mock.patch.object(_terminal, "_set_winsize"), \
-                _sandbox_mock.patch.object(
+        before = (attach_sess.role, attach_sess.workspace)
+        with _mock.patch.object(_terminal, "_ws_is_trusted", return_value=True), \
+                _mock.patch.object(_terminal, "_reap_idle"), \
+                _mock.patch.object(_terminal, "_ensure_reaper"), \
+                _mock.patch.object(_terminal, "_set_winsize"), \
+                _mock.patch.object(
                     _terminal, "_create_session",
-                    new=_sandbox_mock.AsyncMock()) as create_again:
+                    new=_mock.AsyncMock()) as create_again:
             await _terminal._serve_ws(attach_ws)
         handshake = json.loads(attach_ws.sent_text[0])
         results["attach_immutable"] = (
             immutable and create_again.call_count == 0
-            and before == (
-                attach_sess.role, attach_sess.workspace,
-                attach_sess.sandbox_profile,
-            )
+            and before == (attach_sess.role, attach_sess.workspace)
             and handshake == {
                 "type": "session", "sid": attach_sess.sid,
                 "role": "lesson-agent",
@@ -670,31 +200,31 @@ def test_sandbox_learning(client, suite_state):
     assert (
         _e2.get("lesson_launcher")
     ), (
-        "E2 lesson create uses only the lesson-agent sandbox launcher"
+        "E2 lesson create opens the role's shell in the bundle directory"
     )
     assert (
-        _e2.get("sandbox_refusal")
+        _e2.get("refusals")
     ), (
-        "E2 probe/bwrap failures visibly refuse with no bare-shell fallback"
+        "E2 spawn and workspace failures refuse visibly, never a shell elsewhere"
     )
     assert (
         _e2.get("plain_unchanged")
     ), (
-        "E2 plain create stays unsandboxed in the repository"
+        "E2 plain create stays in the repository"
     )
     assert (
         _e2.get("attach_immutable")
     ), (
-        "E2 attach preserves immutable role/workspace/profile and reports role"
+        "E2 attach preserves immutable role/workspace and reports role"
     )
 
-    with _sandbox_mock.patch.dict(
+    with _mock.patch.dict(
             os.environ,
             {"EPHEMERIS_TERM_PROXY": "http://127.0.0.1:19091"}):
         _proxy_plain = _terminal._detect_proxy_env("plain")
         _proxy_agent = _terminal._detect_proxy_env("lesson-agent")
         _proxy_learner = _terminal._detect_proxy_env("lesson-learner")
-    with _sandbox_mock.patch.dict(
+    with _mock.patch.dict(
             os.environ, {"EPHEMERIS_TERM_PROXY": "off"}):
         _proxy_off = (
             _terminal._detect_proxy_env("plain"),
@@ -712,10 +242,10 @@ def test_sandbox_learning(client, suite_state):
     # A proxied child must still reach this app directly: the s3 capability URL
     # is a loopback address, and an inherited proxy can arrive with no NO_PROXY
     # at all (or one that never mentions loopback).
-    with _sandbox_mock.patch.dict(
+    with _mock.patch.dict(
             os.environ, {"HTTP_PROXY": "http://proxy.invalid:3128"}, clear=True):
         _proxy_inherited = _terminal._detect_proxy_env("lesson-agent")
-    with _sandbox_mock.patch.dict(
+    with _mock.patch.dict(
             os.environ,
             {"HTTP_PROXY": "http://proxy.invalid:3128",
              # both spellings, deliberately different: neither list may be lost
@@ -752,22 +282,22 @@ def test_sandbox_learning(client, suite_state):
         }
         proc = _types.SimpleNamespace(returncode=0)
 
-        async def _sandboxed(role_selector, base_url, prepare=True):
+        async def _lesson_shell(role_selector, base_url, prepare=True):
             resolver = ("prepare_terminal_workspace" if prepare
                         else "resolve_terminal_workspace")
-            with _sandbox_mock.patch.object(
+            with _mock.patch.object(
                     _terminal, resolver, return_value=workspace), \
-                    _sandbox_mock.patch.object(
+                    _mock.patch.object(
                         _terminal, "_detect_proxy_env", return_value={}), \
-                    _sandbox_mock.patch.object(
-                        _terminal, "spawn_sandboxed",
-                        new=_sandbox_mock.AsyncMock(return_value=proc)) as spawn, \
-                    _sandbox_mock.patch.object(_terminal._TermSession, "start"):
+                    _mock.patch.object(
+                        _terminal.asyncio, "create_subprocess_exec",
+                        new=_mock.AsyncMock(return_value=proc)) as spawn, \
+                    _mock.patch.object(_terminal._TermSession, "start"):
                 sess = await _terminal._create_session(
                     _lt["slug"], role_selector, base_url=base_url)
             return sess, spawn.call_args.kwargs["env"]
 
-        agent, agent_env = await _sandboxed(None, "http://127.0.0.1:8765")
+        agent, agent_env = await _lesson_shell(None, "http://127.0.0.1:8765")
         token = agent_env.get("EPHEMERIS_ASSESS_TOKEN", "")
         capability = _terminal.resolve_assessment_capability(token)
         results["agent_capability"] = (
@@ -791,8 +321,8 @@ def test_sandbox_learning(client, suite_state):
         )
 
         # A second agent session on the same lesson is a second sitting.
-        first, first_env = await _sandboxed(None, "http://127.0.0.1:8765")
-        second, second_env = await _sandboxed(None, "http://127.0.0.1:8765")
+        first, first_env = await _lesson_shell(None, "http://127.0.0.1:8765")
+        second, second_env = await _lesson_shell(None, "http://127.0.0.1:8765")
         results["distinct_sittings"] = (
             first_env["EPHEMERIS_ASSESS_TOKEN"]
             != second_env["EPHEMERIS_ASSESS_TOKEN"]
@@ -813,7 +343,7 @@ def test_sandbox_learning(client, suite_state):
         )
         await second.close()
 
-        learner, learner_env = await _sandboxed(
+        learner, learner_env = await _lesson_shell(
             "lesson-learner", "http://127.0.0.1:8765", prepare=False)
         results["learner_gets_nothing"] = not (_S3_VARS & set(learner_env))
         await learner.close()
@@ -826,11 +356,11 @@ def test_sandbox_learning(client, suite_state):
         with tempfile.TemporaryDirectory() as _tok_dir:
             _tok_file = Path(_tok_dir) / "claude-token"
             _tok_file.write_text("demo-long-lived-token\n", encoding="utf-8")
-            with _sandbox_mock.patch.object(
+            with _mock.patch.object(
                     _terminal, "_CLAUDE_TOKEN_FILE", _tok_file):
-                tok_agent, tok_agent_env = await _sandboxed(
+                tok_agent, tok_agent_env = await _lesson_shell(
                     None, "http://127.0.0.1:8765")
-                tok_learner, tok_learner_env = await _sandboxed(
+                tok_learner, tok_learner_env = await _lesson_shell(
                     "lesson-learner", "http://127.0.0.1:8765", prepare=False)
         results["token_env_agent_only"] = (
             tok_agent_env.get("CLAUDE_CODE_OAUTH_TOKEN")
@@ -840,12 +370,12 @@ def test_sandbox_learning(client, suite_state):
         await tok_agent.close()
         await tok_learner.close()
 
-        with _sandbox_mock.patch.object(
+        with _mock.patch.object(
                 _terminal, "_detect_proxy_env", return_value={}), \
-                _sandbox_mock.patch.object(
+                _mock.patch.object(
                     _terminal.asyncio, "create_subprocess_exec",
-                    new=_sandbox_mock.AsyncMock(return_value=proc)) as bare, \
-                _sandbox_mock.patch.object(_terminal._TermSession, "start"):
+                    new=_mock.AsyncMock(return_value=proc)) as bare, \
+                _mock.patch.object(_terminal._TermSession, "start"):
             plain = await _terminal._create_session(
                 base_url="http://127.0.0.1:8765")
         results["plain_gets_nothing"] = not (
@@ -854,7 +384,7 @@ def test_sandbox_learning(client, suite_state):
 
         # No spellable app address: neither variable, rather than a token the
         # agent has no URL to use.
-        blind, blind_env = await _sandboxed(None, None)
+        blind, blind_env = await _lesson_shell(None, None)
         results["no_url_no_token"] = (
             not (_S3_VARS & set(blind_env))
             and blind._assess_token is None
@@ -872,13 +402,14 @@ def test_sandbox_learning(client, suite_state):
                 kw["env"]["EPHEMERIS_ASSESS_TOKEN"])
             return proc
 
-        with _sandbox_mock.patch.object(
+        with _mock.patch.object(
                 _terminal, "prepare_terminal_workspace", return_value=workspace), \
-                _sandbox_mock.patch.object(
+                _mock.patch.object(
                     _terminal, "_detect_proxy_env", return_value={}), \
-                _sandbox_mock.patch.object(
-                    _terminal, "spawn_sandboxed", new=_spawn_and_probe), \
-                _sandbox_mock.patch.object(_terminal._TermSession, "start"):
+                _mock.patch.object(
+                    _terminal.asyncio, "create_subprocess_exec",
+                    new=_spawn_and_probe), \
+                _mock.patch.object(_terminal._TermSession, "start"):
             early = await _terminal._create_session(
                 _lt["slug"], None, base_url="http://127.0.0.1:8765")
         results["live_during_spawn"] = (
@@ -892,12 +423,12 @@ def test_sandbox_learning(client, suite_state):
 
         # Every other way a session ends revokes it too: the idle reaper's
         # forced eviction and the lifespan shutdown both run close().
-        reaped, reaped_env = await _sandboxed(None, "http://127.0.0.1:8765")
+        reaped, reaped_env = await _lesson_shell(None, "http://127.0.0.1:8765")
         reaped.detached_at = (
             _terminal.time.monotonic() - (_terminal._SESSION_TTL + 60))
         _terminal._reap_idle()
         await _asyncio.sleep(0)  # close() is scheduled as a task
-        killed, killed_env = await _sandboxed(None, "http://127.0.0.1:8765")
+        killed, killed_env = await _lesson_shell(None, "http://127.0.0.1:8765")
         await _terminal.shutdown_terminal()
         results["revoked_on_reap_and_shutdown"] = (
             _terminal.resolve_assessment_capability(
@@ -908,21 +439,17 @@ def test_sandbox_learning(client, suite_state):
         )
 
         # A failed spawn registers nothing: no session, no live token.
-        with _sandbox_mock.patch.object(
+        with _mock.patch.object(
                 _terminal, "prepare_terminal_workspace", return_value=workspace), \
-                _sandbox_mock.patch.object(
+                _mock.patch.object(
                     _terminal, "_detect_proxy_env", return_value={}), \
-                _sandbox_mock.patch.object(
-                    _terminal, "spawn_sandboxed",
-                    new=_sandbox_mock.AsyncMock(
-                        side_effect=_sandbox.SandboxSpawnError("denied"))):
-            try:
-                await _terminal._create_session(
-                    _lt["slug"], None, base_url="http://127.0.0.1:8765")
-            except _terminal._LessonSandboxError:
-                pass
+                _mock.patch.object(
+                    _terminal.asyncio, "create_subprocess_exec",
+                    new=_mock.AsyncMock(side_effect=OSError("denied"))):
+            failed = await _terminal._create_session(
+                _lt["slug"], None, base_url="http://127.0.0.1:8765")
         results["failed_spawn_leaves_no_token"] = (
-            _terminal._ASSESS_CAPABILITIES == {}
+            failed is None and _terminal._ASSESS_CAPABILITIES == {}
         )
         return results
 
@@ -993,14 +520,13 @@ def test_sandbox_learning(client, suite_state):
     try:
         _terminal._TermSession(
             "verify-s3-role", _types.SimpleNamespace(returncode=0), _s3_master,
-            role="lesson-learner", workspace=ws_info["dir"],
-            sandbox_profile="lesson-learner", assess_token="never")
+            role="lesson-learner", workspace=ws_info["dir"], assess_token="never")
     except ValueError:
         _s3_role_bound = True
     finally:
         os.close(_s3_master)
         os.close(_s3_slave)
-    with _sandbox_mock.patch.dict(os.environ, {
+    with _mock.patch.dict(os.environ, {
             "EPHEMERIS_ASSESS_TOKEN": "leaked-from-the-service",
             "EPHEMERIS_ASSESS_URL": "http://leaked.invalid/"}):
         _s3_inherited = _terminal._child_env("lesson-agent")

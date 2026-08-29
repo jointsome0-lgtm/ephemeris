@@ -30,9 +30,8 @@ inside the archive.
 The archive is defined by **exclusion**, not by a list of known directories.
 `lessons/` is the obvious one, but an instance also accumulates `migrations/`
 (the only input `migrate_bundles --rollback` accepts), `lessons-attic/`,
-`course-raw/`, `agent-homes/` (each lesson's persistent agent memory — the
-transcripts `claude --continue` reads), projection caches, and whatever the
-next feature adds beside them. Enumerating those by name would mean a backup that is silently incomplete
+`course-raw/`, projection caches, and whatever the next feature adds beside
+them. Enumerating those by name would mean a backup that is silently incomplete
 between edits, so what is left out is left out deliberately and the manifest
 names it under `excluded`:
 

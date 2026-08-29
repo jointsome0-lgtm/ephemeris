@@ -11,8 +11,10 @@ import asyncio
 import codecs
 import inspect
 import os
+import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -23,7 +25,6 @@ from types import MappingProxyType
 from typing import Awaitable, Callable, Mapping
 from uuid import uuid4
 
-from app import sandbox
 from app.services.runner_registry import RUNNER_REGISTRY, RunnerSpec
 
 
@@ -33,6 +34,13 @@ TERMINAL_RETENTION_SECONDS = 15 * 60
 MAX_TERMINAL_JOBS = 8
 GLOBAL_ACTIVE_LIMIT = 2
 PER_LESSON_ACTIVE_LIMIT = 1
+
+# Per-process backstops under the wall-clock timeout: a snapshot that spins,
+# allocates, or writes in a loop is stopped by the kernel before the timer
+# fires. RLIMIT_CPU is set per job to the runner's own wall limit.
+RUNNER_ADDRESS_SPACE_BYTES = 1024 * 1024 * 1024
+RUNNER_FILE_BYTES = 32 * 1024 * 1024
+RUNNER_NOFILE = 256
 
 STARTING = "STARTING"
 RUNNING = "RUNNING"
@@ -49,16 +57,14 @@ TERMINAL_CAUSES = frozenset({
     "shutdown",
 })
 
+_HOME = os.path.expanduser("~")
 RUNNER_ENV: Mapping[str, str] = MappingProxyType({
     "PATH": "/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin",
-    "HOME": sandbox.USER_HOME,
-    # bubblewrap synthesizes PWD after --chdir; state the same safe value in
-    # the allowlist so the child environment remains explicit and testable.
-    "PWD": sandbox.RUNNER_WORKDIR,
+    "HOME": _HOME,
     "LANG": "C.UTF-8",
     "LC_ALL": "C.UTF-8",
-    "GOCACHE": f"{sandbox.USER_HOME}/.cache/go-build",
-    "GOMODCACHE": sandbox.GO_MODULE_CACHE_ROOT,
+    "GOCACHE": f"{_HOME}/.cache/go-build",
+    "GOMODCACHE": f"{_HOME}/go/pkg/mod",
     "GOFLAGS": "-mod=readonly",
 })
 
@@ -120,7 +126,6 @@ class RunnerHealth:
 def _probe_result(
     argv: list[str],
     *,
-    pass_fds: tuple[int, ...] = (),
     env: Mapping[str, str] = RUNNER_ENV,
 ) -> str:
     try:
@@ -130,7 +135,6 @@ def _probe_result(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=dict(env),
-            pass_fds=pass_fds,
             text=True,
             check=False,
             timeout=15,
@@ -143,66 +147,9 @@ def _probe_result(
     return detail[:500] or f"exit {result.returncode}"
 
 
-def _probe_ro_bind_data() -> str:
-    fd = sandbox._snapshot_memfd(b"probe\n")
-    target = "/tmp/ephemeris-runner-ro-bind-data-probe"
-    try:
-        return _probe_result([
-            sandbox.BWRAP,
-            "--unshare-user",
-            "--die-with-parent",
-            "--ro-bind", "/", "/",
-            "--tmpfs", "/tmp",
-            "--perms", "0444",
-            "--ro-bind-data", str(fd), target,
-            "--",
-            "/usr/bin/python3", "-c",
-            "import os,stat,sys; sys.exit(stat.S_IMODE(os.stat(sys.argv[1]).st_mode) != 0o444)",
-            target,
-        ], pass_fds=(fd,))
-    finally:
-        os.close(fd)
-
-
-def _probe_go_module_cache() -> str:
-    try:
-        fd = sandbox.open_runner_module_cache_fd()
-    except OSError as exc:
-        return f"required no-follow Go module cache is unavailable: {exc}"
-    try:
-        return _probe_result([
-            sandbox.BWRAP,
-            "--unshare-user",
-            "--die-with-parent",
-            "--ro-bind", "/", "/",
-            "--tmpfs", sandbox.USER_HOME,
-            "--dir", f"{sandbox.USER_HOME}/go",
-            "--dir", f"{sandbox.USER_HOME}/go/pkg",
-            "--ro-bind-fd", str(fd), sandbox.GO_MODULE_CACHE_ROOT,
-            "--",
-            "/usr/bin/test", "-d", sandbox.GO_MODULE_CACHE_ROOT,
-        ], pass_fds=(fd,))
-    finally:
-        os.close(fd)
-
-
 @cache
 def _cached_runner_health_unlocked() -> RunnerHealth:
-    """Probe the complete F3 execution contract once per process lifetime."""
-    try:
-        sandbox.require_sandbox_runtime()
-    except sandbox.SandboxError as exc:
-        return RunnerHealth(False, str(exc))
-
-    detail = _probe_ro_bind_data()
-    if detail:
-        return RunnerHealth(False, f"--ro-bind-data probe failed: {detail}")
-
-    try:
-        sandbox.require_user_scope_runtime()
-    except sandbox.SandboxError as exc:
-        return RunnerHealth(False, str(exc))
-
+    """Probe every registry executable once per process lifetime."""
     checked: set[str] = set()
     for runner_id, spec in RUNNER_REGISTRY.items():
         executable = spec.argv[0]
@@ -217,9 +164,6 @@ def _cached_runner_health_unlocked() -> RunnerHealth:
         detail = _probe_result(version_argv)
         if detail:
             return RunnerHealth(False, f"{runner_id} executable probe failed: {detail}")
-    detail = _probe_go_module_cache()
-    if detail:
-        return RunnerHealth(False, detail)
     return RunnerHealth(True)
 
 
@@ -261,8 +205,6 @@ class RunnerRequest:
     snapshot: bytes
     bundle_dir: str
     bundle_root: str
-    private_root: str
-    private_masks: tuple[str, ...] = ()
     lesson_uid: str = ""
     lesson_id: int = 0
     slug: str = ""
@@ -288,7 +230,7 @@ class RunnerJob:
     reservation_released: bool = False
     event_recorded: bool = False
     reader_count: int = 0
-    scope_unit: str = ""
+    workdir: str = ""
     process: asyncio.subprocess.Process | None = field(default=None, repr=False)
     task: asyncio.Task[None] | None = field(default=None, repr=False)
     finished: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
@@ -465,13 +407,9 @@ class RunnerService:
                     )
                 raise RunnerShuttingDownError("runner service is shutting down")
             try:
-                if not request.private_root:
-                    raise RunnerUnavailableError(
-                        "runner private instance root is required"
-                    )
-                if len(request.snapshot) > sandbox.RUNNER_FILE_BYTES:
+                if len(request.snapshot) > RUNNER_FILE_BYTES:
                     raise SnapshotTooLargeError(
-                        f"runner snapshot exceeds {sandbox.RUNNER_FILE_BYTES} bytes"
+                        f"runner snapshot exceeds {RUNNER_FILE_BYTES} bytes"
                     )
                 spec = self._registry.get(request.runner_id)
                 if spec is None:
@@ -538,10 +476,7 @@ class RunnerService:
                 raise GlobalCapacityError("global runner capacity reached")
 
             job_id = str(uuid4())
-            job = RunnerJob(
-                job_id, request, spec,
-                scope_unit=f"ephemeris-runner-{job_id}",
-            )
+            job = RunnerJob(job_id, request, spec)
             self._jobs[job.job_id] = job
             self._idempotency[replay_key] = (
                 request.block_id, request.file_rev, job.job_id, None
@@ -682,27 +617,31 @@ class RunnerService:
     async def _spawn(
         self, job: RunnerJob
     ) -> asyncio.subprocess.Process:
+        """Run the snapshot from a fresh directory of its own.
+
+        The directory is the job's cwd and holds nothing but the read-only
+        snapshot; `_drive_job` removes it once the process is reaped.
+        """
         request = job.request
         spec = job.spec
         basename = PurePosixPath(request.filename).name
-        snapshot_path = f"{sandbox.RUNNER_WORKDIR}/{basename}"
-        command = spec.command(snapshot_path)
-        return await sandbox.spawn_sandboxed(
-            "lesson-runner",
-            request.bundle_dir,
-            command,
-            bundle_root=request.bundle_root,
-            private_root=request.private_root,
-            private_masks=request.private_masks,
-            stdin=subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=RUNNER_ENV,
-            snapshot=request.snapshot,
-            snapshot_name=basename,
-            runner_wall_seconds=spec.wall_seconds,
-            runner_scope_unit=job.scope_unit,
+        job.workdir = await asyncio.to_thread(
+            _write_snapshot_dir, basename, request.snapshot
         )
+        try:
+            return await _create_leader(
+                *spec.command(f"{job.workdir}/{basename}"),
+                stdin=subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=job.workdir,
+                env=dict(RUNNER_ENV),
+                start_new_session=True,
+                preexec_fn=_runner_rlimits(spec.wall_seconds),
+            )
+        except BaseException:
+            await asyncio.to_thread(shutil.rmtree, job.workdir, True)
+            raise
 
     async def _drive_job(self, job: RunnerJob) -> None:
         async with self._lock:
@@ -757,6 +696,13 @@ class RunnerService:
         finally:
             async with self._lock:
                 job.process_reaped = True
+            # Whatever the leader left behind in its process group goes with
+            # it: a background child would otherwise outlive the job's wall
+            # clock, and one holding the output pipes would keep the readers
+            # below from ever reaching EOF.
+            await asyncio.to_thread(self._kill_tree, job)
+            if job.workdir:
+                await asyncio.to_thread(shutil.rmtree, job.workdir, True)
 
         async with self._lock:
             if returncode < 0:
@@ -946,30 +892,7 @@ class RunnerService:
 
     @staticmethod
     def _kill_tree(job: RunnerJob) -> None:
-        scope_env = {"PATH": RUNNER_ENV["PATH"]}
-        for name in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
-            value = os.environ.get(name)
-            if value:
-                scope_env[name] = value
-        try:
-            subprocess.run(
-                [
-                    sandbox.SYSTEMCTL,
-                    "--user",
-                    "kill",
-                    "--kill-whom=all",
-                    "--signal=SIGKILL",
-                    f"{job.scope_unit}.scope",
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=scope_env,
-                check=False,
-                timeout=5,
-            )
-        except (OSError, subprocess.SubprocessError):
-            pass
+        """Kill the job's whole process group: it was started as a session leader."""
         process = job.process
         if process is None:
             return
@@ -977,3 +900,74 @@ class RunnerService:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+
+
+class _LeaderProtocol(asyncio.subprocess.SubprocessStreamProtocol):
+    def __init__(self, limit: int, loop: asyncio.AbstractEventLoop) -> None:
+        super().__init__(limit=limit, loop=loop)
+        self.exited: asyncio.Future[None] = loop.create_future()
+
+    def process_exited(self) -> None:
+        super().process_exited()
+        if not self.exited.done():
+            self.exited.set_result(None)
+
+
+class _Leader(asyncio.subprocess.Process):
+    """A job's session leader, whose ``wait()`` returns the moment it exits.
+
+    ``asyncio.subprocess.Process.wait()`` on Python 3.12+ also waits for the
+    output pipes to close, and a background child that inherited them keeps it
+    from ever returning; the wall clock would then fire on a leader that exited
+    normally long before.
+    """
+
+    def __init__(self, transport, protocol: _LeaderProtocol, loop) -> None:
+        super().__init__(transport, protocol, loop)
+        self._exited = protocol.exited
+
+    async def wait(self) -> int:
+        await asyncio.shield(self._exited)
+        return self.returncode
+
+
+async def _create_leader(*argv: str, **kwargs) -> _Leader:
+    loop = asyncio.get_running_loop()
+    transport, protocol = await loop.subprocess_exec(
+        lambda: _LeaderProtocol(limit=2**16, loop=loop), *argv, **kwargs
+    )
+    return _Leader(transport, protocol, loop)
+
+
+def _write_snapshot_dir(basename: str, snapshot: bytes) -> str:
+    workdir = tempfile.mkdtemp(prefix="ephemeris-runner-")
+    try:
+        fd = os.open(
+            os.path.join(workdir, basename),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o444,
+        )
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(snapshot)
+    except BaseException:
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise
+    return workdir
+
+
+def _runner_rlimits(wall_seconds: int) -> Callable[[], None]:
+    # Imported in the parent: the hook runs between fork and exec, where a
+    # first import could deadlock on the import lock.
+    import resource
+
+    def apply() -> None:
+        for limit, cap in (
+            (resource.RLIMIT_CPU, wall_seconds),
+            (resource.RLIMIT_AS, RUNNER_ADDRESS_SPACE_BYTES),
+            (resource.RLIMIT_NOFILE, RUNNER_NOFILE),
+            (resource.RLIMIT_FSIZE, RUNNER_FILE_BYTES),
+        ):
+            _soft, hard = resource.getrlimit(limit)
+            bounded = cap if hard == resource.RLIM_INFINITY else min(cap, hard)
+            resource.setrlimit(limit, (bounded, bounded))
+
+    return apply
