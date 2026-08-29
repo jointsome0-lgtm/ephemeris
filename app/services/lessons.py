@@ -1433,6 +1433,19 @@ def _state_file_snapshot(path: Path) -> tuple[bytes, os.stat_result] | None:
             os.close(fd)
 
 
+def _stage_written(lesson: dict, ref: str) -> bool:
+    """A declared page counts as written only when its file is a readable
+    regular file reached through no symlink (§2); a declaration the preview
+    shows as a placeholder is not a stage the learner can work on."""
+    try:
+        ref = _clean_bundle_ref(ref)
+        if bundle_schema.path_has_symlink(_lesson_dir(lesson["slug"]), ref):
+            return False
+        return _bundle_path(lesson["slug"], ref).is_file()
+    except LessonError:
+        return False
+
+
 def _state_artifact_files(
     lesson: dict, roots: list[str]
 ) -> list[tuple[str, Path, os.stat_result]]:
@@ -1642,9 +1655,48 @@ def _render_lesson_state(
                 f"  - …and {open_total - len(open_questions)} more, oldest "
                 "first in `attempts.jsonl`"
             )
-    stages = [page for page in read.pages if page["path"] != read.entry]
-    if stages:
-        last = stages[-1]
+    pages = {page["id"]: page["path"] for page in read.pages}
+    blocks = {block["file"]: block for block in read.blocks}
+    starter_by_file: dict[str, bytes] = {}
+    for page_id, page in pages.items():
+        page_blocks = [block for block in read.blocks if block["page"] == page_id]
+        if not page_blocks:
+            continue
+        by_block, starters = _page_starters(lesson, page)
+        for block in page_blocks:
+            starter = by_block.get(block["id"])
+            # Unmarked pages only resolve when there is nothing to confuse:
+            # one block and one textarea. Pairing by document order would
+            # silently take an answer or output textarea for a starter.
+            if starter is None and len(page_blocks) == len(starters) == 1:
+                starter = starters[0]
+            if starter is not None:
+                starter_by_file[block["file"]] = starter
+    artifacts = _state_artifact_files(lesson, read.artifact_roots)
+    artifact_lines: list[str] = []
+    changed_by_page: dict[str, int] = {}
+    for rel, path, stat in artifacts:
+        equal = "unknown"
+        block = blocks.get(rel)
+        snapshot = _state_file_snapshot(path) if block else None
+        if block and snapshot is not None:
+            data, stat = snapshot
+            starter = starter_by_file.get(rel)
+            if starter is not None:
+                equal = str(data == starter).lower()
+        if block and equal == "false":
+            changed_by_page[block["page"]] = changed_by_page.get(block["page"], 0) + 1
+        mtime = datetime.fromtimestamp(
+            stat.st_mtime, timezone.utc
+        ).isoformat(timespec="seconds").replace("+00:00", "Z")
+        artifact_lines.append(
+            f"  - {json.dumps(rel)}: mtime={mtime}; equal_to_starter={equal}"
+        )
+    declared_stages = [page for page in read.pages if page["path"] != read.entry]
+    written = [page for page in declared_stages if _stage_written(lesson, page["path"])]
+    missing = [page for page in declared_stages if page not in written]
+    if written:
+        last = written[-1]
         declared = [
             q for q in read.questions
             if q["page"] == last["id"] and q["kind"] != bundle_schema.ASK_TUTOR_KIND
@@ -1654,14 +1706,25 @@ def _render_lesson_state(
             if latest.get(q["id"]) is not None
             and not attempts_service.row_is_question(latest[q["id"]], q["kind"])
         )
+        editors = [block for block in read.blocks if block["page"] == last["id"]]
         last_ref, last_cut = _state_json_excerpt(last["path"])
         lines.append(
-            f"- Stages written: {len(stages)}; last stage (data): {last_ref}"
+            f"- Stages written: {len(written)} of {len(declared_stages)} declared; "
+            f"last written stage (data): {last_ref}"
             + (" (cut here; the full path is in `lesson.json`)" if last_cut else "")
-            + f" with {answered} of {len(declared)} questions answered"
+            + f"; on it {answered} of {len(declared)} questions answered and "
+            f"{changed_by_page.get(last['id'], 0)} of {len(editors)} editor files "
+            "changed from their starter"
         )
     else:
-        lines.append("- Stages written: none — the lesson has no stage yet")
+        lines.append(f"- Stages written: 0 of {len(declared_stages)} declared")
+    if missing:
+        refs = [_state_json_excerpt(page["path"])[0] for page in missing[:5]]
+        lines.append(
+            "- Declared stages with no readable page file (write or repair them; "
+            "nothing can be recorded on a placeholder): " + ", ".join(refs)
+            + (f", and {len(missing) - 5} more" if len(missing) > 5 else "")
+        )
     lines.append("- Questions:")
     for question in read.questions:
         attempt = latest.get(question["id"])
@@ -1684,39 +1747,7 @@ def _render_lesson_state(
     if not read.questions:
         lines.append("  - none declared")
     lines.append("- Artifacts:")
-    pages = {page["id"]: page["path"] for page in read.pages}
-    blocks = {block["file"]: block for block in read.blocks}
-    starter_by_file: dict[str, bytes] = {}
-    for page_id, page in pages.items():
-        page_blocks = [block for block in read.blocks if block["page"] == page_id]
-        if not page_blocks:
-            continue
-        by_block, starters = _page_starters(lesson, page)
-        for block in page_blocks:
-            starter = by_block.get(block["id"])
-            # Unmarked pages only resolve when there is nothing to confuse:
-            # one block and one textarea. Pairing by document order would
-            # silently take an answer or output textarea for a starter.
-            if starter is None and len(page_blocks) == len(starters) == 1:
-                starter = starters[0]
-            if starter is not None:
-                starter_by_file[block["file"]] = starter
-    artifacts = _state_artifact_files(lesson, read.artifact_roots)
-    for rel, path, stat in artifacts:
-        equal = "unknown"
-        block = blocks.get(rel)
-        snapshot = _state_file_snapshot(path) if block else None
-        if block and snapshot is not None:
-            data, stat = snapshot
-            starter = starter_by_file.get(rel)
-            if starter is not None:
-                equal = str(data == starter).lower()
-        mtime = datetime.fromtimestamp(
-            stat.st_mtime, timezone.utc
-        ).isoformat(timespec="seconds").replace("+00:00", "Z")
-        lines.append(
-            f"  - {json.dumps(rel)}: mtime={mtime}; equal_to_starter={equal}"
-        )
+    lines.extend(artifact_lines)
     if not artifacts:
         lines.append("  - none found")
     lines.extend([
@@ -1849,9 +1880,14 @@ the route on the cover (`index.html`) as a short list of stage titles.
 A plan is cheap to revise; a written page is not. Then write ONE stage
 per sitting, the next one on the plan, shaped by the record of the
 stage before it: the misses, the questions they asked, what their code
-did. STATE says how many stages exist and how far the learner got on
-the last one. While the last stage has no recorded answers, do not
-write the next one unless the learner tells you to go on. A lesson
+did. STATE says how many stages exist, which declared pages have no
+file on disk, and what the learner recorded on the last written one:
+answers, and editor files changed from their starter; `runs.jsonl`
+holds their finished runs. While the last stage shows no recorded work,
+do not write the next one unless the learner tells you to go on. A
+declared stage with no page file is yours to write or repair, never
+one to wait on. A stage that records nothing (a v1 manifest, a page of
+reading) is done when the learner says so, not before. A lesson
 written several stages ahead teaches an imagined learner; it is the
 document you were told not to write. End a sitting with a commit, then
 tell the learner what to do on the new stage and to come back when
