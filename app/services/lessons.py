@@ -1434,16 +1434,18 @@ def _state_file_snapshot(path: Path) -> tuple[bytes, os.stat_result] | None:
 
 
 def _stage_written(lesson: dict, ref: str) -> bool:
-    """A declared page counts as written only when its file is a readable
-    regular file reached through no symlink (§2); a declaration the preview
-    shows as a placeholder is not a stage the learner can work on."""
+    """A declared page counts as written only when its file is a regular file
+    reached through no symlink (§2) and within the bridge identity cap: a
+    placeholder records nothing, and neither does a page too large to carry
+    a `page_rev` (the `page-too-large` finding in `_file_info`)."""
     try:
         ref = _clean_bundle_ref(ref)
         if bundle_schema.path_has_symlink(_lesson_dir(lesson["slug"]), ref):
             return False
-        return _bundle_path(lesson["slug"], ref).is_file()
-    except LessonError:
+        st = _bundle_path(lesson["slug"], ref).stat()
+    except (LessonError, OSError):
         return False
+    return stat_module.S_ISREG(st.st_mode) and st.st_size <= PAGE_IDENTITY_MAX_BYTES
 
 
 def _state_artifact_files(
@@ -1721,8 +1723,9 @@ def _render_lesson_state(
     if missing:
         refs = [_state_json_excerpt(page["path"])[0] for page in missing[:5]]
         lines.append(
-            "- Declared stages with no readable page file (write or repair them; "
-            "nothing can be recorded on a placeholder): " + ", ".join(refs)
+            "- Declared stages with no page file that can record work (missing, "
+            "symlinked, or over the bridge size cap; write or repair them): "
+            + ", ".join(refs)
             + (f", and {len(missing) - 5} more" if len(missing) > 5 else "")
         )
     lines.append("- Questions:")

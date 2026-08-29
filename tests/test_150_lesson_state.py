@@ -186,8 +186,9 @@ def test_state_stage_line_skips_missing_pages_and_counts_changed_editor_files(
         "0 of 1 editor files changed from their starter"
     ) in first
     assert (
-        "- Declared stages with no readable page file (write or repair them; "
-        'nothing can be recorded on a placeholder): "related/state-missing.html"'
+        "- Declared stages with no page file that can record work (missing, "
+        "symlinked, or over the bridge size cap; write or repair them): "
+        '"related/state-missing.html"'
     ) in first
 
     artifact.write_text('print("learner edited the stage")\n', encoding="utf-8")
@@ -197,6 +198,14 @@ def test_state_stage_line_skips_missing_pages_and_counts_changed_editor_files(
     assert "1 of 1 editor files changed from their starter" in second
     assert "- Stages written: 1 of 2 declared" in second
     assert '"related/state-missing.html"' in second
+
+    (lesson_dir / "related" / "state-missing.html").unlink()
+    with (lesson_dir / "related" / "state-missing.html").open("wb") as fh:
+        fh.truncate(lessons.PAGE_IDENTITY_MAX_BYTES + 1)
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    third = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
+    assert "- Stages written: 1 of 2 declared" in third
+    assert '"related/state-missing.html"' in third
 
 
 def test_starter_flag_survives_a_page_that_also_holds_answer_textareas(client):
