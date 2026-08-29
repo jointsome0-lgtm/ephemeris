@@ -111,8 +111,8 @@
     {% block detail %}<aside class="detail detail-empty" aria-hidden="true"></aside>{% endblock %}
   </div>
 
-  {# mobile-only bottom nav + a slide-up "More" sheet for the rail's overflow
-     destinations (unreachable on phones, where the rail is hidden). Pure CSS
+  {# narrow-screen bottom nav + a slide-up "More" sheet for the rail's overflow
+     destinations (unreachable where the rail is hidden). Pure CSS
      toggle via #more-toggle so it works without JS. #}
   <input type="checkbox" id="more-toggle" class="more-toggle" hidden>
   <nav class="bottom-nav" aria-label="Primary">

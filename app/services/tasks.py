@@ -153,8 +153,8 @@ def toggle_complete(conn: sqlite3.Connection, task_id: int) -> bool:
     """Flip completion. Returns the new completed state (True = now completed).
 
     The read decides the write and the caller is told which way it went, so the
-    whole flip is held under the writer lock (#22): desktop and phone tapping
-    the same task can no longer both read "open" and both write "completed".
+    whole flip is held under the writer lock (#22): two browser tabs toggling the
+    same task cannot both read "open" and both write "completed".
     """
     ts = now_iso()
     with immediate(conn):

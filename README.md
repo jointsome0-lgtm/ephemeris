@@ -40,7 +40,7 @@ with an explicit message rather than breaking the rest of the app. Learn's
 uv sync                      # build .venv from uv.lock
 export ACTIVITY_DATA_DIR=~/.local/share/ephemeris
 
-# Desktop-only (safe default — not reachable from other devices):
+# Loopback is the only supported binding:
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers
 ```
 
@@ -157,31 +157,12 @@ cached, so a host-side fix does not reach a running Ephemeris:
 systemctl --user restart ephemeris
 ```
 
-## Open from your phone (same Wi-Fi)
-
-The app has **no auth** — only do this on a network you trust (see
-`docs/system-design.md` §20).
-
-```bash
-hostname -I    # find your Linux box's LAN IP first
-
-# Trusted home Wi-Fi only — lets other devices on the LAN connect.
-# The host allowlist admits only loopback names by default, so include
-# the LAN IP (or hostname) your phone will put in the URL:
-EPHEMERIS_TRUSTED_HOSTS="localhost,127.0.0.1,::1,<linux-lan-ip>" \
-  uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-proxy-headers
-```
-
-Then on the phone browse to `http://<linux-lan-ip>:8000`. Without the
-`EPHEMERIS_TRUSTED_HOSTS` entry the app answers LAN requests with
-`400 untrusted Host` (see `docs/security-model.md`).
-
 ## Security
 
-The supported boundary is localhost by default, or a trusted LAN when explicitly
-enabled; public-internet deployment is unsupported in v0. The embedded terminal
-is off by default (opt in with `EPHEMERIS_ENABLE_TERMINAL=1`) and remains
-loopback-only when enabled. See the [security model](docs/security-model.md)
+The only supported boundary is loopback (`127.0.0.1`); public-internet
+deployment is unsupported in v0. The embedded terminal is off by default (opt
+in with `EPHEMERIS_ENABLE_TERMINAL=1`) and is also loopback-only. See the
+[security model](docs/security-model.md)
 for the deployment assumptions and known limitations, and
 [`SECURITY.md`](SECURITY.md) for how to report a vulnerability.
 The ecosystem-wide security policy lives in [selfos `SECURITY.md`](https://github.com/jointsome0-lgtm/selfos/blob/main/SECURITY.md);
@@ -196,15 +177,14 @@ committed template:
 ```bash
 mkdir -p ~/.config/systemd/user
 cp deploy/ephemeris.service.example ~/.config/systemd/user/ephemeris.service
-# For phone/LAN access, change --host to 0.0.0.0 in the copy (trusted Wi-Fi only).
 systemctl --user daemon-reload
 systemctl --user enable --now ephemeris
 loginctl enable-linger "$USER"        # keep running after logout / across reboots
 ```
 
 Status: `systemctl --user status ephemeris` · logs: `journalctl --user -u ephemeris -f`.
-The template ships with `127.0.0.1`; copy-and-edit (don't symlink) so your local
-host choice never lands back in Git. Copies made before `--no-proxy-headers` was
+The template binds `127.0.0.1`; copy-and-edit (don't symlink) so local path and
+environment changes never land back in Git. Copies made before `--no-proxy-headers` was
 added to the template keep the old `ExecStart` — add the flag by hand, then
 `systemctl --user daemon-reload && systemctl --user restart ephemeris` so the
 edited unit is the one that starts (see [security model](docs/security-model.md)).

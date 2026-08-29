@@ -118,10 +118,9 @@ mechanical.
 
 The diary concentrates the most sensitive personal text in a deliberately
 no-auth app. The operational rules live in `docs/system-design.md` §20 and
-sec10.2: a diary-bearing instance should stay on `127.0.0.1`, and LAN
-exposure is a deliberate trust decision. Diary content stays out of agent
-context by default (selfos AGENTS.md → cloud-context data boundary; the
-repo-side note is in AGENTS.md). The pre-ship adversarial pass over the
-combined surface (terminal + diary + export + strip) was delegated to Codex
-per repo convention; findings and dispositions are recorded on the PR for
-issue #2.
+sec10.2: a diary-bearing instance stays on `127.0.0.1`. Diary content stays out
+of agent context by default (selfos AGENTS.md → cloud-context data boundary;
+the repo-side note is in AGENTS.md). The pre-ship adversarial pass over the
+combined surface (terminal + diary + export + strip) was delegated to Codex per
+repo convention; findings and dispositions are recorded on the PR for issue
+#2.

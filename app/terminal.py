@@ -3,13 +3,13 @@
 Goal 2 of the agent feature (see memory `agent-feature-plan`): a simple terminal
 for running general agents (Claude Code, codex, aider) and shell commands.
 
-SECURITY: this grants full shell access. The app itself runs on the LAN (0.0.0.0)
-with NO AUTH, so the terminal MUST never be reachable from another device. The socket
-rejects any non-loopback peer AND validates the Host/Origin headers — so a browser the
-local user visits cannot be used as a confused deputy (cross-site WebSocket hijacking),
-and DNS-rebinding is blocked; the drawer UI (in base.html) is only rendered for local
-clients. Access it from the machine running the server, via
-http://localhost:<port> / http://127.0.0.1:<port> — NOT the LAN IP.
+SECURITY: this grants full shell access. The app has NO AUTH and supports only a
+loopback binding. The socket rejects any non-loopback peer AND validates the
+Host/Origin headers — so a browser the local user visits cannot be used as a
+confused deputy (cross-site WebSocket hijacking), and DNS-rebinding is blocked;
+the drawer UI (in base.html) is only rendered for local clients. Access it from
+the machine running the server, via http://localhost:<port> or
+http://127.0.0.1:<port>.
 NOTE: do NOT run uvicorn with --proxy-headers or behind a forwarded-headers proxy, or
 `scope["client"]` could become attacker-influenced and weaken the loopback peer check.
 The terminal is OFF unless explicitly opted in: set EPHEMERIS_ENABLE_TERMINAL=1
@@ -236,9 +236,8 @@ def _child_setup_for(slave_fd: int):
 # unrelated dev server and silently breaks the shell's egress.
 _HTTP_PROXY_PORT = 10809
 _SOCKS_PROXY_PORT = 10808
-# Loopback literals are honored by every client and cover this app's own calls; the
-# CIDR LAN ranges are best-effort (only some clients parse CIDR in NO_PROXY).
-_NO_PROXY = "localhost,127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12"
+# Loopback literals are honored by every client and cover this app's own calls.
+_NO_PROXY = "localhost,127.0.0.1,::1"
 # This app's own spellings. The composed sets below already carry them inside
 # _NO_PROXY; _with_loopback_direct is what guarantees them on the one branch that
 # cannot compose its value — the inherited one.
@@ -399,9 +398,7 @@ def _app_base_url(ws: WebSocket) -> str | None:
     The address comes from the ASGI scope's ``server`` — the LOCAL end of the
     accepted socket, filled in by the server from the transport — and never from
     the client-supplied Host header: the URL handed to the agent must name this
-    app, not whatever a local caller claimed it was called. A wildcard bind has
-    no useful spelling, so it falls back to loopback, which is what the deployment
-    listens on anyway.
+    app, not whatever a local caller claimed it was called.
     """
     server = ws.scope.get("server")
     if not server or len(server) < 2:
@@ -409,8 +406,6 @@ def _app_base_url(ws: WebSocket) -> str | None:
     host, port = server[0], server[1]
     if not host or not port:
         return None
-    if host in {"0.0.0.0", "::", ""}:
-        host = "127.0.0.1"
     if ":" in host:  # bare IPv6 literal needs brackets in a URL authority
         host = f"[{host}]"
     scheme = "https" if ws.scope.get("scheme") in {"wss", "https"} else "http"

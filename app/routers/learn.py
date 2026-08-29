@@ -1565,8 +1565,8 @@ def _self_origin(request: Request) -> str | None:
     The render gate points a browser at the URL built here. A client-supplied
     Host header would therefore choose which server gets loaded and reported
     on, so the address comes from the ASGI scope's `server` — the local end of
-    the connection, filled in by the server from the transport. Same rule, and
-    the same wildcard fallback, as the terminal's capability URL.
+    the connection, filled in by the server from the transport. This is the
+    same rule as the terminal's capability URL.
     """
     server = request.scope.get("server")
     if not server or len(server) < 2:
@@ -1574,8 +1574,6 @@ def _self_origin(request: Request) -> str | None:
     host, port = server[0], server[1]
     if not host or not port:
         return None
-    if host in {"0.0.0.0", "::", ""}:
-        host = "127.0.0.1"
     if ":" in host:  # bare IPv6 literal needs brackets in a URL authority
         host = f"[{host}]"
     scheme = "https" if request.scope.get("scheme") in {"wss", "https"} else "http"

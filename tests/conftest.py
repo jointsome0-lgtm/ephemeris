@@ -13,7 +13,7 @@ os.environ["ACTIVITY_DATA_DIR"] = tempfile.mkdtemp(prefix="al-verify-")
 # session ownership) is still exercised.
 os.environ["EPHEMERIS_ENABLE_TERMINAL"] = "1"
 # TestClient presents Host: testserver; force the allowlist to a known value
-# (app/security.py reads it at import) so an ambient LAN setting can't 400
+# (app/security.py reads it at import) so an ambient host allowlist can't 400
 # every request under test.
 os.environ["EPHEMERIS_TRUSTED_HOSTS"] = "testserver,localhost,127.0.0.1,::1"
 

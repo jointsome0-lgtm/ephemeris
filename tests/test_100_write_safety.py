@@ -1,10 +1,11 @@
 """Concurrent-write safety and the archived-list write gate (#22).
 
-Desktop and phone reach the same SQLite file, and until this slice every
-read-modify-write here ran its read outside the writer lock: sqlite3's legacy
-mode emits a DEFERRED `BEGIN` before the first DML and never before a `SELECT`.
-Two devices could therefore both read "not skipped yet" and both write the whole
-`exdates` document back, and the second write silently erased the first.
+Two browser tabs reach the same SQLite file, and without the writer lock every
+read-modify-write here could run its read outside the transaction: sqlite3's
+legacy mode emits a DEFERRED `BEGIN` before the first DML and never before a
+`SELECT`. Two tabs could therefore both read "not skipped yet" and both write
+the whole `exdates` document back, and the second write silently erased the
+first.
 
 Nothing below spawns a thread. A race proved by racing is a race proved
 sometimes; these cases interleave the two connections by hand, at the exact

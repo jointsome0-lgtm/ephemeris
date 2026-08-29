@@ -20,7 +20,7 @@ os.environ["ACTIVITY_DATA_DIR"] = str(SOURCE_DIR)
 os.environ.pop("ACTIVITY_DB", None)
 os.environ.pop("EPHEMERIS_ENABLE_TERMINAL", None)  # terminal is opt-in; stay at the default (off)
 # TestClient presents Host: testserver; force the allowlist to a known value
-# so an ambient LAN setting can't 400 every request under test.
+# so an ambient host allowlist can't 400 every request under test.
 os.environ["EPHEMERIS_TRUSTED_HOSTS"] = "testserver,localhost,127.0.0.1,::1"
 sys.path.insert(0, str(ROOT))
 
