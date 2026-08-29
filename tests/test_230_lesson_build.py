@@ -119,6 +119,28 @@ def test_the_bundle_argv_asks_for_one_classic_script():
     assert f"--metafile=/w/out/{lesson_build._GRAPH_NAME}" in argv
 
 
+def test_a_relative_data_dir_yields_an_absolute_build_workspace(
+    tmp_path, monkeypatch
+):
+    from app.services import lessons
+
+    bundle = tmp_path / "instance" / "lessons" / "relative-build"
+    bundle.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(lessons, "LESSONS_DIR", Path("instance/lessons"))
+    monkeypatch.setattr(
+        lessons, "BUILD_WORKSPACES_DIR", Path("instance/lesson-builds")
+    )
+
+    workspace = lessons.ensure_build_workspace("relative-build")
+
+    assert workspace == (tmp_path / "instance/lesson-builds/relative-build")
+    assert workspace.is_absolute()
+    assert os.readlink(bundle / "node_modules") == str(workspace / "node_modules")
+    argv = lesson_build._bundle_argv(Path("/bundle/src/page.ts"), workspace / "out")
+    assert f"--outdir={workspace / 'out'}" in argv
+
+
 @pytest.mark.parametrize("spec", [
     "--backend=hardlink", "-x", "--minimum-release-age=0", "d3 && rm -rf /",
     "../escape", "", "d3@--force", "UPPER", "a" * 300,

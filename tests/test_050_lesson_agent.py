@@ -70,12 +70,15 @@ def test_lesson_agent_learning(client, suite_state):
     async def _e2_contract():
         results = {}
         workspace = {"dir": ws_info["dir"], "slug": _lt["slug"], "title": "demo"}
+        relative_workspace = dict(workspace, dir=os.path.relpath(workspace["dir"]))
+        expected_workspace = str(Path(relative_workspace["dir"]).absolute())
         proc = _types.SimpleNamespace(returncode=0)
 
         # A lesson parameter is classified server-side: the shell is started in
         # the bundle directory with the role's environment, nothing more.
         with _mock.patch.object(
-                _terminal, "prepare_terminal_workspace", return_value=workspace), \
+                _terminal, "prepare_terminal_workspace",
+                return_value=relative_workspace), \
                 _mock.patch.object(
                     _terminal, "_detect_proxy_env", return_value={
                         "HTTP_PROXY": "http://127.0.0.1:10809",
@@ -89,10 +92,10 @@ def test_lesson_agent_learning(client, suite_state):
         results["lesson_launcher"] = (
             lesson_sess is not None
             and lesson_sess.role == "lesson-agent"
-            and lesson_sess.workspace == workspace["dir"]
+            and lesson_sess.workspace == expected_workspace
             and proxy_detect.call_args.args == ("lesson-agent",)
             and spawn_call.args == (os.environ.get("SHELL") or "/bin/bash", "-i")
-            and spawn_call.kwargs["cwd"] == workspace["dir"]
+            and spawn_call.kwargs["cwd"] == expected_workspace
             and spawn_call.kwargs["preexec_fn"].__qualname__.startswith(
                 "_child_setup_for")
             and spawn_call.kwargs["env"]["HTTP_PROXY"]

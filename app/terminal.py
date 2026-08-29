@@ -854,6 +854,7 @@ async def _spawn_on_pty(
     close() revokes it) or the caller's `finally` takes it back. Runs under the
     caller's _CREATE_LOCK.
     """
+    workspace_dir = str(Path(workspace_dir).absolute())
     _fcntl, pty, _termios = _pty_stack()
     master_fd, slave_fd = pty.openpty()
     os.set_blocking(master_fd, False)  # pump + input writes are add_reader/add_writer-driven

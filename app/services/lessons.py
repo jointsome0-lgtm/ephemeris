@@ -2773,7 +2773,7 @@ def _ensure_build_workspace(slug: str, lesson_dir: Path) -> Path:
     if not _SLUG_RE.match(slug or ""):
         raise LessonError("invalid lesson slug")
     BUILD_WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
-    workspace = BUILD_WORKSPACES_DIR / slug
+    workspace = (BUILD_WORKSPACES_DIR / slug).absolute()
     # Absolute: a link's text resolves against the link's own directory, not
     # against the process cwd a relative data directory was spelled from.
     target = (workspace / BUILD_WORKSPACE_LINK).absolute()
