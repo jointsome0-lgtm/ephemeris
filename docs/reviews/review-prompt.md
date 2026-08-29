@@ -1,3 +1,5 @@
+> Archived 2026-08-29 together with `QUEUE.md`; kept for the history of the reports in this directory.
+
 # Standing brief: draining the security review queue
 
 Audience: the reviewer this brief is handed to (Codex via a direct `codex exec`, or

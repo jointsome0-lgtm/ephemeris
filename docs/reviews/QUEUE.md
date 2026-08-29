@@ -1,26 +1,9 @@
-# Security review queue
+# Security review queue (archived)
 
-Pending adversarial security reviews for the sensitive surfaces: the terminal
-PTY/WS core (`app/terminal.py` + `app/static/terminal.js`), the future
-`app/agent/`, and anything about to be exposed on a live port.
-
-How it works:
-
-- Whoever lands a change touching those surfaces appends one entry under
-  **Pending** — date, commits, paths, one factual line about what changed.
-  Entries stay neutral: facts only, no threat analysis.
-- Draining an entry = applying `docs/reviews/review-prompt.md` (the standing
-  brief) to it and writing a report next to this file. The brief is handed to
-  the reviewer by file reference, never restated inline. Entries drain in one
-  batch before the restart that would carry them, not one pass per merge;
-  entries over the same surface share a scope and a report. The drain
-  diagnoses and does not repair: findings land in the report, the fix is an
-  ordinary reviewed PR, and an entry reaches Done with that PR — so no code
-  arrives on `main` without a second pair of eyes.
-- Deploy gate: the live service does not restart with code whose entries are
-  still Pending (AGENTS.md → Public-Safety Check).
-
-Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
+Archived 2026-08-29. Changes to the terminal and sandbox code now go through
+the ordinary PR review like everything else; no entry is appended here and
+nothing is gated on this file. The entries below are kept as history — each
+one links the drain report in this directory.
 
 ## Pending
 
