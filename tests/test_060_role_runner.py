@@ -318,7 +318,9 @@ def test_role_runner(client, suite_state):
     _runner._cached_runner_health.cache_clear()
 
     class _F3Process:
-        _next_pid = 900000
+        # Above any real pid_max: the natural-exit path kills the process
+        # group of every job, fake ones included, and must find nobody there.
+        _next_pid = 2_000_000_000
 
         def __init__(self):
             type(self)._next_pid += 1
@@ -369,6 +371,20 @@ def test_role_runner(client, suite_state):
         observed["workdir"] = job.workdir
         observed["workdir_removed"] = not os.path.exists(job.workdir)
         observed["exit_code"] = job.exit_code
+
+        failed_request = _runner.RunnerRequest(
+            "spawn", "blk_demo", "sha256:invented", "spawn-failed-key",
+            "python-script-v1", "attempts/blk_demo/main.py",
+            b"print('invented')\n", "/tmp/private/lessons/demo",
+            "/tmp/private/lessons",
+        )
+        with _mock.patch.object(
+                _runner.asyncio, "create_subprocess_exec",
+                side_effect=OSError("invented exec refusal")):
+            failed = (await service.admit(failed_request)).job
+            await service.wait(failed.job_id)
+        observed["failed_cause"] = failed.cause
+        observed["failed_workdir_removed"] = bool(failed.workdir) and not os.path.exists(failed.workdir)
         return observed
 
     _f3_spawn = _asyncio.run(_f3_spawn_contract())
@@ -384,7 +400,9 @@ def test_role_runner(client, suite_state):
         and callable(_f3_spawn["preexec"])
         and _f3_spawn["exit_code"] == 0
         and _f3_spawn["workdir_removed"]
-    ), f"F3 a snapshot runs read-only from its own fresh directory, removed after the job: {_f3_spawn}"
+        and _f3_spawn["failed_cause"] == "spawn-failed"
+        and _f3_spawn["failed_workdir_removed"]
+    ), f"F3 a snapshot runs read-only from its own fresh directory, removed after the job or a failed spawn: {_f3_spawn}"
 
     async def _f3_real_execution():
         from app.services.runner_registry import SNAPSHOT_PATH, RunnerSpec
@@ -422,11 +440,21 @@ def test_role_runner(client, suite_state):
         flood, _ = await run(
             "flood", b"import sys\nwhile True: sys.stdout.write('x' * 65536)\n",
         )
-        return printed, printed_output, stuck, flood, sleep_marker
+        # A child left behind by a leader that exits normally, holding the
+        # output pipes: the job must still finish, and the child must not
+        # outlive it.
+        orphan_marker = f"301.{os.getpid()}"
+        orphan, _ = await run(
+            "orphan",
+            f"import subprocess\nsubprocess.Popen(['/bin/sleep', '{orphan_marker}'])\n"
+            "print('leader done')\n".encode(),
+        )
+        return printed, printed_output, stuck, flood, sleep_marker, orphan, orphan_marker
 
-    _f3_printed, _f3_printed_output, _f3_stuck, _f3_flood, _f3_sleep_marker = (
-        _asyncio.run(_f3_real_execution())
-    )
+    (
+        _f3_printed, _f3_printed_output, _f3_stuck, _f3_flood, _f3_sleep_marker,
+        _f3_orphan, _f3_orphan_marker,
+    ) = _asyncio.run(_f3_real_execution())
     assert (
         _f3_printed.cause == "exit" and _f3_printed.exit_code == 0
         and f"invented {_f3_printed.workdir}" in _f3_printed_output
@@ -443,6 +471,13 @@ def test_role_runner(client, suite_state):
         _f3_flood.cause == "output-limit" and _f3_flood.truncated
         and _f3_flood.output_bytes == _runner.OUTPUT_LIMIT_BYTES
     ), "F3 a snapshot flooding stdout is stopped at the output cap"
+    assert (
+        _f3_orphan.cause == "exit" and _f3_orphan.exit_code == 0
+        and _f3_orphan.state == _runner.FINISHED
+        and subprocess.run(
+            ["pgrep", "-f", f"sleep {_f3_orphan_marker}"], capture_output=True, text=True,
+        ).returncode != 0
+    ), "F3 a child outliving a normally exiting leader is killed with the job"
 
     async def _f3_service_contracts():
         def req(

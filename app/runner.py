@@ -628,16 +628,20 @@ class RunnerService:
         job.workdir = await asyncio.to_thread(
             _write_snapshot_dir, basename, request.snapshot
         )
-        return await asyncio.create_subprocess_exec(
-            *spec.command(f"{job.workdir}/{basename}"),
-            stdin=subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=job.workdir,
-            env=dict(RUNNER_ENV),
-            start_new_session=True,
-            preexec_fn=_runner_rlimits(spec.wall_seconds),
-        )
+        try:
+            return await asyncio.create_subprocess_exec(
+                *spec.command(f"{job.workdir}/{basename}"),
+                stdin=subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=job.workdir,
+                env=dict(RUNNER_ENV),
+                start_new_session=True,
+                preexec_fn=_runner_rlimits(spec.wall_seconds),
+            )
+        except BaseException:
+            await asyncio.to_thread(shutil.rmtree, job.workdir, True)
+            raise
 
     async def _drive_job(self, job: RunnerJob) -> None:
         async with self._lock:
@@ -692,6 +696,11 @@ class RunnerService:
         finally:
             async with self._lock:
                 job.process_reaped = True
+            # Whatever the leader left behind in its process group goes with
+            # it: a background child would otherwise outlive the job's wall
+            # clock, and one holding the output pipes would keep the readers
+            # below from ever reaching EOF.
+            await asyncio.to_thread(self._kill_tree, job)
             if job.workdir:
                 await asyncio.to_thread(shutil.rmtree, job.workdir, True)
 
@@ -900,10 +909,8 @@ def _write_snapshot_dir(basename: str, snapshot: bytes) -> str:
             os.path.join(workdir, basename),
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o444,
         )
-        try:
-            os.write(fd, snapshot)
-        finally:
-            os.close(fd)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(snapshot)
     except BaseException:
         shutil.rmtree(workdir, ignore_errors=True)
         raise

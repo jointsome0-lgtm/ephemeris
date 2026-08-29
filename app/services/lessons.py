@@ -2774,7 +2774,9 @@ def _ensure_build_workspace(slug: str, lesson_dir: Path) -> Path:
         raise LessonError("invalid lesson slug")
     BUILD_WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
     workspace = BUILD_WORKSPACES_DIR / slug
-    target = workspace / BUILD_WORKSPACE_LINK
+    # Absolute: a link's text resolves against the link's own directory, not
+    # against the process cwd a relative data directory was spelled from.
+    target = (workspace / BUILD_WORKSPACE_LINK).absolute()
     for path in (workspace, target):
         # exists() follows links, so a dangling one reads as absent here; the
         # is_symlink() term is what catches it.
@@ -2801,7 +2803,13 @@ def _ensure_build_workspace(slug: str, lesson_dir: Path) -> Path:
                     link.name, lesson_dir,
                 )
             _preserve_foreign(link)
-    os.symlink(target, link)
+    try:
+        os.symlink(target, link)
+    except FileExistsError:
+        # A terminal open and a build may prepare the same lesson at once;
+        # the loser is fine as long as the winner placed the same link.
+        if not (link.is_symlink() and os.readlink(link) == str(target)):
+            raise
     return workspace
 
 
