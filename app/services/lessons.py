@@ -1335,10 +1335,6 @@ def with_bundle_info(lesson: dict | None, entry: str | None = None) -> dict | No
     return lesson
 
 
-def with_file_info(lesson: dict | None) -> dict | None:
-    return with_bundle_info(lesson)
-
-
 def _require_lesson(conn: sqlite3.Connection, lesson_id: int) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM lessons WHERE id = ?", (lesson_id,)).fetchone()
     if row is None:

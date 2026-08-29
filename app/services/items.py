@@ -45,11 +45,6 @@ def list_items(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def get_item(conn: sqlite3.Connection, item_id: int) -> sqlite3.Row | None:
-    """One routine item with all columns (for the habit edit form)."""
-    return conn.execute("SELECT * FROM routine_items WHERE id = ?", (item_id,)).fetchone()
-
-
 def list_sections(conn: sqlite3.Connection) -> list[str]:
     """Distinct section names (group_name) in display order, for the Section picker."""
     rows = conn.execute(

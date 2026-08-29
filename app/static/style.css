@@ -276,7 +276,6 @@ body.term-stack-open .tt-shell { padding-right: var(--term-stack-w); }
 .rail-foot { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .rail-foot .rail-ico { width: 34px; height: 34px; }
 .rail-foot .rail-ico svg { width: 18px; height: 18px; }
-.rail-label { display: none; }   /* icon-only rail, matching TickTick */
 
 /* shared chrome reset for icon-style <button>s (theme toggle, rail buttons, terminal) */
 .theme-toggle, button.rail-ico, .term-btn {
@@ -1973,9 +1972,6 @@ body.term-stack-open .timer-drawer { right: calc(18px + var(--term-stack-w, 0px)
 .er-fill { display: block; height: 100%; border-radius: 999px; background: var(--astral); }
 .er-val { font-family: var(--font-mono); font-size: 12px; color: var(--muted); text-align: right; }
 
-.focus-14 { margin-top: 22px; }
-.focus-streak { margin: 4px 0 0; font-size: 12px; color: var(--astral); }
-.focus-by-lesson { margin-top: 20px; }
 .focus-by-lesson h2 { font-size: 14px; font-weight: 600; margin: 0 0 10px; }
 
 /* year sky — a star per day; brighter = kept */

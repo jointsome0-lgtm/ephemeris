@@ -412,14 +412,6 @@ def exdates_of(ev) -> list[str]:
     return sorted(_exdates_set(ev["exdates"]))
 
 
-def list_events(conn: sqlite3.Connection, include_archived: bool = False) -> list[sqlite3.Row]:
-    q = "SELECT * FROM calendar_events"
-    if not include_archived:
-        q += " WHERE archived_at IS NULL"
-    q += " ORDER BY start_date, (start_time IS NULL) DESC, start_time, id"
-    return conn.execute(q).fetchall()
-
-
 # --- single-occurrence skip / restore (EXDATE, sec32 §4) -------------------
 
 

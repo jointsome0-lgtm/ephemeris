@@ -47,7 +47,6 @@ _TARGETS = {
     "habit": ("routine_items", "habit_id", "active = 1"),
     "task": ("tasks", "task_id", "completed_at IS NULL"),
 }
-TARGET_KINDS = tuple(_TARGETS)
 
 
 class FocusError(ValueError):
@@ -648,25 +647,6 @@ def overview(conn: sqlite3.Connection) -> dict:
     }
 
 
-def pomodoro_counts(conn: sqlite3.Connection) -> dict:
-    """The two tallies `overview` dropped, for the legacy route's answer only.
-
-    A pre-#75 page reads `today_pomo` / `total_pomo` off every response and
-    would print `undefined` without them. What used to be a `pomo` row is now a
-    25-minute countdown; a database restored from an older export can still
-    hold the original word, so both spellings count.
-
-    Deletable with the rest of the compat layer — docs/system-design.md sec34.
-    """
-    row = conn.execute(
-        "SELECT COALESCE(SUM(CASE WHEN date = ? THEN 1 ELSE 0 END), 0) AS today_pomo, "
-        "COUNT(*) AS total_pomo FROM focus_sessions "
-        "WHERE mode = 'pomo' OR (mode = 'countdown' AND target_seconds = 1500)",
-        (today_str(),),
-    ).fetchone()
-    return {"today_pomo": row["today_pomo"], "total_pomo": row["total_pomo"]}
-
-
 _RECORD_SELECT = (
     "SELECT fs.*, " + _TARGET_TITLES + "FROM focus_sessions fs " + _TARGET_JOIN
 )
@@ -743,30 +723,6 @@ def daily_totals(conn: sqlite3.Connection, days: int = 14) -> list[dict]:
     return out
 
 
-def lesson_totals(conn: sqlite3.Connection, days: int | None = None,
-                  limit: int = 6) -> list[dict]:
-    """Top lessons by focused time (all-time, or the last `days` days). Only
-    sessions that named a lesson count — the per-lesson Focus breakdown."""
-    params: list = []
-    where = "WHERE fs.lesson_id IS NOT NULL "
-    if days:
-        start = (_date.fromisoformat(today_str()) - timedelta(days=days - 1)).isoformat()
-        where += "AND fs.date >= ? "
-        params.append(start)
-    rows = conn.execute(
-        "SELECT l.id AS lesson_id, l.title AS title, "
-        "COALESCE(SUM(fs.seconds),0) AS sec "
-        "FROM focus_sessions fs JOIN lessons l ON l.id = fs.lesson_id "
-        + where + "GROUP BY l.id ORDER BY sec DESC, l.id LIMIT ?",
-        (*params, limit),
-    ).fetchall()
-    return [{
-        "lesson_id": r["lesson_id"], "title": r["title"],
-        "seconds": r["sec"], "minutes": r["sec"] // 60,
-        "label": _dur_label(r["sec"]),
-    } for r in rows]
-
-
 def _target_total(conn: sqlite3.Connection, column: str, target_id: int) -> dict:
     row = conn.execute(
         "SELECT COALESCE(SUM(seconds),0) AS sec, COUNT(*) AS n, "
@@ -800,21 +756,6 @@ def task_total(conn: sqlite3.Connection, task_id: int) -> dict:
     """All focused time recorded against ONE task. A task is offered as a timer
     target, so the time spent on it has to be readable on the task itself."""
     return _target_total(conn, "task_id", task_id)
-
-
-def habit_totals(conn: sqlite3.Connection) -> dict[int, dict]:
-    """{habit_id: {'seconds','label','today_seconds','today_label'}} for every
-    habit that has recorded time — one query for a whole list of rows."""
-    rows = conn.execute(
-        "SELECT habit_id, COALESCE(SUM(seconds),0) AS sec, "
-        "COALESCE(SUM(CASE WHEN date = ? THEN seconds ELSE 0 END),0) AS today_sec "
-        "FROM focus_sessions WHERE habit_id IS NOT NULL GROUP BY habit_id",
-        (today_str(),),
-    ).fetchall()
-    return {r["habit_id"]: {
-        "seconds": r["sec"], "label": _dur_label(r["sec"]),
-        "today_seconds": r["today_sec"], "today_label": _dur_label(r["today_sec"]),
-    } for r in rows}
 
 
 def focus_day_streak(daily: list[dict]) -> int:

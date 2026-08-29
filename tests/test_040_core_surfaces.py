@@ -1066,42 +1066,6 @@ def test_core_surfaces(client, suite_state):
         + "  -- " + str(nrec) + " vs " + _stop
     )
 
-    # The pre-#75 write still answers, for a Focus tab left open across the
-    # restart: its app.js posts here when a Pomodoro completes, and a 404 would
-    # drop a span the user really did spend. The old words convert on the way in
-    # — and back out again, because that page reads the answer in its own
-    # vocabulary and would print `undefined` for anything it does not know.
-    legacy = c.post("/focus/session", data={"mode": "pomo", "seconds": 1500},
-                    headers={"X-Partial": "1"})
-    assert legacy.status_code == 200, "the retired session write still records"
-    lrec, lov = legacy.json()["record"], legacy.json()["overview"]
-    assert lrec["mode"] == "pomo" and lrec["mode_label"] == "Pomo", (
-        "the answer speaks the old page's words" + "  -- " + str(lrec)
-    )
-    assert lrec["duration_label"] == "25m" and "lesson_title" in lrec, (
-        "including the fields it prints on the row it appends"
-        + "  -- " + str(lrec)
-    )
-    assert lov["today_pomo"] >= 1 and lov["total_pomo"] >= lov["today_pomo"], (
-        "the counters it headlines come back" + "  -- " + str(lov)
-    )
-    assert lov["today_pomo"] < lov["today_sessions"], (
-        "and count Pomodoros, not every span" + "  -- " + str(lov)
-    )
-    nonsense = c.post("/focus/session", data={"mode": "nope", "seconds": 600},
-                      headers={"X-Partial": "1"})
-    assert nonsense.status_code == 422, (
-        "a word the old page never spoke is refused, not filed as an open span"
-        + "  -- " + nonsense.text
-    )
-    lc = get_conn()
-    try:
-        assert lc.execute(
-            "SELECT mode FROM focus_sessions WHERE id = ?", (lrec["id"],)
-        ).fetchone()[0] == "countdown", "while the row stored is a countdown"
-    finally:
-        lc.close()
-
     assert 'class="sky-strip"' in c.get("/today").text, (
         "/today carries the sky-strip constellation"
     )
