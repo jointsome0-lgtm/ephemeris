@@ -368,7 +368,9 @@ def test_role_runner(client, suite_state):
             job = (await service.admit(request)).job
             await service.wait(job.job_id)
         observed["workdir"] = job.workdir
-        observed["workdir_removed"] = not os.path.exists(job.workdir)
+        observed["workdir_removed"] = (
+            not os.path.exists(job.workdir) and not os.path.exists(f"{job.workdir}.tmp")
+        )
         observed["exit_code"] = job.exit_code
 
         failed_request = _runner.RunnerRequest(
@@ -383,7 +385,9 @@ def test_role_runner(client, suite_state):
             failed = (await service.admit(failed_request)).job
             await service.wait(failed.job_id)
         observed["failed_cause"] = failed.cause
-        observed["failed_workdir_removed"] = bool(failed.workdir) and not os.path.exists(failed.workdir)
+        observed["failed_workdir_removed"] = bool(failed.workdir) and not any(
+            os.path.exists(p) for p in (failed.workdir, f"{failed.workdir}.tmp")
+        )
         return observed
 
     _f3_spawn = _asyncio.run(_f3_spawn_contract())
@@ -396,7 +400,7 @@ def test_role_runner(client, suite_state):
         and _f3_spawn["content"] == b"print('invented')\n"
         and _f3_spawn["env"] == {
             **_runner.RUNNER_ENV,
-            "TMPDIR": _f3_spawn["workdir"], "GOTMPDIR": _f3_spawn["workdir"],
+            "TMPDIR": f"{_f3_spawn['workdir']}.tmp", "GOTMPDIR": f"{_f3_spawn['workdir']}.tmp",
         }
         and _f3_spawn["new_session"] is True
         and callable(_f3_spawn["preexec"])

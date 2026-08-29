@@ -635,12 +635,16 @@ class RunnerService:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=job.workdir,
-                env={**RUNNER_ENV, "TMPDIR": job.workdir, "GOTMPDIR": job.workdir},
+                env={
+                    **RUNNER_ENV,
+                    "TMPDIR": _scratch_dir(job.workdir),
+                    "GOTMPDIR": _scratch_dir(job.workdir),
+                },
                 start_new_session=True,
                 preexec_fn=_runner_rlimits(spec.wall_seconds),
             )
         except BaseException:
-            await asyncio.to_thread(shutil.rmtree, job.workdir, True)
+            await asyncio.to_thread(_remove_workdir, job.workdir)
             raise
 
     async def _drive_job(self, job: RunnerJob) -> None:
@@ -702,7 +706,7 @@ class RunnerService:
             # below from ever reaching EOF.
             await asyncio.to_thread(self._kill_tree, job)
             if job.workdir:
-                await asyncio.to_thread(shutil.rmtree, job.workdir, True)
+                await asyncio.to_thread(_remove_workdir, job.workdir)
 
         async with self._lock:
             if returncode < 0:
@@ -939,9 +943,20 @@ async def _create_leader(*argv: str, **kwargs) -> _Leader:
     return _Leader(transport, protocol, loop)
 
 
+def _scratch_dir(workdir: str) -> str:
+    """Where the job's toolchain writes temporaries: beside cwd, never in it."""
+    return f"{workdir}.tmp"
+
+
+def _remove_workdir(workdir: str) -> None:
+    shutil.rmtree(workdir, ignore_errors=True)
+    shutil.rmtree(_scratch_dir(workdir), ignore_errors=True)
+
+
 def _write_snapshot_dir(basename: str, snapshot: bytes) -> str:
     workdir = tempfile.mkdtemp(prefix="ephemeris-runner-")
     try:
+        os.mkdir(_scratch_dir(workdir), 0o700)
         fd = os.open(
             os.path.join(workdir, basename),
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o444,
@@ -949,7 +964,7 @@ def _write_snapshot_dir(basename: str, snapshot: bytes) -> str:
         with os.fdopen(fd, "wb") as handle:
             handle.write(snapshot)
     except BaseException:
-        shutil.rmtree(workdir, ignore_errors=True)
+        _remove_workdir(workdir)
         raise
     return workdir
 
