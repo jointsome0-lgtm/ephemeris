@@ -116,6 +116,12 @@ def test_state_regenerates_from_current_db_and_never_serializes_token(
     assert "equal_to_starter=true" in first
     assert '"attempts/notes.txt": mtime=' in first
     assert "- Summary exists: no" in first
+    assert (
+        '- Stages written: 1 of 1 declared; last written stage (data): '
+        '"related/state-next.html"; on it 0 of 1 questions answered and '
+        "0 of 0 editor files changed from their starter"
+    ) in first
+    assert "## Pacing: one stage ahead of the learner" in first
     assert "`EPHEMERIS_ASSESS_URL`, `EPHEMERIS_ASSESS_TOKEN`" in first
     assert secret not in first
 
@@ -131,6 +137,11 @@ def test_state_regenerates_from_current_db_and_never_serializes_token(
     assert "`q_statebeta`: unanswered; verdict=none" in second
     assert "mtime=2030-03-17T17:46:40Z; equal_to_starter=false" in second
     assert "- Summary exists: yes" in second
+    assert (
+        '- Stages written: 1 of 1 declared; last written stage (data): '
+        '"related/state-next.html"; on it 0 of 1 questions answered and '
+        "0 of 0 editor files changed from their starter"
+    ) in second
     assert secret not in second
     assert first != second
     assert "write one early provisional resume brief" in (
@@ -138,6 +149,63 @@ def test_state_regenerates_from_current_db_and_never_serializes_token(
     ).read_text(encoding="utf-8"), (
         "the verdict-writing contract rides along as a companion (#195)"
     )
+
+
+def test_state_stage_line_skips_missing_pages_and_counts_changed_editor_files(
+    client,
+):
+    lesson, lesson_dir, manifest = _lesson_with_state_surface("Stage Line Fixture")
+    manifest["pages"].append({
+        "id": "pg_statemissing",
+        "path": "related/state-missing.html",
+        "title": "Declared but never written",
+    })
+    manifest["blocks"].append({
+        "id": "blk_stagecode",
+        "page": "pg_statepage2",
+        "kind": "editor",
+        "language": "python",
+        "file": "attempts/blk_stagecode/main.py",
+        "runner_id": "python-script-v1",
+    })
+    bundle_schema.write_manifest(lesson_dir / lessons.MANIFEST_NAME, manifest)
+    (lesson_dir / "related" / "state-next.html").write_text(
+        '<html><textarea data-block="blk_stagecode">print("stage")\n'
+        "</textarea></html>",
+        encoding="utf-8",
+    )
+    artifact = lesson_dir / "attempts" / "blk_stagecode" / "main.py"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text('print("stage")\n', encoding="utf-8")
+
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    first = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
+    assert (
+        '- Stages written: 1 of 2 declared; last written stage (data): '
+        '"related/state-next.html"; on it 0 of 1 questions answered and '
+        "0 of 1 editor files changed from their starter"
+    ) in first
+    assert (
+        "- Declared stages with no page file that can record work (missing, "
+        "symlinked, or over the bridge size cap; write or repair them): "
+        '"related/state-missing.html"'
+    ) in first
+
+    artifact.write_text('print("learner edited the stage")\n', encoding="utf-8")
+    (lesson_dir / "related" / "state-missing.html").symlink_to("state-next.html")
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    second = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
+    assert "1 of 1 editor files changed from their starter" in second
+    assert "- Stages written: 1 of 2 declared" in second
+    assert '"related/state-missing.html"' in second
+
+    (lesson_dir / "related" / "state-missing.html").unlink()
+    with (lesson_dir / "related" / "state-missing.html").open("wb") as fh:
+        fh.truncate(lessons.PAGE_IDENTITY_MAX_BYTES + 1)
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    third = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
+    assert "- Stages written: 1 of 2 declared" in third
+    assert '"related/state-missing.html"' in third
 
 
 def test_starter_flag_survives_a_page_that_also_holds_answer_textareas(client):

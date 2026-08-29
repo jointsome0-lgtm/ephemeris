@@ -55,6 +55,13 @@ Review critics over-produce. Act on findings that name a concrete failure — wr
 - Trivial read-only work and single-file doc edits on a clean main need no worktree.
 - Remove the worktree and delete its local branch once its PR merges.
 
+## Pull requests
+
+- After opening a PR, run the `watch` skill on it without being asked. Merge
+  is pre-authorized: fix findings in the ordinary rounds, and once Codex gives
+  a clean verdict and CI is green, squash-merge, remove the worktree, and
+  delete the branch.
+
 ## Style
 
 - Avoid code comments unless explicitly asked to add comments.
