@@ -116,6 +116,11 @@ def test_state_regenerates_from_current_db_and_never_serializes_token(
     assert "equal_to_starter=true" in first
     assert '"attempts/notes.txt": mtime=' in first
     assert "- Summary exists: no" in first
+    assert (
+        '- Stages written: 1; last stage (data): "related/state-next.html" '
+        "with 0 of 1 questions answered"
+    ) in first
+    assert "## Pacing — one stage ahead of the learner" in first
     assert "`EPHEMERIS_ASSESS_URL`, `EPHEMERIS_ASSESS_TOKEN`" in first
     assert secret not in first
 
@@ -131,6 +136,10 @@ def test_state_regenerates_from_current_db_and_never_serializes_token(
     assert "`q_statebeta`: unanswered; verdict=none" in second
     assert "mtime=2030-03-17T17:46:40Z; equal_to_starter=false" in second
     assert "- Summary exists: yes" in second
+    assert (
+        '- Stages written: 1; last stage (data): "related/state-next.html" '
+        "with 0 of 1 questions answered"
+    ) in second
     assert secret not in second
     assert first != second
     assert "write one early provisional resume brief" in (

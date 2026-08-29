@@ -1642,6 +1642,26 @@ def _render_lesson_state(
                 f"  - …and {open_total - len(open_questions)} more, oldest "
                 "first in `attempts.jsonl`"
             )
+    stages = [page for page in read.pages if page["path"] != read.entry]
+    if stages:
+        last = stages[-1]
+        declared = [
+            q for q in read.questions
+            if q["page"] == last["id"] and q["kind"] != bundle_schema.ASK_TUTOR_KIND
+        ]
+        answered = sum(
+            1 for q in declared
+            if latest.get(q["id"]) is not None
+            and not attempts_service.row_is_question(latest[q["id"]], q["kind"])
+        )
+        last_ref, last_cut = _state_json_excerpt(last["path"])
+        lines.append(
+            f"- Stages written: {len(stages)}; last stage (data): {last_ref}"
+            + (" (cut here; the full path is in `lesson.json`)" if last_cut else "")
+            + f" with {answered} of {len(declared)} questions answered"
+        )
+    else:
+        lines.append("- Stages written: none — the lesson has no stage yet")
     lines.append("- Questions:")
     for question in read.questions:
         attempt = latest.get(question["id"])
@@ -1821,6 +1841,21 @@ missing. Formats, reading bounds, and edge rules: `reference/record.md`.
 %SOURCE_KEEP%
 - If neither road works, say plainly which material you could not get and
   build from what is in the bundle. Never invent the part you missed.
+
+## Pacing — one stage ahead of the learner, never the whole course
+
+The lesson is built as the learner walks it, not before they start.
+Plan the route as a short list of stage titles on the cover
+(`index.html`) — a plan is cheap to revise; a written page is not.
+Then write ONE stage per sitting: the next one on the plan, shaped by
+the record of the stage before it — the misses, the questions they
+asked, what their code did. STATE says how many stages exist and how
+far the learner got on the last one. While the last stage has no
+recorded answers, the next stage does not get written unless the
+learner tells you to go on; a lesson written several stages ahead
+teaches an imagined learner, and is the document you were told not to
+write. End a sitting by committing and telling the learner what to do
+on the new stage and to come back when they are through.
 
 ## Pages
 
