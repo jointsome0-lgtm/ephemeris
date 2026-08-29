@@ -35,7 +35,5 @@ knowingly switched off and why.
   including the public-data boundary. Nothing from a real ledger (task titles,
   notes, dates, screenshots, exports) belongs in code, docs, tests, or fixtures;
   invent examples instead.
-- Changes to `app/terminal.py` or anything that listens on a port get their own
-  security review; see [`docs/reviews/QUEUE.md`](docs/reviews/QUEUE.md).
 - Keep the commit history readable: one logical change per commit, present-tense
   subject line.

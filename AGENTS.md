@@ -48,18 +48,7 @@ Diary content (sec35) stays out of agent context by default (selfos AGENTS.md
 
 Review critics over-produce. Act on findings that name a concrete failure — wrong behaviour, crash, data loss, broken contract — in the app as deployed: single user, loopback-only, no auth, one worker. Reject the rest with the reason written down: hardening for a deployment this project does not have, abstraction for hypothetical futures, style rewrites. Real defects are never what gets waved off.
 
-## Public-Safety Check
-
-The app has no auth in v0. Keeping the code in public Git is acceptable; exposing a running instance to the public internet is not.
-
-Review-queue entries:
-
-- Changes touching `app/terminal.py`, a new bundle file the lesson sandboxes read, or anything about to listen on a port get one entry appended to `docs/reviews/QUEUE.md` when they land.
-- Those changes do not go live while their entries are Pending. That file's header describes the drain protocol.
-- The drain is run by Codex (`codex exec`, handed `docs/reviews/review-prompt.md` by file reference). Claude does not run it; it repairs the findings in an ordinary PR.
-- Nothing else earns an entry: UI, templates, and portability work go straight to the deploy gate.
-
-Git worktrees:
+## Git worktrees
 
 - Create them only in `.worktrees/<name>` inside the repo (globally gitignored via `~/.config/git/ignore`), never as sibling directories.
 - Any work that will open a PR branches and builds in such a worktree, never in the primary checkout — the primary checkout stays on a clean `main` so parallel sessions don't fight for its index.
