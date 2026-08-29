@@ -120,7 +120,7 @@ def test_state_regenerates_from_current_db_and_never_serializes_token(
         '- Stages written: 1; last stage (data): "related/state-next.html" '
         "with 0 of 1 questions answered"
     ) in first
-    assert "## Pacing — one stage ahead of the learner" in first
+    assert "## Pacing: one stage ahead of the learner" in first
     assert "`EPHEMERIS_ASSESS_URL`, `EPHEMERIS_ASSESS_TOKEN`" in first
     assert secret not in first
 

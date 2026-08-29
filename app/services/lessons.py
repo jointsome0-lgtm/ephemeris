@@ -1842,20 +1842,20 @@ missing. Formats, reading bounds, and edge rules: `reference/record.md`.
 - If neither road works, say plainly which material you could not get and
   build from what is in the bundle. Never invent the part you missed.
 
-## Pacing — one stage ahead of the learner, never the whole course
+## Pacing: one stage ahead of the learner, never the whole course
 
-The lesson is built as the learner walks it, not before they start.
-Plan the route as a short list of stage titles on the cover
-(`index.html`) — a plan is cheap to revise; a written page is not.
-Then write ONE stage per sitting: the next one on the plan, shaped by
-the record of the stage before it — the misses, the questions they
-asked, what their code did. STATE says how many stages exist and how
-far the learner got on the last one. While the last stage has no
-recorded answers, the next stage does not get written unless the
-learner tells you to go on; a lesson written several stages ahead
-teaches an imagined learner, and is the document you were told not to
-write. End a sitting by committing and telling the learner what to do
-on the new stage and to come back when they are through.
+Build the lesson as the learner walks it, not before they start. Put
+the route on the cover (`index.html`) as a short list of stage titles.
+A plan is cheap to revise; a written page is not. Then write ONE stage
+per sitting, the next one on the plan, shaped by the record of the
+stage before it: the misses, the questions they asked, what their code
+did. STATE says how many stages exist and how far the learner got on
+the last one. While the last stage has no recorded answers, do not
+write the next one unless the learner tells you to go on. A lesson
+written several stages ahead teaches an imagined learner; it is the
+document you were told not to write. End a sitting with a commit, then
+tell the learner what to do on the new stage and to come back when
+they are through.
 
 ## Pages
 
