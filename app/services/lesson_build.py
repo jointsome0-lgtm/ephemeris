@@ -296,6 +296,14 @@ async def _run_step(
         # the same `package.json`, lockfile and `node_modules`.
         await _kill(process)
         raise
+    # A leader that exits normally may still leave a child behind in its
+    # group, and once the lesson lock is released nothing else stops it from
+    # writing the workspace. The group id is the leader's pid; nobody left in
+    # it is the ordinary outcome.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
     elapsed = time.monotonic() - started
     tail = output.decode("utf-8", "replace").strip()
     _log.info("lesson build: %s finished rc=%s in %.2fs", step, process.returncode, elapsed)

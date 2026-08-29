@@ -394,7 +394,10 @@ def test_role_runner(client, suite_state):
         and _f3_spawn["entries"] == ["main.py"]
         and _f3_spawn["mode"] == 0o444
         and _f3_spawn["content"] == b"print('invented')\n"
-        and _f3_spawn["env"] == dict(_runner.RUNNER_ENV)
+        and _f3_spawn["env"] == {
+            **_runner.RUNNER_ENV,
+            "TMPDIR": _f3_spawn["workdir"], "GOTMPDIR": _f3_spawn["workdir"],
+        }
         and _f3_spawn["new_session"] is True
         and callable(_f3_spawn["preexec"])
         and _f3_spawn["exit_code"] == 0

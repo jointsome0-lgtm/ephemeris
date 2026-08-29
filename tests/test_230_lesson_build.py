@@ -359,6 +359,26 @@ def test_a_step_runs_from_the_workspace_with_the_apps_environment(tmp_path, monk
     assert names <= {"PATH", "HOME", "TMPDIR", "PWD", "OLDPWD", "SHLVL", "_"}, names
 
 
+def test_a_step_takes_its_background_children_with_it(tmp_path, monkeypatch):
+    """A leader that starts a child with the output pipe closed and exits
+    ends the step at EOF; the child must not outlive it, or it keeps writing
+    the workspace after the lesson lock is released."""
+    import asyncio
+    import subprocess
+
+    monkeypatch.setattr(lesson_build, "_require_build_runtime", lambda: None)
+    marker = f"302.{os.getpid()}"
+    code, tail = asyncio.run(lesson_build._run_step(
+        "install", workspace=tmp_path,
+        command=["/bin/sh", "-c", f"sleep {marker} >/dev/null 2>&1 & echo leader done"],
+        timeout=10,
+    ))
+    assert code == 0 and tail == "leader done"
+    assert subprocess.run(
+        ["pgrep", "-f", f"sleep {marker}"], capture_output=True,
+    ).returncode != 0
+
+
 # --- the render gate ---------------------------------------------------------
 
 _PAGES = {

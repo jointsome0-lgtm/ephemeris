@@ -635,7 +635,7 @@ class RunnerService:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=job.workdir,
-                env=dict(RUNNER_ENV),
+                env={**RUNNER_ENV, "TMPDIR": job.workdir, "GOTMPDIR": job.workdir},
                 start_new_session=True,
                 preexec_fn=_runner_rlimits(spec.wall_seconds),
             )

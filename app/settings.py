@@ -121,7 +121,7 @@ def load(env: dict[str, str] | None = None) -> Settings:
     data_dir = env.get("ACTIVITY_DATA_DIR")
     if not data_dir:
         raise RuntimeError(_MISSING_DATA_DIR)
-    root = Path(data_dir)
+    root = Path(data_dir).absolute()
     return Settings(
         data_dir=root,
         db_path=Path(env.get("ACTIVITY_DB", root / "activity.sqlite")),
