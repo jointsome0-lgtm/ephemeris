@@ -252,6 +252,25 @@ def test_a_cancelled_step_does_not_leave_a_package_manager_running(monkeypatch):
     assert left.returncode != 0, f"the step outlived the request: {left.stdout}"
 
 
+def test_a_child_the_step_left_behind_dies_with_the_step(monkeypatch):
+    """A leader that exits after forking a child which keeps the output pipe:
+    the tail read waits on that child, the step times out, and the kill has
+    to reach the child even though the leader is already gone."""
+    import asyncio
+    import subprocess as _sp
+
+    marker = f"300.{os.getpid()}"
+    monkeypatch.setattr(lesson_build, "_require_build_runtime", lambda: None)
+    with pytest.raises(lesson_build.BuildError) as caught:
+        asyncio.run(lesson_build._run_step(
+            "install", workspace=Path("/tmp"),
+            command=["/bin/sh", "-c", f"/bin/sleep {marker} & exit 0"], timeout=1,
+        ))
+    assert caught.value.code == "install-timeout"
+    left = _sp.run(["pgrep", "-f", f"sleep {marker}"], capture_output=True, text=True)
+    assert left.returncode != 0, f"the child outlived the step: {left.stdout}"
+
+
 def test_a_build_may_not_write_its_artifact_over_its_own_source():
     """`{"entry": "x.js", "out": "x.js"}` would destroy the authored source.
 

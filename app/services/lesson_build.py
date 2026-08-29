@@ -308,18 +308,20 @@ async def _kill(process: asyncio.subprocess.Process) -> None:
     The guarantee owed to the caller is the *kill*, and it is taken before the
     first `await`: no bun keeps writing the workspace after the lock protecting
     it is released, whatever happens to this coroutine next. The step was
-    started as a session leader, so the kill reaches its children too.
+    started as a session leader, so the kill reaches its children too — and it
+    is sent whether or not the leader itself is still there: a child that
+    inherited the output pipe is exactly what keeps the tail read waiting
+    after the leader has gone.
 
     On the cancellation path the `await` raises again straight away, which is
     fine and deliberately not shielded — asyncio's child watcher reaps the
     process on SIGCHLD whether or not anyone is waiting, while a shielded task
     left running past the loop's own shutdown is a real leak.
     """
-    if process.returncode is None:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:  # pragma: no cover - it finished as we looked
-            pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
     # The output pipe outlives its reader. Measured on CPython 3.10: cancelling
     # the task inside `StreamReader.read` leaves the read transport open, so the
     # subprocess transport never finishes and its fd waits for the collector.
