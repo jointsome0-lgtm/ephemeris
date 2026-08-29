@@ -1,7 +1,7 @@
 # Ephemeris — System Design Document
 
 Status: Living implementation design and v0.1 baseline
-Primary target: Linux + Samsung browser  
+Primary target: Linux browser
 Storage model: local-first SQLite  
 Product type: personal activity/routine/path tracker  
 UX reference: TickTick-like execution interface, not TickTick clone
@@ -26,18 +26,15 @@ The app should work from:
 
 ```text
 Linux browser
-Samsung phone browser
 ```
 
 Initial deployment:
 
 ```text
-Linux machine = local server
-Samsung = browser client over local Wi-Fi
+Linux machine = local server and browser client
 SQLite = source of truth
 JSONL/Markdown = export layer
 Git = backup/history later
-VPS = later only if always-on access is needed
 ```
 
 ---
@@ -189,7 +186,6 @@ Primary user:
 ```text
 one person
 Linux desktop/laptop
-Samsung phone
 wants low-friction daily tracking
 wants future machine-readable history
 does not want to depend on TickTick long-term
@@ -198,8 +194,7 @@ does not want to depend on TickTick long-term
 Primary environment:
 
 ```text
-home/local Wi-Fi first
-later possible VPS
+same-machine loopback
 ```
 
 ---
@@ -280,16 +275,10 @@ width: 1366
 height: 768
 ```
 
-Primary design target:
+Design target:
 
 ```text
-Samsung browser / mobile web
-```
-
-Secondary target:
-
-```text
-Linux desktop browser
+Responsive web at narrow and desktop viewports
 ```
 
 ### 8.2 Flows to Inspect
@@ -422,7 +411,6 @@ Screenshots may be stored locally for design reference, but should not become th
 ### 10.1 MVP Architecture
 
 ```text
-Samsung Browser
 Linux Browser
       ↓
 FastAPI web app
@@ -436,63 +424,23 @@ Git backup later
 
 ### 10.2 Initial Deployment
 
-Run locally on Linux. Two modes:
+Run locally on Linux over loopback:
 
 ```bash
-# Desktop-only (safe default — not reachable from other devices):
+# Loopback is the only supported binding:
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers
-
-# Trusted home Wi-Fi (lets Samsung connect — read sec20 first).
-# The trusted-host allowlist defaults to loopback names only, so name the
-# LAN IP/hostname the phone will use (docs/security-model.md):
-EPHEMERIS_TRUSTED_HOSTS="localhost,127.0.0.1,::1,<lan-ip>" \
-  uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-proxy-headers
 ```
 
-Bind `0.0.0.0` ONLY on a network you trust: the app has no auth (sec20), so on
-`0.0.0.0` anyone on the LAN can read and write it. The app should print a
-warning on startup when it binds `0.0.0.0`. Committed scripts/README default to
-`127.0.0.1`.
-
-A diary-bearing instance (sec35) raises what that trust decision covers: the
-diary concentrates the most sensitive personal text in the app, and a LAN bind
-hands reading and writing it to every device on that Wi-Fi. Keep such an
-instance on `127.0.0.1` unless every device on the network is yours; the
-diary's export lines are a full unfiltered ledger replay (private entries
-included — the selfos adapter is the privacy gate), so the same caution covers
-`data/exports/`.
+A diary-bearing instance (sec35) concentrates the most sensitive personal text
+in the app, so it and its full unfiltered export replay stay behind the same
+loopback boundary. Export lines include private entries; the selfos adapter is
+the privacy gate.
 
 Open on Linux:
 
 ```text
 http://localhost:8000
 ```
-
-Open on Samsung in the same Wi-Fi network:
-
-```text
-http://<linux-lan-ip>:8000
-```
-
-Find Linux LAN IP:
-
-```bash
-hostname -I
-```
-
-### 10.3 Later Deployment
-
-Only after the app is actually useful:
-
-```text
-small VPS
-Caddy or Nginx
-HTTPS
-basic auth or single-user password
-daily backup
-```
-
-VPS is not required for MVP.
 
 ---
 
@@ -693,7 +641,7 @@ Connection policy (every SQLite connection, in db.py):
 
 ```text
 - PRAGMA foreign_keys = ON;   # OFF by default in SQLite — required for the checkins FK
-- PRAGMA journal_mode = WAL;  # phone can read while desktop writes
+- PRAGMA journal_mode = WAL;  # one browser tab can read while another writes
 - PRAGMA busy_timeout = 5000; # brief writer contention waits instead of erroring
 ```
 
@@ -1249,7 +1197,7 @@ stream alone can't rebuild a recurrence rule. The series rows are the source of
 truth; expanded occurrences are never exported.
 
 `POST /export/jsonl` writes the file above AND streams it back as a download so
-the Samsung client can save it; `GET /export` renders a one-button page. (The
+the browser can save it; `GET /export` renders a one-button page. (The
 stop-loss fallback in sec24 replaces this with a script and no page.)
 
 **Retention (issue #23).** `data/exports/` keeps the `limits.EXPORT_KEEP`
@@ -1382,7 +1330,7 @@ MVP local-only assumptions:
 
 ```text
 runs on trusted Linux machine
-available only on local Wi-Fi
+available only over loopback
 no public internet exposure
 no auth in v0
 ```
@@ -1391,7 +1339,7 @@ Security rules:
 
 ```text
 do not expose local server to the internet
-do not run on 0.0.0.0 on untrusted networks (sec10.2 defaults to 127.0.0.1)
+bind only to 127.0.0.1 (sec10.2)
 do not store secrets in repo
 do not commit Playwright auth state
 do not commit cookies
@@ -1399,7 +1347,7 @@ do not commit TickTick screenshots if they contain private data
 do not commit the SQLite DB or raw exports (sec9)
 verify same-origin / Origin header on state-changing POSTs (lightweight CSRF guard; the app has no auth)
 render user text (titles/notes) via Jinja autoescape only — never |safe, never disable autoescape
-treat a diary-bearing instance (sec35) as holding the most sensitive data class: prefer 127.0.0.1; a LAN bind exposes diary read/write to the whole network (sec10.2)
+treat a diary-bearing instance (sec35) as holding the most sensitive data class and keep it on 127.0.0.1 (sec10.2)
 never filter the JSONL export: it stays a full ledger replay, private diary entries included — the selfos adapter is the routing/privacy gate, ephemeris carries the flags opaquely
 diary content stays out of cloud agent context by default (selfos AGENTS.md → cloud-context data boundary; repo note in AGENTS.md)
 accepted risk (owner, 2026-08-14, #191): the boundary above is convention, not enforcement — lesson-agent shells share the host network and can read /diary and the export over loopback; no egress block or route gate is planned
@@ -1408,16 +1356,6 @@ accepted risk (owner, 2026-08-17): the reusable year-long Claude token (`DATA_DI
 embed peer views (atlas, exp2res gap questions) by configured URL over same-machine loopback only, in a sandboxed iframe; ephemeris never fetches or parses them (sec35)
 back up the SQLite file with `sqlite3 .backup` or `VACUUM INTO` (consistent under WAL), not a raw cp mid-write
 (optional) set owner-only permissions on data/ if the Linux host is shared
-```
-
-If deployed to VPS later, add:
-
-```text
-HTTPS
-single-user password
-backup encryption
-server firewall
-basic rate limiting
 ```
 
 ---
@@ -1438,12 +1376,12 @@ run export
 verify JSONL file
 ```
 
-Test from Samsung:
+Test at a narrow viewport:
 
 ```text
-open http://<linux-lan-ip>:8000
+open http://localhost:8000
 mark statuses
-verify mobile layout
+verify responsive layout
 verify tap targets
 verify no horizontal scrolling
 ```
@@ -1487,7 +1425,7 @@ MVP is accepted when:
 
 ```text
 1. App runs locally on Linux.
-2. Samsung can open it over local Wi-Fi.
+2. App opens at `http://localhost:8000`.
 3. Today page is usable at 390px width.
 4. User can mark 5–10 routine items in under 60 seconds.
 5. Each item supports:
@@ -1630,20 +1568,10 @@ Only after MVP is used for real.
 weekly review
 Markdown export
 simple stats
-better mobile UI
-PWA manifest
-```
-
-### v0.3
-
-```text
-basic auth
-VPS deployment
-HTTPS
 daily backups
 ```
 
-### v0.4
+### v0.3
 
 ```text
 paths
@@ -1738,9 +1666,8 @@ capture surface on the same boundary: entries journal locally and ride the
 export, and when `SELFOS_EXP2RES_URL` is set the tab renders the Exp2Res
 gap-questions view by URL — nothing more; answers are ordinary diary entries.
 
-Integration v1 embeds peer views on the same machine over loopback. Phone/LAN
-gateway support is deferred, and Ephemeris remains usable when either peer URL
-is unset.
+Integration v1 embeds peer views on the same machine over loopback. Ephemeris
+remains usable when either peer URL is unset.
 
 Not part of MVP.
 
@@ -1780,7 +1707,7 @@ Must build:
 6. History by date
 7. Manage routine items
 8. JSONL export
-9. Mobile-first responsive UI
+9. Responsive UI
 
 Important:
 - Do not clone TickTick visually.
@@ -1789,7 +1716,7 @@ Important:
 - Keep implementation simple.
 - SQLite is source of truth.
 - Append events for meaningful changes.
-- README must explain how to run locally and open from Samsung over Wi-Fi.
+- README must explain how to run locally over loopback.
 
 Do not add:
 - AI

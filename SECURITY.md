@@ -37,8 +37,7 @@ authoritative for this repository and defines what counts as a vulnerability
 here. In short:
 
 - Single-user, local-first app with **no authentication** and no CSRF tokens.
-- The supported binding is loopback (`127.0.0.1`); a trusted LAN (`0.0.0.0`) is
-  supported only as an explicit choice on a network the user controls.
+- The only supported binding is loopback (`127.0.0.1`).
 - Public-internet deployment is **unsupported** in v0, directly or behind a
   reverse proxy. Findings that only apply to such a deployment are out of scope.
 - The embedded terminal is off by default, requires `EPHEMERIS_ENABLE_TERMINAL`,

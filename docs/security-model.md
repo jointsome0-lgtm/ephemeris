@@ -1,18 +1,17 @@
 # Security model
 
 Ephemeris v0 is a local-first, single-user application. Its security boundary is
-the machine and network on which it runs, not an application login.
+the machine on which it runs, not an application login.
 
 ## Supported deployments
 
 | Binding | v0 support |
 | --- | --- |
-| `127.0.0.1` | Default and recommended. Only clients on the server machine can reach the app. |
-| `0.0.0.0` | Supported only on a trusted LAN, for example to use the app from another personal device. Every LAN client can reach the unauthenticated main app. |
+| `127.0.0.1` | The only supported binding. Only clients on the server machine can reach the app. |
 | Public internet | Unsupported. Do not expose v0 directly or through a public reverse proxy; it has no authentication. |
 
 This is acceptable for v0 only because the intended deployment is one user on a
-machine and network they control. It is not a general multi-user security model.
+machine they control. It is not a general multi-user security model.
 The repository can be public because it contains application code, while the
 running service and its private runtime data stay inside that local boundary.
 
@@ -21,9 +20,9 @@ running service and its private runtime data stay inside that local boundary.
 The terminal is a higher-risk surface than the main app: a successful connection
 grants a shell with the server process's operating-system permissions. It is
 therefore **off by default** and exists only when the process was started with
-`EPHEMERIS_ENABLE_TERMINAL=1` (see below). Even when the main app listens on a
-trusted LAN, the terminal is supported only from the server machine through
-`localhost`, `127.0.0.1`, or another loopback address.
+`EPHEMERIS_ENABLE_TERMINAL=1` (see below). The terminal is supported only from
+the server machine through `localhost`, `127.0.0.1`, or another loopback
+address.
 
 The WebSocket at `/terminal/ws` applies several independent checks:
 
@@ -132,8 +131,8 @@ Exports can contain task titles, habit names, notes, dates, and behavioral
 history. Public docs, tests, and fixtures use invented examples rather than
 copies of real data.
 
-Keeping these files out of Git is not access control: in LAN mode, any client
-that can reach the unauthenticated app can use the routes the app exposes.
+Keeping these files out of Git is not access control: local clients can use the
+routes the unauthenticated app exposes.
 
 ## Main-app request perimeter
 
@@ -144,8 +143,7 @@ first slice; issue #23 added the body ceiling). It owns four things:
   carry a `Host` whose hostname is in `EPHEMERIS_TRUSTED_HOSTS`
   (comma-separated hostnames; default `localhost,127.0.0.1,::1`; read at
   import, so restart to change). This blocks DNS rebinding for the whole app,
-  `GET` routes included. LAN deployments must list the names or addresses
-  clients will actually use.
+  `GET` routes included.
 - **Central write guard.** Every unsafe-method request (`POST`/`PUT`/`PATCH`/
   `DELETE`) passes one origin policy in middleware — a newly added route
   cannot forget it. Each case is deliberate: any present `Origin` (all values,
@@ -191,7 +189,7 @@ only vets the handshake's `Host` before it.
 
 These are documented limitations, not fixes made in this pass:
 
-- The main app has no authentication, including in LAN mode, and no CSRF tokens.
+- The main app has no authentication and no CSRF tokens.
   The intended fixes are single-user session authentication and CSRF protection
   for state-changing requests. The origin-policy middleware is defense in
   depth, not a substitute for either.
@@ -224,5 +222,5 @@ These are documented limitations, not fixes made in this pass:
   fallback carve-out is a filtered user-mode network (pasta/slirp4netns)
   for the learner shell instead of `--share-net`.
 
-Until those fixes exist, keep the documented deployment boundary: loopback by
-default, a trusted LAN only when needed, and never the public internet.
+Until those fixes exist, keep the documented deployment boundary on loopback
+and never expose it to the public internet.

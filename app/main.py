@@ -2,7 +2,7 @@
 
 Implements system-design.md sec15 (routes), sec16.4 (status & note write
 contract — Mode A no-JS forms + Mode B fetch), and sec20 (security: same-origin
-guard, Jinja autoescape only, no-auth LAN warning).
+guard, Jinja autoescape only, no-auth loopback warning).
 
 Every route now lives in app/routers/ (#24, cuts 1-5). What is left here is the
 assembly: the startup/shutdown lifespan, the app object, the request perimeter,
@@ -73,7 +73,7 @@ async def _lifespan(app: FastAPI):
     if created:
         log.info("Seeded %d routine items", created)
     log.warning(
-        "Ephemeris has NO AUTH (sec20): serve only on a trusted LAN; "
+        "Ephemeris has NO AUTH (sec20): keep it bound to 127.0.0.1; "
         "never expose to the public internet."
     )
     app.state.runner_service = runs.create_service()

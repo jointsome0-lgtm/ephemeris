@@ -973,8 +973,6 @@ def test_sandbox_learning(client, suite_state):
         _terminal._app_base_url(_E2Sock({}, {
             "server": ("127.0.0.1", 8765), "scheme": "ws"})),
         _terminal._app_base_url(_E2Sock({}, {
-            "server": ("0.0.0.0", 8000), "scheme": "ws"})),
-        _terminal._app_base_url(_E2Sock({}, {
             "server": ("::1", 8765), "scheme": "wss"})),
         _terminal._app_base_url(_E2Sock({}, {"server": None})),
         _terminal._app_base_url(_E2Sock({}, {"server": ("127.0.0.1", None)})),
@@ -982,8 +980,8 @@ def test_sandbox_learning(client, suite_state):
     ]
     assert (
         _s3_urls == [
-          "http://127.0.0.1:8765", "http://127.0.0.1:8000",
-          "https://[::1]:8765", None, None, None]
+          "http://127.0.0.1:8765", "https://[::1]:8765",
+          None, None, None]
         # the derivation reads the ASGI scope only — the fake carries no
         # headers at all, so a spoofed Host has no channel into the URL
         and not hasattr(_E2Sock({}), "headers")

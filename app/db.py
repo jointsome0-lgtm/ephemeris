@@ -176,8 +176,8 @@ def get_conn(*, check_same_thread: bool = True) -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     # foreign_keys is OFF by default in SQLite and is per-connection; required
-    # for the checkins -> routine_items FK. journal_mode=WAL lets the phone read
-    # while the desktop writes. busy_timeout briefly waits out writer contention.
+    # for the checkins -> routine_items FK. journal_mode=WAL lets one browser tab
+    # read while another writes. busy_timeout briefly waits out writer contention.
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
