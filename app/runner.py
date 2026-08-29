@@ -629,7 +629,7 @@ class RunnerService:
             _write_snapshot_dir, basename, request.snapshot
         )
         try:
-            return await asyncio.create_subprocess_exec(
+            return await _create_leader(
                 *spec.command(f"{job.workdir}/{basename}"),
                 stdin=subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
@@ -900,6 +900,43 @@ class RunnerService:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+
+
+class _LeaderProtocol(asyncio.subprocess.SubprocessStreamProtocol):
+    def __init__(self, limit: int, loop: asyncio.AbstractEventLoop) -> None:
+        super().__init__(limit=limit, loop=loop)
+        self.exited: asyncio.Future[None] = loop.create_future()
+
+    def process_exited(self) -> None:
+        super().process_exited()
+        if not self.exited.done():
+            self.exited.set_result(None)
+
+
+class _Leader(asyncio.subprocess.Process):
+    """A job's session leader, whose ``wait()`` returns the moment it exits.
+
+    ``asyncio.subprocess.Process.wait()`` on Python 3.12+ also waits for the
+    output pipes to close, and a background child that inherited them keeps it
+    from ever returning; the wall clock would then fire on a leader that exited
+    normally long before.
+    """
+
+    def __init__(self, transport, protocol: _LeaderProtocol, loop) -> None:
+        super().__init__(transport, protocol, loop)
+        self._exited = protocol.exited
+
+    async def wait(self) -> int:
+        await asyncio.shield(self._exited)
+        return self.returncode
+
+
+async def _create_leader(*argv: str, **kwargs) -> _Leader:
+    loop = asyncio.get_running_loop()
+    transport, protocol = await loop.subprocess_exec(
+        lambda: _LeaderProtocol(limit=2**16, loop=loop), *argv, **kwargs
+    )
+    return _Leader(transport, protocol, loop)
 
 
 def _write_snapshot_dir(basename: str, snapshot: bytes) -> str:

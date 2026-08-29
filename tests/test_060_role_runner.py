@@ -364,8 +364,7 @@ def test_role_runner(client, suite_state):
             b"print('invented')\n", "/tmp/private/lessons/demo",
             "/tmp/private/lessons",
         )
-        with _mock.patch.object(
-                _runner.asyncio, "create_subprocess_exec", side_effect=fake_exec):
+        with _mock.patch.object(_runner, "_create_leader", side_effect=fake_exec):
             job = (await service.admit(request)).job
             await service.wait(job.job_id)
         observed["workdir"] = job.workdir
@@ -379,7 +378,7 @@ def test_role_runner(client, suite_state):
             "/tmp/private/lessons",
         )
         with _mock.patch.object(
-                _runner.asyncio, "create_subprocess_exec",
+                _runner, "_create_leader",
                 side_effect=OSError("invented exec refusal")):
             failed = (await service.admit(failed_request)).job
             await service.wait(failed.job_id)
