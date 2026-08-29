@@ -156,15 +156,6 @@ def total_checkins(conn: sqlite3.Connection, item_id: int) -> int:
     return row[0]
 
 
-def status_counts(conn: sqlite3.Connection, item_id: int) -> dict[str, int]:
-    """{status: count} across all time (for the detail breakdown)."""
-    rows = conn.execute(
-        "SELECT status, COUNT(*) AS n FROM checkins WHERE routine_item_id = ? GROUP BY status",
-        (item_id,),
-    ).fetchall()
-    return {r["status"]: r["n"] for r in rows}
-
-
 def month_stats(
     conn: sqlite3.Connection, item_id: int, year: int, month: int, today: str | None = None
 ) -> dict:

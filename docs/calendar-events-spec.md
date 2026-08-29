@@ -185,7 +185,6 @@ def create_event(conn, title, *, start_date, freq='once', byweekday=None,
 def update_event(conn, event_id, **fields) -> None          # patch-style like update_task
 def archive_event(conn, event_id) -> None                   # sets archived_at (soft)
 def get_event(conn, event_id) -> sqlite3.Row | None
-def list_events(conn, include_archived=False) -> list[sqlite3.Row]
 
 def skip_occurrence(conn, event_id, date: str) -> None      # append date to exdates JSON
 def unskip_occurrence(conn, event_id, date: str) -> None    # remove from exdates

@@ -51,61 +51,6 @@ def _rejected(exc: focus.FocusError) -> JSONResponse:
     return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
 
 
-@router.post("/focus/session")
-def post_focus_session_legacy(
-    request: Request,
-    mode: str = Form("pomo"),
-    seconds: int = Form(...),
-    note: str = Form(""),
-    lesson_id: str = Form(""),
-    conn: sqlite3.Connection = Depends(get_db),
-):
-    """The pre-#75 write, kept for the restart window only.
-
-    The mirror of `focus.html`: that template protects a NEW checkout served by
-    an OLD process, this protects an OLD page still open in a browser after the
-    restart. Its `app.js` posts here when a Pomodoro completes, and a 404 would
-    silently drop a span the user really did spend. The old vocabulary is
-    translated once, here, rather than being kept alive in the schema.
-
-    Deletable together with `app/templates/focus.html`, once no pre-#75 page can
-    still be open — see docs/system-design.md sec34.
-    """
-    # The old vocabulary had exactly two words. Translating anything else into
-    # `open` would let a malformed post write a durable session and a ledger
-    # event the pre-#75 route would have refused — compatibility means the old
-    # contract entire, not only the half that accepts.
-    if mode not in ("pomo", "stopwatch"):
-        return _rejected(focus.FocusError("unknown timer mode"))
-    try:
-        sid = focus.record_session(
-            conn, "countdown" if mode == "pomo" else "open", seconds,
-            target_seconds=1500 if mode == "pomo" else None,
-            note=note, lesson_id=lesson_id,
-        )
-    except focus.FocusError as exc:
-        return _rejected(exc)
-    # The answer is in the old page's vocabulary too, not just the old URL: it
-    # reads `today_pomo` / `total_pomo` off the overview and `lesson_title` off
-    # the record. Handing it the new shapes would blank its counters and mislabel
-    # the row it appends — a compatibility route that only half-answers is worse
-    # than none, because the write succeeded and the page says otherwise.
-    with snapshot(conn):
-        ov, rec = focus.overview(conn), focus.get_session_view(conn, sid)
-        pomo = focus.pomodoro_counts(conn)
-    return JSONResponse({
-        "ok": True,
-        "overview": {**ov, **pomo},
-        "record": {
-            **rec,
-            "mode": mode,
-            "mode_label": "Pomo" if mode == "pomo" else "Stopwatch",
-            "lesson_id": rec["target"]["id"] if rec["target"] else None,
-            "lesson_title": rec["target"]["title"] if rec["target"] else None,
-        },
-    })
-
-
 @router.get("/focus/timer")
 def get_focus_timer(request: Request, conn: sqlite3.Connection = Depends(get_db)):
     """The drawer's bootstrap: what is running right now, if anything."""
