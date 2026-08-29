@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   # gitleaks scans the whole history — not just the event's commits — when it is
   # started by hand, so this trigger is what a full-repository sweep runs from.
@@ -11,22 +12,10 @@ permissions:
   contents: read
 
 jobs:
-  # The suite is the only thing worth paying for three times over. Everything
-  # else below runs once, on the deployed interpreter.
+  # One deployment, one interpreter: everything runs on the Python that
+  # .python-version pins, which is what `uv run` starts the service with.
   test:
     runs-on: ubuntu-latest
-
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.12", "3.13"]
-
-    env:
-      # Pin uv to the interpreter setup-python just installed. Left to itself uv
-      # downloads a python-build-standalone runtime, and those builds omit
-      # os.memfd_create and fcntl.F_SEAL_*, which app/sandbox.py requires.
-      UV_PYTHON: ${{ matrix.python-version }}
-      UV_PYTHON_PREFERENCE: only-system
 
     steps:
       - name: Check out repository
@@ -35,7 +24,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version-file: .python-version
 
       - name: Set up uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
@@ -67,7 +56,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.10"
+          python-version-file: .python-version
 
       - name: Set up uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
