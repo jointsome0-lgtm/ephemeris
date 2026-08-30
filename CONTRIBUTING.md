@@ -15,7 +15,6 @@ uv sync
 bun install --frozen-lockfile   # the tsc the committed-JS freshness check runs
 uv run ruff check .
 uv run pytest
-uv run python verify_restore.py
 uv run python scripts/check_public_hygiene.py
 ```
 

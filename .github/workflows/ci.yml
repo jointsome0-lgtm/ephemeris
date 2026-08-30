@@ -67,9 +67,6 @@ jobs:
       - name: Lint
         run: uv run ruff check .
 
-      - name: Verify export/restore round trip
-        run: uv run python verify_restore.py
-
       - name: Check public hygiene
         run: python scripts/check_public_hygiene.py
 

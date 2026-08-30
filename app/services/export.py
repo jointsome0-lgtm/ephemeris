@@ -98,9 +98,9 @@ def iter_jsonl(conn: sqlite3.Connection) -> Iterator[str]:
 def build_jsonl(conn: sqlite3.Connection) -> tuple[str, int]:
     """The whole export as one string, for a caller that needs it in memory.
 
-    Only verify_restore.py's re-export proof does, and it compares two exports
-    line for line. The HTTP path never calls this — export_events() streams
-    straight to disk.
+    Only the re-export proof in tests/test_300_restore_roundtrip.py does, and it
+    compares two exports line for line. The HTTP path never calls this —
+    export_events() streams straight to disk.
     """
     lines = list(iter_jsonl(conn))
     return "".join(lines), len(lines)
