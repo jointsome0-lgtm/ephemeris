@@ -7,6 +7,7 @@ soft archive, and the matching ledger events.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import logging
 import mimetypes
@@ -23,6 +24,7 @@ from html import escape
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from threading import Lock
+from typing import NamedTuple
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -261,24 +263,44 @@ def _write_manifest(path: Path, data: dict) -> None:
     bundle_schema.write_manifest(path, data)
 
 
-def _read_regular_no_follow(path: Path) -> str | None:
-    """Read a file as UTF-8 (errors replaced) only if the very descriptor the
-    bytes come from is a regular non-symlink file; None otherwise (§2)."""
+class _RegularRead(NamedTuple):
+    data: bytes
+    opened: os.stat_result
+    closed: os.stat_result
+
+    @property
+    def stable(self) -> bool:
+        return _digest_key(self.opened) == _digest_key(self.closed)
+
+
+def _read_regular_no_follow(
+    path: Path | str, limit: int, *, dir_fd: int | None = None
+) -> _RegularRead | None:
+    """`path` as bytes, only if it is a regular non-symlink file of at most
+    `limit` bytes; None otherwise (§2). The regular-file check, the size
+    check and the bytes all come from one descriptor, and the read takes one
+    byte past `limit` so a file growing underneath is refused, not trusted.
+    With `dir_fd`, `path` is a name resolved against that descriptor."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(path, projection.READ_FLAGS, dir_fd=dir_fd)
     except OSError:
         return None
     try:
-        if not stat_module.S_ISREG(os.fstat(fd).st_mode):
+        opened = os.fstat(fd)
+        if not stat_module.S_ISREG(opened.st_mode) or opened.st_size > limit:
             return None
-        with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as fh:
+        with os.fdopen(fd, "rb") as fh:
             fd = -1
-            return fh.read()
+            data = fh.read(limit + 1)
+            closed = os.fstat(fh.fileno())
     except OSError:
         return None
     finally:
         if fd >= 0:
             os.close(fd)
+    if len(data) > limit:
+        return None
+    return _RegularRead(data, opened, closed)
 
 
 # Digest cache for the metadata poll (D2 drain L3): the client polls every
@@ -330,88 +352,25 @@ def _digest_key(st: os.stat_result) -> tuple:
     return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size, st.st_ctime_ns)
 
 
-def _hash_regular_no_follow(path: Path) -> tuple[str, os.stat_result] | None:
-    """sha256 of a page's raw bytes plus the stat the reload token is built
-    from, both bound to ONE descriptor (§6.3: `page_rev` covers the bytes the
-    parent loaded, so hash and token must describe the same file object, with
-    no path re-resolution between them). On a cache miss the closing stat is
-    taken AFTER the read: a mid-read rewrite bumps mtime past what we return,
-    so the poller sees a version change and re-binds rather than trusting a
-    torn hash; the digest is cached only when the identity stayed stable
-    across the read. None when the name is (or became) anything but a regular
-    non-symlink file (§2)."""
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
-    except OSError:
-        return None
-    try:
-        st = os.fstat(fd)
-        if not stat_module.S_ISREG(st.st_mode) or st.st_size > PAGE_IDENTITY_MAX_BYTES:
-            return None
-        cached = _cached_page_digest(path, _digest_key(st))
-        if cached is not None:
-            return cached, st
-        digest = hashlib.sha256()
-        total = 0
-        with os.fdopen(fd, "rb") as fh:
-            fd = -1
-            for chunk in iter(lambda: fh.read(1 << 16), b""):
-                total += len(chunk)
-                if total > PAGE_IDENTITY_MAX_BYTES:
-                    # grew past the bound while we read (PR-60 round 1): the
-                    # open-time check alone would hash — and grant identity
-                    # to — an oversized file; abort instead
-                    return None
-                digest.update(chunk)
-            st_after = os.fstat(fh.fileno())
-        if _digest_key(st_after) == _digest_key(st):
-            _cache_page_digest(path, _digest_key(st_after), digest.hexdigest())
-        return digest.hexdigest(), st_after
-    except OSError:
-        return None
-    finally:
-        if fd >= 0:
-            os.close(fd)
-
-
 def _read_page_snapshot(path: Path) -> tuple[bytes, str, os.stat_result] | None:
-    """One-descriptor page snapshot for the serving route (drain D2 L2): the
-    bytes, their sha256, and the closing stat all come from the SAME open, so
-    the response body can never diverge from the digest the identity/version
-    metadata advertises for those bytes. None when the name is not a regular
-    non-symlink file within the supported size bound — the caller falls back
-    to the plain streaming response and grants no identity."""
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
-    except OSError:
+    """One-descriptor page snapshot: the bytes, their sha256, and the closing
+    stat all describe the SAME open (§6.3: `page_rev` covers the bytes the
+    parent loaded, so hash and token must describe one file object). A
+    mid-read rewrite bumps mtime past what the token is built from, so the
+    poller sees a version change and re-binds rather than trusting a torn
+    hash; the digest is looked up and cached only when the identity stayed
+    stable across the read. None when the name is not a regular non-symlink
+    file within the supported size bound."""
+    read = _read_regular_no_follow(path, PAGE_IDENTITY_MAX_BYTES)
+    if read is None:
         return None
-    try:
-        st = os.fstat(fd)
-        if not stat_module.S_ISREG(st.st_mode) or st.st_size > PAGE_IDENTITY_MAX_BYTES:
-            return None
-        chunks = []
-        total = 0
-        with os.fdopen(fd, "rb") as fh:
-            fd = -1
-            for chunk in iter(lambda: fh.read(1 << 16), b""):
-                total += len(chunk)
-                if total > PAGE_IDENTITY_MAX_BYTES:
-                    # abort as soon as the bound is crossed (PR-60 round 1):
-                    # never buffer more than the supported page size, even
-                    # against a file growing under the read
-                    return None
-                chunks.append(chunk)
-            st_after = os.fstat(fh.fileno())
-        data = b"".join(chunks)
-        digest = hashlib.sha256(data).hexdigest()
-        if _digest_key(st_after) == _digest_key(st):
-            _cache_page_digest(path, _digest_key(st_after), digest)
-        return data, digest, st_after
-    except OSError:
-        return None
-    finally:
-        if fd >= 0:
-            os.close(fd)
+    key = _digest_key(read.closed)
+    digest = _cached_page_digest(path, key) if read.stable else None
+    if digest is None:
+        digest = hashlib.sha256(read.data).hexdigest()
+        if read.stable:
+            _cache_page_digest(path, key, digest)
+    return read.data, digest, read.closed
 
 
 def _mkdir_no_follow(path: Path) -> None:
@@ -426,58 +385,6 @@ def _is_regular_no_follow(path: Path) -> bool:
         return stat_module.S_ISREG(os.lstat(path).st_mode)
     except OSError:
         return False
-
-
-def _read_bounded_no_follow(path, limit: int, dir_fd: int | None = None) -> str | None:
-    """`path` as text, only if it is a regular file no larger than `limit`.
-
-    Same §2 rule as `_read_regular_no_follow` and the same reason as
-    `_holds_exactly` for the bound: these names sit in a directory a lesson
-    session can write, and nothing on a read path may load whatever it finds
-    there. With `dir_fd`, `path` is a name resolved against that descriptor —
-    which is how a caller reads and later replaces the same name without the
-    directory underneath it being swapped in between."""
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
-                     dir_fd=dir_fd)
-    except OSError:
-        return None
-    try:
-        info = os.fstat(fd)
-        if not stat_module.S_ISREG(info.st_mode) or info.st_size > limit:
-            return None
-        with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as handle:
-            fd = -1
-            return handle.read(limit)
-    except OSError:
-        return None
-    finally:
-        if fd >= 0:
-            os.close(fd)
-
-
-def _holds_exactly(path: Path, expected: str) -> bool:
-    """Whether `path` is a regular file whose bytes are exactly `expected`.
-
-    Bounded by the comparison itself: the size is checked on the descriptor
-    the bytes come from, and a file of any other length is answered without
-    reading it. The name belongs to a session that can put a multi-gigabyte
-    sparse file there in an instant, and this is asked on a read path.
-    """
-    want = expected.encode("utf-8")
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-    except OSError:
-        return False
-    try:
-        info = os.fstat(fd)
-        if not stat_module.S_ISREG(info.st_mode) or info.st_size != len(want):
-            return False
-        return os.read(fd, len(want)) == want
-    except OSError:
-        return False
-    finally:
-        os.close(fd)
 
 
 def _write_git_exclude(git_dir: Path) -> None:
@@ -495,30 +402,16 @@ def _write_git_exclude(git_dir: Path) -> None:
     trust it, and a rename replaces a planted link rather than following it.
     """
     info_name, exclude_name = GIT_EXCLUDE_PATH
-    git_fd = os.open(git_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    git_fd = os.open(git_dir, projection.DIRECTORY_FLAGS)
     try:
-        info_fd = os.open(info_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                          dir_fd=git_fd)
+        info_fd = os.open(info_name, projection.DIRECTORY_FLAGS, dir_fd=git_fd)
     finally:
         os.close(git_fd)
-    staged = f"{exclude_name}.{uuid4().hex}.tmp"
     try:
-        fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                     0o644, dir_fd=info_fd)
-        try:
-            with os.fdopen(os.dup(fd), "w", encoding="utf-8") as handle:
-                handle.write(BUNDLE_GIT_EXCLUDE)
-                handle.flush()
-                os.fsync(handle.fileno())
-        finally:
-            os.close(fd)
-        os.replace(staged, exclude_name, src_dir_fd=info_fd, dst_dir_fd=info_fd)
-    except BaseException:
-        try:
-            os.unlink(staged, dir_fd=info_fd)
-        except OSError:
-            pass
-        raise
+        projection.publish(
+            info_fd, exclude_name, BUNDLE_GIT_EXCLUDE.encode("utf-8"),
+            prefix=f".{exclude_name}-", owned=False,
+        )
     finally:
         os.close(info_fd)
 
@@ -546,10 +439,12 @@ def _bundle_repo_is_ready(git_dir: Path) -> bool:
     finished. The read follows no link (§2) and takes a mismatch as unready,
     which also means a later change to the rules re-applies itself.
     """
+    rules = BUNDLE_GIT_EXCLUDE.encode("utf-8")
+    marker = _read_regular_no_follow(git_dir.joinpath(*GIT_EXCLUDE_PATH), len(rules))
     return (
         all(git_dir.joinpath(name).is_dir() for name in GIT_REQUIRED_DIRS)
-        and _holds_exactly(git_dir.joinpath(*GIT_EXCLUDE_PATH),
-                           BUNDLE_GIT_EXCLUDE)
+        and marker is not None
+        and marker.data == rules
     )
 
 
@@ -691,14 +586,13 @@ def _ensure_repo_identity(git_dir: Path) -> bool:
         return False
     staged: Path | None = None
     try:
-        current = _read_bounded_no_follow("config", GIT_CONFIG_MAX_BYTES,
-                                          dir_fd=git_fd)
+        current = _read_regular_no_follow("config", GIT_CONFIG_MAX_BYTES, dir_fd=git_fd)
         if current is None:
             return True
         GIT_STAGING_DIR.mkdir(parents=True, exist_ok=True)
         staged = Path(tempfile.mkdtemp(dir=GIT_STAGING_DIR))
         copy = staged / "config"
-        copy.write_text(current, encoding="utf-8")
+        copy.write_text(current.data.decode("utf-8", errors="replace"), encoding="utf-8")
         filled = False
         for key, value in BUNDLE_GIT_IDENTITY:
             read = subprocess.run(
@@ -798,9 +692,11 @@ def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:
     # is bound to the descriptor the bytes are read from (no stat/open gap).
     index = lesson_dir / DEFAULT_ENTRY
     if not index.exists() and not index.is_symlink():
-        legacy_text = _read_regular_no_follow(_legacy_lesson_path(lesson["slug"]))
-        if legacy_text is not None:
-            index.write_text(legacy_text, encoding="utf-8")
+        legacy = _read_regular_no_follow(
+            _legacy_lesson_path(lesson["slug"]), PAGE_IDENTITY_MAX_BYTES
+        )
+        if legacy is not None:
+            index.write_text(legacy.data.decode("utf-8", errors="replace"), encoding="utf-8")
 
     return read
 
@@ -977,8 +873,8 @@ def _file_info(
                 outcome = bundle_schema.DEGRADED
             stat = pre_stat
         else:
-            hashed = _hash_regular_no_follow(path) if page_id else None
-            if hashed is None:
+            snapshot = _read_page_snapshot(path) if page_id else None
+            if snapshot is None:
                 # Not a regular file after all (or undeclared): no identity,
                 # and nothing renderable to hash — report the page as missing
                 # rather than serving bytes the token/hash pair does not
@@ -986,7 +882,7 @@ def _file_info(
                 # lands here too: the hash bound is authoritative.)
                 exists = False
             else:
-                digest, stat = hashed
+                _, digest, stat = snapshot
                 bridge_page = {
                     "lesson_uid": lesson["uid"],
                     "page_id": page_id,
@@ -1123,10 +1019,10 @@ def hash_bundle_page(lesson: dict, ref: str) -> str | None:
         ref = _clean_bundle_ref(ref)
         if bundle_schema.path_has_symlink(_lesson_dir(lesson["slug"]), ref):
             return None
-        hashed = _hash_regular_no_follow(_bundle_path(lesson["slug"], ref))
+        snapshot = _read_page_snapshot(_bundle_path(lesson["slug"], ref))
     except LessonError:
         return None
-    return hashed[0] if hashed else None
+    return snapshot[1] if snapshot else None
 
 
 def lesson_file_info(lesson: dict, entry: str | None = None) -> dict:
@@ -1194,8 +1090,8 @@ def bundle_resource_info(lesson: dict, ref: str) -> dict:
     # (mtime:profile[:digest16] — PR-60 round 2), for every declared v2
     # page including legacy-display and other non-bridge profiles, so the
     # route's `?v` comparison never 409s a page the metadata advertises.
-    # Oversized or vanished-under-us pages return no snapshot (same bound
-    # as `_hash_regular_no_follow`); their token then carries no digest,
+    # Oversized or vanished-under-us pages return no snapshot (the
+    # `PAGE_IDENTITY_MAX_BYTES` bound); their token then carries no digest,
     # which is exactly what the metadata reports for them.
     content = None
     version = str(stat.st_mtime_ns) if stat else "0"
@@ -1384,36 +1280,10 @@ class _TextareaDefaults(HTMLParser):
 
 def _state_file_snapshot(path: Path) -> tuple[bytes, os.stat_result] | None:
     """Bounded, no-follow snapshot of one learner artifact."""
-    try:
-        fd = os.open(
-            path,
-            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
-        )
-    except OSError:
+    read = _read_regular_no_follow(path, _STATE_FILE_MAX_BYTES)
+    if read is None or read.closed.st_nlink != 1 or not read.stable:
         return None
-    try:
-        before = os.fstat(fd)
-        if (
-            not stat_module.S_ISREG(before.st_mode)
-            or before.st_nlink != 1
-            or before.st_size > _STATE_FILE_MAX_BYTES
-        ):
-            return None
-        with os.fdopen(fd, "rb") as fh:
-            fd = -1
-            data = fh.read(_STATE_FILE_MAX_BYTES + 1)
-            after = os.fstat(fh.fileno())
-        if (
-            len(data) > _STATE_FILE_MAX_BYTES
-            or _digest_key(before) != _digest_key(after)
-        ):
-            return None
-        return data, after
-    except OSError:
-        return None
-    finally:
-        if fd >= 0:
-            os.close(fd)
+    return read.data, read.closed
 
 
 def _stage_written(lesson: dict, ref: str) -> bool:
@@ -2547,47 +2417,12 @@ def _bundle_dir_is_safe(lesson_dir: Path) -> bool:
         return False
 
 
-def _replace_file(path: Path, data: bytes) -> None:
-    """Atomically replace an app-generated file inside a bundle.
-
-    Write and fsync a temporary file in the verified destination directory,
-    then replace the destination entry without ever opening it. Pre-planted
-    links and special files are replaced rather than followed or opened.
-
-    Every file this writes is private (0600) and app-owned: the two briefs and
-    `.claude/settings.json`. It took a `mode` until #161, for the seeded
-    library copies, which had to be world-readable because the page
-    referencing them was served to the learner. Those are gone with the shelf,
-    and so is the only reason this ever wrote a bundle file anyone else reads.
-    """
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".brief-")
-    try:
-        try:
-            fh = os.fdopen(fd, "wb")
-        except BaseException:
-            os.close(fd)
-            raise
-        with fh:
-            fh.write(data)
-            fh.flush()
-            os.fsync(fh.fileno())
-            # On the descriptor we just wrote, never the name. mkstemp already
-            # makes it 0600; this restates it so the file's mode is a property
-            # of this writer rather than of tempfile's default.
-            os.fchmod(fh.fileno(), 0o600)
-        os.replace(tmp_name, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
-
-
 def _write_brief(path: Path, text: str) -> None:
     """Atomically replace a generated agent-facing file (AGENTS.md, CLAUDE.md,
-    `.claude/settings.json`) at mode 0600."""
-    _replace_file(path, text.encode("utf-8"))
+    `.claude/settings.json`, the `reference/` companions) at mode 0600: a
+    pre-planted link or special file on the name is replaced, never followed
+    or opened."""
+    projection.replace_file(path, text.encode("utf-8"), prefix=".brief-")
 
 
 def _preserve_foreign(path: Path, expected: bytes | None = None) -> None:
@@ -2686,10 +2521,9 @@ def _write_reference_files(lesson_dir: Path) -> None:
     """
     reference_dir = _ensure_reference_dir(lesson_dir)
     for name, text in _REFERENCE_FILES.items():
-        data = text.encode("utf-8")
         path = reference_dir / name
-        _preserve_foreign(path, data)
-        _replace_file(path, data)
+        _preserve_foreign(path, text.encode("utf-8"))
+        _write_brief(path, text)
 
 
 _SOURCE_STORE_YES = """\
@@ -2963,96 +2797,33 @@ def resolve_terminal_workspace(slug: str | None) -> dict | None:
     return _workspace_view(slug, lesson, lesson_dir)
 
 
-def _reconcile_assessment_projection(lesson: dict) -> None:
-    """Reconcile trigger (a) — S-DESIGN D-S1-5: the tutor's own record is
-    rewritten from the authority the moment its next reader appears.
+_RECONCILE_BEFORE_BRIEF = (
+    ("attempts", lambda svc, conn, lesson: svc.reconcile_projection_if_stale(conn, lesson)),
+)
+_RECONCILE_AFTER_BRIEF = (
+    ("assessments", lambda svc, conn, lesson: svc.reconcile_projection(conn, lesson)),
+    ("learner_memory", lambda svc, conn, lesson: svc.reconcile_projection(conn, lesson)),
+    ("runs", lambda svc, conn, lesson: svc.retire_foreign_projection(lesson)),
+)
 
-    Best effort in every direction. A pending projection must not keep the
-    terminal from opening, so nothing here can refuse the workspace; the
-    service itself already answers False rather than raising. The import is
-    deferred because the assessment service imports this module.
 
-    The ordinary reconcile seal distinguishes an intact projection from a
-    missing or changed one. An intact file needs no fold or rewrite merely
-    because another terminal was opened; deletion or mutation falls through to
-    the same full repair.
-    """
-    try:
-        from .assessments import reconcile_projection
-
-        conn = get_conn()
+def _reconcile_projections(lesson: dict, steps) -> None:
+    """Run the terminal-open projection triggers, best effort in every
+    direction: a projection the app cannot repair must not keep the terminal
+    from opening. Each service imports this module, so it is imported here
+    on demand. `attempts.jsonl` heals BEFORE the brief because STATE sends
+    the tutor there for the rest of a long question and for every answer it
+    names; the others run after the briefs are in place."""
+    for module_name, step in steps:
         try:
-            reconcile_projection(conn, lesson)
-        finally:
-            conn.close()
-    except (OSError, sqlite3.Error, ImportError):
-        pass
-
-
-def _reconcile_learner_memory(lesson: dict) -> None:
-    """Regenerate `memory.jsonl` — what every OTHER studied lesson concluded
-    (#114) — for the tutor about to read it.
-
-    Unconditional, unlike the assessment reconcile above: this file is derived
-    from other lessons' assessments and manifests, so an intact file proves
-    nothing about being current. Terminal open is its only trigger, which is
-    exactly the staleness the spec states — evidence recorded elsewhere
-    arrives here at the next open.
-
-    Best effort in every direction, and deferred import for the same cycle
-    reason as its siblings.
-    """
-    try:
-        from .learner_memory import reconcile_projection
-
-        conn = get_conn()
-        try:
-            reconcile_projection(conn, lesson)
-        finally:
-            conn.close()
-    except (OSError, sqlite3.Error, ImportError):
-        pass
-
-
-def _reconcile_attempt_projection(lesson: dict) -> None:
-    """Rebuild `attempts.jsonl` from the authority if it does not match.
-
-    Verify-first (review round 5): a terminal open is not a reason to rewrite
-    a file that is already the projection of its own authority, and a lesson's
-    attempt history has no ceiling. The seal check is what an intact file
-    costs; only a missing, mutated or behind file pays for the rebuild — the
-    same rule the assessment reconcile beside it follows.
-
-    Best effort in every direction: the service answers False rather than
-    raising, and nothing here may keep the terminal from opening. Deferred
-    import for the same cycle reason.
-    """
-    try:
-        from .attempts import reconcile_projection_if_stale
-
-        conn = get_conn()
-        try:
-            reconcile_projection_if_stale(conn, lesson)
-        finally:
-            conn.close()
-    except (OSError, sqlite3.Error, ImportError):
-        pass
-
-
-def _retire_foreign_run_projection(lesson: dict) -> None:
-    """The run projection has no authority to rebuild from — its output tails
-    live nowhere else — so the terminal-open trigger verifies rather than
-    reconciles: a `runs.jsonl` the app did not publish is moved aside before
-    the brief above tells this session to read it as what the code did.
-
-    Best effort in every direction, like the assessment reconcile beside it,
-    and deferred for the same reason: the run service imports this module.
-    """
-    try:
-        from . import runs
-        runs.retire_foreign_projection(lesson)
-    except (OSError, sqlite3.Error, LessonError):
-        pass
+            service = importlib.import_module(f".{module_name}", __package__)
+            conn = get_conn()
+            try:
+                step(service, conn, lesson)
+            finally:
+                conn.close()
+        except (OSError, sqlite3.Error, ImportError, LessonError):
+            pass
 
 
 def prepare_terminal_workspace(slug: str | None) -> dict | None:
@@ -3082,13 +2853,13 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
         # Before the brief: what the brief says about `source/` depends on
         # whether this bundle has one, and a taken name means it does not.
         source_dir = _ensure_source_dir(lesson_dir)
-        # Before the brief, unlike the two reconciles below: STATE quotes the
+        # Before the brief, unlike the steps after it: STATE quotes the
         # open questions but sends the tutor to `attempts.jsonl` for the rest
         # of a long one, and for every answer it names. Healing the file first
         # is what makes that pointer true after a `projection: pending` write
         # or a deleted file (review round 3). Best effort, like its siblings —
         # a projection that cannot be repaired still costs no brief.
-        _reconcile_attempt_projection(lesson)
+        _reconcile_projections(lesson, _RECONCILE_BEFORE_BRIEF)
         conn = get_conn()
         try:
             state = _render_lesson_state(conn, lesson, read)
@@ -3107,9 +2878,7 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
         return None
     # After the briefs: the workspace is ready either way, and a projection
     # hiccup may not cost the agent its regenerated contract.
-    _reconcile_assessment_projection(lesson)
-    _reconcile_learner_memory(lesson)
-    _retire_foreign_run_projection(lesson)
+    _reconcile_projections(lesson, _RECONCILE_AFTER_BRIEF)
     return _workspace_view(slug, lesson, lesson_dir, build_workspace)
 
 

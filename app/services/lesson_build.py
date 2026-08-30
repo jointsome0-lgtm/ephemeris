@@ -38,7 +38,7 @@ import stat
 import time
 from pathlib import Path, PurePosixPath
 
-from . import bundle_schema, lessons, render_check
+from . import bundle_schema, lessons, projection, render_check
 
 _log = logging.getLogger(__name__)
 
@@ -212,21 +212,7 @@ def _seed_workspace(workspace: Path, slug: str) -> None:
         {"name": f"lesson-{slug}", "private": True, "version": "0.0.0"},
         indent=2,
     ) + "\n"
-    _atomic_write(manifest, body.encode("utf-8"), mode=0o600)
-
-
-def _atomic_write(path: Path, data: bytes, *, mode: int = 0o600) -> None:
-    temporary = path.with_name(f".{path.name}.new")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
-        os.unlink(temporary)
-        raise
-    os.replace(temporary, path)
+    projection.replace_file(manifest, body.encode("utf-8"), prefix=".package.json-")
 
 
 def _require_build_runtime() -> None:
@@ -532,36 +518,14 @@ def _reject_irregular_output(fd: int, name: str, out: str, steps: list[dict]) ->
 def _write_through(fd: int, name: str, data: bytes) -> tuple:
     """Place `data` at `name`; return the identity of the file placed there.
 
-    The identity comes from `fstat` on the descriptor this function wrote, held
-    open across the rename, and never from a second look at the path. The agent
-    session can replace `name` the instant the rename returns, and a path-based
-    stat would then record ITS inode as this build's own — and vouch for those
-    bytes at the end, which is the failure this whole check exists to stop.
-
-    Read after the rename, because the rename moves the inode's ctime.
+    The identity comes from `fstat` on the descriptor the publisher wrote,
+    held open across the rename, and never from a second look at the path. The
+    agent session can replace `name` the instant the rename returns, and a
+    path-based stat would then record ITS inode as this build's own — and
+    vouch for those bytes at the end, which is the failure this whole check
+    exists to stop.
     """
-    # Random, for the reason `_set_aside` is: this name is opened `O_TRUNC` and
-    # then renamed over `name`, so a predictable one would destroy an authored
-    # `.page.js.new` and then present it as the build's output.
-    temporary = f".{name}.{os.urandom(6).hex()}.new"
-    handle = os.open(
-        temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC,
-        0o644, dir_fd=fd,
-    )
-    try:
-        # `closefd=False`: the descriptor outlives the stream, because the
-        # identity below is read through it after the rename.
-        with os.fdopen(handle, "wb", closefd=False) as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, name, src_dir_fd=fd, dst_dir_fd=fd)
-        return _identity_of(os.fstat(handle))
-    except BaseException:
-        _remove_through(fd, temporary)
-        raise
-    finally:
-        os.close(handle)
+    return _identity_of(projection.publish(fd, name, data, prefix=f".{name}.", owned=False))
 
 
 def _identity_of(info: os.stat_result) -> tuple:
