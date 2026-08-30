@@ -19,9 +19,7 @@ import stat as stat_module
 import subprocess
 import tempfile
 import textwrap
-from datetime import datetime, timezone
 from html import escape
-from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from threading import Lock
 from typing import NamedTuple
@@ -1243,49 +1241,6 @@ REFERENCE_DIR_NAME = "reference"
 _STATE_FILE_MAX_BYTES = 64 * 1024
 
 
-class _TextareaDefaults(HTMLParser):
-    """Default text of a page's textareas, plus the ones a `data-block`
-    attribute binds to an editor block. A page mixes editor textareas with
-    answer and output textareas, so only the marked ones (or a page whose
-    single textarea is its single block) identify a starter."""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.values: list[str] = []
-        self.by_block: dict[str, str] = {}
-        self._parts: list[str] | None = None
-        self._block: str | None = None
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag == "textarea" and self._parts is None:
-            self._parts = []
-            self._block = next(
-                (value for name, value in attrs if name == "data-block" and value),
-                None,
-            )
-
-    def handle_data(self, data: str) -> None:
-        if self._parts is not None:
-            self._parts.append(data)
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag == "textarea" and self._parts is not None:
-            value = "".join(self._parts)
-            self.values.append(value)
-            if self._block is not None:
-                self.by_block.setdefault(self._block, value)
-            self._parts = None
-            self._block = None
-
-
-def _state_file_snapshot(path: Path) -> tuple[bytes, os.stat_result] | None:
-    """Bounded, no-follow snapshot of one learner artifact."""
-    read = _read_regular_no_follow(path, _STATE_FILE_MAX_BYTES)
-    if read is None or read.closed.st_nlink != 1 or not read.stable:
-        return None
-    return read.data, read.closed
-
-
 def _stage_written(lesson: dict, ref: str) -> bool:
     """A declared page counts as written only when its file is a regular file
     reached through no symlink (§2) and within the bridge identity cap: a
@@ -1301,74 +1256,44 @@ def _stage_written(lesson: dict, ref: str) -> bool:
     return stat_module.S_ISREG(st.st_mode) and st.st_size <= PAGE_IDENTITY_MAX_BYTES
 
 
-def _state_artifact_files(
-    lesson: dict, roots: list[str]
-) -> list[tuple[str, Path, os.stat_result]]:
-    """Apply the bundle's bounded artifact discovery contract."""
-    bundle_dir = _lesson_dir(lesson["slug"])
-    found = []
-    for root in roots:
-        root_path = bundle_dir / PurePosixPath(root)
-        if bundle_schema.path_has_symlink(bundle_dir, root):
-            continue
-        seen = 0
+def _changed_editor_files(lesson_dir: Path, files: list[str]) -> int | None:
+    """How many of `files` the bundle's repository tracks and now holds
+    different bytes from their first commit; None when there is no repository
+    to ask. History is read through git, the working tree through the
+    module's own reader, and a file no commit has seen yet is not counted."""
+    git_dir = lesson_dir / GIT_DIR_NAME
+    if git_dir.is_symlink() or not git_dir.is_dir():
+        return None
+    git = [
+        "git", f"--git-dir={git_dir}", f"--work-tree={lesson_dir}",
+        "--literal-pathspecs",
+    ]
 
-        def walk(current: Path, depth: int) -> None:
-            nonlocal seen
-            try:
-                with os.scandir(current) as iterator:
-                    entries = sorted(iterator, key=lambda entry: entry.name)
-            except OSError:
-                return
-            for entry in entries:
-                if seen >= 512:
-                    return
-                seen += 1
-                try:
-                    if entry.is_symlink():
-                        continue
-                    if entry.is_dir(follow_symlinks=False):
-                        if depth < 3:
-                            walk(Path(entry.path), depth + 1)
-                        continue
-                    if not entry.is_file(follow_symlinks=False):
-                        continue
-                    stat = entry.stat(follow_symlinks=False)
-                except OSError:
-                    continue
-                path = Path(entry.path)
-                rel = path.relative_to(bundle_dir).as_posix()
-                if bundle_schema.path_has_symlink(bundle_dir, rel):
-                    continue
-                if stat_module.S_ISREG(stat.st_mode):
-                    found.append((rel, path, stat))
+    def run(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [*git, *args], capture_output=True, timeout=GIT_INIT_TIMEOUT_SECONDS
+        )
 
-        walk(root_path, 0)
-    return sorted(found, key=lambda item: item[0])
-
-
-def _page_starters(
-    lesson: dict, page: str
-) -> tuple[dict[str, bytes], tuple[bytes, ...]]:
-    """Starter text of one page: keyed by the block id a textarea declares in
-    `data-block`, plus every textarea default in document order."""
-    snapshot = _read_page_snapshot(_entry_path(lesson["slug"], page))
-    if snapshot is None:
-        return {}, ()
-    text = snapshot[0].decode("utf-8", errors="replace")
-    parser = _TextareaDefaults()
-    parser.feed(text)
-
-    def starter(raw: str) -> bytes:
-        value = raw.replace("\r\n", "\n").replace("\r", "\n")
-        if value.startswith("\n"):
-            value = value[1:]
-        return value.encode("utf-8")
-
-    return (
-        {block_id: starter(raw) for block_id, raw in parser.by_block.items()},
-        tuple(starter(raw) for raw in parser.values),
-    )
+    try:
+        if run("rev-parse", "--git-dir").returncode != 0:
+            return None
+        changed = 0
+        for rel in files:
+            if bundle_schema.path_has_symlink(lesson_dir, rel):
+                continue
+            current = _read_regular_no_follow(lesson_dir / rel, _STATE_FILE_MAX_BYTES)
+            if current is None:
+                continue
+            history = run("rev-list", "--reverse", "HEAD", "--", rel)
+            first = history.stdout.split(b"\n", 1)[0].decode("ascii", errors="replace")
+            if history.returncode != 0 or not first:
+                continue
+            starter = run("cat-file", "blob", f"{first}:{rel}")
+            if starter.returncode == 0 and starter.stdout != current.data:
+                changed += 1
+        return changed
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def _agent_path_dirs() -> list[Path]:
@@ -1510,43 +1435,6 @@ def _render_lesson_state(
                 f"  - …and {open_total - len(open_questions)} more, oldest "
                 "first in `attempts.jsonl`"
             )
-    pages = {page["id"]: page["path"] for page in read.pages}
-    blocks = {block["file"]: block for block in read.blocks}
-    starter_by_file: dict[str, bytes] = {}
-    for page_id, page in pages.items():
-        page_blocks = [block for block in read.blocks if block["page"] == page_id]
-        if not page_blocks:
-            continue
-        by_block, starters = _page_starters(lesson, page)
-        for block in page_blocks:
-            starter = by_block.get(block["id"])
-            # Unmarked pages only resolve when there is nothing to confuse:
-            # one block and one textarea. Pairing by document order would
-            # silently take an answer or output textarea for a starter.
-            if starter is None and len(page_blocks) == len(starters) == 1:
-                starter = starters[0]
-            if starter is not None:
-                starter_by_file[block["file"]] = starter
-    artifacts = _state_artifact_files(lesson, read.artifact_roots)
-    artifact_lines: list[str] = []
-    changed_by_page: dict[str, int] = {}
-    for rel, path, stat in artifacts:
-        equal = "unknown"
-        block = blocks.get(rel)
-        snapshot = _state_file_snapshot(path) if block else None
-        if block and snapshot is not None:
-            data, stat = snapshot
-            starter = starter_by_file.get(rel)
-            if starter is not None:
-                equal = str(data == starter).lower()
-        if block and equal == "false":
-            changed_by_page[block["page"]] = changed_by_page.get(block["page"], 0) + 1
-        mtime = datetime.fromtimestamp(
-            stat.st_mtime, timezone.utc
-        ).isoformat(timespec="seconds").replace("+00:00", "Z")
-        artifact_lines.append(
-            f"  - {json.dumps(rel)}: mtime={mtime}; equal_to_starter={equal}"
-        )
     declared_stages = [page for page in read.pages if page["path"] != read.entry]
     written = [page for page in declared_stages if _stage_written(lesson, page["path"])]
     missing = [page for page in declared_stages if page not in written]
@@ -1561,15 +1449,25 @@ def _render_lesson_state(
             if latest.get(q["id"]) is not None
             and not attempts_service.row_is_question(latest[q["id"]], q["kind"])
         )
-        editors = [block for block in read.blocks if block["page"] == last["id"]]
+        editors = [
+            block["file"] for block in read.blocks if block["page"] == last["id"]
+        ]
+        changed = (
+            _changed_editor_files(_lesson_dir(lesson["slug"]), editors)
+            if editors else 0
+        )
         last_ref, last_cut = _state_json_excerpt(last["path"])
         lines.append(
             f"- Stages written: {len(written)} of {len(declared_stages)} declared; "
             f"last written stage (data): {last_ref}"
             + (" (cut here; the full path is in `lesson.json`)" if last_cut else "")
             + f"; on it {answered} of {len(declared)} questions answered and "
-            f"{changed_by_page.get(last['id'], 0)} of {len(editors)} editor files "
-            "changed from their starter"
+            + (
+                f"{changed} of {len(editors)} editor files changed from their starter"
+                if changed is not None else
+                "editor files changed from their starter: count unavailable "
+                "(the bundle has no git repository)"
+            )
         )
     else:
         lines.append(f"- Stages written: 0 of {len(declared_stages)} declared")
@@ -1602,10 +1500,6 @@ def _render_lesson_state(
         )
     if not read.questions:
         lines.append("  - none declared")
-    lines.append("- Artifacts:")
-    lines.extend(artifact_lines)
-    if not artifacts:
-        lines.append("  - none found")
     lines.extend([
         "- Run history: `runs.jsonl` is the app-owned finished-run log; each "
         "line binds a run and block to its file revision, start/finish timestamps, "
@@ -2131,11 +2025,10 @@ are read-only for you, so never create or change that file. Put starter
 text in the page's textarea/default editor state; the artifact appears only
 when the learner saves it.
 
-Author a plain textarea with Load and Save, and mark it
-`data-block="blk_<id>"` with that block's id: STATE in `AGENTS.md` reads its
-default text as the starter and tells you whether the saved artifact still
-matches it byte for byte. Without that attribute the flag stays `unknown`
-unless the page holds exactly one block and one textarea. When the block
+Author a plain textarea with Load and Save. STATE in `AGENTS.md` counts the
+editor files on the last written stage that your commits track and whose
+bytes now differ from their first commit; a file no commit has seen is not
+counted, and without a repository the count is unavailable. When the block
 declares a registered runner, add Run and Cancel while a run is active. For
 that runner-backed page, the one ready announcement is
 `{"ephemeris":"lesson-bridge","type":"ready","abi":[2],"want":["editor","run"]}`,

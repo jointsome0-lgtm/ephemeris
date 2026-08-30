@@ -35,7 +35,7 @@ def test_core_brief_stays_far_under_the_codex_cap():
     assert rendered.count("%STATE%") == 1, "exactly one STATE slot"
     core = rendered.replace("%STATE%", "")
     # Half the cap, not the cap: STATE shares the file, grows with the
-    # lesson (open questions, artifacts), and has no fixed ceiling.
+    # lesson (open questions), and has no fixed ceiling.
     assert len(core.encode("utf-8")) < CODEX_PROJECT_DOC_CAP // 2, (
         "the always-on core crept back toward the truncation cap — move the "
         "growth into a reference/ companion instead (#195)"
@@ -51,7 +51,7 @@ def test_state_is_capped_so_the_core_tail_always_loads():
     assert lessons._cap_state(small) == small, "an ordinary STATE passes as-is"
 
     filler = "".join(
-        f'  - "attempts/blk_x/{i:04d}-{"f" * 160}.txt": mtime=…\n'
+        f'  - `q_{i:04d}`, attempt `att_{i:04d}`: "{"f" * 160}"\n'
         for i in range(400)
     )
     state = "\n## STATE (generated; refreshed on every terminal open)\n\n" + filler
@@ -60,7 +60,7 @@ def test_state_is_capped_so_the_core_tail_always_loads():
     )
     brief = lessons._render_agents_brief(Path("made"), state)
     assert len(brief.encode("utf-8")) < CODEX_PROJECT_DOC_CAP, (
-        "an artifact-heavy STATE must never push the core past what the "
+        "a question-heavy STATE must never push the core past what the "
         "harness loads (#197 round 2)"
     )
     assert "## Mission" in brief and "## Bundle map and git" in brief
