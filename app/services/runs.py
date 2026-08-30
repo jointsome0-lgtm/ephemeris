@@ -7,9 +7,7 @@ import os
 import sqlite3
 import stat as stat_module
 import tempfile
-import threading
 import time
-from collections import deque
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,8 +18,6 @@ from ..db import DATA_DIR, append_event, get_conn
 from . import artifacts, bundle_schema, lessons
 
 
-RATE_WINDOW_SECONDS = 60.0
-RATE_MAX_PER_WINDOW = 10
 MAX_BODY_BYTES = 16 * 1024
 MAX_KEY_LEN = 128
 PROJECTION_NAME = "runs.jsonl"
@@ -46,8 +42,6 @@ RECORD_VERSION = 1
 EVENT_OMITTED_FIELDS = ("output_tail", "output_tail_truncated")
 
 _monotonic = time.monotonic
-_rate_lock = threading.Lock()
-_rate: dict[str, deque[float]] = {}
 
 
 class RunRequestError(Exception):
@@ -56,39 +50,6 @@ class RunRequestError(Exception):
         self.code = code
         self.status = status
         self.detail = detail
-
-
-def _reset_rate_limit() -> None:
-    with _rate_lock:
-        _rate.clear()
-
-
-def _check_rate(lesson_uid: str) -> float:
-    now = _monotonic()
-    with _rate_lock:
-        window = _rate.setdefault(lesson_uid, deque())
-        while window and now - window[0] > RATE_WINDOW_SECONDS:
-            window.popleft()
-        if len(window) >= RATE_MAX_PER_WINDOW:
-            retry = max(1, int(RATE_WINDOW_SECONDS - (now - window[0])) + 1)
-            exc = runner.RateLimitedError(lesson_uid)
-            exc.retry_after = retry
-            raise exc
-        window.append(now)
-        return now
-
-
-def _refund_rate(lesson_uid: str, stamp: object) -> None:
-    if not isinstance(stamp, float):
-        return
-    with _rate_lock:
-        window = _rate.get(lesson_uid)
-        if window is None:
-            return
-        try:
-            window.remove(stamp)
-        except ValueError:
-            pass
 
 
 def _valid_key(value: object) -> bool:
@@ -741,12 +702,7 @@ async def _record_finish(job: runner.RunnerJob) -> bool:
 
 
 def create_service() -> runner.RunnerService:
-    _reset_rate_limit()
-    return runner.RunnerService(
-        rate_hook=_check_rate,
-        rate_refund_hook=_refund_rate,
-        finish_hook=_record_finish,
-    )
+    return runner.RunnerService(finish_hook=_record_finish)
 
 
 async def start(
@@ -756,17 +712,13 @@ async def start(
     payload: dict,
 ) -> runner.Admission:
     lesson_uid = lesson["uid"]
-    try:
-        file_rev, key = clean_start_payload(payload)
-    except RunRequestError:
-        await service.charge_validation_refusal(lesson_uid)
-        raise
+    file_rev, key = clean_start_payload(payload)
 
     async with service.prepare_start(lesson_uid):
-        preflight = await service.preflight(lesson_uid, key, block_id, file_rev)
-        if isinstance(preflight, runner.Admission):
-            return preflight
+        replay = await service.preflight(lesson_uid, key, block_id, file_rev)
+        if replay is not None:
+            return replay
         request = await asyncio.to_thread(
             prepare_request, lesson, block_id, file_rev, key
         )
-        return await service.admit(request, rate_permit=preflight.rate_charge)
+        return await service.admit(request)

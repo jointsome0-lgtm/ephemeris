@@ -85,10 +85,6 @@ class IdempotencyConflictError(RunnerError):
     code = "idempotency-conflict"
 
 
-class RateLimitedError(RunnerError):
-    code = "rate-limited"
-
-
 class LessonCapacityError(RunnerError):
     code = "lesson-run-active"
 
@@ -236,11 +232,6 @@ class Admission:
     replayed: bool
 
 
-@dataclass(frozen=True)
-class AdmissionPermit:
-    rate_charge: object | None
-
-
 @dataclass
 class ReaderLease:
     job: RunnerJob
@@ -248,10 +239,7 @@ class ReaderLease:
 
 
 SpawnHook = Callable[[RunnerJob], Awaitable[asyncio.subprocess.Process]]
-RateHook = Callable[[str], object]
-RateRefundHook = Callable[[str, object], None]
 FinishHook = Callable[[RunnerJob], object]
-_NO_RATE_PERMIT = object()
 
 
 class RunnerService:
@@ -260,8 +248,6 @@ class RunnerService:
     def __init__(
         self,
         *,
-        rate_hook: RateHook | None = None,
-        rate_refund_hook: RateRefundHook | None = None,
         spawn_hook: SpawnHook | None = None,
         health_hook: Callable[[], None] = require_runner_health,
         finish_hook: FinishHook | None = None,
@@ -282,8 +268,6 @@ class RunnerService:
         self._active_by_lesson: dict[str, int] = {}
         self._active_total = 0
         self._accepting = True
-        self._rate_hook = rate_hook
-        self._rate_refund_hook = rate_refund_hook
         self._spawn_hook = spawn_hook or self._spawn
         self._health_hook = health_hook
         self._finish_hook = finish_hook
@@ -327,8 +311,8 @@ class RunnerService:
         idempotency_key: str,
         block_id: str,
         file_rev: str,
-    ) -> Admission | AdmissionPermit:
-        """Resolve cheap state and reserve rate before filesystem validation."""
+    ) -> Admission | None:
+        """Resolve replay and cheap refusals before filesystem validation."""
         async with self._lock:
             self._prune_locked()
             replay = self._replay_locked(
@@ -342,23 +326,11 @@ class RunnerService:
                 raise LessonCapacityError(lesson_uid)
             if self._active_total >= self._global_limit:
                 raise GlobalCapacityError("global runner capacity reached")
-            rate_charge: object | None = None
-            if self._rate_hook is not None:
-                rate_charge = self._rate_hook(lesson_uid)
-                if rate_charge is False:
-                    raise RateLimitedError(lesson_uid)
-            return AdmissionPermit(rate_charge)
+            return None
 
-    async def admit(
-        self,
-        request: RunnerRequest,
-        *,
-        rate_permit: object = _NO_RATE_PERMIT,
-    ) -> Admission:
+    async def admit(self, request: RunnerRequest) -> Admission:
         """Validate health off-loop, then reserve under the admission lock."""
         replay_key = (request.lesson_uid, request.idempotency_key)
-        permit_supplied = rate_permit is not _NO_RATE_PERMIT
-        supplied_charge = rate_permit if permit_supplied else None
 
         # Keep replay/error ordering ahead of health, and reject cheap request
         # defects without starting subprocess probes.  Health itself must run
@@ -366,80 +338,34 @@ class RunnerService:
         # responsive during a cold or unhealthy probe.
         async with self._lock:
             self._prune_locked()
-            try:
-                replay = self._replay_locked(
-                    request.lesson_uid, request.idempotency_key,
-                    request.block_id, request.file_rev,
-                )
-            except (IdempotencyConflictError, JobMissingError):
-                if permit_supplied:
-                    self._refund_rate_locked(
-                        request.lesson_uid, supplied_charge
-                    )
-                raise
+            replay = self._replay_locked(
+                request.lesson_uid, request.idempotency_key,
+                request.block_id, request.file_rev,
+            )
             if replay is not None:
-                if permit_supplied:
-                    self._refund_rate_locked(
-                        request.lesson_uid, supplied_charge
-                    )
                 return replay
             if not self._accepting:
-                if permit_supplied:
-                    self._refund_rate_locked(
-                        request.lesson_uid, supplied_charge
-                    )
                 raise RunnerShuttingDownError("runner service is shutting down")
             spec = self._registry[request.runner_id]
 
-        try:
-            await asyncio.to_thread(self._health_hook)
-        except BaseException:
-            if permit_supplied:
-                async with self._lock:
-                    self._refund_rate_locked(
-                        request.lesson_uid, supplied_charge
-                    )
-            raise
+        await asyncio.to_thread(self._health_hook)
 
         # State may have changed while health ran.  Repeat all mutable checks;
-        # a concurrent identical winner replays and any supplied rate permit is
-        # refunded before returning or refusing.
+        # a concurrent identical winner replays before this one reserves.
         async with self._lock:
             self._prune_locked()
-            try:
-                replay = self._replay_locked(
-                    request.lesson_uid, request.idempotency_key,
-                    request.block_id, request.file_rev,
-                )
-            except (IdempotencyConflictError, JobMissingError):
-                if permit_supplied:
-                    self._refund_rate_locked(
-                        request.lesson_uid, supplied_charge
-                    )
-                raise
+            replay = self._replay_locked(
+                request.lesson_uid, request.idempotency_key,
+                request.block_id, request.file_rev,
+            )
             if replay is not None:
-                if permit_supplied:
-                    self._refund_rate_locked(
-                        request.lesson_uid, supplied_charge
-                    )
                 return replay
             if not self._accepting:
-                if permit_supplied:
-                    self._refund_rate_locked(
-                        request.lesson_uid, supplied_charge
-                    )
                 raise RunnerShuttingDownError("runner service is shutting down")
-            rate_charge: object | None = supplied_charge
-            if not permit_supplied and self._rate_hook is not None:
-                rate_charge = self._rate_hook(request.lesson_uid)
-                if rate_charge is False:
-                    raise RateLimitedError(request.lesson_uid)
             lesson_active = self._active_by_lesson.get(request.lesson_uid, 0)
             if lesson_active >= self._per_lesson_limit:
-                self._refund_rate_locked(request.lesson_uid, rate_charge)
                 raise LessonCapacityError(request.lesson_uid)
             if self._active_total >= self._global_limit:
-                self._refund_rate_locked(request.lesson_uid, rate_charge)
                 raise GlobalCapacityError("global runner capacity reached")
 
             job_id = str(uuid4())
@@ -454,19 +380,6 @@ class RunnerService:
                 self._drive_job(job), name=f"lesson-runner-{job.job_id}"
             )
             return Admission(job, False)
-
-    async def charge_validation_refusal(self, lesson_uid: str) -> None:
-        """Charge one expensive start validation that did not reach admit()."""
-        async with self._lock:
-            if self._rate_hook is None:
-                return
-            charge = self._rate_hook(lesson_uid)
-            if charge is False:
-                raise RateLimitedError(lesson_uid)
-
-    def _refund_rate_locked(self, lesson_uid: str, charge: object | None) -> None:
-        if charge is not None and self._rate_refund_hook is not None:
-            self._rate_refund_hook(lesson_uid, charge)
 
     async def get(self, job_id: str) -> RunnerJob | None:
         async with self._lock:

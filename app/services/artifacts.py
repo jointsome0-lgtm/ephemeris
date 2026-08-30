@@ -13,8 +13,6 @@ import re
 import sqlite3
 import stat as stat_module
 import threading
-import time
-from collections import deque
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from uuid import uuid4
@@ -27,13 +25,8 @@ from .runner_registry import RUNNER_REGISTRY
 MAX_FILE_BYTES = 64 * 1024
 MAX_BODY_BYTES = 512 * 1024
 MAX_DEPTH_BELOW_ROOT = 4
-RATE_WINDOW_SECONDS = 60.0
-RATE_MAX_PER_WINDOW = 30
 FILE_REV_RE = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 
-_monotonic = time.monotonic
-_rate_lock = threading.Lock()
-_rate: dict[int, deque[float]] = {}
 _bundle_locks_lock = threading.Lock()
 _bundle_locks: dict[str, threading.RLock] = {}
 
@@ -89,33 +82,6 @@ def bundle_lock(slug: str) -> threading.RLock:
         if lock is None:
             lock = _bundle_locks[slug] = threading.RLock()
         return lock
-
-
-def _check_rate(lesson_id: int) -> float:
-    now = _monotonic()
-    with _rate_lock:
-        window = _rate.setdefault(lesson_id, deque())
-        while window and now - window[0] > RATE_WINDOW_SECONDS:
-            window.popleft()
-        if len(window) >= RATE_MAX_PER_WINDOW:
-            retry = max(1, int(RATE_WINDOW_SECONDS - (now - window[0])) + 1)
-            raise ArtifactError(
-                "rate-limited", 429, f"retry after ~{retry}s", retry_after=retry
-            )
-        window.append(now)
-        return now
-
-
-def _refund_rate(lesson_id: int, stamp: float | None) -> None:
-    if stamp is None:
-        return
-    with _rate_lock:
-        window = _rate.get(lesson_id)
-        if window is not None:
-            try:
-                window.remove(stamp)
-            except ValueError:
-                pass
 
 
 def _require_eligible(read: bundle_schema.ManifestRead) -> None:
@@ -494,7 +460,6 @@ def save_artifact(
     conn: sqlite3.Connection, lesson: dict, block_id: str, payload: dict
 ) -> dict:
     """Compare and atomically publish one artifact under the phase-F lock."""
-    stamp = _check_rate(lesson["id"])
     data, base_rev = _clean_save(payload)
     with bundle_lock(lesson["slug"]):
         read = lessons.read_bundle_readonly(lesson)
@@ -513,7 +478,6 @@ def save_artifact(
                         "artifact changed while the save was in progress",
                         file_rev=current_rev,
                     )
-                _refund_rate(lesson["id"], stamp)
                 return {
                     "result": "unchanged",
                     "file_rev": current_rev,

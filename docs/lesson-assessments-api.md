@@ -157,11 +157,11 @@ The attempt endpoint's "same key + same question/page" shortcut is deliberately
 replayed with a different judgment is a visible conflict, never a silent
 coalesce.
 
-The replay lookup precedes every mutable-state refusal — the archive check, the
-attempt/`supersedes` reference checks, and the rate limit included. A retry of
-an already-durable write returns its `assessment_id` even when the lesson has
-since been archived or the window is exhausted; the refusal table below governs
-only NEW writes. Capability resolution is *not* a mutable-state refusal but a
+The replay lookup precedes every mutable-state refusal — the archive check and
+the attempt/`supersedes` reference checks. A retry of an already-durable write
+returns its `assessment_id` even when the lesson has since been archived; the
+refusal table below governs only NEW writes. Capability resolution is *not* a
+mutable-state refusal but a
 fact about the request, so it runs first, with validation: a retry presenting a
 dead token is refused rather than answered with a quiet duplicate.
 
@@ -193,7 +193,6 @@ recorded once, by the write that actually lands.
 | 411 / 413 / 415 | `length-required` / `payload-too-large` / `unsupported-media-type` | body admission |
 | 422 | `unknown-attempt` | `attempt_id` is not a recorded attempt of this lesson |
 | 422 | `unknown-supersedes` | `supersedes` is not an assessment of this lesson |
-| 429 | `rate-limited` | > 30 assessments per lesson per 60 s window (`Retry-After` set). The sliding window lives in server-process memory: the deployment model is one worker (the loopback systemd unit), so the bound is per deployment in practice; during a rolling restart two processes can briefly hold separate windows (bounded 2× for the overlap). The limit is an abuse damper, not a security boundary — body caps, validation, and the durable-write semantics never depend on it. Replays and key conflicts are refunded. |
 
 ## Storage effects of one recorded assessment
 

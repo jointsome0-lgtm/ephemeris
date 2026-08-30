@@ -659,18 +659,8 @@ def test_role_runner(client, suite_state):
             race_processes.append(process)
             return process
 
-        race_charges = []
-        race_refunds = []
-
-        def race_rate(lesson):
-            token = (lesson, len(race_charges))
-            race_charges.append(token)
-            return token
-
         race_service = _runner.RunnerService(
-            spawn_hook=race_spawn, health_hook=lambda: None,
-            rate_hook=race_rate,
-            rate_refund_hook=lambda lesson, token: race_refunds.append((lesson, token)),
+            spawn_hook=race_spawn, health_hook=lambda: None
         )
         per_lesson = await _asyncio.gather(
             race_service.admit(req("same", "key-1")),
@@ -680,7 +670,6 @@ def test_role_runner(client, suite_state):
         result["per_lesson_race"] = (
             sum(isinstance(item, _runner.Admission) for item in per_lesson) == 1
             and sum(isinstance(item, _runner.LessonCapacityError) for item in per_lesson) == 1
-            and len(race_charges) == 2 and len(race_refunds) == 1
         )
         await _asyncio.sleep(0)
         for process in race_processes:
@@ -714,7 +703,6 @@ def test_role_runner(client, suite_state):
             if isinstance(item, _runner.Admission):
                 await _finished(global_service, item.job.job_id)
 
-        rate_calls = []
         replay_processes = []
 
         async def replay_spawn(_job):
@@ -723,8 +711,7 @@ def test_role_runner(client, suite_state):
             return process
 
         replay_service = _runner.RunnerService(
-            spawn_hook=replay_spawn, health_hook=lambda: None,
-            rate_hook=lambda lesson: rate_calls.append(lesson) or True,
+            spawn_hook=replay_spawn, health_hook=lambda: None
         )
         same_request = req("replay", "same-key")
         replay_results = await _asyncio.gather(
@@ -733,7 +720,7 @@ def test_role_runner(client, suite_state):
         result["idempotency_first"] = (
             replay_results[0].job is replay_results[1].job
             and {item.replayed for item in replay_results} == {False, True}
-            and len(rate_calls) == 1 and replay_service._active_total == 1
+            and replay_service._active_total == 1
         )
         await _asyncio.sleep(0)
         replay_processes[0].finish(0)
@@ -798,7 +785,7 @@ def test_role_runner(client, suite_state):
             isinstance(attached_replay, _runner.Admission)
             and attached_replay.job is new and attached_replay.replayed
             and attached_survived_pruning and detached_expired
-            and isinstance(detached_replay, _runner.AdmissionPermit)
+            and detached_replay is None
         )
 
         reader_bound_service = _runner.RunnerService(
@@ -939,12 +926,12 @@ def test_role_runner(client, suite_state):
     assert (
         _f3_service.get("per_lesson_race")
         and _f3_service.get("global_race")
-    ), f"F3 one-lock admission closes races and refunds busy rate charges: {str(_f3_service)}"
+    ), f"F3 one-lock admission closes capacity races: {str(_f3_service)}"
     assert (
         _f3_service.get("idempotency_first")
         and _f3_service.get("retention")
         and _f3_service.get("reader_cap")
-    ), f"F3 idempotency precedes rate/capacity and terminal retention is bounded: {str(_f3_service)}"
+    ), f"F3 idempotency precedes capacity and terminal retention is bounded: {str(_f3_service)}"
     assert _f3_service.get("shutdown"), f"F3 shutdown stops jobs through the same exact-release path: {str(_f3_service)}"
 
     async def _f4_terminal_cause_matrix():

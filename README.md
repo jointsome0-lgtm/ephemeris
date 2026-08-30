@@ -58,11 +58,10 @@ single worker" ([lesson artifacts API](docs/lesson-artifacts-api.md),
 
 Three things assume it:
 
-- **The abuse dampers are in-process.** The per-lesson rate limits on artifact
-  saves and assessments are sliding windows in server-process memory, so N
-  workers would permit N times the documented budget. (Even a rolling restart
-  briefly overlaps two processes, which the assessments API notes as a bounded
-  2×.)
+- **The abuse damper is in-process.** The per-lesson rate limit on attempts
+  is a sliding window in server-process memory, so N workers would permit N
+  times the documented budget. (Even a rolling restart briefly overlaps two
+  processes, which the attempts API notes as a bounded 2×.)
 - **The terminal session registry is in-process.** A detached PTY lives in the
   worker that created it, so a second worker cannot reattach to it — the drawer
   would appear to lose sessions at random depending on which worker answered.

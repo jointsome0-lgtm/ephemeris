@@ -41,8 +41,6 @@ import os
 import sqlite3
 import stat as stat_module
 import threading
-import time
-from collections import deque
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -81,24 +79,12 @@ PROJECTION_STATE_DIR = DATA_DIR / "assessment-projections"
 META_KIND = "assessments_meta"
 META_VERSION = 1
 
-# Rate limit (D-S1-3): 30 per lesson per 60 s with the attempts-style refund
-# table — replays and key conflicts are not new writes and get their slot back,
-# refusals of new writes stay charged. In-process memory by design: the
-# deployment model is ONE worker (loopback systemd unit), so this is an abuse
-# damper, not a security boundary.
-RATE_WINDOW_SECONDS = 60.0
-RATE_MAX_PER_WINDOW = 30
-
 # The write capability (D-S1-3 / D-S2-2, slice s3). The lesson-agent terminal
 # session hands its token back in this header; the registry that answers for it
 # lives in `app/terminal.py` and dies with the session and the process. A
 # request without the header is the owner/manual path and is still admitted —
 # it simply records no sitting.
 CAPABILITY_HEADER = "X-Ephemeris-Assess-Token"
-
-_monotonic = time.monotonic  # separable for tests
-_rate_lock = threading.Lock()
-_rate: dict[int, deque[float]] = {}
 
 # One lock per lesson: the duplicate check and the transactional insert
 # serialize in-process, so a retry racing its own original resolves as a
@@ -135,33 +121,6 @@ def _lesson_lock(slug: str) -> threading.RLock:
         if lock is None:
             lock = _lesson_locks[slug] = threading.RLock()
         return lock
-
-
-def _check_rate(lesson_id: int) -> float:
-    """Charge one window slot; returns the charged stamp so outcomes that turn
-    out not to be new writes can refund it (the attempts idiom)."""
-    now = _monotonic()
-    with _rate_lock:
-        window = _rate.setdefault(lesson_id, deque())
-        while window and now - window[0] > RATE_WINDOW_SECONDS:
-            window.popleft()
-        if len(window) >= RATE_MAX_PER_WINDOW:
-            retry = max(1, int(RATE_WINDOW_SECONDS - (now - window[0])) + 1)
-            raise AssessmentError("rate-limited", 429, f"retry after ~{retry}s")
-        window.append(now)
-        return now
-
-
-def _refund_rate(lesson_id: int, stamp: float | None) -> None:
-    if stamp is None:
-        return
-    with _rate_lock:
-        window = _rate.get(lesson_id)
-        if window is not None:
-            try:
-                window.remove(stamp)
-            except ValueError:
-                pass  # already expired out of the sliding window
 
 
 def _utc_now_iso() -> str:
@@ -576,22 +535,19 @@ def record_assessment(
     _sweep_once(conn, lesson)
 
     # D-S1-3: the replay lookup precedes every mutable-state refusal — the
-    # archive check, the attempt/supersedes references, and the rate limit
-    # included. The original write is already durable, so a client retry must
-    # learn its assessment_id even if the lesson was archived meanwhile or the
-    # retry lands with the window exhausted; the refusals below govern only NEW
-    # writes. Replays and conflicts consume no budget, so the work they can
-    # repeat has to stay cheap: one indexed SELECT here, and a reconcile that
-    # returns after reading a watermark unless the state actually moved since
-    # this process last published (see `_published`).
+    # archive check and the attempt/supersedes references. The original write
+    # is already durable, so a client retry must learn its assessment_id even
+    # if the lesson was archived meanwhile; the refusals below govern only NEW
+    # writes. The work a replay can repeat stays cheap: one indexed SELECT
+    # here, and a reconcile that returns after reading a watermark unless the
+    # state actually moved since this process last published (see
+    # `_published`).
     with _lesson_lock(lesson["slug"]):
         replay = _replay_or_conflict(conn, lesson, submission, fingerprint)
     if replay is not None:
         return replay
 
-    rate_stamp: float | None = None
     try:
-        rate_stamp = _check_rate(lesson["id"])
         if lesson.get("archived"):
             # D-S1-4: the owner unarchives first — a distinct 409, never a
             # silent write into a lesson that has been put away. This is the
@@ -610,27 +566,16 @@ def record_assessment(
         # uncommitted at the early check above and then hit a refusal here
         # after the original committed. The durable outcome still wins —
         # re-check before refusing.
-        try:
-            with _lesson_lock(lesson["slug"]):
-                replay = _replay_or_conflict(conn, lesson, submission, fingerprint)
-        except AssessmentError:
-            _refund_rate(lesson["id"], rate_stamp)  # conflict: not a new write
-            raise
+        with _lesson_lock(lesson["slug"]):
+            replay = _replay_or_conflict(conn, lesson, submission, fingerprint)
         if replay is not None:
-            _refund_rate(lesson["id"], rate_stamp)
             return replay
         raise
 
-    try:
-        with _lesson_lock(lesson["slug"]):
-            return _record_locked(
-                conn, lesson, submission, fingerprint, question_id, rate_stamp,
-                sitting_id,
-            )
-    except AssessmentError as exc:
-        if exc.code == "idempotency-conflict":  # not a new write
-            _refund_rate(lesson["id"], rate_stamp)
-        raise
+    with _lesson_lock(lesson["slug"]):
+        return _record_locked(
+            conn, lesson, submission, fingerprint, question_id, sitting_id,
+        )
 
 
 def _record_locked(
@@ -639,7 +584,6 @@ def _record_locked(
     submission: dict,
     fingerprint: str,
     question_id: str | None,
-    rate_stamp: float | None,
     sitting_id: str | None,
 ) -> dict:
     """The lesson-locked write section of `record_assessment`."""
@@ -748,7 +692,6 @@ def _record_locked(
                  "id": seq},
                 "recorded",
             )
-    _refund_rate(lesson["id"], rate_stamp)
     return replay
 
 
