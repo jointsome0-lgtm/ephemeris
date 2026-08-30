@@ -1845,8 +1845,8 @@ missing. Formats, reading bounds, and edge rules: `reference/record.md`.
 - Verify before you rely: a tool is available only if you just ran it
   successfully from this shell.
 - The learner's shell opens in this same directory, with the same network
-  access (proxy variables preset) and fewer tools: everything you ask them
-  to run must work in a fresh lesson shell.
+  access and fewer tools: everything you ask them to run must work in a
+  fresh lesson shell.
 %SOURCE_STORE%
 - Fetch plainly first (`curl` on the lesson's source URL). When a fetch
   hits a login wall or an empty application shell and the

@@ -133,8 +133,8 @@ environment changes never land back in Git.
 ## Configuration
 
 Every variable the app reads. The first six are read once at startup, so
-restart the process after changing one; the proxy and Chrome variables are read
-each time a terminal shell or a render gate starts.
+restart the process after changing one; the Chrome variable is read each time
+a render gate starts.
 
 | Env var | Default | Meaning |
 | --- | --- | --- |
@@ -144,14 +144,14 @@ each time a terminal shell or a render gate starts.
 | `SELFOS_EXP2RES_URL` | unset (no strip) | Loopback http(s) URL of the Exp2Res gap-questions view the Diary tab embeds. A non-loopback URL is ignored with a warning. |
 | `SELFOS_EXP2RES_MIRROR_URL` | unset (`/mirror` answers 404) | Loopback http(s) URL of the Exp2Res Mirror view the `/mirror` surface embeds. Same loopback rule. |
 | `EPHEMERIS_ENABLE_TERMINAL` | unset (terminal off) | Opt-in: `1`/`true`/`yes`/`on` registers the loopback-only terminal websocket and UI. |
-| `EPHEMERIS_TERM_PROXY` | unset | Egress proxy for the terminal shell: `off` forces a direct connection, an `http://` or `socks5h://` URL is used as given. Unset: the service's own proxy variables are inherited, else the xray client on `127.0.0.1:10809` (http) / `10808` (socks) is auto-detected. |
-| `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `FTP_PROXY` (either case) | unset | The service's proxy configuration, passed to the terminal shell verbatim (loopback kept direct) when `EPHEMERIS_TERM_PROXY` is unset and at least one of `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` is set. `NO_PROXY` and `FTP_PROXY` ride along only in that case; on their own they are dropped. |
 | `EPHEMERIS_RENDER_CHECK_CHROME` | unset (search `$PATH` for `google-chrome`, `chromium`, `chromium-browser`, `chrome`) | Path to the Chrome/Chromium binary the Learn render gate runs. |
 
 The terminal shell does not inherit the service environment; it starts from an
 allowlist (`HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH`, `LANG`, `LANGUAGE`,
-`LC_*`, `TZ`, `XDG_*`, `SSH_AUTH_SOCK`) with `TERM` and `PATH` normalized.
-`SHELL` picks the shell the drawer runs. The lesson-agent shell is additionally
+`LC_*`, `TZ`, `XDG_*`, `SSH_AUTH_SOCK`, and `HTTP_PROXY`, `HTTPS_PROXY`,
+`NO_PROXY` in either case) with `TERM` and `PATH` normalized. The proxy
+variables pass through exactly as the service has them; the app does no egress
+routing of its own. `SHELL` picks the shell the drawer runs. The lesson-agent shell is additionally
 handed `EPHEMERIS_ASSESS_URL`, `EPHEMERIS_ASSESS_TOKEN` and
 `EPHEMERIS_BUILD_URL`, minted per session, and `CLAUDE_CODE_OAUTH_TOKEN` read
 from `$ACTIVITY_DATA_DIR/claude-token` when that file exists. Those four are
