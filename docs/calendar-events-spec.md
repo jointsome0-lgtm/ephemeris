@@ -7,8 +7,7 @@
 > `items.py`), calendar route + `_month_grid` (now `app/routers/calendar.py`;
 > `app/main.py` when this spec was written), `calendar.html`.
 >
-> Author: planning pass. Implementer: a coding model. **Section 13 lists the few
-> genuinely-open choices** — confirm those before building.
+> Author: planning pass. Implementer: a coding model.
 
 ---
 

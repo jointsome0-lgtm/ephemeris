@@ -9,7 +9,8 @@ See [`docs/system-design.md`](docs/system-design.md) for the full design.
 **Status:** runnable and in daily use. The surfaces are Today/Tasks (with the
 Board, Next 7, list, completed, history and trash views), Calendar (month and
 week), a Focus timer in a drawer on every page, Habits, Search, Diary, Retro,
-Learn, Mirror, and JSONL Export, plus the opt-in terminal drawer. Light/dark
+Learn, JSONL Export, and, when `SELFOS_EXP2RES_MIRROR_URL` is set, Mirror,
+plus the opt-in terminal drawer. Light/dark
 themes, Mode A (no-JS PRG) + Mode B (fetch) progressive enhancement. Recovery
 is a documented contract: full [backup and restore](docs/backup-restore.md)
 for the instance, the [JSONL restore contract](docs/restore-from-export.md)
@@ -146,7 +147,7 @@ each time a terminal shell or a render gate starts.
 | `EPHEMERIS_MAX_BODY_BYTES` | 2 MiB | Ceiling on an unsafe-method request body. Junk, a non-positive value, or a value below the largest per-route cap plus headroom falls back to the default; it can raise the ceiling, never lower it. |
 | `EPHEMERIS_ENABLE_TERMINAL` | unset (terminal off) | Opt-in: `1`/`true`/`yes`/`on` registers the loopback-only terminal websocket and UI. |
 | `EPHEMERIS_TERM_PROXY` | unset | Egress proxy for the terminal shell: `off` forces a direct connection, an `http://` or `socks5h://` URL is used as given. Unset: the service's own proxy variables are inherited, else the xray client on `127.0.0.1:10809` (http) / `10808` (socks) is auto-detected. |
-| `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `FTP_PROXY` (either case) | unset | The service's proxy configuration, passed to the terminal shell verbatim (loopback kept direct) when `EPHEMERIS_TERM_PROXY` is unset. |
+| `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `FTP_PROXY` (either case) | unset | The service's proxy configuration, passed to the terminal shell verbatim (loopback kept direct) when `EPHEMERIS_TERM_PROXY` is unset and at least one of `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` is set. `NO_PROXY` and `FTP_PROXY` ride along only in that case; on their own they are dropped. |
 | `EPHEMERIS_RENDER_CHECK_CHROME` | unset (search `$PATH` for `google-chrome`, `chromium`, `chromium-browser`, `chrome`) | Path to the Chrome/Chromium binary the Learn render gate runs. |
 
 The terminal shell does not inherit the service environment; it starts from an

@@ -12,6 +12,7 @@ Security problems go through [`SECURITY.md`](SECURITY.md), not a public issue.
 
 ```bash
 uv sync
+bun install --frozen-lockfile   # the tsc the committed-JS freshness check runs
 uv run ruff check .
 uv run pytest
 uv run python verify_restore.py
