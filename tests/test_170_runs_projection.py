@@ -12,7 +12,7 @@ import pytest
 
 from app import runner
 from app.db import get_conn
-from app.services import bundle_schema, lessons, runs
+from app.services import bundle_schema, lessons, projection, runs
 from app.services.runner_registry import RUNNER_REGISTRY
 
 
@@ -551,13 +551,13 @@ def test_a_compaction_interrupted_while_staging_leaves_the_old_file(
     first = _lines(bundle)
     monkeypatch.setattr(runs, "PROJECTION_MAX_BYTES", (bundle / runs.PROJECTION_NAME).stat().st_size)
 
-    real_write_all = runs._write_all
+    real_write_all = projection.write_all
 
     def half_write(fd, data):
         real_write_all(fd, data[: len(data) // 2])
         raise OSError("invented crash while staging the compacted projection")
 
-    monkeypatch.setattr(runs, "_write_all", half_write)
+    monkeypatch.setattr(projection, "write_all", half_write)
     # The ledger event is authoritative and still lands; only the projection
     # is lost, exactly as any other projection failure.
     assert runs._record_finish_sync(_job(bundle, "invented run 1\n")) is True

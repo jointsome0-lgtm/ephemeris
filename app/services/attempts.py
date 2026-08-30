@@ -256,34 +256,6 @@ def _state_path(lesson: dict) -> Path:
     return PROJECTION_STATE_DIR / f"{projection.safe_uid(lesson)}.json"
 
 
-def _file_seal(st: os.stat_result) -> dict:
-    return {
-        "dev": st.st_dev,
-        "ino": st.st_ino,
-        "size": st.st_size,
-        "mtime_ns": st.st_mtime_ns,
-        "ctime_ns": st.st_ctime_ns,
-    }
-
-
-def _seal_matches(st: os.stat_result, seal: dict) -> bool:
-    return (
-        stat_module.S_ISREG(st.st_mode)
-        and st.st_nlink == 1
-        and all(
-            isinstance(seal.get(name), int)
-            and seal[name] == value
-            for name, value in (
-                ("dev", st.st_dev),
-                ("ino", st.st_ino),
-                ("size", st.st_size),
-                ("mtime_ns", st.st_mtime_ns),
-                ("ctime_ns", st.st_ctime_ns),
-            )
-        )
-    )
-
-
 def _read_state(lesson: dict) -> dict | None:
     try:
         fd = os.open(_state_path(lesson), projection.READ_FLAGS)
@@ -380,7 +352,7 @@ def _projection_matches_state(lesson: dict, state: dict) -> bool:
     except OSError:
         return False
     try:
-        return _seal_matches(os.fstat(fd), state["file"])
+        return projection.seal_matches(os.fstat(fd), state["file"])
     finally:
         os.close(fd)
 
@@ -483,9 +455,9 @@ def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
         "v": PROJECTION_STATE_VERSION,
         "lesson_uid": lesson["uid"],
         **cursor,
-        "file": _file_seal(published_st),
+        "file": projection.file_seal(published_st),
     }
-    if not _seal_matches(os.lstat(path), state["file"]):
+    if not projection.seal_matches(os.lstat(path), state["file"]):
         raise OSError("rebuilt projection changed during publication")
     _write_state(lesson, state)
 
@@ -596,7 +568,7 @@ def _project_attempt_locked(
             try:
                 fd = _projection_fd(lesson, os.O_RDWR | os.O_APPEND)
                 before = os.fstat(fd)
-                if not _seal_matches(before, state["file"]):
+                if not projection.seal_matches(before, state["file"]):
                     raise OSError("projection changed before append")
                 expected_size = before.st_size + len(line)
                 written_st = projection.write_all(fd, line)
@@ -611,7 +583,7 @@ def _project_attempt_locked(
                 os.fsync(fd)
                 after = os.fstat(fd)
                 if (
-                    not _seal_matches(after, _file_seal(written_st))
+                    not projection.seal_matches(after, projection.file_seal(written_st))
                     or os.pread(fd, len(line), before.st_size) != line
                 ):
                     raise OSError("projection changed after append")
@@ -619,7 +591,7 @@ def _project_attempt_locked(
                 fd = -1
                 os.close(closing_fd)
                 name_st = os.lstat(_projection_path(lesson))
-                if not _seal_matches(name_st, _file_seal(after)):
+                if not projection.seal_matches(name_st, projection.file_seal(after)):
                     raise OSError("projection name changed during append")
                 _write_state(lesson, {
                     "v": PROJECTION_STATE_VERSION,
@@ -628,7 +600,7 @@ def _project_attempt_locked(
                     "cursor_attempt_id": candidate["attempt_id"],
                     "tail_created_at": candidate["created_at"],
                     "tail_attempt_id": candidate["attempt_id"],
-                    "file": _file_seal(name_st),
+                    "file": projection.file_seal(name_st),
                 })
                 appended = True
             except OSError:

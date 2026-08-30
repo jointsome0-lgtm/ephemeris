@@ -2,13 +2,15 @@
 
 The rows below are invented. Each expected text was rendered by its service
 before that service moved onto the shared module (#225 for attempts, #226 for
-assessments); a rebuild from the same rows must still produce exactly these
-bytes.
+assessments, #227 for runs); a rebuild from the same rows, or the same
+sequence of finishes, must still produce exactly these bytes.
 """
 from __future__ import annotations
 
 import hashlib
 import os
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -178,9 +180,55 @@ ASSESSMENT_GOLDEN_SHA256 = (
 )
 
 
+RUN_LESSON_UID = "7a1c2e3f-4b5d-4c6e-8f90-a1b2c3d4e5f6"
+RUN_LESSON_SLUG = "vera-golden-runs"
+RUN_FINISHES = [
+    ("66666666-6666-4666-8666-666666666661", "vera-run-1", "sha256:" + "6" * 64,
+     "hello from Vera\n",
+     {"cause": "exit", "exit_code": 0, "truncated": False, "duration_ms": 125},
+     datetime(2031, 3, 4, 10, 0, 0, 1, tzinfo=timezone.utc)),
+    ("66666666-6666-4666-8666-666666666662", "vera-run-2", "sha256:" + "7" * 64,
+     "line one\nline two\ttabbed \"quoted\" back\\slash café ✓ \U0001F4D8 \x00\x1b[0m",
+     {"cause": "signal", "signal": "SIGKILL", "truncated": True, "duration_ms": 30000},
+     datetime(2031, 3, 4, 10, 0, 45, 500000, tzinfo=timezone.utc)),
+    ("66666666-6666-4666-8666-666666666663", "vera-run-3", "sha256:" + "8" * 64,
+     "",
+     {"cause": "exit", "exit_code": 1, "truncated": False, "duration_ms": 0},
+     datetime(2031, 3, 4, 10, 1, 0, 0, tzinfo=timezone.utc)),
+]
+RUN_GOLDEN = (
+    '{"kind":"run","v":1,"run_id":"66666666-6666-4666-8666-666666666661",'
+    '"lesson_uid":"7a1c2e3f-4b5d-4c6e-8f90-a1b2c3d4e5f6","block_id":"blk_vera0001",'
+    '"runner_id":"python-script-v1",'
+    '"file_rev":"sha256:6666666666666666666666666666666666666666666666666666666666666666",'
+    '"cause":"exit","exit_code":0,"signal":null,"duration_ms":125,"truncated":false,'
+    '"started_at":"2031-03-04T09:59:59.875001+00:00",'
+    '"finished_at":"2031-03-04T10:00:00.000001+00:00",'
+    '"output_tail":"hello from Vera\\n","output_tail_truncated":false}\n'
+    '{"kind":"run","v":1,"run_id":"66666666-6666-4666-8666-666666666662",'
+    '"lesson_uid":"7a1c2e3f-4b5d-4c6e-8f90-a1b2c3d4e5f6","block_id":"blk_vera0001",'
+    '"runner_id":"python-script-v1",'
+    '"file_rev":"sha256:7777777777777777777777777777777777777777777777777777777777777777",'
+    '"cause":"signal","exit_code":null,"signal":"SIGKILL","duration_ms":30000,'
+    '"truncated":true,"started_at":"2031-03-04T10:00:15.500000+00:00",'
+    '"finished_at":"2031-03-04T10:00:45.500000+00:00",'
+    '"output_tail":"line one\\nline two\\ttabbed \\"quoted\\" back\\\\slash '
+    'café ✓ 📘 \\u0000\\u001b[0m","output_tail_truncated":false}\n'
+    '{"kind":"run","v":1,"run_id":"66666666-6666-4666-8666-666666666663",'
+    '"lesson_uid":"7a1c2e3f-4b5d-4c6e-8f90-a1b2c3d4e5f6","block_id":"blk_vera0001",'
+    '"runner_id":"python-script-v1",'
+    '"file_rev":"sha256:8888888888888888888888888888888888888888888888888888888888888888",'
+    '"cause":"exit","exit_code":1,"signal":null,"duration_ms":0,"truncated":false,'
+    '"started_at":"2031-03-04T10:01:00.000000+00:00",'
+    '"finished_at":"2031-03-04T10:01:00.000000+00:00",'
+    '"output_tail":"","output_tail_truncated":false}\n'
+).encode("utf-8")
+RUN_GOLDEN_SHA256 = "3765eaf143d119b6ca0b9485d49be22afaa925d06147c1d09b819d2250f25541"
+
+
 def _isolated_conn(monkeypatch, tmp_path):
     from app import db as db_module
-    from app.services import assessments, attempts, lessons
+    from app.services import assessments, attempts, lessons, runs
 
     monkeypatch.setattr(db_module, "DATA_DIR", tmp_path)
     monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "activity.sqlite")
@@ -192,6 +240,7 @@ def _isolated_conn(monkeypatch, tmp_path):
     monkeypatch.setattr(
         assessments, "PROJECTION_STATE_DIR", tmp_path / "assessment-projections"
     )
+    monkeypatch.setattr(runs, "PROJECTION_STATE_DIR", tmp_path / "run-projections")
     db_module.init_db()
     return db_module.get_conn()
 
@@ -282,6 +331,54 @@ def test_rebuilt_assessment_projection_matches_the_golden_bytes(
 
     assert first == ASSESSMENT_GOLDEN
     assert second == ASSESSMENT_GOLDEN
+
+
+def _finished_job(lesson: dict, finish: tuple):
+    from app import runner
+    from app.services import lessons
+    from app.services.runner_registry import RUNNER_REGISTRY
+
+    run_id, key, file_rev, output, terminal, _finished_at = finish
+    request = runner.RunnerRequest(
+        block_id="blk_vera0001", file_rev=file_rev, idempotency_key=key,
+        runner_id="python-script-v1", filename="main.py",
+        snapshot=b"print('invented')\n",
+        bundle_dir=str(Path(lessons.LESSONS_DIR) / lesson["slug"]),
+        bundle_root=str(lessons.LESSONS_DIR),
+        lesson_uid=lesson["uid"], lesson_id=lesson["id"], slug=lesson["slug"],
+    )
+    return runner.RunnerJob(
+        job_id=run_id, request=request, spec=RUNNER_REGISTRY[request.runner_id],
+        state=runner.FINISHED, finished_monotonic=time.monotonic(),
+        events=[
+            {"seq": 1, "event": "output", "stream": "stdout", "text": output},
+            {"seq": 2, "event": "exit", **terminal},
+        ],
+    )
+
+
+def test_recorded_run_projection_matches_the_golden_bytes(monkeypatch, tmp_path):
+    from app.services import lessons, runs
+
+    assert hashlib.sha256(RUN_GOLDEN).hexdigest() == RUN_GOLDEN_SHA256
+
+    conn = _isolated_conn(monkeypatch, tmp_path)
+    try:
+        lesson = _insert_lesson(
+            conn, "Vera Example: runs golden", RUN_LESSON_SLUG, RUN_LESSON_UID
+        )
+    finally:
+        conn.close()
+    with mock.patch.object(
+        runs, "_finished_at", side_effect=[finish[5] for finish in RUN_FINISHES]
+    ):
+        for finish in RUN_FINISHES:
+            assert runs._record_finish_sync(_finished_job(lesson, finish)) is True
+
+    bundle = Path(lessons.LESSONS_DIR) / RUN_LESSON_SLUG
+    assert (bundle / runs.PROJECTION_NAME).read_bytes() == RUN_GOLDEN
+    assert not list(bundle.glob(".runs-*.tmp"))
+    assert not list(bundle.glob(f"{runs.PROJECTION_NAME}.collision-*"))
 
 
 def test_publish_clears_a_directory_at_the_target_name(tmp_path):
