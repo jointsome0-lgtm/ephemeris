@@ -191,12 +191,7 @@ def post_habit_create(
     return_to: str = Form("/habits"),
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    """Create a habit from the four fields the form still offers (#18).
-
-    frequency / goal / goal_days / reminder / constant_reminder are not accepted:
-    nothing reads them, so the form no longer asks. New rows take the column
-    defaults create_item already applies.
-    """
+    """Create a habit from the four fields the form offers (#18)."""
     try:
         items.create_item(
             conn, title, group_name, emoji=emoji, start_date=(start_date or None),
@@ -216,12 +211,7 @@ def post_habit_edit(
     return_to: str = Form("/habits"),
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    """Edit a habit's four remaining fields (#18).
-
-    The removed columns are deliberately NOT passed: update_item's `_UNSET`
-    sentinel then leaves whatever a pre-#18 row already stored intact, so
-    trimming the form does not silently erase existing data.
-    """
+    """Edit a habit's four fields (#18); the legacy columns are never touched."""
     try:
         items.update_item(
             conn, item_id, title, group_name, emoji=emoji,

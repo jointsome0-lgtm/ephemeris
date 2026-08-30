@@ -1133,7 +1133,7 @@ pane share `_habit_detail.html` via `_habit_detail_ctx()` (the route passes
 
 ### 30.3 Tasks write contract
 
-- `POST /tasks {title, list_id?, due_date?, kind?, return_to}` → create (defaults to Inbox).
+- `POST /tasks {title, list_id?, due_date?, return_to}` → create (defaults to Inbox).
 - `POST /tasks/{id}/complete {return_to}` → reversible toggle; `X-Partial:1` ⇒ JSON
   `{ok, task_id, completed}` (Mode B), else 303 PRG to `return_to`.
 - `POST /tasks/{id}/update {title, note, due_date, priority, list_id, return_to}` → patch.
@@ -1210,13 +1210,15 @@ rather than adding a parallel one.
   `start_date TEXT` (defaults to today on create), `reminder TEXT` (HH:MM),
   `constant_reminder INTEGER=0`.
 
-Validated/clamped in `items._clean_habit_fields` (whitelists each enum, `emoji[:8]`
-so ZWJ sequences like 🧘‍♂️ survive). **Reminders are stored for parity only** — firing
-them needs a scheduler, which is out of scope (no background process; the app is a
-request/response server). `create_item`/`update_item` take the fields as keyword args
-(`update_item` uses an `_UNSET` sentinel so a partial edit only touches supplied
-columns); both append the existing `routine_item_created`/`updated` events with the
-new fields in the payload.
+Since #18 only `emoji` and `start_date` are written: `items._clean_habit_fields`
+trims them (`emoji[:8]` so ZWJ sequences like 🧘‍♂️ survive), `create_item`/`update_item`
+take just those two as keyword args (`update_item` uses an `_UNSET` sentinel so a
+partial edit only touches supplied columns), and both append the existing
+`routine_item_created`/`updated` events with `emoji` and `start_date` in the payload.
+The other four columns keep their schema defaults; the service neither accepts nor
+emits them (#220). **Reminders were stored for parity only** — firing them needs a
+scheduler, which is out of scope (no background process; the app is a
+request/response server).
 
 ### 31.2 Routes (`main.py`)
 
@@ -1227,7 +1229,7 @@ new fields in the payload.
   `MIN(sort_order)`) of `_habit_listrow`s, a collapsed daily-note fold, the Create
   modal, and — when `?sel=habit-{id}` — the inline pane via `_habit_selection_ctx`
   (`?...&edit=1` swaps the pane body for the edit form).
-- `POST /habits` → create (all §31.1 fields; `constant_reminder=bool(...)`).
+- `POST /habits` → create (title, section, emoji, start date).
 - `POST /habits/{id}/edit` → `update_item`.
 - `POST /habits/{id}/archive` → `items.deactivate_item` (**soft**, `active=0`; row +
   history kept, hidden from the tab — same recovery-not-shame rule as lists/§16.5).
@@ -1299,9 +1301,9 @@ TickTick equivalent on this tab).
 `verify.py` covers the tab end-to-end (now **112/112**): pane renders
 (`pane-today` / four-status choices / `cal-grid` / TickTick stat-card labels / ⋯ menu /
 edit form); full page shows the four stat-card labels + "Habit Log on" heading; rows
-carry the streak + the `.hl-check` ring (`data-dot`); create persists all fields
-(emoji 🧘 / weekdays / 66 / 07:30 / constant=1) + appends the event; empty title →
-flash; edit (partial, reminder cleared); pane check-in 303s back to `?sel=habit-{id}`
+carry the streak + the `.hl-check` ring (`data-dot`); create persists the form's
+fields (emoji 🧘 / start date) + appends the event; empty title → flash; edit leaves
+the legacy columns alone; pane check-in 303s back to `?sel=habit-{id}`
 and the pane reflects the new status; archive (`active=0`, hidden but kept); delete
 (row + check-ins gone, `routine_item_deleted` event kept); cross-origin `POST /habits`
 → 403; `/history` still serves the day-layout.

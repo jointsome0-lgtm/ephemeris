@@ -27,7 +27,7 @@ def _task_chip(t) -> dict:
     """A due task as a calendar chip — shared by the month + week views
     (the templates' chip class ladder reads exactly these keys)."""
     return {
-        "title": t["title"], "kind": t["kind"],
+        "title": t["title"],
         "completed": t["completed_at"] is not None, "priority": t["priority"],
     }
 

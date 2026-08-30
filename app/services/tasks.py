@@ -28,12 +28,12 @@ STATUSES = tuple(key for key, _label in BOARD_COLUMNS)
 DONE_LIMIT = 50
 
 # Seeded once on first run so Today/Lists aren't empty (sec17 seed pattern).
-# (title, list_name|None=Inbox, due_offset_days|None, kind, completed)
+# (title, list_name|None=Inbox, due_offset_days|None, completed)
 SEED_TASKS = [
-    ("Reply to emails", "Inbox", 0, "task", False),
-    ("Buy groceries", "Shopping", 0, "task", False),
-    ("Read 10 pages", "Study", 0, "task", False),
-    ("Plan the week", "Inbox", 0, "task", True),
+    ("Reply to emails", "Inbox", 0, False),
+    ("Buy groceries", "Shopping", 0, False),
+    ("Read 10 pages", "Study", 0, False),
+    ("Plan the week", "Inbox", 0, True),
 ]
 
 
@@ -91,13 +91,10 @@ def create_task(
     title: str,
     list_id: int | None = None,
     due_date: str | None = None,
-    kind: str = "task",
     priority: int = 0,
     note: str | None = None,
 ) -> int:
     title, due_date, priority = _clean(title, due_date, priority, note)
-    if kind not in ("task",):
-        kind = "task"
     if list_id is None:
         list_id = lists_svc.inbox_id(conn)
     else:
@@ -108,15 +105,15 @@ def create_task(
         # under the write lock the INSERT itself holds — two concurrent adds to
         # the same list can no longer land on the same number (#22).
         cur = conn.execute(
-            "INSERT INTO tasks (title, list_id, note, due_date, priority, kind, sort_order, created_at) "
-            "SELECT ?, ?, ?, ?, ?, ?, COALESCE(MAX(sort_order), 0) + 10, ? "
+            "INSERT INTO tasks (title, list_id, note, due_date, priority, sort_order, created_at) "
+            "SELECT ?, ?, ?, ?, ?, COALESCE(MAX(sort_order), 0) + 10, ? "
             "FROM tasks WHERE list_id = ?",
-            (title, list_id, note, due_date, priority, kind, ts, list_id),
+            (title, list_id, note, due_date, priority, ts, list_id),
         )
         task_id = cur.lastrowid
         append_event(conn, "task_created", {
             "task_id": task_id, "title": title, "list_id": list_id,
-            "due_date": due_date, "kind": kind, "priority": priority,
+            "due_date": due_date, "kind": "task", "priority": priority,
         })
     return task_id
 
@@ -128,10 +125,10 @@ def seed_if_empty(conn: sqlite3.Connection) -> int:
     t0 = _date.fromisoformat(today_str())
     by_name = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM lists").fetchall()}
     n = 0
-    for title, lname, off, kind, done in SEED_TASKS:
+    for title, lname, off, done in SEED_TASKS:
         lid = by_name.get(lname) if lname else lists_svc.inbox_id(conn)
         due = (t0 + timedelta(days=off)).isoformat() if off is not None else None
-        tid = create_task(conn, title, list_id=lid, due_date=due, kind=kind)
+        tid = create_task(conn, title, list_id=lid, due_date=due)
         if done:
             toggle_complete(conn, tid)
         n += 1

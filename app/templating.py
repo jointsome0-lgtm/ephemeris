@@ -362,7 +362,7 @@ def _selection_ctx(conn, request: Request, sel: str | None, month: str | None) -
 
 def _render_tasks(request: Request, conn, *, page_title: str, active: str, sections: list,
                   show_add: bool, add_list_id=None, add_list_name: str = "",
-                  add_due: str | None = None, add_kind: str = "task",
+                  add_due: str | None = None,
                   sel: str | None = None, month: str | None = None,
                   flash: str | None = None, rail: str = "tasks", pulse=None,
                   template: str = "tasks.html", extra: dict | None = None):
@@ -383,7 +383,6 @@ def _render_tasks(request: Request, conn, *, page_title: str, active: str, secti
         "add_list_id": add_list_id,
         "add_list_name": add_list_name,
         "add_due": add_due,
-        "add_kind": add_kind,
         "today": today_str(),
         "cur_path": request.url.path,
         "in_list": active.startswith("list-"),
