@@ -2,25 +2,18 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.abc as _importlib_abc
 import json
 import os
-import sqlite3
-import stat as stat_module
-import subprocess
 import sys
 import tempfile
-import threading
-from datetime import date as _vdate
 from pathlib import Path
 
-from conftest import ROOT, events_of, item_row
+from conftest import ROOT
 
 
 
 def test_lesson_agent_learning(client, suite_state):
-    from app.db import SCHEMA_VERSION, get_conn, pretty_date, today_str
-    from app.main import app
+    from app.db import get_conn
 
     c = client
     _asyncio = suite_state["_asyncio"]

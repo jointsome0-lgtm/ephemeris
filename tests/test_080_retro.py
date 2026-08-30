@@ -1,26 +1,12 @@
 """Retro capture verification."""
 from __future__ import annotations
 
-import hashlib
-import importlib.abc as _importlib_abc
-import json
-import os
-import sqlite3
-import stat as stat_module
-import subprocess
-import sys
-import tempfile
-import threading
-from datetime import date as _vdate
-from pathlib import Path
-
-from conftest import ROOT, events_of, item_row
+from conftest import events_of
 
 
 
 def test_retro(client, suite_state):
-    from app.db import SCHEMA_VERSION, get_conn, pretty_date, today_str
-    from app.main import app
+    from app.db import get_conn
 
     c = client
     import json as _json
