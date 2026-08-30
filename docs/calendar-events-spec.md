@@ -35,7 +35,7 @@ first-class entity, **calendar events**, that have:
 - Routes: extend `/calendar` (month), add `/calendar/week`, event CRUD POSTs.
 - Templates/CSS: month chips with time, new timed week view, event form.
 - Audit events (sec14.1) + JSONL export hook (sec18).
-- Unit tests for the expansion engine + route smoke tests (sec21.2).
+- Unit tests for the expansion engine + route smoke tests.
 
 ### Non-goals (keep MVP honest — sec5)
 - **No reminders firing.** Same stance as habit reminders (sec31): a time can be
@@ -211,7 +211,7 @@ Audit event types: `calendar_event_created`, `calendar_event_updated`,
 ## 6. Routes — `app/routers/calendar.py` (`app/main.py` when this spec was written)
 
 All POSTs: same-origin guarded + **303 PRG redirect** like every other write
-(sec15.3 / sec20). New view switcher uses the existing `Month ⌄` pill placeholder
+(sec15.3 / docs/security-model.md). New view switcher uses the existing `Month ⌄` pill placeholder
 in `calendar.html`.
 
 **Reads**
@@ -297,8 +297,8 @@ layout_day(occs):                      # occs: timed occurrences for ONE day
   - a `position:relative` grid of hour rows; event blocks absolutely positioned by
     `top = (minutes_from_band_start) px-per-min`, `height = duration`.
   - Match TickTick week look (see `docs/reference/screenshots/tt-calendar.png`).
-- **Event form** — modal or right-pane, reuse task-form styles
-  (`docs/reference/ux-primitives.md`): title, emoji, list, all-day toggle,
+- **Event form** — modal or right-pane, reuse task-form styles: title, emoji,
+  list, all-day toggle,
   start/end time, repeat (none/daily/weekly + weekday checkboxes when weekly),
   start date, end date, note. On a recurring occurrence, the edit affordance
   offers **"This event"** (→ skip + create override, stretch) vs **"All events"**
@@ -330,7 +330,7 @@ store wall-clock strings, not instants.
 
 ---
 
-## 10. Testing (sec21.2 — `tests/`)
+## 10. Testing (`tests/`)
 
 **`tests/test_calendar_events.py`** — the expansion engine is the priority:
 - weekly MWF over a full month → exact expected date list;
@@ -375,7 +375,7 @@ Keep the suite green (the repo tracks a "N/N verified" bar).
 
 ---
 
-## 12. Staging (sec23-style milestones)
+## 12. Staging (milestones)
 
 - **M1 — model+engine:** schema v5, `calendar_events.py`, occurrence expansion,
   full unit tests. No UI yet. (De-risks the hard part first.)
@@ -385,7 +385,7 @@ Keep the suite green (the repo tracks a "N/N verified" bar).
   click-empty-slot-to-create).
 
 Before touching the **live** DB: `python -m scripts.backup_db --keep 20` first
-(sec19), test the migration on the copy, and restart the service via
+(docs/backup-restore.md), test the migration on the copy, and restart the service via
 `systemctl --user restart ephemeris` (never a broad `pkill`).
 
 ---

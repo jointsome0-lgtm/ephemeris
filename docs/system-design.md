@@ -199,213 +199,6 @@ same-machine loopback
 
 ---
 
-## 7. UX Reference Strategy
-
-TickTick is used as a UX reference only.
-
-The agent should inspect TickTick’s web UI through Playwright and produce a reference report.
-
-This research is an OPTIONAL spike, not an MVP dependency (sec22, sec23); it is gated by a Terms-of-Service preflight and a stop rule (sec28).
-
-Playwright is suitable for this because it supports page screenshots, full-page screenshots, and screenshot files through `page.screenshot`; it also supports reusing authenticated browser state via storage state, which helps avoid logging in repeatedly during research. ([Playwright][1])
-
-### 7.1 UX Research Goal
-
-The agent should answer:
-
-```text
-What makes TickTick fast for daily execution?
-How dense is the Today view?
-How are items grouped?
-How are completed items displayed?
-How many taps does a check-in require?
-What is visible without opening details?
-What is hidden behind secondary screens?
-How does mobile navigation work?
-What can we copy conceptually?
-What should we avoid?
-```
-
-### 7.2 Allowed Research
-
-The agent may:
-
-```text
-take screenshots
-inspect layout structure
-record interaction notes
-compare mobile/desktop density
-use accessibility tree / locators
-write UX primitives
-```
-
-### 7.3 Forbidden Research / Actions
-
-The agent must not:
-
-```text
-copy TickTick CSS
-copy TickTick icons
-copy TickTick logos
-copy TickTick proprietary text
-commit credentials
-commit cookies
-commit Playwright auth state
-scrape private user data
-bypass paid features
-depend on TickTick DOM structure
-build a patched TickTick client
-```
-
----
-
-## 8. Playwright UX Research Task
-
-### 8.1 Target Viewports
-
-The agent should inspect at minimum:
-
-```text
-Mobile viewport:
-width: 390
-height: 844
-
-Desktop viewport:
-width: 1366
-height: 768
-```
-
-Design target:
-
-```text
-Responsive web at narrow and desktop viewports
-```
-
-### 8.2 Flows to Inspect
-
-The agent should inspect:
-
-```text
-1. Today view
-2. Habits/routines view
-3. Add task/item flow
-4. Add habit/routine flow
-5. Completion/check-in flow
-6. History/review/calendar-like flow if available
-7. Mobile navigation
-8. Desktop navigation
-```
-
-### 8.3 Deliverables
-
-The agent should create:
-
-```text
-docs/reference/ticktick-ux-report.md
-docs/reference/ux-primitives.md
-docs/reference/screenshots/
-  ticktick-mobile-today.png
-  ticktick-mobile-habits.png
-  ticktick-mobile-add-item.png
-  ticktick-desktop-today.png
-  ticktick-desktop-habits.png
-```
-
-### 8.4 UX Primitives to Extract
-
-The report should extract primitives, not visuals:
-
-```text
-daily list anatomy
-section grouping
-item row structure
-completion affordance
-status visualization
-date navigation
-bottom navigation
-floating action button behavior
-detail drawer behavior
-note/detail access
-empty states
-error states
-mobile tap target density
-desktop density
-```
-
----
-
-## 9. Playwright Research Skeleton
-
-```ts
-// tests/reference/ticktick-reference.spec.ts
-import { test } from "@playwright/test";
-
-test.describe("TickTick UX reference capture", () => {
-  test.use({
-    storageState: "playwright/.auth/ticktick.json",
-  });
-
-  test("capture mobile reference screens", async ({ page }) => {
-    await page.setViewportSize({ width: 390, height: 844 });
-
-    await page.goto("https://ticktick.com/webapp/", {
-      waitUntil: "networkidle",
-    });
-
-    await page.screenshot({
-      path: "docs/reference/screenshots/ticktick-mobile-home.png",
-      fullPage: true,
-    });
-
-    // Agent should navigate manually or with stable locators
-    // and capture Today / Habits / Add Item flows.
-  });
-
-  test("capture desktop reference screens", async ({ page }) => {
-    await page.setViewportSize({ width: 1366, height: 768 });
-
-    await page.goto("https://ticktick.com/webapp/", {
-      waitUntil: "networkidle",
-    });
-
-    await page.screenshot({
-      path: "docs/reference/screenshots/ticktick-desktop-home.png",
-      fullPage: true,
-    });
-  });
-});
-```
-
-Required `.gitignore` entries:
-
-```gitignore
-.agents/
-.claude/
-.codex/
-.playwright-mcp/
-playwright/.auth/
-test-results/
-playwright-report/
-docs/reference/screenshots/
-ticktick-*.png
-tt-*.png
-my-*.png
-# Source-of-truth DB, exports, and backups are private by default:
-data/
-*.sqlite
-*.sqlite3
-*.sqlite-wal
-*.sqlite-shm
-*.db
-*.jsonl
-.env
-.env.*
-```
-
-Screenshots may be stored locally for design reference, but should not become the source of copied UI assets.
-
----
-
 ## 10. System Architecture
 
 ### 10.1 MVP Architecture
@@ -478,51 +271,6 @@ Reason:
 
 ```text
 The first version should be understandable, hackable, and disposable.
-```
-
----
-
-## 12. Project Structure
-
-The layout proposed in the v0.1 draft, kept as the record of what the design
-sketched. It was never built exactly this way (there is no `app/models.py` or
-`tests/reference/`, and it omits most of the services and templates that
-shipped), and the tree has diverged further since: the repository is
-`ephemeris/`, routes live in `app/routers/`, configuration in
-`app/settings.py`, and the test suite is `tests/` (pytest) plus
-`verify_restore.py`.
-
-```text
-activity-ledger/
-  app/
-    main.py
-    db.py
-    models.py
-    services/
-      checkins.py
-      export.py
-    templates/
-      base.html
-      today.html
-      history.html
-      items.html
-      export.html
-    static/
-      style.css
-  data/
-    activity.sqlite
-    exports/
-  docs/
-    system-design.md
-    reference/
-      ticktick-ux-report.md
-      ux-primitives.md
-      screenshots/
-  tests/
-    reference/
-      ticktick-reference.spec.ts
-  README.md
-  .gitignore
 ```
 
 ---
@@ -841,7 +589,7 @@ Rules:
 - Never hard-delete an item that has check-ins; deactivation keeps history joinable.
   Deactivated items are hidden from Today/History but listed (and reactivatable)
   in a "Deactivated" section on /items.
-- All POSTs are same-origin guarded (sec20) and use 303 PRG redirects.
+- All POSTs are same-origin guarded (docs/security-model.md) and use 303 PRG redirects.
 ```
 
 ### 15.4 Export
@@ -917,7 +665,7 @@ Mobile-first wireframe:
 
 Row contract (390px) — the row mirrors a TickTick habit row (avatar · name +
 streak stats · weekly dots), but the dots are coloured by our four-status model
-so a row shows more than binary done/not-done (sec7.3 pattern-level only):
+so a row shows more than binary done/not-done (pattern-level only, no copied assets):
 
 ```text
 - Anatomy: [emoji/letter avatar] [name + streak line] [7-day status dots] [⋮].
@@ -926,24 +674,23 @@ so a row shows more than binary done/not-done (sec7.3 pattern-level only):
 - The 7 dots align to the week strip's 7 days. Each is coloured + glyphed by that
   day's status (✓ full / ◐ light / – skip / ✕ fail); empty past days and future
   days render faint. They give at-a-glance week history without opening anything.
-- ONE primary affordance per row (ux-primitives P3): the ACTIVE day's dot (today on
+- ONE primary affordance per row: the ACTIVE day's dot (today on
   Today; the selected day on History) is a larger button — tap = full_done (1 tap,
   re-tap clears). The other six dots are read-only history (the week strip handles
   navigation). Active dot ~34px; comfortable on touch and the obvious target.
 - light_done / skipped / failed, the per-item note, AND a "Stats & calendar →" link
   to the habit detail (sec16.6) live in a panel revealed by tapping the card (Mode A:
   the card IS a native <details>; Mode B enhances it). Keeps light_done one gesture
-  away (P7) without crowding the row.
-- Status reads as colour AND glyph for grayscale / colour-blind users (sec16.5,
-  sec22 criterion 6).
+  away without crowding the row.
+- Status reads as colour AND glyph for grayscale / colour-blind users (sec16.5).
 - The header "<kept>/<total> kept" reflects full_done + light_done; the count AND
   the row's streak are recomputed live in Mode B from the check-in's JSON response
   (the server returns current/best streak so the number is correct beyond 7 days).
-- Sections are collapsible group headers with a count (P2). A Sun–Sat week strip
-  at the top moves between days (P8; today highlighted, future days disabled).
-- Dark theme by default; our own styling/assets only (sec7.3).
+- Sections are collapsible group headers with a count. A Sun–Sat week strip
+  at the top moves between days (today highlighted, future days disabled).
+- Dark theme by default; our own styling/assets only.
 - Empty state (no active items): link to Manage Items, not a blank page.
-- Validated against sec22 criterion 4 (5-10 items in <60s) at 390px.
+- Validated against the MVP speed target (5-10 items in <60s) at 390px.
 ```
 
 ### 16.3 Desktop Layout
@@ -1055,7 +802,7 @@ Mode B — clean TypeScript (progressive enhancement over Mode A):
   {ok,item_id,status,note} (or {ok:false,error} -> toast on a 422). The script
   updates that row in place (dot glyph/colour, choices, meta, note value).
 - No full reload: scroll, keyboard, and other rows' unsaved text are preserved.
-  This is the primary path for sec22 criterion 4 (<60s); Mode A stays correct but
+  This is the primary path for the <60s target; Mode A stays correct but
   is slower (a full reload per save).
 - If the script is absent/disabled, the plain forms (Mode A) still work.
 ```
@@ -1093,7 +840,7 @@ The app should support recovery, not shame.
 
 Tapping a row's "📊 Stats & calendar →" link opens `GET /habit/{id}` — the
 per-item motivation/analytics surface. This mirrors TickTick's habit detail pane in
-PATTERN only (sec7.3); the data is ours and, thanks to the four-status model, the
+PATTERN only; the data is ours and, thanks to the four-status model, the
 heatmap is richer than a binary done/not-done grid.
 
 Layout (single centered column; stat cards spread to one row on desktop):
@@ -1197,8 +944,7 @@ stream alone can't rebuild a recurrence rule. The series rows are the source of
 truth; expanded occurrences are never exported.
 
 `POST /export/jsonl` writes the file above AND streams it back as a download so
-the browser can save it; `GET /export` renders a one-button page. (The
-stop-loss fallback in sec24 replaces this with a script and no page.)
+the browser can save it; `GET /export` renders a one-button page.
 
 **Retention (issue #23).** `data/exports/` keeps the `limits.EXPORT_KEEP`
 newest `events-*.jsonl` files and drops the rest after every write. This is
@@ -1226,7 +972,7 @@ space is under what the next backup set would need — the measured database plu
 the instance archive of the last set, never less than
 `limits.FREE_SPACE_FLOOR`, because a fixed number cannot describe an unbounded
 ledger. It reads only — a GET in this app is
-side-effect-free by contract (sec20 / `app/security.py`), so it never writes a
+side-effect-free by contract (`app/security.py`), so it never writes a
 backup or prunes anything.
 
 The panel counts a backup set only when `scripts/backup_db.py` would accept its
@@ -1248,350 +994,6 @@ checks run in the service layer, where the domain errors the routes already
 render are raised. The body ceiling is documented in
 `docs/security-model.md`. Pagination for the history views is deliberately not
 part of this: it is a UI decision, not a limit.
-
-### 18.2 Future Markdown Export
-
-Later, optionally generate:
-
-```text
-data/exports/days/2026-06-05.md
-data/exports/weeks/2026-W23.md
-```
-
-Example daily markdown:
-
-```md
-# 2026-06-05
-
-## P0 Core Routine
-
-- Sleep: light_done
-- Food: full_done
-- Sport / show up: skipped
-- Evening walk: light_done
-- Daily output: full_done
-
-## Daily Note
-
-Short note here.
-```
-
-Markdown export is not source of truth.
-
-SQLite remains source of truth.
-
----
-
-## 19. Backup Strategy
-
-MVP:
-
-```text
-manual SQLite backup via `sqlite3 .backup` or `VACUUM INTO` (consistent under WAL; not a raw cp mid-write, sec20)
-manual JSONL export
-```
-
-Later:
-
-```text
-daily SQLite backup
-daily JSONL export
-private Git commit of encrypted/sanitized exports
-optional encrypted remote backup
-```
-
-Do not store the main SQLite database directly in Git as the primary sync model.
-Do not store raw JSONL/Markdown exports in the public repo; they can contain
-private task titles, habit names, notes, timestamps, and behavioral history.
-
-Public Git is for:
-
-```text
-source code
-public docs
-invented demo fixtures
-sanitized archive material only when explicitly reviewed
-human-readable traces
-```
-
-SQLite is for:
-
-```text
-working memory
-querying
-app state
-```
-
----
-
-## 20. Security Model
-
-MVP local-only assumptions:
-
-```text
-runs on trusted Linux machine
-available only over loopback
-no public internet exposure
-no auth in v0
-```
-
-Security rules:
-
-```text
-do not expose local server to the internet
-bind only to 127.0.0.1 (sec10.2)
-do not store secrets in repo
-do not commit Playwright auth state
-do not commit cookies
-do not commit TickTick screenshots if they contain private data
-do not commit the SQLite DB or raw exports (sec9)
-verify same-origin / Origin header on state-changing POSTs (lightweight CSRF guard; the app has no auth)
-render user text (titles/notes) via Jinja autoescape only — never |safe, never disable autoescape
-treat a diary-bearing instance (sec35) as holding the most sensitive data class and keep it on 127.0.0.1 (sec10.2)
-never filter the JSONL export: it stays a full ledger replay, private diary entries included — the selfos adapter is the routing/privacy gate, ephemeris carries the flags opaquely
-diary content stays out of cloud agent context by default (selfos AGENTS.md → cloud-context data boundary; repo note in AGENTS.md)
-accepted risk (owner, 2026-08-14, #191): the boundary above is convention, not enforcement — lesson-agent shells share the host network and can read /diary and the export over loopback; no egress block or route gate is planned
-accepted risk (owner, 2026-08-17): lesson shells reach the shared Playwright MCP listener on localhost:9223, whose core tool set includes arbitrary host-side code execution; the brief's read-only rule stays prose, no per-lesson capability or separate restricted server is planned — the shared browser is deliberate architecture on a single-owner host (queue entries 2026-08-09/#177+#178 and 2026-08-11/#181; reviews of 2026-08-11/-12/-16)
-accepted risk (owner, 2026-08-17): the reusable year-long Claude token (`DATA_DIR/claude-token`) rides in the lesson-agent shell environment while that shell reads untrusted source material and has outbound network; no broker or process boundary is planned — with the shared-browser risk above accepted, host-side code execution would reach the token file past any broker anyway (queue entry 2026-08-12/#189; reviews of 2026-08-12/-16)
-embed peer views (atlas, exp2res gap questions) by configured URL over same-machine loopback only, in a sandboxed iframe; ephemeris never fetches or parses them (sec35)
-back up the SQLite file with `sqlite3 .backup` or `VACUUM INTO` (consistent under WAL), not a raw cp mid-write
-(optional) set owner-only permissions on data/ if the Linux host is shared
-```
-
----
-
-## 21. Testing Strategy
-
-### 21.1 Manual MVP Test
-
-Test from Linux:
-
-```text
-open /today
-mark all P0 items
-write daily note
-open /history
-verify saved data
-run export
-verify JSONL file
-```
-
-Test at a narrow viewport:
-
-```text
-open http://localhost:8000
-mark statuses
-verify responsive layout
-verify tap targets
-verify no horizontal scrolling
-```
-
-### 21.2 Automated Tests
-
-Backend tests:
-
-```text
-create routine item
-upsert checkin
-update status
-save daily note
-export JSONL
-```
-
-UI smoke tests:
-
-```text
-Today page loads
-History page loads
-Items page loads
-Export endpoint works
-```
-
-Playwright tests for our app later:
-
-```text
-mobile Today page screenshot
-mark full_done
-mark light_done
-save daily note
-navigate to History
-```
-
----
-
-## 22. MVP Acceptance Criteria
-
-MVP is accepted when:
-
-```text
-1. App runs locally on Linux.
-2. App opens at `http://localhost:8000`.
-3. Today page is usable at 390px width.
-4. User can mark 5–10 routine items in under 60 seconds.
-5. Each item supports:
-   - full_done
-   - light_done
-   - skipped
-   - failed
-6. Selected status is visually clear.
-7. Daily note is saved.
-8. History by date works.
-9. Routine items can be added/deactivated.
-10. Data persists in SQLite.
-11. JSONL export works.
-12. No external service is required.
-```
-
-Note on criterion 4: the <60s speed target is met by the Mode B
-progressive-enhancement path (framework-free TypeScript/JS, sec16.4). Mode A
-(no-JS, POST-redirect-GET) stays fully functional and correct — it is the
-fallback, just with a full-page reload per save. Both paths share one server
-contract, so acceptance is judged on the Mode B path.
-
----
-
-## 23. MVP Milestones
-
-### Milestone 0 — Skeleton
-
-```text
-FastAPI app starts
-SQLite file created
-base template works
-```
-
-### Milestone 1 — Today Page
-
-```text
-seed routine items
-show grouped items
-status buttons work
-checkins saved
-```
-
-### Milestone 2 — Daily Note + History
-
-```text
-daily note saved
-history date view works
-previous/next date navigation
-```
-
-### Milestone 3 — Manage Items
-
-```text
-add item
-edit item
-deactivate item
-sort/group display
-```
-
-### Milestone 4 — Export
-
-```text
-export JSONL = events stream + calendar series snapshots (sec18.1; sec32 §8)
-events table serialized one-per-line, ORDER BY id
-check-ins ride along AS routine_checkin_* event payloads (not a separate record)
-daily notes ride along AS daily_note_updated event payloads (not a separate record)
-calendar_events ride along AS calendar_event_series snapshot records
-```
-
-### Milestone 5 — UX Pass
-
-```text
-mobile layout improved
-tap targets usable (>=44px, sec16.2)
-no copied assets/design
-```
-
-### Optional Spike (NOT MVP-blocking) — TickTick UX reference
-
-```text
-- Run BEFORE Milestone 1 if done at all; MVP acceptance (sec22) does NOT depend on it.
-- Requires a Terms-of-Service preflight and a hard stop rule (sec28) before any
-  authenticated automation; prefer logged-out/marketing pages or manual observation;
-  use a disposable account only if login is truly needed.
-- Screenshots and Playwright auth state are gitignored (sec9). The markdown
-  deliverables (ux-report, primitives) carry no private or proprietary text and
-  MAY be committed; keep raw screenshots local-only.
-```
-
----
-
-## 24. Stop-Loss Rules
-
-If implementation starts expanding, cut scope.
-
-Invoke the stop-loss (reduce to the fallback below) if, after Milestone 1, the
-Today page fails sec22 criterion 3 (usable at 390px) or criterion 4 (5-10 items
-in under 60s) in real use, OR if Milestones 0-1 are not working after a fixed
-time-box (e.g. a weekend). Reduce to:
-
-```text
-single app.py
-one SQLite file
-one today.html
-hardcoded seed items
-no manage screen
-no export UI, only script
-```
-
-This fallback is a PRE-MVP SURVIVAL build, NOT an MVP-acceptance path: with
-hardcoded items and no manage screen it does not satisfy sec22 (notably
-criterion 9 — routine items can be added/deactivated). It keeps a working Today
-page while you regroup; full sec22 acceptance still requires restoring the
-manage screen.
-
-Forbidden scope creep:
-
-```text
-"Let's add AI"
-"Let's add S3"
-"Let's deploy VPS first"
-"Let's make it native Android"
-"Let's model Story now"
-"Let's build full path graph now"
-"Let's add charts"
-```
-
-The app exists to support routine, not replace routine.
-
----
-
-## 25. Future Roadmap
-
-Only after MVP is used for real.
-
-### v0.2
-
-```text
-weekly review
-Markdown export
-simple stats
-daily backups
-```
-
-### v0.3
-
-```text
-paths
-steps
-artifacts
-Story progress references
-learning traces
-```
-
-### v0.5+
-
-```text
-versioned export surfaces
-shell navigation and configured URL embed points
-deterministic cross-system adapters owned by Selfos
-no peer-schema knowledge inside Ephemeris
-Story translation/workflow support
-worldbuilding references
-calendar/telegram integrations
-```
 
 ---
 
@@ -1673,168 +1075,12 @@ Not part of MVP.
 
 ---
 
-## 27. Coding Agent Prompt
-
-```text
-Build Ephemeris v0 according to docs/system-design.md.
-
-Goal:
-A local-first personal activity tracker with a TickTick-like execution interface, but our own data model and SQLite source of truth.
-
-Stack:
-- Python
-- FastAPI
-- SQLite
-- Jinja2
-- vanilla HTML/CSS
-- vanilla TypeScript/JS (framework-free, progressive enhancement; sec16.4 Mode B)
-- no React
-- no auth
-- no Docker
-- no VPS
-- no external services
-
-Must build:
-1. Today page
-2. Grouped routine items
-3. Four statuses per item:
-   - full_done
-   - light_done
-   - skipped
-   - failed
-4. Optional note per check-in
-5. Daily note
-6. History by date
-7. Manage routine items
-8. JSONL export
-9. Responsive UI
-
-Important:
-- Do not clone TickTick visually.
-- Do not copy TickTick assets, CSS, icons, logos, or text.
-- Use TickTick only as UX reference.
-- Keep implementation simple.
-- SQLite is source of truth.
-- Append events for meaningful changes.
-- README must explain how to run locally over loopback.
-
-Do not add:
-- AI
-- S3
-- VPS
-- auth
-- React
-- native app
-- notifications
-- calendar sync
-- complex analytics
-- Story/worldbuilding model
-```
-
----
-
-## 28. Reference UX Agent Prompt
-
-```text
-Use Playwright to inspect TickTick web UI as a UX reference for Ephemeris.
-
-Goal:
-Extract interaction patterns that make TickTick fast for daily execution.
-
-Do not:
-- clone TickTick
-- copy assets
-- copy CSS
-- copy logos/icons
-- bypass paid features
-- scrape private data
-- commit credentials/cookies/session files
-- proceed if TickTick Terms or bot controls are unclear (STOP; use public/marketing pages or manual observation instead)
-- treat this spike as required for MVP (it is optional — sec23)
-
-Use:
-- a Terms-of-Service preflight before any authenticated automation
-- a disposable TickTick account only if login is truly needed
-- Playwright storageState under playwright/.auth/
-- .gitignore for playwright/.auth/ and screenshots; the markdown report/primitives carry no private text and may be committed
-
-Inspect:
-1. Today view
-2. Habits/routines view
-3. Add item/habit flow
-4. Completion/check-in flow
-5. Mobile navigation
-6. Desktop navigation
-7. History/review-like views if available
-
-Viewports:
-- mobile: 390x844
-- desktop: 1366x768
-
-Deliver:
-- docs/reference/ticktick-ux-report.md
-- docs/reference/ux-primitives.md
-- screenshots under docs/reference/screenshots/
-
-The report should answer:
-- What makes the Today screen fast?
-- How many taps does a check-in require?
-- What information is visible immediately?
-- What is hidden behind secondary interactions?
-- How does the UI avoid feeling overloaded?
-- Which patterns should Ephemeris adopt conceptually?
-- Which patterns should Ephemeris avoid?
-```
-
----
-
-## 29. Final Design Decision
-
-Build:
-
-```text
-TickTick-like execution UI
-+
-Ephemeris data model
-+
-SQLite local memory
-+
-JSONL export
-```
-
-Do not build:
-
-```text
-TickTick clone
-full task manager
-personal OS
-cloud sync platform
-agent system
-Story system
-```
-
-The first successful version is simple:
-
-```text
-open Today
-mark full/light/skip/fail
-write note
-save
-review later
-export data
-```
-
-```
-```
-
-[1]: https://playwright.dev/docs/screenshots?utm_source=chatgpt.com "Screenshots"
-
 ## 30. Task Manager Layer (TickTick clone) — scope change 2026-06-05
 
-§29 originally said *do not build a TickTick clone / full task manager*. The user
+The v0.1 draft originally said *do not build a TickTick clone / full task manager*. The user
 revisited that after seeing the full TickTick Today screen and explicitly chose a
 **full TickTick clone** (Tasks + Habits + Lists + Tags + Filters +
-Countdown + Inbox + the 3-pane app shell). This section supersedes §29's
+Countdown + Inbox + the 3-pane app shell). This section supersedes the draft's
 "do not build" line for that decision. The habit layer (§16.2/§16.6) is kept
 intact and folded in as one section of the new Today, plus its own Habit tab.
 
@@ -1891,7 +1137,7 @@ pane share `_habit_detail.html` via `_habit_detail_ctx()` (the route passes
 - `POST /tasks/{id}/complete {return_to}` → reversible toggle; `X-Partial:1` ⇒ JSON
   `{ok, task_id, completed}` (Mode B), else 303 PRG to `return_to`.
 - `POST /tasks/{id}/update {title, note, due_date, priority, list_id, return_to}` → patch.
-- All carry the same-origin guard (§20) and a `return_to` (validated same-origin path)
+- All carry the same-origin guard (docs/security-model.md) and a `return_to` (validated same-origin path)
   so the post-redirect lands back on the originating list / open pane.
 - Habit check-ins from the compact rows on the tasks page reuse `POST /checkins` with a
   `return_to` (forms marked `data-native` so `app.js` lets them submit Mode A and the
@@ -1991,7 +1237,7 @@ new fields in the payload.
 - The rich day-review view moved to `GET /history` (still `today.html`,
   `day-layout`); `GET /habit/{id}` stays the standalone full detail page.
 
-All four POSTs carry the same-origin guard (§20) and a validated `return_to`
+All four POSTs carry the same-origin guard (docs/security-model.md) and a validated `return_to`
 (`_safe_return`), 303-redirecting back to the tab/open pane; `ItemError` (e.g. empty
 title) round-trips as a `?flash=` message.
 
