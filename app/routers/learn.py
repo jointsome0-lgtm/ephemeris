@@ -1,15 +1,5 @@
-"""Learn routes (#24 cut 1): the lesson surface extracted from app/main.py.
-
-Moved verbatim — every route path, signature, status code, header and template
-context is the one main.py had; only the decorators (`@app.` → `@router.`) and
-the imports changed. The router is included with no prefix, in the position the
-routes used to occupy, so URLs and registration order are unchanged.
-
-The surface: the /learn view + preview/metadata/bundle files, lesson artifacts
-(F1), runs (F4, including the SSE stream), attempts (D4), assessments (S-D-S1)
-and the lesson CRUD writes. One module, not a package: those seams stay
-together until something actually varies across them.
-"""
+"""Learn routes: the /learn view, preview and bundle files, artifacts, runs,
+attempts, assessments, the build step and the lesson CRUD writes."""
 from __future__ import annotations
 
 import asyncio
@@ -62,21 +52,16 @@ def get_learn(
     if selected is None and rows:
         selected = rows[0]
     if selected:
-        # Lesson agents write the manifest before they can POST an attempt
-        # against its question. Capture the DB state first, then take the
-        # single FINAL manifest read used by bundle metadata, selection
-        # persistence, and the record:
-        # a newly committed attempt can therefore never be classified
-        # against an older declaration set.
+        # DB state first, then the single manifest read that bundle metadata,
+        # selection persistence and the record all use, so a newly committed
+        # attempt is never classified against an older declaration set.
         record_db_state = lessons.record_panel_db_state(conn, selected["id"])
         selected, selected_manifest = lessons.with_bundle_info_read(
             selected, entry=selected_entry
         )
-        # A rejected manifest has no selectable entry — show the
-        # placeholder without persisting a selection. A stale v2
-        # selection (§4.2) keeps its stored/requested candidate too:
-        # persisting the fallback would make the very next read report
-        # `ok` and erase the finding.
+        # A rejected manifest has no selectable entry; a stale v2 selection
+        # (§4.2) keeps its stored candidate too, because persisting the
+        # fallback would make the next read report `ok` and erase the finding.
         if (selected["entry"]
                 and not selected["bundle"]["stale_selection"]):
             lessons.mark_opened(conn, selected["id"], selected["entry"])
@@ -95,37 +80,21 @@ def get_learn(
             selected["entry"],
             exists=selected["file"]["exists"],
         )
-        # The metadata poll re-resolves its `entry` param on every request, so
-        # it must carry the ORIGINAL stale candidate when the render fell back
-        # (§4.2): polling the fallback entry would answer `ok` and silently
-        # clear the invalid-entry finding the page just surfaced. The version
-        # token still tracks the fallback file — the one actually displayed —
-        # because resolution inside the meta route lands on the same fallback.
+        # The metadata poll must carry the ORIGINAL stale candidate when the
+        # render fell back (§4.2): polling the fallback entry would answer
+        # `ok` and clear the finding the page just surfaced.
         selected["preview_meta_url"] = _lesson_preview_url(
             selected["id"],
             selected["bundle"]["stale_selection"] or selected["entry"],
             meta=True,
         )
-        # F1 endpoint discovery.
         selected["artifacts_url"] = f"/learn/lessons/{selected['id']}/blocks"
         selected["runs_url"] = f"/learn/lessons/{selected['id']}/blocks"
-        # #133 endpoint discovery: the record-counts poll target.
         selected["record_counts_url"] = f"/learn/lessons/{selected['id']}/record-counts"
-        # #136: what the "Review my answers" button types. None when no agent
-        # CLI is installed here — the template then renders no button, because
-        # a one-click review that ends in `command not found` is worse than the
-        # bare terminal it replaces.
+        # None when no agent CLI is installed: the template then renders no
+        # "Review my answers" button rather than one that cannot run.
         selected["tutor_command"] = lessons.tutor_launch_command()
-        # D2: the iframe sandbox attribute follows the effective profile
-        # (same owner as the header-level directive); the profile is folded
-        # into the version token, so a flip reloads the frame and the parent
-        # runtime re-applies the tokens the metadata then carries.
         selected["sandbox"] = _preview_sandbox(selected["file"]["profile"])
-        # #133 tier 2: the read-back snapshot the bridge hands the loaded
-        # document in its `welcome`. An attribute rather than a route, so it
-        # is the same reading as the panel this render draws — see
-        # `_record_snapshot`. Scoped to the questions this page declares,
-        # which the bridge identity already resolved (spec §6.3).
         selected["record_snapshot"] = json.dumps(
             _record_snapshot(
                 selected["record"], selected["file"]["bridge_page"]
@@ -145,11 +114,9 @@ def get_learn(
         lesson_id=selected_id,
         entry=selected["entry"] if selected else None,
     )
-    # #81: track progress counts the whole active list, never the filtered
-    # `rows` — "N of M studied" that moved when a status pill was clicked would
-    # be a different number each time and mean nothing. The next-step link
-    # leaves the filter behind for the same reason: it points at a lesson the
-    # current filter usually excludes.
+    # Track progress counts the whole active list, never the filtered `rows`:
+    # "N of M studied" must not move when a status pill is clicked. The
+    # next-step link leaves the filter behind for the same reason.
     track_rows = (
         rows if status is None and not show_archived
         else lessons.list_lessons(conn)
@@ -185,30 +152,10 @@ def _lesson_groups(
 ) -> tuple[list[dict], list[dict]]:
     """Split the rendered list into a tree of collapsible blocks, plus the rest.
 
-    A course seeded as fourteen lessons buries every other lesson in a flat
-    list, so a track renders as one group instead of fourteen rows. The split
-    is presentational: `rows` is whatever the status/archived filter already
-    chose, and grouping neither adds a row to it nor removes one.
-
-    Groups nest by the `path` address (§4.5): `codecrafters/concepts/…` renders
-    inside `codecrafters`, and a node keeps its own rows alongside its child
-    groups. Whole branches the filter emptied are dropped — an ancestor
-    survives on its descendants' rows alone, because folding a group away must
-    not be able to hide the only lesson that matched.
-
-    The header keeps the whole-track numbers from `track_progress` (#81: they
-    are the unfiltered list, so a status pill cannot make them jump) while the
-    rows inside are the filtered ones — which is why a group can read "1 of 14"
-    over a single row without either number being wrong. A track no filtered
-    row belongs to is dropped entirely rather than left as an empty header.
-
-    Members keep the track's own step order, not the list's recency order: a
-    course is read forwards. Membership comes from `track_progress` for the
-    same reason its counts do — one owner for the rule (see its docstring).
-
-    Archived lessons reach `rows` only under `?archived=1`, and archiving drops
-    a lesson from its track, so they land in the ungrouped tail — the same
-    answer the #81 strip already gives.
+    Presentational only: `rows` is whatever the filter chose, and grouping
+    neither adds a row nor removes one. Groups nest by the `path` address
+    (§4.5); a branch the filter emptied is dropped. The header keeps the
+    whole-track numbers while the rows inside are the filtered ones.
     """
     shown = {row["id"]: row for row in rows}
     selected_id = selected["id"] if selected else None
@@ -227,16 +174,11 @@ def _lesson_groups(
             **node,
             "children": children,
             "rows": members,
-            # Integer percent for the bar's width; the readable count beside it
-            # stays "N of M", which reads better than "0%" for an untouched
-            # track. Rounds toward 0 so a bar only fills when the step is done.
+            # Rounds toward 0 so a bar only fills when the step is done.
             "pct": node["studied"] * 100 // node["total"],
-            # Whether the lesson on screen is somewhere in this node's subtree.
-            # It is the server's default for "open" — a learner who navigated
-            # into a track should land with every ancestor of it unfolded — and
-            # it stays true after the stored preference overrides that default,
-            # so a group deliberately kept folded can still show that the
-            # current lesson is inside it.
+            # The server's default for "open"; still true after the stored
+            # preference overrides it, so a folded group can say it holds the
+            # current lesson.
             "selected": selected_id in node["ids"],
         }
 
@@ -265,37 +207,27 @@ def _learn_url(
     return "/learn" + (f"?{urlencode(query)}" if query else "")
 
 
-# --- the record panel (#4 phase S, D-S3-1) -----------------------------------
+# --- the record panel -------------------------------------------------------
 #
-# What the tutor concluded, rendered beside the lesson: evidence per concept,
-# where the last session left off, and the verdict on each question's latest
-# answer. Server-rendered on GET like the rest of the MPA — no JS, and every
-# agent- and learner-authored string reaches the template as plain text that
-# Jinja escapes (learn.html renders no markdown: the lesson iframe's
-# protections do not extend to the parent page).
-#
-# The whole builder is a pure read. The manifest comes from the READONLY
-# reader: D-F1-2 binds phase S too, so rendering a page never creates bundle
-# state. The assessment side is the D-S1-2 active fold, so a retracted or
-# superseded record never reaches the panel.
+# A pure read: the manifest comes from the READONLY reader, so rendering never
+# creates bundle state, and the assessment side is the active fold, so a
+# retracted or superseded record never reaches the panel. Every agent- and
+# learner-authored string reaches the template as plain text Jinja escapes.
 
-# Chip order: the actionable state first, then alphabetically so the block is
-# stable between renders. Unknown levels cannot occur (closed vocabulary,
-# CHECK-enforced) but sort last rather than crashing the page.
+# Chip order: the actionable state first. Unknown levels cannot occur
+# (CHECK-enforced) but sort last rather than crashing the page.
 _EVIDENCE_ORDER = {"weak": 0, "developing": 1, "seen": 2, "passed": 3}
 
 
 def _focus_label(focus_total: dict) -> str:
-    """The focused magnitude for the counts line. `_dur_label` spells nothing
-    as "0s"; the line is a row of magnitudes, so an empty one keeps the minutes
-    unit of the rest. One owner, because the poll refreshes the same cell."""
+    """`_dur_label` spells nothing as "0s"; the counts line is a row of
+    minutes, so an empty focus keeps that unit."""
     return focus_total["label"] if focus_total["seconds"] else "0m"
 
 
 def _record_date(iso: str | None) -> str:
-    """Local calendar date of a UTC authority stamp. The column is written
-    only by the app, so an unparseable value is a corrupt-row guard rather
-    than a contract — it renders as no date instead of failing the page."""
+    """Local calendar date of a UTC stamp; an unparseable value (a corrupt
+    row, since only the app writes the column) renders as no date."""
     try:
         return pretty_date(datetime.fromisoformat(iso).astimezone().date())
     except (TypeError, ValueError):
@@ -304,28 +236,13 @@ def _record_date(iso: str | None) -> str:
 
 def _document_question_ids(read) -> set[str] | None:
     """The question ids the manifest DOCUMENT names, valid or not, or None
-    when the document does not answer the question.
+    when the document cannot answer.
 
-    Retirement is absence from the manifest (S-M7), and absence is a fact
-    about the document rather than about the typed model. Validation drops
-    entries the author never removed — a dangling page reference, an id that
-    fails the grammar — neither of which rejects the read, so a question
-    missing from `read.questions` may be unreadable rather than retired.
-    Presence is therefore read here and everything shown still comes from the
-    validated model.
-
-    A missing `questions` key is an answer: the author declares none, and an
-    attempted question really has left. Any value PRESENT under that key and
-    not a list — an explicit null included — is not an answer: nothing can be
-    observed absent from a list that is not there, so it reads as unknown,
-    like a rejected manifest. Presence is tested on the key rather than on the
-    value, because `raw.get` cannot tell the two documents apart.
-
-    A rejected read cannot answer for the document. A v1 read cannot either:
-    that schema has no question declaration at all. Nor can an
-    identity-mismatched v2 read, whose declaration belongs to a different
-    lesson even though the shared reader keeps that condition DEGRADED so the
-    foreign bundle can still render under the legacy profile.
+    Retirement is absence from the manifest, a fact about the document
+    rather than the validated model, which drops entries the author never
+    removed. A missing `questions` key means the author declares none; a
+    present value that is not a list (an explicit null included) reads as
+    unknown, as do a rejected read, a v1 read and an identity-mismatched read.
     """
     if (read.rejected or read.version != bundle_schema.SCHEMA_V2
             or "identity-mismatch" in read.codes()):
@@ -350,25 +267,11 @@ def _record_entry(state: dict, attempt: dict | None, *, label: str,
                   declared_kind: str | None = None) -> dict:
     """One question row: its latest attempt and the verdict on THAT attempt.
 
-    A review names the attempt it judged, so a verdict on a superseded answer
-    stays with that answer instead of being re-attached to a newer one. Only
-    the latest ACTIVE review renders; the reviews written BEFORE it are a
-    count. Reviews written after it are not: if the fold shows this one, any
-    later review was retracted, and a retracted verdict is not an earlier
-    reading of the answer.
-
-    `page_id` is where the manifest declares the question NOW; the attempt
-    carries where it was answered. A question may move pages, and the stored
-    `stale` flag was decided at record time, so a move after the answer leaves
-    no mark on it — the row therefore shows the page the answer was written on
-    and names the current binding beside it rather than silently adopting it.
-
-    `ask_tutor` (#136) is the row's DIRECTION: the learner asked this instead
-    of answering it. It follows the same rule as `stale` — what was recorded
-    wins, and `declared_kind` speaks only for a control nobody has used yet —
-    so neither retiring an ask control nor re-kinding an ordinary question can
-    relabel what the learner already wrote. Turning a recorded question back
-    into a wrong answer is the exact misreading this issue exists to end.
+    Only the latest ACTIVE review renders; earlier ones are a count, and any
+    later one was retracted. `page_id` is where the manifest declares the
+    question NOW; the row shows the page the answer was written on and names
+    the current binding beside it. `declared_kind` speaks only for a control
+    nobody has used yet, so re-kinding cannot relabel a recorded question.
     """
     review = None
     earlier = 0
@@ -394,26 +297,17 @@ def _record_entry(state: dict, attempt: dict | None, *, label: str,
         "review_date": _record_date(review["created_at"]) if review else "",
         "review_exam": bool(review and review["mode"] == "exam"),
         "earlier_reviews": earlier,
-        # Filled by `_attach_successors` once every row exists (#133 tier 1).
+        # Filled by `_attach_successors` once every row exists.
         "successor": None,
     }
 
 
 def _attach_successors(rows: list[dict], declared: list[dict]) -> None:
-    """Point a RETIRED row at the declared question that says it `replaces` it.
+    """Point a RETIRED row at the declared question that `replaces` it.
 
-    Durable ids are never reused, so a rewritten question arrives under a new
-    id and everything recorded about the old one keeps standing alone at the
-    foot of the panel. The manifest is the only place that can say the two are
-    the same question, and the reader has already refused every ambiguous or
-    self-referential claim, so this is a plain lookup — a link between two rows
-    the panel is showing anyway, never a move of history between them.
-
-    Only retired rows take the link (§4.3: a predecessor is by definition no
-    longer declared). The reader can only compare the claim against the
-    questions that VALIDATED, while retirement is decided here, against the
-    ids the document still names — so a claim on a question the manifest still
-    names but could not validate is refused at this end, where that is known.
+    Only retired rows take the link (§4.3). The reader compares the claim
+    against the questions that VALIDATED while retirement is decided here, so
+    a claim on a named-but-unvalidated question is refused at this end.
     """
     successors = {
         question["replaces"]: {
@@ -431,31 +325,13 @@ def _attach_successors(rows: list[dict], declared: list[dict]) -> None:
 
 def _record_snapshot(record: dict, bridge_page: dict | None) -> dict:
     """What crosses INTO the lesson page: the record for the questions THIS
-    page declares (#133 tier 2, ABI §2.1 `welcome.record`).
+    page declares (ABI §2.1 `welcome.record`).
 
-    Projected from the panel rows the same render draws — never a second read
-    of the record. That is the whole point of taking it here: a snapshot read
-    fresher than the panel would restore an answer or a verdict that the panel
-    under the iframe does not show, and tier 1's unread cursor watermarks
-    exactly the rows that WERE rendered. One reading feeds both surfaces, by
-    construction, so the page can never be shown a verdict the badge below it
-    still calls unread — nor the reverse.
-
-    Nothing here is new information: every field is already on the page, in the
-    Record panel, for the same learner. The answer is the panel's own excerpt
-    (`answer_truncated` says so), not a re-read of the full 32 KiB body — the
-    boundary carries what the page already shows and no more.
-
-    It carries the identity it was taken FOR. The parent may reload the frame
-    onto another page without a /learn render — a removed or renamed entry
-    falls back through `_resolve_entry` — and that successor document must not
-    be handed the predecessor's answers just because it completed the next
-    handshake (review round 1, P1). The runtime compares before it attaches.
-
-    Only questions with something recorded get an entry. A declared question
-    the learner has not answered has nothing to restore, and the page already
-    knows its own ids; an entry saying "nothing" would only invite a page to
-    read absence as proof it was never attempted, which §6.1 forbids.
+    Projected from the panel rows the same render draws, never a second read,
+    so the page is never shown a verdict the badge below still calls unread.
+    It carries the identity it was taken FOR, and the runtime compares before
+    it attaches. Only questions with something recorded get an entry: absence
+    must not read as proof a question was never attempted (§6.1).
     """
     question_ids = set(bridge_page["questions"]) if bridge_page else set()
     questions = []
@@ -468,10 +344,8 @@ def _record_snapshot(record: dict, bridge_page: dict | None) -> dict:
         review = row["review"]
         questions.append({
             "question_id": row["question_id"],
-            # The direction the RECORD travels, decided by the panel's own
-            # reader (review round 1, P2): re-kinding a durable id must not
-            # let a page read a grading verdict as the tutor's reply, which is
-            # exactly what its current control kind would say.
+            # Decided by the panel's own reader, not the page's current control
+            # kind, which could turn a grading verdict into the tutor's reply.
             "asked": row["ask_tutor"],
             "answer": attempt["answer"],
             "answer_truncated": attempt["answer_truncated"],
@@ -497,19 +371,14 @@ def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> d
     )
     latest = attempt_state["latest_by_question"]
     # `/learn` passes the exact read that built `selected["bundle"]`, so one
-    # GET cannot show metadata from one manifest version and question
-    # retirement/labels from another. Direct helper callers retain the pure
-    # read fallback.
+    # GET cannot mix two manifest versions.
     read = (
         manifest_read if manifest_read is not None
         else lessons.read_bundle_readonly(lesson)
     )
-    # A manifest that does not yield a declaration list — rejected outright, or
-    # carrying a `questions` value nothing can be read as absent from — knows
-    # nothing about what the author still declares, so nothing is called
-    # retired on its word (S-M7 retires by ABSENCE from the manifest, and
-    # absence has to be observed, not assumed). The attempted questions then
-    # render under their durable ids and the retired block is omitted entirely.
+    # A manifest that yields no declaration list knows nothing about what the
+    # author still declares, so nothing is called retired on its word: the
+    # attempted questions render under their durable ids, unretired.
     document_ids = _document_question_ids(read)
     declared_known = document_ids is not None
     declared = read.questions if declared_known else []
@@ -524,10 +393,8 @@ def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> d
     ]
     declared_ids = {q["id"] for q in declared}
     named = document_ids if declared_known else set()
-    # An answered question the manifest still names but the reader could not
-    # validate keeps its place in the list — unlabelled and marked, because a
-    # validation failure is not a retirement. It has no readable current page,
-    # so the row falls back to the page its answer was written on.
+    # Named but not validated is not a retirement: the row stays, unlabelled
+    # and marked, on the page its answer was written on.
     questions += [
         _record_entry(
             state, attempt,
@@ -549,7 +416,6 @@ def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> d
         if question_id not in declared_ids and question_id not in named
     ]
     if not declared_known:
-        # Not retired — just unlabelled, because the manifest could not be read.
         questions = [dict(row, retired=False) for row in retired]
         retired = []
     _attach_successors(questions + retired, declared)
@@ -581,23 +447,14 @@ def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> d
         "questions": questions,
         "retired": retired,
         "declared_known": declared_known,
-        # Kept beside `counts` rather than inside it: the count line is the
-        # panel's own shape, and the record-counts poll below is the second
-        # reader of these two.
         "verdict_count": len(state["reviews_by_attempt"]),
-        # How far THIS rendering of the panel reads. What the learner
-        # acknowledges is the snapshot in front of them, so the cursor travels
-        # with the rendered rows rather than being taken from whichever poll
-        # happened to answer last. A watermark over both tables, not the newest
-        # standing review: a retraction takes a row AWAY and a Check rewrites
-        # one, and a cursor derived from the fold would hold still (or move
-        # backwards) through either.
+        # A watermark over both tables, not the newest standing review: a
+        # retraction takes a row AWAY and a Check rewrites one, and a cursor
+        # derived from the fold would hold still through either.
         "cursor": _record_signal(state, attempt_state),
         "counts": {
-            # Answers only (#136): a question to the tutor is recorded in the
-            # same table, but calling it an attempt in the line the learner
-            # reads would make asking for help look like a failed try. It is
-            # counted beside it instead, and only when there is one.
+            # Answers only: counting a question to the tutor as an attempt
+            # would make asking for help look like a failed try.
             "attempts": attempt_state.get("answers", attempt_state["total"]),
             "questions": attempt_state.get("questions", 0),
             "assessments": state["active_count"],
@@ -612,16 +469,10 @@ def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> d
 
 
 # Preview CSP is selected by the manifest's runtime profile
-# (learn-bundle-spec.md §5; enforcement is D1's). The manifest can only pick
-# a registered profile — never compose or widen policy — and the readers
-# fail-close missing/unknown profiles to legacy-display, so the profile
-# reaching here is always registered. The iframe sandbox *attribute* in
-# learn.html is unchanged here (D2 owns it); the header-level `sandbox`
-# directive below also covers a page opened directly, outside the iframe.
-#
-# legacy-display: the historical permissive policy, verbatim, so pre-v2
-# bundles keep rendering — but the profile carries no bridge/attempt/run
-# affordances (those flags are computed off the manifest read, not the CSP).
+# (learn-bundle-spec.md §5): a registered profile only, never composed or
+# widened, and the readers fail-close unknown profiles to legacy-display.
+# legacy-display is the historical permissive policy, verbatim, so pre-v2
+# bundles keep rendering; it carries no bridge/attempt/run affordances.
 _LESSON_PREVIEW_CSP_LEGACY = (
     "sandbox allow-scripts allow-forms allow-popups allow-downloads; "
     "default-src 'self' data: blob: https:; "
@@ -633,27 +484,12 @@ _LESSON_PREVIEW_CSP_LEGACY = (
     "object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
 )
 # interactive-local-v1: code local, data open (owner decision 2026-08-11).
-# SCRIPTS stay 'self' + inline only — remote script URLs, data:/blob: script
-# and 'unsafe-eval' are refused, so a page cannot LOAD code from the network;
-# the sanctioned road for library code is the build step with its 30-day
-# release quarantine. Residual, accepted with the decision: 'unsafe-inline'
-# plus an open connect-src means a script already on the page could fetch
-# remote text and inject it as a new inline <script> — the quarantine gates
-# what ships in the bundle, not what a shipped loader does at runtime (spec
-# §5 residual). Everything that is not code may use the network:
-# fetch/XHR/WebSocket (connect-src), images, media, fonts and stylesheets
-# accept remote URLs, http: included — lesson experiments talk to loopback
-# servers the learner just started, and the app itself is served over http.
-# Forms, popups, downloads, plugins and nested frames stay refused.
-#
-# Known residual (spec §5): SAME-FRAME NAVIGATION is not blocked — a page can
-# still `location.href = remote` or follow a plain link, and the destination
-# document is outside this response's CSP. No shipped header can close that
-# channel: CSP3's `navigate-to` was removed from the spec (Sep 2022) without
-# ever shipping in a browser, and no sandbox token governs self-navigation.
-# The layer that can observe the frame leaving the lesson document is the D2
-# parent runtime (its bridge port dies with the document); until then this
-# stays an accepted, documented residual of the loopback deployment.
+# Scripts stay 'self' + inline only, so a page cannot LOAD code from the
+# network; library code goes through the build step and its release
+# quarantine. Everything that is not code may use the network, http: included:
+# lesson experiments talk to loopback servers the learner just started.
+# Accepted residuals (spec §5): an inline script can fetch remote text and
+# inject it, and same-frame navigation is not blocked by any shipped header.
 _LESSON_PREVIEW_CSP_INTERACTIVE = (
     "sandbox allow-scripts; "
     "default-src 'none'; "
@@ -670,11 +506,8 @@ _LESSON_PREVIEW_CSPS = {
     bundle_schema.PROFILE_LEGACY: _LESSON_PREVIEW_CSP_LEGACY,
     bundle_schema.PROFILE_INTERACTIVE: _LESSON_PREVIEW_CSP_INTERACTIVE,
 }
-# The iframe sandbox ATTRIBUTE mirrors the header-level `sandbox` directive
-# per profile (D2; the header alone already covers direct opens). One owner:
-# learn.html renders these tokens and the preview metadata carries them, so
-# the parent runtime re-applies the server's value on profile flips instead
-# of keeping a second copy of this policy in the client.
+# One owner for the iframe sandbox tokens: learn.html renders them and the
+# preview metadata carries them, so the client keeps no second copy.
 _LESSON_PREVIEW_SANDBOXES = {
     bundle_schema.PROFILE_LEGACY: "allow-scripts allow-forms allow-popups allow-downloads",
     bundle_schema.PROFILE_INTERACTIVE: "allow-scripts",
@@ -682,14 +515,12 @@ _LESSON_PREVIEW_SANDBOXES = {
 
 
 def _preview_csp(profile: str) -> str:
-    # Unreachable via the readers (they fail-close to legacy-display), but if
-    # an unregistered value ever leaks through, default to the NARROW policy —
-    # never the wide legacy one.
+    # Unreachable via the readers, but an unregistered value defaults to the
+    # NARROW policy, never the wide legacy one.
     return _LESSON_PREVIEW_CSPS.get(profile, _LESSON_PREVIEW_CSP_INTERACTIVE)
 
 
 def _preview_sandbox(profile: str) -> str:
-    # Same fail-closed default as _preview_csp: unknown ⇒ the narrow tokens.
     return _LESSON_PREVIEW_SANDBOXES.get(
         profile, _LESSON_PREVIEW_SANDBOXES[bundle_schema.PROFILE_INTERACTIVE]
     )
@@ -728,12 +559,9 @@ _STALE_SNAPSHOT_HTML = """<!doctype html>
 
 @router.get("/learn/lessons/{lesson_id}/files/{resource:path}")
 def get_lesson_bundle_file(lesson_id: int, resource: str, v: str | None = None):
-    # NOT Depends(get_db) (#24 cut 5): this route can answer with a
-    # FileResponse, which streams the bundle file from disk AFTER the handler
-    # returns. A dependency's finally runs only once the response completes, so
-    # it would pin this connection for the whole transfer — a slow client would
-    # hold it open indefinitely. The database is needed only to resolve the
-    # lesson, so the connection is scoped to exactly that, as it was before.
+    # Not Depends(get_db): a FileResponse streams the file AFTER the handler
+    # returns, and a dependency's finally runs only once the response
+    # completes, so it would pin the connection for the whole transfer.
     conn = get_conn()
     try:
         lesson = _lesson_or_404(conn, lesson_id)
@@ -753,14 +581,10 @@ def get_lesson_bundle_file(lesson_id: int, resource: str, v: str | None = None):
         headers["Content-Security-Policy"] = _preview_csp(info["profile"])
         headers["X-Lesson-Preview-Version"] = info["version"]
     if v is not None and info["versioned_page"] and v != info["version"]:
-        # Serve-time version binding (PR-60 rounds 1-2): the parent
-        # navigates with the token it is going to arm; a declared v2 page
-        # whose current state no longer produces that token is refused —
-        # INCLUDING when no snapshot could be taken (raced replacement,
-        # grown past the size bound): the streaming fallback must not
-        # serve bytes the requested token does not describe. The transient
-        # swap-restore case self-heals on the reload below; a real edit
-        # moves the metadata token and the parent re-navigates with it.
+        # Serve-time version binding: a declared v2 page whose current state
+        # no longer produces the token the parent is going to arm is refused,
+        # INCLUDING when no snapshot could be taken: the streaming fallback
+        # must not serve bytes the requested token does not describe.
         return Response(
             content=_STALE_SNAPSHOT_HTML,
             status_code=409,
@@ -768,9 +592,8 @@ def get_lesson_bundle_file(lesson_id: int, resource: str, v: str | None = None):
             headers=headers,
         )
     if info["content"] is not None:
-        # Declared v2 page: byte-bound snapshot (drain D2 L2) — the body IS
-        # the bytes the version token's digest describes; FileResponse would
-        # re-open the path and could serve a racing replacement instead.
+        # The body IS the bytes the version token's digest describes;
+        # FileResponse could re-open the path onto a racing replacement.
         return Response(
             content=info["content"], media_type=info["media_type"], headers=headers
         )
@@ -778,14 +601,9 @@ def get_lesson_bundle_file(lesson_id: int, resource: str, v: str | None = None):
 
 
 def _scheme_hint(request: Request) -> str | None:
-    """The colour scheme the app resolved for this reader, if it said.
-
-    `window.alTheme` (base.html) mirrors its resolved `data-theme` into the
-    `al-scheme` cookie precisely so this server-rendered page can match a theme
-    that is pinned against the OS. A presentation hint and nothing else: it
-    selects a palette, authorises nothing, and any value but the two known ones
-    is ignored rather than trusted into the response.
-    """
+    """The colour scheme the app resolved for this reader, if it said: the
+    `al-scheme` cookie `window.alTheme` mirrors its resolved `data-theme` into.
+    A presentation hint only; any value but the two known ones is ignored."""
     value = request.cookies.get("al-scheme")
     return value if value in lessons.SCHEMES else None
 
@@ -804,8 +622,7 @@ def get_lesson_preview(request: Request, lesson_id: int, entry: str | None = Non
         media_type="text/html; charset=utf-8",
         headers={
             "Cache-Control": "no-store",
-            # A generated placeholder is rendered in the reader's colour scheme,
-            # so the cookie is part of what selects this body.
+            # The placeholder is rendered in the reader's colour scheme.
             "Vary": "Cookie",
             "Content-Security-Policy": _preview_csp(info["profile"]),
             "X-Content-Type-Options": "nosniff",
@@ -827,18 +644,13 @@ def get_lesson_preview_meta(lesson_id: int, entry: str | None = None,
         "exists": info["exists"],
         "version": info["version"],
         "path": info["rel_path"],
-        # Manifest read outcome + findings (learn-bundle-spec.md §9.2):
-        # readers must surface findings to the preview metadata.
+        # Readers must surface findings to the metadata (learn-bundle-spec.md §9.2).
         "outcome": info["outcome"],
         "findings": info["findings"],
-        # Effective runtime profile + bridge eligibility (§5, D1): the
-        # metadata is where the app states which policy set governs the
-        # rendered page and whether D2 may offer the postMessage port.
+        # The policy set governing the page (§5) and whether it may get a port.
         "profile": info["profile"],
         "bridge": info["bridge"],
-        # D2: the sandbox tokens the iframe must carry for this profile (the
-        # parent runtime re-applies them before reloading on a profile flip)
-        # and the per-page identity the handshake hands to the lesson —
+        # The per-page identity the handshake hands to the lesson is
         # parent-derived (§6.3), None whenever this page may not get a port.
         "sandbox": _preview_sandbox(info["profile"]),
         "bridge_page": info["bridge_page"],
@@ -847,43 +659,28 @@ def get_lesson_preview_meta(lesson_id: int, entry: str | None = None,
     })
 
 
-# Longest `since` a caller can hand the record poll. The value is only ever
-# compared as a string against cursors this app minted, but an unbounded query
-# parameter should not reach a comparison loop at all.
+# Longest `since` the record poll accepts; an unbounded query parameter should
+# not reach a comparison loop at all.
 _MAX_SINCE_LEN = 64
-# Width the assessment `seq` is padded to so plain string ordering agrees with
-# numeric ordering. 20 digits covers the full SQLite rowid range.
+# `seq` padded to the full SQLite rowid width, so string order is numeric order.
 _CURSOR_WIDTH = 20
 
 
 def _record_cursor(seq: int) -> str:
-    """The opaque recency cursor for one assessment row.
-
-    Deliberately `seq`, not `created_at`: the rowid is this table's recency
-    AUTHORITY (assessments.py) and is unique by construction, while two rows
-    can carry the same microsecond stamp and then have no order at all —
-    a verdict sharing a stamp with an acknowledged one would never be counted
-    unread. Padded so the client can treat it as an opaque string it only ever
-    hands back.
-    """
+    """The opaque recency cursor for one assessment row: `seq`, not
+    `created_at`, because the rowid is the table's recency authority and
+    unique, while a verdict sharing a microsecond stamp with an acknowledged
+    one would never count as unread."""
     return f"{seq:0{_CURSOR_WIDTH}d}"
 
 
 def _record_signal(state: dict, attempt_state: dict) -> str:
-    """How far a rendering of the panel reads, over BOTH tables behind it.
-
-    The rows are a join: a Check recorded while the page is open replaces an
-    answer (or fills in a "Not attempted" row) without touching
-    `lesson_assessments`, exactly as a retraction removes a verdict without
-    adding a standing one. A signal built on either table alone therefore
-    holds still while the counts line beside it moves, and the panel would sit
-    on a stale body until a full reload.
-
-    Both fields are fixed width with a constant separator, so comparing two
-    signals as plain strings compares recency — and the assessment field keeps
-    its own leading position, which is what lets `unread` be counted against
-    `signal[:_CURSOR_WIDTH]` without parsing anything a client handed back.
-    """
+    """How far a rendering of the panel reads, over BOTH tables behind it: a
+    Check replaces an answer without touching `lesson_assessments` and a
+    retraction removes a verdict without adding one, so a signal on either
+    table alone holds still while the counts line moves. Fixed-width fields:
+    string comparison is recency, and `unread` slices `signal[:_CURSOR_WIDTH]`
+    without parsing client input."""
     if not (state["watermark"] or attempt_state["watermark"]):
         return ""
     return (f"{_record_cursor(state['watermark'])}"
@@ -893,31 +690,16 @@ def _record_signal(state: dict, attempt_state: dict) -> str:
 @router.get("/learn/lessons/{lesson_id}/record-counts")
 def get_lesson_record_counts(lesson_id: int, since: str | None = None,
                              conn: sqlite3.Connection = Depends(get_db)):
-    """The Record panel's counts, so a verdict written while the page is open
-    reaches the learner (#133 tier 1).
-
-    The panel itself is server-rendered on GET and the live-reload poll only
-    watches the lesson FILE, so before this a verdict landed silently and the
-    learner had to guess that reloading was worth it. This answers with the
-    same numbers the panel folds — no note text, no per-question shape: it is a
-    signal that the record moved, not a second rendering of it.
+    """The Record panel's counts: a signal that the record moved, not a second
+    rendering of it.
 
     Read state is the CLIENT's: `since` is the cursor the learner last
-    acknowledged, and `unread` counts the standing verdicts recorded after it.
-    Nothing is stored server-side, so this stays a pure read and two browsers
-    on the same lesson keep their own idea of what they have seen. Absent
-    `since` = no baseline yet (a first visit), which is nothing unread rather
-    than everything; the client acknowledges an empty record with the zero
-    cursor, so the FIRST verdict of a lesson still announces itself.
-
-    `cursor` is the panel's WATERMARK over both tables behind it, which is a
-    strictly wider signal than `unread`: a retraction, an evidence/summary
-    write, or a Check recorded from the editor changes the rendered rows
-    without adding a standing verdict to announce. The watermark still moves
-    for all of those, and the client reads a cursor past its baseline with
-    nothing unread as "the record changed quietly" — refresh the body, no
-    badge. A count that only ever went up would leave a retracted verdict on
-    screen under a header already reading `0 verdicts`.
+    acknowledged and `unread` counts the standing verdicts recorded after it.
+    Absent `since` is nothing unread rather than everything; the client
+    acknowledges an empty record with the zero cursor, so the FIRST verdict
+    still announces itself. `cursor` is strictly wider than `unread`: a
+    retraction or a Check moves it without a verdict to announce, and the
+    client reads that as "refresh the body, no badge".
     """
     lesson = _lesson_or_404(conn, lesson_id)
     state, attempt_state, focus_total = lessons.record_panel_db_state(conn, lesson["id"])
@@ -931,36 +713,30 @@ def get_lesson_record_counts(lesson_id: int, since: str | None = None,
             "questions": attempt_state.get("questions", 0),
             "assessments": state["active_count"],
             "verdicts": len(reviews),
-            # Against the ASSESSMENT field of the baseline only: what counts as
-            # unread is a standing verdict recorded after it, and the attempt
-            # half of the signal must not make old verdicts look new again.
-            # Fixed-width fields make that a slice, not a parse of client input.
+            # Against the ASSESSMENT field of the baseline only, so the
+            # attempt half of the signal cannot make old verdicts look new.
             "unread": (
                 sum(1 for cursor in cursors if cursor > baseline[:_CURSOR_WIDTH])
                 if baseline else 0
             ),
             "cursor": _record_signal(state, attempt_state),
-            # The whole counts line, not a subset: a focus session finished in
-            # the drawer beside this panel moves it too, and half a line that
-            # refreshes is worse than one that plainly does not.
+            # The whole counts line: a focus session in the drawer moves it too.
             "focus": _focus_label(focus_total),
         },
         headers={"Cache-Control": "no-store"},
     )
 
 
-# --- lesson artifacts (phase F1 editor backend) ----------------------------
+# --- lesson artifacts -------------------------------------------------------
 
 
 def _refusal(exc) -> JSONResponse:
     headers = {"Cache-Control": "no-store"}
     if isinstance(exc, attempts.AttemptError) and exc.status == 429:
         headers["Retry-After"] = str(int(attempts.RATE_WINDOW_SECONDS))
-    # JSON accepts escaped lone surrogates in object keys. The strict
-    # unknown-field error names those keys, but Starlette deliberately renders
-    # JSON with ensure_ascii=False and cannot UTF-8 encode a surrogate. Keep the
-    # controlled 400 path total: ordinary Unicode stays unchanged while only
-    # unencodable code points become their explicit backslash escape.
+    # An unknown-field detail can carry a lone surrogate from an object key,
+    # and Starlette renders JSON with ensure_ascii=False, which cannot encode
+    # one; escape only the unencodable code points so the 400 path stays total.
     detail = exc.detail.encode("utf-8", "backslashreplace").decode("utf-8")
     return JSONResponse(
         {"ok": False, "error": exc.code, "detail": detail, **getattr(exc, "fields", {})},
@@ -987,9 +763,8 @@ async def _admit_json(
     try:
         payload = json.loads(body)
     except (ValueError, RecursionError):
-        # RecursionError: json.loads on deeply nested input (well under the
-        # byte cap) — still just a malformed body, never a 500. The parser
-        # unwinds fully before this handler runs.
+        # RecursionError: deeply nested input under the byte cap is still a
+        # malformed body, never a 500.
         raise error_cls("invalid-json", 400, "body is not valid JSON")
     if not isinstance(payload, dict):
         raise error_cls("invalid-json", 400, "body must be a JSON object")
@@ -1017,12 +792,9 @@ def get_lesson_artifact(lesson_id: int, block_id: str,
 @router.post("/learn/lessons/{lesson_id}/blocks/{block_id}/file")
 async def post_lesson_artifact(request: Request, lesson_id: int, block_id: str):
     def work(payload: dict) -> dict:
-        # NOT Depends(get_db) (#24 cut 5): this runs in a threadpool worker,
-        # and sqlite3 connections are thread-affine (check_same_thread). A
-        # dependency-provided connection is opened in whichever worker
-        # resolved the dependency, so using it here would raise as soon as
-        # the two threads differ. The connection must be born in the thread
-        # that uses it.
+        # Not Depends(get_db): this runs in a threadpool worker and sqlite3
+        # connections are thread-affine, so the connection must be born in
+        # the thread that uses it.
         conn = get_conn()
         try:
             lesson = _artifact_lesson(conn, lesson_id)
@@ -1041,7 +813,7 @@ async def post_lesson_artifact(request: Request, lesson_id: int, block_id: str):
     return JSONResponse({"ok": True, **result}, headers={"Cache-Control": "no-store"})
 
 
-# --- lesson runs (phase F4 run API) ---------------------------------------
+# --- lesson runs ------------------------------------------------------------
 
 
 def _runner_refusal(exc: runner_core.RunnerError) -> JSONResponse:
@@ -1222,22 +994,17 @@ async def stream_lesson_run(request: Request, job_id: str, after: str | None = N
     )
 
 
-# --- lesson attempts (D4, learn-bundle-spec.md §6 + docs/lesson-attempts-api.md)
+# --- lesson attempts (learn-bundle-spec.md §6, docs/lesson-attempts-api.md) --
 
-# The submission envelope is small by contract (§6.2: answer ≤ 32 KiB, whole
-# projection line ≤ 64 KiB); the body cap only has to admit the worst-case
-# JSON escaping of a valid answer plus the fixed fields.
+# The submission is small by contract (§6.2: answer ≤ 32 KiB); the cap only
+# has to admit the worst-case JSON escaping of a valid answer.
 _ATTEMPT_MAX_BODY = 256 * 1024
 
 
 @router.post("/learn/lessons/{lesson_id}/attempts")
 async def post_lesson_attempt(request: Request, lesson_id: int):
-    """The async layer owns body admission (bounded, JSON only); the blocking
-    service work runs in the threadpool like every sync route. The B2
-    perimeter middleware already applied its unsafe-method origin policy before
-    this runs — same-origin fetch (the D5 bridge parent) and origin-less
-    non-browser clients pass; the sandboxed iframe's own `Origin: null` can
-    never reach here."""
+    """The perimeter middleware already applied its unsafe-method origin
+    policy, so the sandboxed iframe's own `Origin: null` never reaches here."""
     def work(payload: dict) -> dict:
         conn = get_conn()
         try:
@@ -1261,26 +1028,22 @@ async def post_lesson_attempt(request: Request, lesson_id: int):
     )
 
 
-# --- lesson assessments (S-DESIGN D-S1, docs/lesson-assessments-api.md) ------
+# --- lesson assessments (docs/lesson-assessments-api.md) --------------------
 
-# The submission is small by contract (note ≤ 8 KiB, next_action ≤ 512 B); the
-# body cap only has to admit the worst-case JSON escaping of a valid note plus
-# the fixed fields. It is a quarter of the attempt cap because assessments
-# diagnose BY REFERENCE — nothing here ever carries an attempt body.
+# The submission is small by contract (note ≤ 8 KiB, next_action ≤ 512 B); a
+# quarter of the attempt cap because assessments diagnose BY REFERENCE and
+# never carry an attempt body.
 _ASSESSMENT_MAX_BODY = 64 * 1024
 
 
 @router.post("/learn/lessons/{lesson_id}/assessments")
 async def post_lesson_assessment(request: Request, lesson_id: int):
-    """The async layer owns body admission (bounded, JSON only); the blocking
-    service work runs in the threadpool like every sync route. The B2
-    perimeter middleware already applied its unsafe-method origin policy: the
-    lesson-agent shell's origin-less request passes, the sandboxed lesson
-    iframe's `Origin: null` never reaches here — the tutor writes verdicts, the
-    lesson page must not."""
-    # The session write capability (s3), if the caller has one. It is read here
-    # and never from the body: the sitting and the lesson it names are the
-    # server's own facts about the caller.
+    """The perimeter middleware already applied its unsafe-method origin
+    policy: the lesson-agent shell's origin-less request passes, the sandboxed
+    lesson iframe's `Origin: null` never reaches here. The tutor writes
+    verdicts; the lesson page must not."""
+    # The session write capability is read from the header and never from the
+    # body: the sitting it names is the server's own fact about the caller.
     capability_token = request.headers.get(assessments.CAPABILITY_HEADER)
 
     def work(payload: dict) -> dict:
@@ -1310,32 +1073,20 @@ async def post_lesson_assessment(request: Request, lesson_id: int):
     )
 
 
-# --- the lesson build step (#161) --------------------------------------------
+# --- the lesson build step --------------------------------------------------
 #
-# The agent authors the source and names the packages; this route runs the
-# package manager and the bundler, because the rules that make either safe —
-# the 30-day release quarantine and the copying cache backend — live on a
-# command line only the app writes (`app/services/lesson_build.py`).
-#
-# No capability token, unlike the assessment write beside it: that one needs a
-# server-derived answer to "which sitting is this", while a build names its
-# lesson in the path and asserts nothing about who asked. What guards it is the
-# B2 perimeter policy every unsafe method already passes — the agent shell's
-# origin-less request is allowed, a cross-origin page is refused, and the
-# sandboxed lesson iframe's `Origin: null` never gets here, so a lesson page
-# cannot rebuild its own lesson.
+# This route runs the package manager and the bundler, because the rules that
+# make either safe live on a command line only the app writes
+# (`app/services/lesson_build.py`). No capability token, unlike the assessment
+# write: a build names its lesson in the path and asserts nothing about who
+# asked; the perimeter policy every unsafe method passes guards it.
 _BUILD_MAX_BODY = 16 * 1024
 
 
 def _self_origin(request: Request) -> str | None:
-    """This app's own origin, from the accepted socket and never from Host.
-
-    The render gate points a browser at the URL built here. A client-supplied
-    Host header would therefore choose which server gets loaded and reported
-    on, so the address comes from the ASGI scope's `server` — the local end of
-    the connection, filled in by the server from the transport. This is the
-    same rule as the terminal's capability URL.
-    """
+    """This app's own origin, from the ASGI scope's `server` and never from
+    Host: a client-supplied Host would choose which server the render gate
+    loads and reports on. The same rule as the terminal's capability URL."""
     server = request.scope.get("server")
     if not server or len(server) < 2:
         return None
@@ -1367,18 +1118,15 @@ async def post_lesson_build(request: Request, lesson_id: int):
         ))
 
     def resolve() -> tuple[dict, str, str]:
-        # Same threadpool rule as every sync route here: the connection is
-        # born in the thread that uses it (#24 cut 5).
         conn = get_conn()
         try:
             lesson = lessons.get_lesson(conn, lesson_id)
             if lesson is None:
                 raise lesson_build.BuildError("unknown-lesson", 404, "unknown lesson")
             page = payload.get("page")
-            # Absent means "the lesson's current page". A number or an object
-            # means the caller tried to choose one and this route could not
-            # read it — treating that as absent would render somewhere else and
-            # report the result as evidence about the selection.
+            # Absent means "the lesson's current page"; a non-string means the
+            # caller tried to choose one and this route could not read it, and
+            # treating that as absent would report evidence about another page.
             if page is not None and not isinstance(page, str):
                 raise lesson_build.BuildError(
                     "invalid-request", 400,
@@ -1386,12 +1134,8 @@ async def post_lesson_build(request: Request, lesson_id: int):
                 )
             asked = page.strip() if isinstance(page, str) and page.strip() else None
             try:
-                # An undeclared page is a fallback `lesson_file_info` handles
-                # quietly, but a malformed one such as `../outside.html`
-                # raises, and that is a bad request rather than an internal
-                # fault. `selected_page_ref` raises on the same input and
-                # otherwise says which spelling this bundle's version would
-                # have had to resolve to.
+                # A malformed page such as `../outside.html` raises and is a
+                # bad request rather than an internal fault.
                 wanted = (
                     lessons.selected_page_ref(lesson, asked)
                     if asked is not None else None
@@ -1400,9 +1144,7 @@ async def post_lesson_build(request: Request, lesson_id: int):
             except lessons.LessonError as exc:
                 raise lesson_build.BuildError("invalid-request", 400, str(exc)) from exc
             # `lesson_file_info` falls back to the manifest's entry for a name
-            # it cannot resolve, which is right for a preview and wrong here:
-            # silently rendering a different page than the one asked for would
-            # let a build pass on evidence about somewhere else.
+            # it cannot resolve, which is right for a preview and wrong here.
             if not info.get("exists") or (
                 wanted is not None and info.get("entry") != wanted
             ):
@@ -1421,9 +1163,8 @@ async def post_lesson_build(request: Request, lesson_id: int):
         result = await lesson_build.build_lesson(
             lesson, add=add, entry=entry, out=out,
             page=page, page_url=f"{origin}{path}",
-            # The same route the page's own relative reference resolves to, so
-            # the gate can tell "this page loaded the artifact" from "this page
-            # loaded cleanly and never mentioned it".
+            # The route the page's own relative reference resolves to, so the
+            # gate can tell "loaded the artifact" from "never mentioned it".
             artifact_url=f"{origin}{_lesson_preview_url(lesson_id, out)}",
         )
     except lesson_build.BuildError as exc:
