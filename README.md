@@ -6,15 +6,15 @@ Formerly known as *tick-like* — old repo URLs redirect here.
 
 See [`docs/system-design.md`](docs/system-design.md) for the full design.
 
-**Status:** runnable and actively implemented. Today/Tasks, Calendar (month),
-a Focus timer in a drawer on every surface, Habits, Search, and JSONL Export are
-available, with light/dark themes and Mode A (no-JS PRG) + Mode B (fetch)
-progressive enhancement. Recovery is a documented contract: full
-[backup and restore](docs/backup-restore.md) for the instance, the
-[JSONL restore contract](docs/restore-from-export.md) for the audit stream.
-Security, backup, cleanup, and Learn work continues
-through focused issues and the repository's normal review and verification
-protocols; it is not waiting on a repository-wide SDD freeze.
+**Status:** runnable and in daily use. The surfaces are Today/Tasks (with the
+Board, Next 7, list, completed, history and trash views), Calendar (month and
+week), a Focus timer in a drawer on every page, Habits, Search, Diary, Retro,
+Learn, JSONL Export, and, when `SELFOS_EXP2RES_MIRROR_URL` is set, Mirror,
+plus the opt-in terminal drawer. Light/dark
+themes, Mode A (no-JS PRG) + Mode B (fetch) progressive enhancement. Recovery
+is a documented contract: full [backup and restore](docs/backup-restore.md)
+for the instance, the [JSONL restore contract](docs/restore-from-export.md)
+for the audit stream.
 
 Integration v1 composes separately owned Atlas and Exp2Res views through
 optional configured URLs on the same-machine/loopback topology. Ephemeris does
@@ -128,55 +128,36 @@ loginctl enable-linger "$USER"        # keep running after logout / across reboo
 
 Status: `systemctl --user status ephemeris` · logs: `journalctl --user -u ephemeris -f`.
 The template binds `127.0.0.1`; copy-and-edit (don't symlink) so local path and
-environment changes never land back in Git. Copies made before `--no-proxy-headers` was
-added to the template keep the old `ExecStart` — add the flag by hand, then
-`systemctl --user daemon-reload && systemctl --user restart ephemeris` so the
-edited unit is the one that starts (see [security model](docs/security-model.md)).
-
-### Migrating an existing in-checkout data directory
-
-Stop the service before moving an existing data directory, then set the
-`ACTIVITY_DATA_DIR` environment line in your service copy and restart:
-
-```bash
-systemctl --user stop ephemeris
-mv ~/projects/ephemeris/data ~/.local/share/ephemeris
-# In ~/.config/systemd/user/ephemeris.service, set:
-# Environment=ACTIVITY_DATA_DIR=%h/.local/share/ephemeris
-systemctl --user daemon-reload
-systemctl --user restart ephemeris
-```
-
-### Upgrading from tick-like
-
-The project was renamed (repo, package, systemd unit, env vars). Pulling the
-rename commit does not migrate an existing install — do it explicitly:
-
-```bash
-systemctl --user disable --now tick-like
-mv ~/projects/tick-like ~/projects/ephemeris
-cp deploy/ephemeris.service.example ~/.config/systemd/user/ephemeris.service
-# ...re-apply any local edits (host, port, env) to the copy, then:
-rm ~/.config/systemd/user/tick-like.service
-systemctl --user daemon-reload
-systemctl --user enable --now ephemeris
-systemctl --user status ephemeris   # verify THIS unit is the listener
-```
-
-The env switches were renamed and the old names are **no longer honored** —
-`TICKLIKE_TERM_PROXY` must be re-set as `EPHEMERIS_TERM_PROXY` or the proxy
-override is ignored. The terminal toggle also changed polarity: it is now
-**off by default** and only `EPHEMERIS_ENABLE_TERMINAL=1` turns it on
-(`TICKLIKE_DISABLE_TERMINAL` / `EPHEMERIS_DISABLE_TERMINAL` are ignored).
+environment changes never land back in Git.
 
 ## Configuration
 
-| Env var             | Default                              | Meaning                                                        |
-|---------------------|--------------------------------------|----------------------------------------------------------------|
-| `APP_TIMEZONE`      | host local zone                      | The ledger clock; defines "today" (§13.3).                     |
-| `ACTIVITY_DATA_DIR` | (required — refuses to start if unset) | Private data path outside the public checkout.                 |
-| `ACTIVITY_DB`       | `<data>/activity.sqlite`             | Override the DB path directly.                                 |
-| `EPHEMERIS_ENABLE_TERMINAL` | unset (terminal off)         | Opt-in: `1`/`true`/`yes`/`on` registers the loopback-only terminal websocket and UI. |
+Every variable the app reads. The first eight are read once at startup, so
+restart the process after changing one; the proxy and Chrome variables are read
+each time a terminal shell or a render gate starts.
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `ACTIVITY_DATA_DIR` | (required; refuses to start if unset) | Private data path outside the public checkout. |
+| `ACTIVITY_DB` | `<data>/activity.sqlite` | Override the SQLite file path directly. |
+| `APP_TIMEZONE` | host local zone | The ledger clock; defines "today" (system design §13.3). |
+| `SELFOS_EXP2RES_URL` | unset (no strip) | Loopback http(s) URL of the Exp2Res gap-questions view the Diary tab embeds. A non-loopback URL is ignored with a warning. |
+| `SELFOS_EXP2RES_MIRROR_URL` | unset (`/mirror` answers 404) | Loopback http(s) URL of the Exp2Res Mirror view the `/mirror` surface embeds. Same loopback rule. |
+| `EPHEMERIS_TRUSTED_HOSTS` | `localhost,127.0.0.1,::1` | Comma-separated hostnames a request's `Host` may name; anything else is refused. |
+| `EPHEMERIS_MAX_BODY_BYTES` | 2 MiB | Ceiling on an unsafe-method request body. Junk, a non-positive value, or a value below the largest per-route cap plus headroom falls back to the default; it can raise the ceiling, never lower it. |
+| `EPHEMERIS_ENABLE_TERMINAL` | unset (terminal off) | Opt-in: `1`/`true`/`yes`/`on` registers the loopback-only terminal websocket and UI. |
+| `EPHEMERIS_TERM_PROXY` | unset | Egress proxy for the terminal shell: `off` forces a direct connection, an `http://` or `socks5h://` URL is used as given. Unset: the service's own proxy variables are inherited, else the xray client on `127.0.0.1:10809` (http) / `10808` (socks) is auto-detected. |
+| `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `FTP_PROXY` (either case) | unset | The service's proxy configuration, passed to the terminal shell verbatim (loopback kept direct) when `EPHEMERIS_TERM_PROXY` is unset and at least one of `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` is set. `NO_PROXY` and `FTP_PROXY` ride along only in that case; on their own they are dropped. |
+| `EPHEMERIS_RENDER_CHECK_CHROME` | unset (search `$PATH` for `google-chrome`, `chromium`, `chromium-browser`, `chrome`) | Path to the Chrome/Chromium binary the Learn render gate runs. |
+
+The terminal shell does not inherit the service environment; it starts from an
+allowlist (`HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH`, `LANG`, `LANGUAGE`,
+`LC_*`, `TZ`, `XDG_*`, `SSH_AUTH_SOCK`) with `TERM` and `PATH` normalized.
+`SHELL` picks the shell the drawer runs. The lesson-agent shell is additionally
+handed `EPHEMERIS_ASSESS_URL`, `EPHEMERIS_ASSESS_TOKEN` and
+`EPHEMERIS_BUILD_URL`, minted per session, and `CLAUDE_CODE_OAUTH_TOKEN` read
+from `$ACTIVITY_DATA_DIR/claude-token` when that file exists. Those four are
+outputs, not settings: setting them on the service has no effect.
 
 ## Data
 

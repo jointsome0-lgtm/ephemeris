@@ -64,8 +64,6 @@ read when the app is imported, so restart the process after setting or
 unsetting it. While disabled, `/terminal/ws` is not registered and the terminal
 UI is not rendered. The committed systemd example ships with the variable
 commented out; enable it only on a single-user desktop deployment.
-(The previous opt-out switch, `EPHEMERIS_DISABLE_TERMINAL`, is no longer
-honored.)
 
 ### Shell environment and lesson scoping
 
