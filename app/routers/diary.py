@@ -1,7 +1,7 @@
 """Diary routes (issue #2, docs/diary-spec.md): per-entry dated journal.
 
-Same write contract as /retro (sec16.4: Mode A no-JS form + 303 PRG with
-flash; Mode B `x-partial: 1` → JSON, errors 422). Every write journals a
+Same write contract as /retro: a plain form post answered with a 303 redirect
+back to the list, the error as a flash when rejected. Every write journals a
 full-snapshot event — that is what the future selfos→exp2res adapter consumes
 from the JSONL export. The gap-questions strip is config-only coupling: when
 SELFOS_EXP2RES_URL is set the template renders that URL in an iframe, and this
@@ -13,13 +13,13 @@ import sqlite3
 from datetime import date as _date
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 
 from .. import settings
 from ..db import get_db, pretty_date, today_str
 from ..security import embed_frame_csp
 from ..services import diary
-from ..templating import _wants_json, _with_flash, templates
+from ..templating import _with_flash, templates
 
 router = APIRouter()  # GET /diary, POST /diary, /diary/{entry_id}/*
 
@@ -88,7 +88,6 @@ def _write_args(entry_date: str, text: str, tags: str, private: str,
 
 @router.post("/diary")
 def post_diary_create(
-    request: Request,
     entry_date: str = Form(""),
     text: str = Form(""),
     tags: str = Form(""),
@@ -96,22 +95,16 @@ def post_diary_create(
     atlas_ref: str = Form(""),
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    json_mode = _wants_json(request)
     try:
-        row = diary.create_entry(
+        diary.create_entry(
             conn, **_write_args(entry_date, text, tags, private, atlas_ref))
     except diary.DiaryError as exc:
-        if json_mode:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
         return _diary_redirect(flash=str(exc))
-    if json_mode:
-        return JSONResponse({"ok": True, "id": row["id"], "uuid": row["uuid"]})
     return _diary_redirect()
 
 
 @router.post("/diary/{entry_id}/edit")
 def post_diary_edit(
-    request: Request,
     entry_id: int,
     entry_date: str = Form(""),
     text: str = Form(""),
@@ -120,44 +113,29 @@ def post_diary_edit(
     atlas_ref: str = Form(""),
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    json_mode = _wants_json(request)
     try:
-        row = diary.update_entry(
+        diary.update_entry(
             conn, entry_id, **_write_args(entry_date, text, tags, private, atlas_ref))
     except diary.DiaryError as exc:
-        if json_mode:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
         return _diary_redirect(flash=str(exc))
-    if json_mode:
-        return JSONResponse({"ok": True, "id": row["id"], "uuid": row["uuid"]})
     return _diary_redirect()
 
 
 @router.post("/diary/{entry_id}/archive")
-def post_diary_archive(request: Request, entry_id: int,
+def post_diary_archive(entry_id: int,
                        conn: sqlite3.Connection = Depends(get_db)):
-    json_mode = _wants_json(request)
     try:
         diary.archive_entry(conn, entry_id)
     except diary.DiaryError as exc:
-        if json_mode:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
         return _diary_redirect(flash=str(exc))
-    if json_mode:
-        return JSONResponse({"ok": True})
     return _diary_redirect()
 
 
 @router.post("/diary/{entry_id}/unarchive")
-def post_diary_unarchive(request: Request, entry_id: int,
+def post_diary_unarchive(entry_id: int,
                          conn: sqlite3.Connection = Depends(get_db)):
-    json_mode = _wants_json(request)
     try:
         diary.unarchive_entry(conn, entry_id)
     except diary.DiaryError as exc:
-        if json_mode:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
         return _diary_redirect(archived=True, flash=str(exc))
-    if json_mode:
-        return JSONResponse({"ok": True})
     return _diary_redirect(archived=True)

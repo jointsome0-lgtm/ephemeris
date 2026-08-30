@@ -84,9 +84,10 @@ changes.
 `GET /diary` (day-grouped list, today first, browse back; `?archived=1`
 shows the archive, `?edit=<id>` pre-fills the form), `POST /diary`,
 `POST /diary/{id}/edit`, `POST /diary/{id}/archive`,
-`POST /diary/{id}/unarchive`. All writes follow the sec16.4 dual-mode
-contract (Mode A no-JS form + 303 PRG with flash; Mode B `x-partial: 1` →
-JSON, errors 422). Nav: rail + More sheet + command palette, `R == 'diary'`;
+`POST /diary/{id}/unarchive`. Every write is a plain form post answered with
+a 303 redirect back to the list; a rejected write redirects with the error as
+a `flash` query parameter. There is no JSON response path (#214). Nav: rail +
+More sheet + command palette, `R == 'diary'`;
 the rail/sheet links are guarded by the `diary_home` Jinja global so the
 live pre-#2 process hides them instead of linking a 404 (live-template
 skew). An entry editing an already-private row shows a "can't be cleared"

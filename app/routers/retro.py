@@ -4,19 +4,20 @@ periods (docs/retro-spec.md, issue #49).
 A pure move out of app/main.py, where the block was the file tail: one router
 included with no prefix at the position it occupied. URLs and registration
 order are unchanged. Every write journals a full-snapshot event, which is what
-the future selfos→exp2res adapter consumes from the JSONL export. The write
-contract follows sec16.4 (Mode A form + Mode B fetch), same as /daily-note.
+the future selfos→exp2res adapter consumes from the JSONL export. Every write
+answers with a 303 redirect back to the list, carrying the error as a flash
+when the service rejects it.
 """
 from __future__ import annotations
 
 import sqlite3
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 
 from ..db import get_db, snapshot
 from ..services import focus, retro
-from ..templating import _wants_json, _with_flash, templates
+from ..templating import _with_flash, templates
 
 router = APIRouter()  # GET /retro, POST /retro, /retro/{entry_id}/*
 
@@ -61,7 +62,6 @@ def get_retro(request: Request, archived: int = 0, edit: int | None = None,
 
 @router.post("/retro")
 def post_retro_create(
-    request: Request,
     period: str = Form(""),
     precision: str = Form("month"),
     confidence: str = Form("medium"),
@@ -69,22 +69,16 @@ def post_retro_create(
     text: str = Form(""),
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    json_mode = _wants_json(request)
     try:
-        row = retro.create_entry(conn, period=period, precision=precision,
+        retro.create_entry(conn, period=period, precision=precision,
                                  confidence=confidence, project=project, text=text)
     except retro.RetroError as exc:
-        if json_mode:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
         return _retro_redirect(flash=str(exc))
-    if json_mode:
-        return JSONResponse({"ok": True, "id": row["id"], "uuid": row["uuid"]})
     return _retro_redirect()
 
 
 @router.post("/retro/{entry_id}/edit")
 def post_retro_edit(
-    request: Request,
     entry_id: int,
     period: str = Form(""),
     precision: str = Form("month"),
@@ -93,44 +87,29 @@ def post_retro_edit(
     text: str = Form(""),
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    json_mode = _wants_json(request)
     try:
-        row = retro.update_entry(conn, entry_id, period=period, precision=precision,
+        retro.update_entry(conn, entry_id, period=period, precision=precision,
                                  confidence=confidence, project=project, text=text)
     except retro.RetroError as exc:
-        if json_mode:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
         return _retro_redirect(flash=str(exc))
-    if json_mode:
-        return JSONResponse({"ok": True, "id": row["id"], "uuid": row["uuid"]})
     return _retro_redirect()
 
 
 @router.post("/retro/{entry_id}/archive")
-def post_retro_archive(request: Request, entry_id: int,
+def post_retro_archive(entry_id: int,
                        conn: sqlite3.Connection = Depends(get_db)):
-    json_mode = _wants_json(request)
     try:
         retro.archive_entry(conn, entry_id)
     except retro.RetroError as exc:
-        if json_mode:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
         return _retro_redirect(flash=str(exc))
-    if json_mode:
-        return JSONResponse({"ok": True})
     return _retro_redirect()
 
 
 @router.post("/retro/{entry_id}/unarchive")
-def post_retro_unarchive(request: Request, entry_id: int,
+def post_retro_unarchive(entry_id: int,
                          conn: sqlite3.Connection = Depends(get_db)):
-    json_mode = _wants_json(request)
     try:
         retro.unarchive_entry(conn, entry_id)
     except retro.RetroError as exc:
-        if json_mode:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
         return _retro_redirect(archived=True, flash=str(exc))
-    if json_mode:
-        return JSONResponse({"ok": True})
     return _retro_redirect(archived=True)
