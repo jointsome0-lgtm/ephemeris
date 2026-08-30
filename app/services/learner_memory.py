@@ -245,15 +245,6 @@ def _render(
     ).encode("utf-8")
 
 
-def _projection_exists(lesson: dict) -> bool:
-    """Whether anything at all occupies the projection name (no-follow)."""
-    try:
-        os.lstat(lessons._lesson_dir(lesson["slug"]) / PROJECTION_NAME)
-    except (OSError, lessons.LessonError):
-        return False
-    return True
-
-
 def _publish(lesson: dict, data: bytes) -> None:
     """Stage the bytes in the bundle, then take the name atomically.
 
@@ -270,7 +261,7 @@ def _publish(lesson: dict, data: bytes) -> None:
 def _rewrite_locked(conn: sqlite3.Connection, lesson: dict) -> bool:
     """Render the committed authority and publish it. Runs under the flock."""
     here_path, here_step, entries, contradicts = _collect(conn, lesson)
-    if not entries and not _projection_exists(lesson):
+    if not entries and not projection.projection_exists(lesson, PROJECTION_NAME):
         # Nothing studied anywhere else and nothing occupies the name: the
         # absent file already IS the state. This runs at every lesson-agent
         # terminal open and must not litter every bundle with an empty file.

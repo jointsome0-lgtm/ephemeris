@@ -1064,41 +1064,6 @@ def _render(lesson: dict, as_of_seq: int, records: list[dict]) -> bytes:
     ).encode("utf-8")
 
 
-def _identity_contradicts(lesson: dict) -> bool:
-    """The publication identity gate (S-H7): never publish lesson A's
-    conclusions into a bundle whose manifest says it is lesson B.
-
-    A readable manifest carrying a `lesson_uid` that differs from the DB uid
-    blocks publication; the row still commits and the projection stays pending
-    until the contradiction is resolved. A missing, v1/legacy, or rejected
-    manifest does NOT block — the slug directory is the DB's own mapping, and
-    demanding a valid v2 manifest would silence exactly the legacy lessons the
-    assessment channel exists for (D-S1-4). The read is the PURE one (D-F1-2):
-    projecting never creates a directory, a skeleton manifest, or a file.
-
-    A rejected read carries no trusted identity, so it never gates. The
-    reader can assign `lesson_uid` and only afterwards accumulate a rejecting
-    finding — an empty `pages` list, a duplicate id — and honouring that
-    half-parsed value would block the projection permanently on exactly the
-    broken manifests the rule above says must publish. This is the
-    `effective_profile` idiom (§9.2): consumers read nothing but findings out
-    of a rejected manifest."""
-    read = lessons.read_bundle_readonly(lesson)
-    if read.rejected:
-        return False
-    uid = read.lesson_uid
-    return isinstance(uid, str) and bool(uid) and uid != lesson.get("uid")
-
-
-def _projection_exists(lesson: dict) -> bool:
-    """Whether anything at all occupies the projection name (no-follow)."""
-    try:
-        os.lstat(lessons._lesson_dir(lesson["slug"]) / PROJECTION_NAME)
-    except (OSError, lessons.LessonError):
-        return False
-    return True
-
-
 def _publish(lesson: dict, data: bytes) -> os.stat_result:
     """Atomically replace the projection over the verified bundle root,
     and report the identity of the file left behind.
@@ -1130,7 +1095,7 @@ def _rewrite_locked(conn: sqlite3.Connection, lesson: dict) -> bool:
         # process would have had bytes to publish. One small manifest read is
         # still nothing against the rewrite it replaces.
         if stamp is not None and _projection_unchanged(lesson, stamp):
-            if _identity_contradicts(lesson):
+            if projection.identity_contradicts(lesson):
                 # Answer here rather than falling through as a cache miss: the
                 # fall-through would fold the whole active state only to refuse
                 # on the same ground below, and replays that reach this are
@@ -1142,13 +1107,13 @@ def _rewrite_locked(conn: sqlite3.Connection, lesson: dict) -> bool:
         # Same watermark as the bytes this process published: republishing
         # would produce the same file but for the meta line's `generated_at`.
         return True
-    if as_of_seq == 0 and not _projection_exists(lesson):
+    if as_of_seq == 0 and not projection.projection_exists(lesson, PROJECTION_NAME):
         # Nothing was ever recorded for this lesson and nothing occupies the
         # name: the absent file already IS the state. Reconcile runs at every
         # lesson-agent terminal open, and it must not litter every bundle —
         # including the legacy ones — with an empty projection.
         return True
-    if _identity_contradicts(lesson):
+    if projection.identity_contradicts(lesson):
         return False
     st = _publish(lesson, _render(lesson, as_of_seq, records))
     if isinstance(uid, str) and uid:

@@ -2,8 +2,9 @@
 
 One per-lesson lock registry, one idempotency-key grammar, one durable
 publisher (stage, fsync, replace, dirsync), one private cross-process lock
-under a projections directory, and one record skeleton parameterised by the
-per-kind pieces.  No rate state lives here.
+under a projections directory, one file seal, the publication identity gate,
+and one record skeleton parameterised by the per-kind pieces.  No rate state
+lives here.
 """
 from __future__ import annotations
 
@@ -80,6 +81,34 @@ def require_eligible(
         )
 
 
+def identity_contradicts(lesson: dict) -> bool:
+    """The publication identity gate (S-H7): never publish lesson A's
+    conclusions into a bundle whose manifest says it is lesson B.
+
+    A readable manifest carrying a `lesson_uid` that differs from the DB uid
+    blocks publication; the row still commits and the projection stays pending
+    until the contradiction is resolved. A missing, v1/legacy, or rejected
+    manifest does NOT block — the slug directory is the DB's own mapping, and
+    demanding a valid v2 manifest would silence exactly the legacy lessons the
+    assessment channel exists for (D-S1-4). The read is the PURE one (D-F1-2):
+    projecting never creates a directory, a skeleton manifest, or a file.
+
+    A rejected read carries no trusted identity, so it never gates. The
+    reader can assign `lesson_uid` and only afterwards accumulate a rejecting
+    finding — an empty `pages` list, a duplicate id — and honouring that
+    half-parsed value would block the projection permanently on exactly the
+    broken manifests the rule above says must publish. This is the
+    `effective_profile` idiom (§9.2): consumers read nothing but findings out
+    of a rejected manifest."""
+    from . import lessons
+
+    read = lessons.read_bundle_readonly(lesson)
+    if read.rejected:
+        return False
+    uid = read.lesson_uid
+    return isinstance(uid, str) and bool(uid) and uid != lesson.get("uid")
+
+
 def safe_uid(lesson: dict) -> str:
     from . import bundle_schema
 
@@ -89,6 +118,16 @@ def safe_uid(lesson: dict) -> str:
     return uid
 
 
+def projection_exists(lesson: dict, name: str) -> bool:
+    from . import lessons
+
+    try:
+        os.lstat(lessons._lesson_dir(lesson["slug"]) / name)
+    except (OSError, lessons.LessonError):
+        return False
+    return True
+
+
 def ensure_state_dir(state_dir: Path) -> None:
     state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     if not stat_module.S_ISDIR(os.lstat(state_dir).st_mode):
@@ -96,7 +135,7 @@ def ensure_state_dir(state_dir: Path) -> None:
 
 
 @contextmanager
-def file_lock(state_dir: Path, lesson: dict):
+def file_lock(state_dir: Path, lesson: dict, *, blocking: bool = False):
     try:
         import fcntl
     except ImportError as exc:
@@ -114,13 +153,33 @@ def file_lock(state_dir: Path, lesson: dict):
         st = os.fstat(fd)
         if not stat_module.S_ISREG(st.st_mode) or st.st_nlink != 1:
             raise OSError("unsafe projection lock file")
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
         yield
     finally:
         try:
             fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
+
+
+def file_seal(st: os.stat_result) -> dict:
+    return {
+        "dev": st.st_dev, "ino": st.st_ino, "size": st.st_size,
+        "mtime_ns": st.st_mtime_ns, "ctime_ns": st.st_ctime_ns,
+    }
+
+
+def seal_matches(st: os.stat_result, seal: object) -> bool:
+    if not isinstance(seal, dict):
+        return False
+    return (
+        stat_module.S_ISREG(st.st_mode)
+        and st.st_nlink == 1
+        and all(
+            isinstance(seal.get(name), int) and seal[name] == value
+            for name, value in file_seal(st).items()
+        )
+    )
 
 
 def write_all(fd: int, data: bytes) -> os.stat_result:
@@ -171,12 +230,18 @@ def stage(
     raise OSError(errno.EEXIST, "could not allocate a projection temp file")
 
 
-def move_aside(dir_fd: int, name: str) -> str | None:
+def move_aside(
+    dir_fd: int, name: str, *, retire_regular: bool = False
+) -> str | None:
     try:
         st = os.lstat(name, dir_fd=dir_fd)
     except FileNotFoundError:
         return None
-    if stat_module.S_ISREG(st.st_mode) and st.st_nlink == 1:
+    if (
+        not retire_regular
+        and stat_module.S_ISREG(st.st_mode)
+        and st.st_nlink == 1
+    ):
         return None
     if stat_module.S_ISDIR(st.st_mode):
         try:
@@ -195,13 +260,21 @@ def publish(
     data: bytes | Callable[[int], None],
     *,
     prefix: str,
+    expect: dict | None = None,
     verify: Callable[[int, os.stat_result], None] | None = None,
-) -> os.stat_result:
+) -> os.stat_result | None:
     temp_name, fd = stage(dir_fd, data, prefix=prefix)
     try:
         staged = os.fstat(fd)
         if not stat_module.S_ISREG(staged.st_mode) or staged.st_nlink != 1:
             raise OSError("staged projection is not a single-link regular file")
+        if expect is not None:
+            try:
+                holder = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            except OSError:
+                return None
+            if not seal_matches(holder, expect):
+                return None
         move_aside(dir_fd, name)
         os.replace(temp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
         temp_name = None
