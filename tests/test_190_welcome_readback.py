@@ -280,13 +280,13 @@ def test_the_snapshot_is_the_panel_reading_never_a_second_one(client, monkeypatc
     """
     lesson = _lesson_for_readback("Readback Single Reading Fixture")
     calls = {"n": 0}
-    original = learn._record_panel_db_state
+    original = lessons.record_panel_db_state
 
     def counted(conn, lesson_id):
         calls["n"] += 1
         return original(conn, lesson_id)
 
-    monkeypatch.setattr(learn, "_record_panel_db_state", counted)
+    monkeypatch.setattr(lessons, "record_panel_db_state", counted)
     assert client.get(f"/learn?lesson={lesson['id']}").status_code == 200
     assert calls["n"] == 1, "the record is read once per /learn render"
 

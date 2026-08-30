@@ -3,8 +3,7 @@
 Moved verbatim — every route path, signature, status code, header and template
 context is the one main.py had; only the decorators (`@app.` → `@router.`) and
 the imports changed. The router is included with no prefix, in the position the
-routes used to occupy, so URLs and registration order are unchanged (the
-`by-slug` routes still register before their `{lesson_id}` twins).
+routes used to occupy, so URLs and registration order are unchanged.
 
 The surface: the /learn view + preview/metadata/bundle files, lesson artifacts
 (F1), runs (F4, including the SSE stream), attempts (D4), assessments (S-D-S1)
@@ -69,7 +68,7 @@ def get_learn(
         # persistence, and the record:
         # a newly committed attempt can therefore never be classified
         # against an older declaration set.
-        record_db_state = _record_panel_db_state(conn, selected["id"])
+        record_db_state = lessons.record_panel_db_state(conn, selected["id"])
         selected, selected_manifest = lessons.with_bundle_info_read(
             selected, entry=selected_entry
         )
@@ -491,13 +490,10 @@ def _record_snapshot(record: dict, bridge_page: dict | None) -> dict:
     }
 
 
-_record_panel_db_state = lessons.record_panel_db_state
-
-
 def _record_panel(conn, lesson: dict, *, manifest_read=None, db_state=None) -> dict:
     state, attempt_state, focus_total = (
         db_state if db_state is not None
-        else _record_panel_db_state(conn, lesson["id"])
+        else lessons.record_panel_db_state(conn, lesson["id"])
     )
     latest = attempt_state["latest_by_question"]
     # `/learn` passes the exact read that built `selected["bundle"]`, so one
@@ -924,7 +920,7 @@ def get_lesson_record_counts(lesson_id: int, since: str | None = None,
     screen under a header already reading `0 verdicts`.
     """
     lesson = _lesson_or_404(conn, lesson_id)
-    state, attempt_state, focus_total = _record_panel_db_state(conn, lesson["id"])
+    state, attempt_state, focus_total = lessons.record_panel_db_state(conn, lesson["id"])
     reviews = list(state["reviews_by_attempt"].values())
     cursors = sorted(_record_cursor(review["seq"]) for review in reviews)
     baseline = since[:_MAX_SINCE_LEN] if since else None
@@ -956,72 +952,71 @@ def get_lesson_record_counts(lesson_id: int, since: str | None = None,
 # --- lesson artifacts (phase F1 editor backend) ----------------------------
 
 
-def _artifact_refusal(exc: artifacts.ArtifactError) -> JSONResponse:
+def _refusal(exc) -> JSONResponse:
+    headers = {"Cache-Control": "no-store"}
+    if isinstance(exc, attempts.AttemptError) and exc.status == 429:
+        headers["Retry-After"] = str(int(attempts.RATE_WINDOW_SECONDS))
+    # JSON accepts escaped lone surrogates in object keys. The strict
+    # unknown-field error names those keys, but Starlette deliberately renders
+    # JSON with ensure_ascii=False and cannot UTF-8 encode a surrogate. Keep the
+    # controlled 400 path total: ordinary Unicode stays unchanged while only
+    # unencodable code points become their explicit backslash escape.
+    detail = exc.detail.encode("utf-8", "backslashreplace").decode("utf-8")
     return JSONResponse(
-        {"ok": False, "error": exc.code, "detail": exc.detail, **exc.fields},
+        {"ok": False, "error": exc.code, "detail": detail, **getattr(exc, "fields", {})},
         status_code=exc.status,
-        headers={"Cache-Control": "no-store"},
+        headers=headers,
     )
 
 
-def _artifact_lesson(
-    conn, *, lesson_id: int | None = None, slug: str | None = None
+async def _admit_json(
+    request: Request, error_cls: type, limit: int, *, what: str,
+    require_length: bool = False,
 ) -> dict:
-    lesson = (
-        lessons.get_lesson_by_slug(conn, slug)
-        if slug is not None
-        else lessons.get_lesson(conn, lesson_id)
-    )
+    if require_length and request.headers.get("content-length") is None:
+        raise error_cls("length-required", 411, "Content-Length is required")
+    content_type = request.headers.get("content-type", "")
+    if content_type.split(";", 1)[0].strip().lower() != "application/json":
+        raise error_cls("unsupported-media-type", 415, f"{what} are application/json")
+    try:
+        body = await read_capped(request, limit)
+    except PayloadTooLarge:
+        raise error_cls("payload-too-large", 413, "request body too large")
+    except ValueError:
+        raise error_cls("invalid-request", 400, "bad Content-Length")
+    try:
+        payload = json.loads(body)
+    except (ValueError, RecursionError):
+        # RecursionError: json.loads on deeply nested input (well under the
+        # byte cap) — still just a malformed body, never a 500. The parser
+        # unwinds fully before this handler runs.
+        raise error_cls("invalid-json", 400, "body is not valid JSON")
+    if not isinstance(payload, dict):
+        raise error_cls("invalid-json", 400, "body must be a JSON object")
+    return payload
+
+
+def _artifact_lesson(conn, lesson_id: int) -> dict:
+    lesson = lessons.get_lesson(conn, lesson_id)
     if lesson is None:
         raise artifacts.ArtifactError("unknown-lesson", 404, "unknown lesson")
     return lesson
 
 
-def _get_artifact(
-    conn, block_id: str, *, lesson_id: int | None = None, slug: str | None = None
-) -> JSONResponse:
+@router.get("/learn/lessons/{lesson_id}/blocks/{block_id}/file")
+def get_lesson_artifact(lesson_id: int, block_id: str,
+                        conn: sqlite3.Connection = Depends(get_db)):
     try:
-        lesson = _artifact_lesson(conn, lesson_id=lesson_id, slug=slug)
+        lesson = _artifact_lesson(conn, lesson_id)
         result = artifacts.get_artifact(lesson, block_id)
     except artifacts.ArtifactError as exc:
-        return _artifact_refusal(exc)
+        return _refusal(exc)
     return JSONResponse({"ok": True, **result}, headers={"Cache-Control": "no-store"})
 
 
-async def _save_artifact(
-    request: Request,
-    block_id: str,
-    *,
-    lesson_id: int | None = None,
-    slug: str | None = None,
-) -> JSONResponse:
-    content_type = request.headers.get("content-type", "")
-    if content_type.split(";", 1)[0].strip().lower() != "application/json":
-        return _artifact_refusal(artifacts.ArtifactError(
-            "unsupported-media-type", 415, "artifact saves are application/json"
-        ))
-    try:
-        body = await read_capped(request, artifacts.MAX_BODY_BYTES)
-    except PayloadTooLarge:
-        return _artifact_refusal(artifacts.ArtifactError(
-            "payload-too-large", 413, "request body too large"
-        ))
-    except ValueError:
-        return _artifact_refusal(artifacts.ArtifactError(
-            "invalid-request", 400, "bad Content-Length"
-        ))
-    try:
-        payload = json.loads(body)
-    except (UnicodeDecodeError, ValueError, RecursionError):
-        return _artifact_refusal(artifacts.ArtifactError(
-            "invalid-json", 400, "body is not valid JSON"
-        ))
-    if not isinstance(payload, dict):
-        return _artifact_refusal(artifacts.ArtifactError(
-            "invalid-json", 400, "body must be a JSON object"
-        ))
-
-    def work() -> dict:
+@router.post("/learn/lessons/{lesson_id}/blocks/{block_id}/file")
+async def post_lesson_artifact(request: Request, lesson_id: int, block_id: str):
+    def work(payload: dict) -> dict:
         # NOT Depends(get_db) (#24 cut 5): this runs in a threadpool worker,
         # and sqlite3 connections are thread-affine (check_same_thread). A
         # dependency-provided connection is opened in whichever worker
@@ -1030,119 +1025,66 @@ async def _save_artifact(
         # that uses it.
         conn = get_conn()
         try:
-            lesson = _artifact_lesson(conn, lesson_id=lesson_id, slug=slug)
+            lesson = _artifact_lesson(conn, lesson_id)
             return artifacts.save_artifact(conn, lesson, block_id, payload)
         finally:
             conn.close()
 
     try:
-        result = await run_in_threadpool(work)
+        payload = await _admit_json(
+            request, artifacts.ArtifactError, artifacts.MAX_BODY_BYTES,
+            what="artifact saves",
+        )
+        result = await run_in_threadpool(work, payload)
     except artifacts.ArtifactError as exc:
-        return _artifact_refusal(exc)
+        return _refusal(exc)
     return JSONResponse({"ok": True, **result}, headers={"Cache-Control": "no-store"})
-
-
-# Registered before the {lesson_id} routes so "by-slug" is not parsed as id.
-@router.get("/learn/lessons/by-slug/{slug}/blocks/{block_id}/file")
-def get_lesson_artifact_by_slug(slug: str, block_id: str,
-                                conn: sqlite3.Connection = Depends(get_db)):
-    return _get_artifact(conn, block_id, slug=slug)
-
-
-@router.post("/learn/lessons/by-slug/{slug}/blocks/{block_id}/file")
-async def post_lesson_artifact_by_slug(request: Request, slug: str, block_id: str):
-    return await _save_artifact(request, block_id, slug=slug)
-
-
-@router.get("/learn/lessons/{lesson_id}/blocks/{block_id}/file")
-def get_lesson_artifact(lesson_id: int, block_id: str,
-                        conn: sqlite3.Connection = Depends(get_db)):
-    return _get_artifact(conn, block_id, lesson_id=lesson_id)
-
-
-@router.post("/learn/lessons/{lesson_id}/blocks/{block_id}/file")
-async def post_lesson_artifact(request: Request, lesson_id: int, block_id: str):
-    return await _save_artifact(request, block_id, lesson_id=lesson_id)
 
 
 # --- lesson runs (phase F4 run API) ---------------------------------------
 
 
-def _run_refusal(code: str, status: int, detail: str = "", **fields) -> JSONResponse:
-    return JSONResponse(
-        {"ok": False, "error": code, "detail": detail, **fields},
-        status_code=status,
-        headers={"Cache-Control": "no-store"},
-    )
-
-
 def _runner_refusal(exc: runner_core.RunnerError) -> JSONResponse:
     if isinstance(exc, runner_core.JobMissingError):
-        return _run_refusal("job-missing", 404, "runner job is no longer retained")
-    if isinstance(exc, runner_core.IdempotencyConflictError):
-        return _run_refusal(
+        error = runs.RunRequestError(
+            "job-missing", 404, "runner job is no longer retained"
+        )
+    elif isinstance(exc, runner_core.IdempotencyConflictError):
+        error = runs.RunRequestError(
             "idempotency-conflict", 409,
             "idempotency_key was already used for another block or revision",
         )
-    if isinstance(exc, (
+    elif isinstance(exc, (
         runner_core.LessonCapacityError,
         runner_core.GlobalCapacityError,
     )):
-        return _run_refusal("busy", 409, "runner capacity is busy")
-    return _run_refusal("runner-unavailable", 409, "runner is unavailable")
+        error = runs.RunRequestError("busy", 409, "runner capacity is busy")
+    else:
+        error = runs.RunRequestError("runner-unavailable", 409, "runner is unavailable")
+    return _refusal(error)
 
 
-async def _start_run(
-    request: Request,
-    block_id: str,
-    *,
-    lesson_id: int | None = None,
-    slug: str | None = None,
-) -> JSONResponse:
-    content_type = request.headers.get("content-type", "")
-    if content_type.split(";", 1)[0].strip().lower() != "application/json":
-        return _run_refusal(
-            "unsupported-media-type", 415, "run starts are application/json"
-        )
-    try:
-        body = await read_capped(request, runs.MAX_BODY_BYTES)
-    except PayloadTooLarge:
-        return _run_refusal("payload-too-large", 413, "request body too large")
-    except ValueError:
-        return _run_refusal("invalid-request", 400, "bad Content-Length")
-    try:
-        payload = json.loads(body)
-    except (UnicodeDecodeError, ValueError, RecursionError):
-        return _run_refusal("invalid-json", 400, "body is not valid JSON")
-    if not isinstance(payload, dict):
-        return _run_refusal("invalid-json", 400, "body must be a JSON object")
-
-    def load_lesson() -> dict | None:
-        # NOT Depends(get_db) (#24 cut 5): this runs in a threadpool worker,
-        # and sqlite3 connections are thread-affine (check_same_thread). A
-        # dependency-provided connection is opened in whichever worker
-        # resolved the dependency, so using it here would raise as soon as
-        # the two threads differ. The connection must be born in the thread
-        # that uses it.
+@router.post("/learn/lessons/{lesson_id}/blocks/{block_id}/runs")
+async def start_lesson_run(request: Request, lesson_id: int, block_id: str):
+    def load_lesson() -> dict:
         conn = get_conn()
         try:
-            return (
-                lessons.get_lesson_by_slug(conn, slug)
-                if slug is not None else lessons.get_lesson(conn, lesson_id)
-            )
+            lesson = lessons.get_lesson(conn, lesson_id)
         finally:
             conn.close()
+        if lesson is None:
+            raise runs.RunRequestError("unknown-lesson", 404, "unknown lesson")
+        return lesson
 
-    lesson = await run_in_threadpool(load_lesson)
-    if lesson is None:
-        return _run_refusal("unknown-lesson", 404, "unknown lesson")
     service = request.app.state.runner_service
     try:
+        payload = await _admit_json(
+            request, runs.RunRequestError, runs.MAX_BODY_BYTES, what="run starts"
+        )
+        lesson = await run_in_threadpool(load_lesson)
         admission = await runs.start(service, lesson, block_id, payload)
-    except artifacts.ArtifactError as exc:
-        return _run_refusal(exc.code, exc.status, exc.detail, **exc.fields)
-    except runs.RunRequestError as exc:
-        return _run_refusal(exc.code, exc.status, exc.detail)
+    except (artifacts.ArtifactError, runs.RunRequestError) as exc:
+        return _refusal(exc)
     except runner_core.RunnerError as exc:
         return _runner_refusal(exc)
     return JSONResponse(
@@ -1156,22 +1098,7 @@ async def _start_run(
     )
 
 
-@router.post("/learn/lessons/by-slug/{slug}/blocks/{block_id}/runs")
-async def start_lesson_run_by_slug(request: Request, slug: str, block_id: str):
-    return await _start_run(request, block_id, slug=slug)
-
-
-@router.post("/learn/lessons/{lesson_id}/blocks/{block_id}/runs")
-async def start_lesson_run(request: Request, lesson_id: int, block_id: str):
-    return await _start_run(request, block_id, lesson_id=lesson_id)
-
-
-@router.get("/learn/runs/{job_id}")
-async def get_lesson_run(request: Request, job_id: str):
-    service = request.app.state.runner_service
-    job = await service.get(job_id)
-    if job is None:
-        return _run_refusal("job-missing", 404, "runner job is no longer retained")
+async def _run_status(job) -> dict:
     if job.state == runner_core.FINISHED and not job.event_attempted.is_set():
         await job.event_attempted.wait()
     status = runs.status_view(job)
@@ -1181,8 +1108,17 @@ async def get_lesson_run(request: Request, job_id: str):
     ):
         await job.event_attempted.wait()
         status = runs.status_view(job)
+    return status
+
+
+@router.get("/learn/runs/{job_id}")
+async def get_lesson_run(request: Request, job_id: str):
+    service = request.app.state.runner_service
+    job = await service.get(job_id)
+    if job is None:
+        return _runner_refusal(runner_core.JobMissingError())
     return JSONResponse(
-        {"ok": True, **status},
+        {"ok": True, **await _run_status(job)},
         headers={"Cache-Control": "no-store"},
     )
 
@@ -1192,20 +1128,11 @@ async def cancel_lesson_run(request: Request, job_id: str):
     service = request.app.state.runner_service
     job = await service.get(job_id)
     if job is None:
-        return _run_refusal("job-missing", 404, "runner job is no longer retained")
+        return _runner_refusal(runner_core.JobMissingError())
     if job.state != runner_core.FINISHED:
         await service.cancel(job_id)
-    if job.state == runner_core.FINISHED and not job.event_attempted.is_set():
-        await job.event_attempted.wait()
-    status = runs.status_view(job)
-    if (
-        status["state"] == runner_core.FINISHED
-        and not job.event_attempted.is_set()
-    ):
-        await job.event_attempted.wait()
-        status = runs.status_view(job)
     return JSONResponse(
-        {"ok": True, **status},
+        {"ok": True, **await _run_status(job)},
         headers={"Cache-Control": "no-store"},
     )
 
@@ -1239,7 +1166,7 @@ async def stream_lesson_run(request: Request, job_id: str, after: str | None = N
         request.headers, request.scope.get("scheme", "http")
     )
     if origin_rejection is not None:
-        return _run_refusal("forbidden", 403, origin_rejection)
+        return _refusal(runs.RunRequestError("forbidden", 403, origin_rejection))
     raw_cursor = after
     if raw_cursor is None:
         raw_cursor = request.headers.get("last-event-id")
@@ -1249,9 +1176,13 @@ async def stream_lesson_run(request: Request, job_id: str, after: str | None = N
         try:
             cursor = int(raw_cursor)
         except ValueError:
-            return _run_refusal("invalid-cursor", 400, "after must be an integer")
+            return _refusal(runs.RunRequestError(
+                "invalid-cursor", 400, "after must be an integer"
+            ))
         if cursor < 0:
-            return _run_refusal("invalid-cursor", 400, "after must be non-negative")
+            return _refusal(runs.RunRequestError(
+                "invalid-cursor", 400, "after must be non-negative"
+            ))
     service = request.app.state.runner_service
     try:
         attached = await service.attach_reader(job_id)
@@ -1299,72 +1230,18 @@ async def stream_lesson_run(request: Request, job_id: str, after: str | None = N
 _ATTEMPT_MAX_BODY = 256 * 1024
 
 
-def _attempt_refusal(code: str, status: int, detail: str = "") -> JSONResponse:
-    headers = {"Cache-Control": "no-store"}
-    if status == 429:
-        headers["Retry-After"] = str(int(attempts.RATE_WINDOW_SECONDS))
-    return JSONResponse(
-        {"ok": False, "error": code, "detail": detail},
-        status_code=status,
-        headers=headers,
-    )
-
-
-async def _record_attempt_request(
-    request: Request, *, lesson_id: int | None = None, slug: str | None = None
-) -> JSONResponse:
-    """Shared handler for the id and slug-alias attempt routes. The async
-    layer owns body admission (bounded, JSON only); the blocking service
-    work runs in the threadpool like every sync route. The B2 perimeter
-    middleware already applied its unsafe-method origin policy before this
-    runs — same-origin fetch (the D5 bridge parent) and origin-less
-    non-browser clients pass; the sandboxed iframe's own `Origin: null`
-    can never reach here."""
-    length = request.headers.get("content-length")
-    if length is None:
-        return _attempt_refusal("length-required", 411, "Content-Length is required")
-    try:
-        expected_len = int(length)
-    except ValueError:
-        return _attempt_refusal("invalid-request", 400, "bad Content-Length")
-    if expected_len < 0:
-        return _attempt_refusal("invalid-request", 400, "bad Content-Length")
-    if expected_len > _ATTEMPT_MAX_BODY:
-        return _attempt_refusal("payload-too-large", 413, "request body too large")
-    content_type = request.headers.get("content-type", "")
-    if content_type.split(";", 1)[0].strip().lower() != "application/json":
-        return _attempt_refusal(
-            "unsupported-media-type", 415, "submissions are application/json"
-        )
-    try:
-        body = await read_capped(request, _ATTEMPT_MAX_BODY)
-    except PayloadTooLarge:
-        return _attempt_refusal("payload-too-large", 413, "request body too large")
-    except ValueError:
-        return _attempt_refusal("invalid-request", 400, "bad Content-Length")
-    try:
-        payload = json.loads(body)
-    except (ValueError, RecursionError):
-        # RecursionError: json.loads on deeply nested input (well under the
-        # byte cap) — still just a malformed body, never a 500. The parser
-        # unwinds fully before this handler runs.
-        return _attempt_refusal("invalid-json", 400, "body is not valid JSON")
-    if not isinstance(payload, dict):
-        return _attempt_refusal("invalid-json", 400, "body must be a JSON object")
-
-    def work() -> dict:
-        # NOT Depends(get_db) (#24 cut 5): this runs in a threadpool worker,
-        # and sqlite3 connections are thread-affine (check_same_thread). A
-        # dependency-provided connection is opened in whichever worker
-        # resolved the dependency, so using it here would raise as soon as
-        # the two threads differ. The connection must be born in the thread
-        # that uses it.
+@router.post("/learn/lessons/{lesson_id}/attempts")
+async def post_lesson_attempt(request: Request, lesson_id: int):
+    """The async layer owns body admission (bounded, JSON only); the blocking
+    service work runs in the threadpool like every sync route. The B2
+    perimeter middleware already applied its unsafe-method origin policy before
+    this runs — same-origin fetch (the D5 bridge parent) and origin-less
+    non-browser clients pass; the sandboxed iframe's own `Origin: null` can
+    never reach here."""
+    def work(payload: dict) -> dict:
         conn = get_conn()
         try:
-            if slug is not None:
-                lesson = lessons.get_lesson_by_slug(conn, slug)
-            else:
-                lesson = lessons.get_lesson(conn, lesson_id)
+            lesson = lessons.get_lesson(conn, lesson_id)
             if lesson is None:
                 raise attempts.AttemptError("unknown-lesson", 404, "unknown lesson")
             return attempts.record_attempt(conn, lesson, payload)
@@ -1372,23 +1249,16 @@ async def _record_attempt_request(
             conn.close()
 
     try:
-        result = await run_in_threadpool(work)
+        payload = await _admit_json(
+            request, attempts.AttemptError, _ATTEMPT_MAX_BODY,
+            what="submissions", require_length=True,
+        )
+        result = await run_in_threadpool(work, payload)
     except attempts.AttemptError as exc:
-        return _attempt_refusal(exc.code, exc.status, exc.detail)
+        return _refusal(exc)
     return JSONResponse(
         {"ok": True, **result}, headers={"Cache-Control": "no-store"}
     )
-
-
-# Registered before the {lesson_id} route so "by-slug" is never parsed as an id.
-@router.post("/learn/lessons/by-slug/{slug}/attempts")
-async def post_lesson_attempt_by_slug(request: Request, slug: str):
-    return await _record_attempt_request(request, slug=slug)
-
-
-@router.post("/learn/lessons/{lesson_id}/attempts")
-async def post_lesson_attempt(request: Request, lesson_id: int):
-    return await _record_attempt_request(request, lesson_id=lesson_id)
 
 
 # --- lesson assessments (S-DESIGN D-S1, docs/lesson-assessments-api.md) ------
@@ -1400,79 +1270,23 @@ async def post_lesson_attempt(request: Request, lesson_id: int):
 _ASSESSMENT_MAX_BODY = 64 * 1024
 
 
-def _assessment_refusal(code: str, status: int, detail: str = "") -> JSONResponse:
-    # JSON accepts escaped lone surrogates in object keys. The strict
-    # unknown-field error names those keys, but Starlette deliberately renders
-    # JSON with ensure_ascii=False and cannot UTF-8 encode a surrogate. Keep the
-    # controlled 400 path total: ordinary Unicode stays unchanged while only
-    # unencodable code points become their explicit backslash escape.
-    detail = detail.encode("utf-8", "backslashreplace").decode("utf-8")
-    return JSONResponse(
-        {"ok": False, "error": code, "detail": detail},
-        status_code=status,
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-async def _record_assessment_request(
-    request: Request, *, lesson_id: int | None = None, slug: str | None = None
-) -> JSONResponse:
-    """Shared handler for the id and slug-alias assessment routes — the D4
-    admission shape, deliberately (the attempt handler owns its own copy and
-    stays untouched). The async layer owns body admission (bounded, JSON only);
-    the blocking service work runs in the threadpool like every sync route. The
-    B2 perimeter middleware already applied its unsafe-method origin policy:
-    the lesson-agent shell's origin-less request passes, the sandboxed lesson
+@router.post("/learn/lessons/{lesson_id}/assessments")
+async def post_lesson_assessment(request: Request, lesson_id: int):
+    """The async layer owns body admission (bounded, JSON only); the blocking
+    service work runs in the threadpool like every sync route. The B2
+    perimeter middleware already applied its unsafe-method origin policy: the
+    lesson-agent shell's origin-less request passes, the sandboxed lesson
     iframe's `Origin: null` never reaches here — the tutor writes verdicts, the
     lesson page must not."""
     # The session write capability (s3), if the caller has one. It is read here
     # and never from the body: the sitting and the lesson it names are the
     # server's own facts about the caller.
     capability_token = request.headers.get(assessments.CAPABILITY_HEADER)
-    length = request.headers.get("content-length")
-    if length is None:
-        return _assessment_refusal("length-required", 411, "Content-Length is required")
-    try:
-        expected_len = int(length)
-    except ValueError:
-        return _assessment_refusal("invalid-request", 400, "bad Content-Length")
-    if expected_len < 0:
-        return _assessment_refusal("invalid-request", 400, "bad Content-Length")
-    if expected_len > _ASSESSMENT_MAX_BODY:
-        return _assessment_refusal("payload-too-large", 413, "request body too large")
-    content_type = request.headers.get("content-type", "")
-    if content_type.split(";", 1)[0].strip().lower() != "application/json":
-        return _assessment_refusal(
-            "unsupported-media-type", 415, "submissions are application/json"
-        )
-    try:
-        body = await read_capped(request, _ASSESSMENT_MAX_BODY)
-    except PayloadTooLarge:
-        return _assessment_refusal("payload-too-large", 413, "request body too large")
-    except ValueError:
-        return _assessment_refusal("invalid-request", 400, "bad Content-Length")
-    try:
-        payload = json.loads(body)
-    except (ValueError, RecursionError):
-        # RecursionError: json.loads on deeply nested input (well under the
-        # byte cap) — still just a malformed body, never a 500.
-        return _assessment_refusal("invalid-json", 400, "body is not valid JSON")
-    if not isinstance(payload, dict):
-        return _assessment_refusal("invalid-json", 400, "body must be a JSON object")
 
-    def work() -> dict:
-        # NOT Depends(get_db) (#24 cut 5): this runs in a threadpool worker,
-        # and sqlite3 connections are thread-affine (check_same_thread). A
-        # dependency-provided connection is opened in whichever worker
-        # resolved the dependency, so using it here would raise as soon as
-        # the two threads differ. The connection must be born in the thread
-        # that uses it.
+    def work(payload: dict) -> dict:
         conn = get_conn()
         try:
-            if slug is not None:
-                lesson = lessons.get_lesson_by_slug(conn, slug)
-            else:
-                lesson = lessons.get_lesson(conn, lesson_id)
+            lesson = lessons.get_lesson(conn, lesson_id)
             if lesson is None:
                 raise assessments.AssessmentError(
                     "unknown-lesson", 404, "unknown lesson"
@@ -1484,23 +1298,16 @@ async def _record_assessment_request(
             conn.close()
 
     try:
-        result = await run_in_threadpool(work)
+        payload = await _admit_json(
+            request, assessments.AssessmentError, _ASSESSMENT_MAX_BODY,
+            what="submissions", require_length=True,
+        )
+        result = await run_in_threadpool(work, payload)
     except assessments.AssessmentError as exc:
-        return _assessment_refusal(exc.code, exc.status, exc.detail)
+        return _refusal(exc)
     return JSONResponse(
         {"ok": True, **result}, headers={"Cache-Control": "no-store"}
     )
-
-
-# Registered before the {lesson_id} route so "by-slug" is never parsed as an id.
-@router.post("/learn/lessons/by-slug/{slug}/assessments")
-async def post_lesson_assessment_by_slug(request: Request, slug: str):
-    return await _record_assessment_request(request, slug=slug)
-
-
-@router.post("/learn/lessons/{lesson_id}/assessments")
-async def post_lesson_assessment(request: Request, lesson_id: int):
-    return await _record_assessment_request(request, lesson_id=lesson_id)
 
 
 # --- the lesson build step (#161) --------------------------------------------
@@ -1518,14 +1325,6 @@ async def post_lesson_assessment(request: Request, lesson_id: int):
 # sandboxed lesson iframe's `Origin: null` never gets here, so a lesson page
 # cannot rebuild its own lesson.
 _BUILD_MAX_BODY = 16 * 1024
-
-
-def _build_refusal(code: str, status: int, detail: str = "", **fields) -> JSONResponse:
-    return JSONResponse(
-        {"ok": False, "error": code, "detail": detail, **fields},
-        status_code=status,
-        headers={"Cache-Control": "no-store"},
-    )
 
 
 def _self_origin(request: Request) -> str | None:
@@ -1551,39 +1350,21 @@ def _self_origin(request: Request) -> str | None:
 
 @router.post("/learn/lessons/{lesson_id}/build")
 async def post_lesson_build(request: Request, lesson_id: int):
-    length = request.headers.get("content-length")
-    if length is None:
-        return _build_refusal("length-required", 411, "Content-Length is required")
     try:
-        if int(length) > _BUILD_MAX_BODY:
-            return _build_refusal("payload-too-large", 413, "request body too large")
-    except ValueError:
-        return _build_refusal("invalid-request", 400, "bad Content-Length")
-    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() \
-            != "application/json":
-        return _build_refusal(
-            "unsupported-media-type", 415, "build requests are application/json"
+        payload = await _admit_json(
+            request, lesson_build.BuildError, _BUILD_MAX_BODY,
+            what="build requests", require_length=True,
         )
-    try:
-        body = await read_capped(request, _BUILD_MAX_BODY)
-    except PayloadTooLarge:
-        return _build_refusal("payload-too-large", 413, "request body too large")
-    except ValueError:
-        return _build_refusal("invalid-request", 400, "bad Content-Length")
-    try:
-        payload = json.loads(body)
-    except (ValueError, RecursionError):
-        return _build_refusal("invalid-json", 400, "body is not valid JSON")
-    if not isinstance(payload, dict):
-        return _build_refusal("invalid-json", 400, "body must be a JSON object")
+    except lesson_build.BuildError as exc:
+        return _refusal(exc)
 
     origin = _self_origin(request)
     if origin is None:
-        return _build_refusal(
+        return _refusal(lesson_build.BuildError(
             "no-origin", 503,
             "this app cannot name its own address, so the render gate has "
             "nothing to load",
-        )
+        ))
 
     def resolve() -> tuple[dict, str, str]:
         # Same threadpool rule as every sync route here: the connection is
@@ -1646,7 +1427,7 @@ async def post_lesson_build(request: Request, lesson_id: int):
             artifact_url=f"{origin}{_lesson_preview_url(lesson_id, out)}",
         )
     except lesson_build.BuildError as exc:
-        return _build_refusal(exc.code, exc.status, exc.detail, **exc.fields)
+        return _refusal(exc)
     return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
 

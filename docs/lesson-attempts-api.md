@@ -23,10 +23,9 @@ supplies only what it saw at load time, and only for comparison.
 
 ```
 POST /learn/lessons/{lesson_id}/attempts
-POST /learn/lessons/by-slug/{slug}/attempts     (alias, same handler)
 ```
 
-Both are unsafe-method routes behind the app perimeter (`app/security.py`):
+This is an unsafe-method route behind the app perimeter (`app/security.py`):
 same-origin browser fetch and origin-less non-browser clients pass; a
 cross-origin or `Origin: null` request (the sandboxed lesson iframe itself)
 is refused with 403 before the handler runs. Requests must be
@@ -96,7 +95,7 @@ is refused with 403 before the handler runs. Requests must be
 |--------|-------|-----------|
 | 400 | `invalid-question-id`, `invalid-page-id`, `invalid-page-rev`, `invalid-idempotency-key`, `invalid-answer`, `invalid-json`, `invalid-request` | grammar/shape violations |
 | 400 | `answer-too-large` | answer > 32 KiB UTF-8, or projection line > 64 KiB |
-| 404 | `unknown-lesson` | no such lesson id/slug |
+| 404 | `unknown-lesson` | no such lesson id |
 | 409 | `manifest-rejected` | record-time manifest read is rejected (§9.2 — attempt writes refused) |
 | 409 | `identity-mismatch` | manifest `lesson_uid` ≠ DB uid (§3 — resolved explicitly, never by a write) |
 | 409 | `attempts-unavailable` | profile grants no attempt affordance (v1, `legacy-display`, unknown profile — §5) |

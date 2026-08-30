@@ -449,14 +449,8 @@ def test_assessment_artifact_migration(client, suite_state):
     _as_surrogate_id = c.post(
         _as_url, content=_as_surrogate_body,
         headers={"content-type": "application/json"})
-    _as_surrogate_slug = c.post(
-        f"/learn/lessons/by-slug/{_as['slug']}/assessments",
-        content=_as_surrogate_body,
-        headers={"content-type": "application/json"})
     assert (
         _as_surrogate_id.status_code == 400
-        and _as_surrogate_slug.status_code == 400
-        and _as_surrogate_id.json() == _as_surrogate_slug.json()
         and _as_surrogate_id.json()["error"] == "unknown-field"
         and _as_surrogate_id.json()["detail"] == r"unknown fields: \ud800"
         and len(_as_rows()) == 1
@@ -535,10 +529,7 @@ def test_assessment_artifact_migration(client, suite_state):
         c.post("/learn/lessons/999999/assessments", json={
             "kind": "summary", "note": _as_note,
             "idempotency_key": "vera-as-404"}).status_code == 404
-        and c.post("/learn/lessons/by-slug/no-such-lesson/assessments", json={
-            "kind": "summary", "note": _as_note,
-            "idempotency_key": "vera-as-404"}).status_code == 404
-    ), "unknown lesson id and slug both 404"
+    ), "unknown lesson id 404s"
 
     # archived lessons refuse (D-S1-4) — but a replay of an already-durable
     # write still returns its outcome: replay precedes mutable-state refusals
@@ -611,16 +602,6 @@ def test_assessment_artifact_migration(client, suite_state):
             " | ".join(_as_plan)
         )
     )
-
-    # slug alias shares the handler
-    _as_slug = c.post(f"/learn/lessons/by-slug/{_as['slug']}/assessments", json={
-        "kind": "summary", "note": "Vera Example: recorded through the alias.",
-        "idempotency_key": "vera-as-slug-1"})
-    assert (
-        _as_slug.status_code == 200
-        and _as_slug.json()["result"] == "recorded"
-        and _as_rows()[-1]["lesson_uid"] == _as["uid"]
-    ), "slug-alias route records against the same lesson"
 
     # active-state fold (D-S1-2) on its own lesson: latest active evidence per
     # concept, latest active review per attempt, latest active summary
@@ -753,15 +734,11 @@ def test_assessment_artifact_migration(client, suite_state):
     ), "body admission: 415 / 413 / invalid-json / non-object"
     _as_stream = _at_asyncio.run(_at_direct_asgi(
         _as_url, 1, [b"x" * (16 * 1024) for _ in range(8)]))
-    _as_stream_slug = _at_asyncio.run(_at_direct_asgi(
-        f"/learn/lessons/by-slug/{_as['slug']}/assessments", 1,
-        [b"x" * (16 * 1024) for _ in range(8)]))
     _as_negative = _at_asyncio.run(_at_direct_asgi(_as_url, -1, [b"{}"]))
     assert (
-        _as_stream == (413, 5) and _as_stream_slug == (413, 5)
-        and _as_negative == (400, 0)
+        _as_stream == (413, 5) and _as_negative == (400, 0)
     ), (
-        "assessment aliases abort dishonest bodies mid-stream, reject "
+        "assessment route aborts dishonest bodies mid-stream, rejects "
         "negative Content-Length"
     )
 
@@ -863,16 +840,14 @@ def test_assessment_artifact_migration(client, suite_state):
                 for k in ("vera-s3-mismatch-1", "vera-s3-unknown-1",
                           "vera-s3-empty-1"))
     ), "a foreign, unknown, or empty capability refuses with its own code"
-    # The by-slug alias resolves the same capability against the same lesson.
-    _s3_slug = _s3_post({
-        "kind": "summary", "note": "Vera Example: alias sitting.",
-        "idempotency_key": "vera-s3-alias-1"}, _s3_cap["token"],
-        url=f"/learn/lessons/by-slug/{_s3_les['slug']}/assessments").json()
+    _s3_first = _s3_post({
+        "kind": "summary", "note": "Vera Example: first synthesis.",
+        "idempotency_key": "vera-s3-sum-1"}, _s3_cap["token"]).json()
     assert (
-        _s3_slug["result"] == "recorded"
-        and _s3_row(_s3_slug["assessment_id"])["sitting_id"]
+        _s3_first["result"] == "recorded"
+        and _s3_row(_s3_first["assessment_id"])["sitting_id"]
         == "verify-sitting-a"
-    ), "the by-slug alias derives the same sitting"
+    ), "the capability derives the sitting the summary lands in"
     # One ACTIVE summary per sitting: a second must supersede the first.
     _s3_second = _s3_post({
         "kind": "summary", "note": "Vera Example: a second synthesis.",
@@ -880,12 +855,12 @@ def test_assessment_artifact_migration(client, suite_state):
     _s3_superseding = _s3_post({
         "kind": "summary", "note": "Vera Example: corrected synthesis.",
         "next_action": "Re-run the channel exercise.",
-        "supersedes": _s3_slug["assessment_id"],
+        "supersedes": _s3_first["assessment_id"],
         "idempotency_key": "vera-s3-sum-3"}, _s3_cap["token"])
     assert (
         _s3_second.status_code == 409
         and _s3_second.json()["error"] == "summary-exists"
-        and _s3_slug["assessment_id"] in _s3_second.json()["detail"]
+        and _s3_first["assessment_id"] in _s3_second.json()["detail"]
         and _s3_superseding.status_code == 200
         and _s3_superseding.json()["result"] == "recorded"
     ), "one active summary per sitting; the refusal names what to supersede"
@@ -1631,13 +1606,6 @@ def test_assessment_artifact_migration(client, suite_state):
         and _f1_get1.json()["file_rev"] == _f1_saved1["file_rev"]
         and _f1_get1.json()["size"] == len(_f1_body1.encode("utf-8"))
     ), "F1 GET returns strict bytes, size, and their sha256 revision"
-    _f1_alias = c.get(
-        f"/learn/lessons/by-slug/{_f1['slug']}/blocks/blk_editor01/file")
-    assert (
-        _f1_alias.status_code == 200
-        and _f1_alias.json()["file_rev"] == _f1_saved1["file_rev"]
-    ), "F1 by-slug artifact alias is the same descriptor-bound read"
-
     _f1_event_count = len(events_of("lesson_artifact_saved"))
     _f1_conflict = c.post(
         _f1_url, json={"content": "print('changed')\n", "base_rev": "absent"})

@@ -20,12 +20,9 @@ a path.
 ```
 GET  /learn/lessons/{lesson_id}/blocks/{block_id}/file
 POST /learn/lessons/{lesson_id}/blocks/{block_id}/file
-GET  /learn/lessons/by-slug/{slug}/blocks/{block_id}/file
-POST /learn/lessons/by-slug/{slug}/blocks/{block_id}/file
 ```
 
-The by-slug forms are aliases with identical behavior. Every route uses the
-pure bundle reader: it never creates a bundle, manifest skeleton, standard
+Every route uses the pure bundle reader: it never creates a bundle, manifest skeleton, standard
 directory, artifact root, or legacy copy. Existing preview reads keep their
 historical behavior and are a separate surface.
 
@@ -106,7 +103,7 @@ the file is absent).
 | 400 | `invalid-base-rev` | neither `absent` nor `sha256:` plus 64 lowercase hex |
 | 400 | `invalid-content` | `content` is not a UTF-8-encodable JSON string |
 | 400 | `invalid-json`, `invalid-request` | malformed/non-object JSON or bad Content-Length |
-| 404 | `unknown-lesson` | no lesson with that id or slug |
+| 404 | `unknown-lesson` | no lesson with that id |
 | 409 | `manifest-rejected` | the pure record-time manifest read is rejected or missing |
 | 409 | `identity-mismatch` | manifest `lesson_uid` differs from DB authority |
 | 409 | `blocks-unavailable` | manifest/profile grants no interactive editor affordance |
@@ -123,13 +120,12 @@ the file is absent).
 
 ```
 POST /learn/lessons/{lesson_id}/blocks/{block_id}/runs
-POST /learn/lessons/by-slug/{slug}/blocks/{block_id}/runs
 GET  /learn/runs/{job_id}
 GET  /learn/runs/{job_id}/stream[?after=<seq>]
 POST /learn/runs/{job_id}/cancel
 ```
 
-The start aliases share one handler. The request is `application/json`, capped
+The request is `application/json`, capped
 at 16 KiB, and contains only the last saved revision and the logical-action
 identity:
 
@@ -243,7 +239,7 @@ is activated; the iframe never receives raw HTTP status as authority.
 | 400 | `invalid-file-rev`, `invalid-idempotency-key`, `invalid-cursor` | run request/cursor grammar |
 | 400 | `invalid-json`, `invalid-request` | malformed/non-object JSON or bad Content-Length |
 | 403 | `forbidden` | browser SSE request is not same-origin |
-| 404 | `unknown-lesson` | no lesson with that id or slug |
+| 404 | `unknown-lesson` | no lesson with that id |
 | 404 | `job-missing` | job is unknown, expired, or count-evicted |
 | 409 | `manifest-rejected`, `identity-mismatch`, `blocks-unavailable` | manifest/profile refuses the affordance |
 | 409 | `unsafe-file` | root, parent, or artifact descriptor is unsafe |
