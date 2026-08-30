@@ -20,7 +20,6 @@
     <input type="hidden" name="smart" value="1">
     <input type="hidden" name="list_id" value="{{ add_list_id }}">
     {% if add_due %}<input type="hidden" name="due_date" value="{{ add_due }}">{% endif %}
-    {% if add_kind and add_kind != 'task' %}<input type="hidden" name="kind" value="{{ add_kind }}">{% endif %}
     <span class="qa-plus" aria-hidden="true">+</span>
     <input type="text" name="title" class="qa-input" placeholder="Add task{% if add_list_name %} to “{{ add_list_name }}”{% endif %}" required>
   </form>

@@ -196,7 +196,6 @@ def post_task_create(
     title: str = Form(...),
     list_id: int | None = Form(None),
     due_date: str | None = Form(None),
-    kind: str = Form("task"),
     smart: str = Form(""),
     return_to: str = Form("/today"),
     conn: sqlite3.Connection = Depends(get_db),
@@ -216,7 +215,7 @@ def post_task_create(
         parsed_label = " · ".join(bits)
     try:
         tasks.create_task(conn, title, list_id=list_id, due_date=(due_date or None),
-                          kind=kind, priority=priority)
+                          priority=priority)
     except tasks.TaskError as exc:
         if _wants_json(request):
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)

@@ -20,17 +20,6 @@ from ..db import append_event, now_iso
 
 DEFAULT_GROUP = "Core Routine"
 
-# Create-Habit option vocabularies (sec31). Stored on the routine_item; kept
-# permissive — unknown values fall back to the default rather than erroring.
-#
-# LEGACY since #18: the habit form no longer offers frequency / goal / goal_days
-# / reminder / constant_reminder, and nothing reads them. These keywords stay so
-# the columns keep their pre-#18 values — callers that omit them leave the stored
-# value alone (update_item's _UNSET) instead of resetting it to the default.
-FREQUENCIES = ("daily", "weekdays", "weekly")
-GOALS = ("achieve_all", "custom")
-GOAL_DAYS = ("forever", "21", "30", "66", "100")
-
 _UNSET = object()  # update_item sentinel: distinguishes "leave alone" from "set to None"
 
 
@@ -63,18 +52,11 @@ def _clean(title: str | None, group_name: str | None) -> tuple[str, str]:
     return title, group_name
 
 
-def _clean_habit_fields(emoji, frequency, goal, goal_days, start_date, reminder) -> dict:
-    """Normalise the optional Create-Habit fields (sec31); unknowns → defaults."""
+def _clean_habit_fields(emoji, start_date) -> dict:
+    """Normalise the optional Create-Habit fields (sec31)."""
     emoji = (emoji or "").strip()[:8] or None
-    frequency = frequency if frequency in FREQUENCIES else "daily"
-    goal = goal if goal in GOALS else "achieve_all"
-    goal_days = str(goal_days) if str(goal_days) in GOAL_DAYS else "forever"
     start_date = (start_date or "").strip() or None
-    reminder = (reminder or "").strip() or None
-    return {
-        "emoji": emoji, "frequency": frequency, "goal": goal,
-        "goal_days": goal_days, "start_date": start_date, "reminder": reminder,
-    }
+    return {"emoji": emoji, "start_date": start_date}
 
 
 def create_item(
@@ -83,15 +65,10 @@ def create_item(
     group_name: str,
     *,
     emoji: str | None = None,
-    frequency: str = "daily",
-    goal: str = "achieve_all",
-    goal_days: str = "forever",
     start_date: str | None = None,
-    reminder: str | None = None,
-    constant_reminder: bool = False,
 ) -> int:
     title, group_name = _clean(title, group_name)
-    h = _clean_habit_fields(emoji, frequency, goal, goal_days, start_date, reminder)
+    h = _clean_habit_fields(emoji, start_date)
     ts = now_iso()
     # Default to the creation date: since #18 this is a real lower bound — the
     # habit is not listed, and does not accrue statistics, before this day.
@@ -103,13 +80,10 @@ def create_item(
         # transaction rather than guessed before it.
         cur = conn.execute(
             "INSERT INTO routine_items "
-            "(title, group_name, active, sort_order, created_at, emoji, frequency, "
-            " goal, goal_days, start_date, reminder, constant_reminder) "
-            "SELECT ?, ?, 1, COALESCE(MAX(sort_order), 0) + 10, ?, ?, ?, ?, ?, ?, ?, ? "
+            "(title, group_name, active, sort_order, created_at, emoji, start_date) "
+            "SELECT ?, ?, 1, COALESCE(MAX(sort_order), 0) + 10, ?, ?, ? "
             "FROM routine_items WHERE group_name = ?",
-            (title, group_name, ts, h["emoji"], h["frequency"], h["goal"],
-             h["goal_days"], h["start_date"], h["reminder"], int(bool(constant_reminder)),
-             group_name),
+            (title, group_name, ts, h["emoji"], h["start_date"], group_name),
         )
         item_id = cur.lastrowid
         nxt = conn.execute(
@@ -117,7 +91,7 @@ def create_item(
         ).fetchone()[0]
         append_event(conn, "routine_item_created", {
             "routine_item_id": item_id, "title": title, "group_name": group_name,
-            "sort_order": nxt, **h, "constant_reminder": int(bool(constant_reminder)),
+            "sort_order": nxt, **h,
         })
     return item_id
 
@@ -129,12 +103,7 @@ def update_item(
     group_name: str,
     *,
     emoji=_UNSET,
-    frequency=_UNSET,
-    goal=_UNSET,
-    goal_days=_UNSET,
     start_date=_UNSET,
-    reminder=_UNSET,
-    constant_reminder=_UNSET,
 ) -> None:
     title, group_name = _clean(title, group_name)
     row = conn.execute("SELECT * FROM routine_items WHERE id = ?", (item_id,)).fetchone()
@@ -142,23 +111,17 @@ def update_item(
         raise ItemError("unknown item")
     # only the columns whose kw was supplied change; the rest keep their value
     pick = lambda v, col: row[col] if v is _UNSET else v  # noqa: E731
-    h = _clean_habit_fields(
-        pick(emoji, "emoji"), pick(frequency, "frequency"), pick(goal, "goal"),
-        pick(goal_days, "goal_days"), pick(start_date, "start_date"), pick(reminder, "reminder"),
-    )
-    const = row["constant_reminder"] if constant_reminder is _UNSET else int(bool(constant_reminder))
+    h = _clean_habit_fields(pick(emoji, "emoji"), pick(start_date, "start_date"))
     ts = now_iso()
     with conn:
         conn.execute(
-            "UPDATE routine_items SET title=?, group_name=?, emoji=?, frequency=?, "
-            "goal=?, goal_days=?, start_date=?, reminder=?, constant_reminder=?, updated_at=? "
-            "WHERE id=?",
-            (title, group_name, h["emoji"], h["frequency"], h["goal"], h["goal_days"],
-             h["start_date"], h["reminder"], const, ts, item_id),
+            "UPDATE routine_items SET title=?, group_name=?, emoji=?, start_date=?, "
+            "updated_at=? WHERE id=?",
+            (title, group_name, h["emoji"], h["start_date"], ts, item_id),
         )
         append_event(conn, "routine_item_updated", {
             "routine_item_id": item_id, "title": title, "group_name": group_name,
-            "sort_order": row["sort_order"], **h, "constant_reminder": const,
+            "sort_order": row["sort_order"], **h,
         })
 
 

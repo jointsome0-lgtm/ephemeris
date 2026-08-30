@@ -7,8 +7,8 @@
    date and section. Frequency / Goal / Goal Days / Reminder / Constant Reminder
    were removed — nothing read them, two of them had no parameter columns to read
    in the first place, and the app has no delivery channel for a reminder. Their
-   columns still exist and keep their values; this form simply does not post them,
-   so items.update_item leaves them alone. #}
+   columns still exist and keep their values; neither this form nor the item
+   service writes them. #}
 {% import "_icons.html" as ic %}
 {% set sec = item.group_name if item else (default_section or '') %}
 <form class="habit-form" method="post" action="{{ action }}" autocomplete="off">
