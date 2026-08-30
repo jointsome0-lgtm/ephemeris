@@ -41,9 +41,6 @@ tt-*.jpg
 my-*.png
 my-*.jpeg
 
-# --- Review working artifacts (intermediate; final report is committed) ---
-docs/reviews/.work/
-
 # --- App data / source of truth (private by default; never commit raw data) ---
 data/
 *.sqlite

@@ -39,7 +39,6 @@ REQUIRED_GITIGNORE_PATTERNS = {
     ".playwright-mcp/",
     "playwright/.auth/",
     "docs/reference/screenshots/",
-    "docs/reviews/.work/",
     "tt-*.png",
     "tt-*.jpeg",
     "tt-*.jpg",
@@ -94,8 +93,6 @@ DENIED_PATH_PATTERNS = (
     "playwright/.auth/**",
     "docs/reference/screenshots",
     "docs/reference/screenshots/**",
-    "docs/reviews/.work",
-    "docs/reviews/.work/**",
 )
 
 FIXTURE_PATH_PATTERNS = ("fixtures/**",)
