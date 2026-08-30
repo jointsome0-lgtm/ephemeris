@@ -10,16 +10,7 @@
     {% if pulse %}{{ ch.sky_strip(pulse) }}{% endif %}
   </header>
 
-  {% if show_add %}
-  <form class="quick-add" method="post" action="/tasks" autocomplete="off">
-    <input type="hidden" name="return_to" value="{{ cur_path }}">
-    <input type="hidden" name="smart" value="1">
-    <input type="hidden" name="list_id" value="{{ add_list_id }}">
-    {% if add_due %}<input type="hidden" name="due_date" value="{{ add_due }}">{% endif %}
-    <span class="qa-plus" aria-hidden="true">+</span>
-    <input type="text" name="title" class="qa-input" placeholder="Add task{% if add_list_name %} to “{{ add_list_name }}”{% endif %}" required>
-  </form>
-  {% endif %}
+  {% with add_placeholder='Add task to “' ~ add_list_name ~ '”' %}{% include "_quick_add.html" %}{% endwith %}
 
   {% if flash %}<p class="flash" role="status">{{ flash }}</p>{% endif %}
 
@@ -57,12 +48,4 @@
   {% endif %}
 {% endblock %}
 
-{% block detail %}
-<aside class="detail{% if not sel %} detail-empty{% endif %}"{% if not sel %} aria-hidden="true"{% endif %}>
-  {% if sel %}<div class="detail-inner">
-  {% if sel == 'task' %}{% include "_task_detail.html" %}
-  {% elif sel == 'habit' %}{% include "_habit_detail.html" %}
-  {% endif %}
-  </div>{% endif %}
-</aside>
-{% endblock %}
+{% block detail %}{% include "_detail_pane.html" %}{% endblock %}

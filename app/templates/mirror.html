@@ -8,11 +8,10 @@
    selfos#25). Loopback-only topology (exp2res §30); the iframe is fully
    sandboxed because the served report is inert self-contained HTML (§17) —
    same posture as the Diary questions strip. #}
-<section class="mirror-embed" style="background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:14px">
+<section class="panel mirror-embed">
   <iframe src="{{ mirror_url }}" title="Exp2Res mirror" sandbox
-          referrerpolicy="no-referrer" loading="lazy"
-          style="width:100%;height:calc(100vh - 170px);min-height:420px;border:1px solid var(--border);border-radius:8px;background:transparent"></iframe>
-  <p class="muted" style="margin:6px 0 0;color:var(--faint);font-size:12px">
+          referrerpolicy="no-referrer" loading="lazy"></iframe>
+  <p class="hint">
     Served by Exp2Res on this machine (<code>exp2res view serve</code>). If the
     frame stays empty, Exp2Res isn’t running right now — the rest of Ephemeris
     works fine without it.

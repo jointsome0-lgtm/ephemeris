@@ -11,7 +11,7 @@
    looking back is exactly what this surface is for. #}
 <section class="retro-focus">
   <div class="retro-focus-head">
-    <span class="section-title" style="margin:0">Focus</span>
+    <span class="section-title">Focus</span>
     <span class="retro-focus-sum">
       {{ focus_ov.today_focus.value }}{{ focus_ov.today_focus.unit }} today ·
       {{ focus_ov.total_focus.value }}{{ focus_ov.total_focus.unit }} all time
@@ -38,71 +38,69 @@
 {% set form_order = ['month','quarter','week','year','exact_day','exact_datetime',
                      'date_range','approximate_range','unknown'] %}
 
-<section class="retro-form" style="background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:18px">
-  <div class="section-title" style="margin-top:0">{{ 'Edit entry' if editing else 'New entry' }}</div>
-  <form method="post" action="{{ '/retro/' ~ editing.id ~ '/edit' if editing else '/retro' }}" autocomplete="off" style="display:flex;flex-direction:column;gap:10px">
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <select name="precision" class="text-input" style="flex:1;min-width:210px" aria-label="Period precision">
+<section class="panel">
+  <div class="section-title">{{ 'Edit entry' if editing else 'New entry' }}</div>
+  <form class="entry-form" method="post" action="{{ '/retro/' ~ editing.id ~ '/edit' if editing else '/retro' }}" autocomplete="off">
+    <div class="entry-fields">
+      <select name="precision" class="text-input wide" aria-label="Period precision">
         {% for key in form_order %}
         <option value="{{ key }}" {% if (editing and editing.precision == key) or (not editing and key == 'month') %}selected{% endif %}>{{ precision_labels[key] }}</option>
         {% endfor %}
       </select>
-      <input type="text" name="period" class="text-input" style="flex:1;min-width:170px"
+      <input type="text" name="period" class="text-input wide"
              placeholder="Period, e.g. 2026-05" aria-label="Period"
              value="{{ editing.period_raw if editing else '' }}">
-      <select name="confidence" class="text-input" style="min-width:120px" aria-label="Confidence">
+      <select name="confidence" class="text-input" aria-label="Confidence">
         {% for key in confidences %}
         <option value="{{ key }}" {% if (editing and editing.confidence == key) or (not editing and key == 'medium') %}selected{% endif %}>{{ key }}</option>
         {% endfor %}
       </select>
-      <input type="text" name="project" class="text-input" style="min-width:150px"
+      <input type="text" name="project" class="text-input"
              placeholder="Project (optional)" aria-label="Project"
              value="{{ editing.project or '' if editing else '' }}">
     </div>
     <textarea name="text" class="text-input" rows="5" required
-              placeholder="What was this period about? What did you actually do?"
-              style="resize:vertical;min-height:90px">{{ editing.text if editing else '' }}</textarea>
-    <p class="muted" style="margin:0;color:var(--faint);font-size:12px">
+              placeholder="What was this period about? What did you actually do?">{{ editing.text if editing else '' }}</textarea>
+    <p class="hint">
       Fuzzy memory? Pick <em>approximate range</em> with low/medium confidence —
       downstream can never sharpen what you record here.
     </p>
-    <div style="display:flex;gap:8px">
-      <button type="submit" class="btn-primary" style="height:36px">{{ 'Save changes' if editing else 'Add retro' }}</button>
-      {% if editing %}<a class="btn-text" href="/retro" style="align-self:center">Cancel</a>{% endif %}
+    <div class="entry-actions">
+      <button type="submit" class="btn-primary">{{ 'Save changes' if editing else 'Add retro' }}</button>
+      {% if editing %}<a class="btn-text" href="/retro">Cancel</a>{% endif %}
     </div>
   </form>
 </section>
 
-<div class="section-title" style="display:flex;align-items:baseline;gap:10px">
+<div class="section-title list-head">
   <span>{{ 'Archived' if show_archived else 'Entries' }} · {{ rows|length }}</span>
-  <a class="btn-text" style="font-size:12px" href="{{ '/retro' if show_archived else '/retro?archived=1' }}">
+  <a class="btn-text btn-sm" href="{{ '/retro' if show_archived else '/retro?archived=1' }}">
     {{ 'show active' if show_archived else 'show archived' }}</a>
 </div>
 
 {% if rows %}
 <div class="items-list">
   {% for r in rows %}
-  <div class="manage-row" style="display:block;border-bottom:1px solid var(--border);padding:10px 4px">
-    <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+  <div class="entry-row">
+    <div class="entry-head">
       <strong>{{ r.period_raw or 'unknown period' }}</strong>
-      <span class="muted" style="color:var(--faint);font-size:12px">{{ r.precision }} · {{ r.confidence }}</span>
-      {% if r.project %}<span class="muted" style="font-size:12px;border:1px solid var(--border);border-radius:9px;padding:0 8px">{{ r.project }}</span>{% endif %}
-      <span style="flex:1"></span>
-      <span style="display:flex;gap:10px;align-items:baseline;white-space:nowrap">
+      <span class="faint">{{ r.precision }} · {{ r.confidence }}</span>
+      {% if r.project %}<span class="tag-pill">{{ r.project }}</span>{% endif %}
+      <span class="entry-tools">
         {% if not show_archived %}
-        <a class="btn-text" style="font-size:12px" href="/retro?edit={{ r.id }}">Edit</a>
-        <form method="post" action="/retro/{{ r.id }}/archive" style="display:inline;margin:0">
-          <button type="submit" class="btn-text" style="font-size:12px">Archive</button>
+        <a class="btn-text btn-sm" href="/retro?edit={{ r.id }}">Edit</a>
+        <form method="post" action="/retro/{{ r.id }}/archive">
+          <button type="submit" class="btn-text btn-sm">Archive</button>
         </form>
         {% else %}
-        <form method="post" action="/retro/{{ r.id }}/unarchive" style="display:inline;margin:0">
-          <button type="submit" class="btn-text" style="font-size:12px">Unarchive</button>
+        <form method="post" action="/retro/{{ r.id }}/unarchive">
+          <button type="submit" class="btn-text btn-sm">Unarchive</button>
         </form>
         {% endif %}
       </span>
     </div>
-    <p style="margin:6px 0 0;white-space:pre-wrap">{{ r.text }}</p>
-    <p class="muted" style="margin:4px 0 0;color:var(--faint);font-size:11px">
+    <p class="entry-text">{{ r.text }}</p>
+    <p class="entry-stamp">
       recorded {{ r.created_at }}{% if r.updated_at %} · edited {{ r.updated_at }}{% endif %}
     </p>
   </div>

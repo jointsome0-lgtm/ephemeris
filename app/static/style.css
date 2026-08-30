@@ -1821,6 +1821,7 @@ body.term-stack-open .timer-drawer { right: calc(18px + var(--term-stack-w, 0px)
 .retro-focus { margin-bottom: 18px; padding: 12px 14px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; }
 .retro-focus-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .retro-focus-sum { font-size: 12px; color: var(--faint); }
+.retro-focus-head .section-title { margin: 0; }
 
 /* ===== manage / items =================================================== */
 .items-list { display: flex; flex-direction: column; }
@@ -1829,6 +1830,41 @@ body.term-stack-open .timer-drawer { right: calc(18px + var(--term-stack-w, 0px)
 .manage-row.muted .row-title { color: var(--faint); }
 
 .section-title { font-size: 12px; font-weight: 700; color: var(--faint); margin: 18px 0 8px; }
+.section-title.list-head { display: flex; align-items: baseline; gap: 10px; }
+.faint { color: var(--faint); font-size: 12px; }
+.hint { margin: 6px 0 0; color: var(--faint); font-size: 12px; }
+.tag-pill { font-size: 12px; border: 1px solid var(--border); border-radius: 9px; padding: 0 8px; }
+.btn-text.btn-sm { font-size: 12px; }
+.manage-add { background: var(--card-bg); }
+.manage-add .text-input { height: 30px; max-width: 200px; }
+.manage-add .btn-primary { height: 32px; }
+details.manage-row { display: block; }
+details.manage-row > summary { display: flex; align-items: center; gap: 10px; cursor: pointer; list-style: none; padding: 10px 4px; }
+.manage-edit { padding: 8px 4px 14px; display: flex; flex-direction: column; gap: 10px; }
+
+.panel { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin-bottom: 18px; }
+.panel > .section-title { margin-top: 0; }
+.panel iframe { width: 100%; border: 1px solid var(--border); border-radius: 8px; background: transparent; }
+.diary-questions iframe { height: 180px; }
+.mirror-embed iframe { height: calc(100vh - 170px); min-height: 420px; }
+.entry-form { display: flex; flex-direction: column; gap: 10px; }
+.entry-form textarea { resize: vertical; min-height: 90px; }
+.entry-form .hint { margin: 0; }
+.entry-fields { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.entry-fields .text-input { min-width: 150px; }
+.entry-fields .wide { flex: 1; min-width: 180px; }
+.entry-fields .btn-primary { height: 40px; }
+.entry-actions { display: flex; gap: 8px; }
+.entry-actions .btn-primary { height: 36px; }
+.entry-actions .btn-text { align-self: center; }
+.check-label { display: flex; gap: 6px; align-items: center; font-size: 13px; }
+.entry-row { display: block; padding: 10px 4px; border-bottom: 1px solid var(--border); }
+.entry-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.entry-tools { margin-left: auto; display: flex; gap: 10px; align-items: baseline; white-space: nowrap; }
+.entry-tools form { display: inline; margin: 0; }
+.entry-text { margin: 6px 0 0; white-space: pre-wrap; }
+.entry-stamp { margin: 4px 0 0; color: var(--faint); font-size: 11px; }
+.diary-day .section-title { font-size: 13px; margin: 14px 0 2px; }
 
 /* ===== search =========================================================== */
 .search-bar { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; border: 1px solid var(--border-2); border-radius: 8px; background: var(--card-bg); }

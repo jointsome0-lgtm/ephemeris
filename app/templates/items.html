@@ -7,11 +7,11 @@
 
 <datalist id="groups">{% for g in known_groups %}<option value="{{ g }}">{% endfor %}</datalist>
 
-<form method="post" action="/items" class="quick-add" autocomplete="off" style="background:var(--card-bg)">
+<form method="post" action="/items" class="quick-add manage-add" autocomplete="off">
   <span class="qa-plus">+</span>
   <input type="text" name="title" class="qa-input" placeholder="New habit / item title…" required>
-  <input type="text" name="group_name" class="text-input" style="height:30px;max-width:200px" placeholder="Section" list="groups">
-  <button type="submit" class="btn-primary" style="height:32px">Add</button>
+  <input type="text" name="group_name" class="text-input" placeholder="Section" list="groups">
+  <button type="submit" class="btn-primary">Add</button>
 </form>
 
 {% if groups %}
@@ -19,16 +19,16 @@
   <div class="section-title">{{ group_name }} · {{ rows|length }}</div>
   <div class="items-list">
     {% for it in rows %}
-    <details class="manage-row" style="display:block;border-bottom:1px solid var(--border)">
-      <summary style="display:flex;align-items:center;gap:10px;cursor:pointer;list-style:none;padding:10px 4px">
-        <span class="row-title" style="flex:1">{{ it.emoji or '' }} {{ it.title }}</span>
-        <span class="muted" style="color:var(--faint);font-size:12px">edit ›</span>
+    <details class="manage-row">
+      <summary>
+        <span class="row-title">{{ it.emoji or '' }} {{ it.title }}</span>
+        <span class="faint">edit ›</span>
       </summary>
-      <div style="padding:8px 4px 14px;display:flex;flex-direction:column;gap:10px">
-        <form method="post" action="/items/{{ it.id }}/edit" style="display:flex;gap:8px;flex-wrap:wrap">
-          <input type="text" name="title" class="text-input" value="{{ it.title }}" style="flex:1;min-width:150px">
-          <input type="text" name="group_name" class="text-input" value="{{ it.group_name }}" list="groups" style="flex:1;min-width:120px">
-          <button type="submit" class="btn-primary" style="height:40px">Save</button>
+      <div class="manage-edit">
+        <form method="post" action="/items/{{ it.id }}/edit" class="entry-fields">
+          <input type="text" name="title" class="text-input wide" value="{{ it.title }}">
+          <input type="text" name="group_name" class="text-input wide" value="{{ it.group_name }}" list="groups">
+          <button type="submit" class="btn-primary">Save</button>
         </form>
         <form method="post" action="/items/{{ it.id }}/deactivate"><button type="submit" class="btn-danger">Deactivate</button></form>
       </div>
@@ -45,7 +45,7 @@
 <div class="items-list">
   {% for it in inactive %}
   <div class="manage-row muted">
-    <span class="row-title">{{ it.emoji or '' }} {{ it.title }} <span style="color:var(--faint);font-size:12px">· {{ it.group_name }}</span></span>
+    <span class="row-title">{{ it.emoji or '' }} {{ it.title }} <span class="faint">· {{ it.group_name }}</span></span>
     <form method="post" action="/items/{{ it.id }}/reactivate"><button type="submit" class="btn-text">Reactivate</button></form>
   </div>
   {% endfor %}

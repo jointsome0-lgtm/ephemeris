@@ -1,0 +1,7 @@
+<aside class="detail{% if not sel %} detail-empty{% endif %}"{% if not sel %} aria-hidden="true"{% endif %}>
+  {% if sel %}<div class="detail-inner">
+  {% if sel == 'task' %}{% include "_task_detail.html" %}
+  {% elif sel == 'habit' %}{% include "_habit_detail.html" %}
+  {% endif %}
+  </div>{% endif %}
+</aside>
