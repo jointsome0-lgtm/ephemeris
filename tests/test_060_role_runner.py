@@ -242,7 +242,7 @@ def test_role_runner(client, suite_state):
         }
     ), "F3 runner preexec applies CPU/AS/NOFILE/FSIZE backstops"
 
-    _runner._cached_runner_health.cache_clear()
+    _runner.runner_health.cache_clear()
     with _mock.patch.object(_runner, "_probe_result", return_value="") as _allprobe:
         _f3_health_a = _runner.runner_health()
         _f3_health_b = _runner.runner_health()
@@ -254,42 +254,7 @@ def test_role_runner(client, suite_state):
         ]
     ), "F3 health probes each registry executable once per process"
 
-    _runner._cached_runner_health.cache_clear()
-    _f3_health_workers = 4
-    _f3_health_gate = threading.Barrier(_f3_health_workers)
-    _f3_health_started = threading.Event()
-    _f3_health_release = threading.Event()
-    _f3_health_entries = []
-    _f3_health_results = []
-
-    def _f3_blocking_probe(_argv, **_kw):
-        _f3_health_entries.append(threading.get_ident())
-        _f3_health_started.set()
-        _f3_health_release.wait(timeout=2)
-        return ""
-
-    def _f3_health_worker():
-        _f3_health_gate.wait(timeout=2)
-        _f3_health_results.append(_runner.runner_health())
-
-    with _mock.patch.object(_runner, "_probe_result", side_effect=_f3_blocking_probe):
-        _f3_health_threads = [
-            threading.Thread(target=_f3_health_worker)
-            for _ in range(_f3_health_workers)
-        ]
-        for _thread in _f3_health_threads:
-            _thread.start()
-        _f3_health_started.wait(timeout=1)
-        _time.sleep(0.05)
-        _f3_health_release.set()
-        for _thread in _f3_health_threads:
-            _thread.join(timeout=2)
-    assert (
-        len(set(_f3_health_entries)) == 1
-        and len(_f3_health_results) == _f3_health_workers
-        and all(result.available for result in _f3_health_results)
-    ), "F3 concurrent cold health callers share one process-lifetime probe"
-    _runner._cached_runner_health.cache_clear()
+    _runner.runner_health.cache_clear()
     with _mock.patch.object(_runner, "_probe_result", return_value="unsupported"):
         try:
             _runner.require_runner_health()
@@ -297,7 +262,7 @@ def test_role_runner(client, suite_state):
         except _runner.RunnerUnavailableError as exc:
             _f3_health_refusal = "unsupported" in str(exc)
     assert _f3_health_refusal, "F3 unhealthy runner refuses visibly with no degraded spawn"
-    _runner._cached_runner_health.cache_clear()
+    _runner.runner_health.cache_clear()
 
     class _F3Process:
         # Above any real pid_max: the natural-exit path kills the process
@@ -556,6 +521,33 @@ def test_role_runner(client, suite_state):
             and health_lookup_responsive
         )
 
+        probe_processes = []
+
+        async def probe_spawn(_job):
+            process = _F3Process()
+            probe_processes.append(process)
+            return process
+
+        probe_service = _runner.RunnerService(spawn_hook=probe_spawn)
+        probed_jobs = []
+        _runner.runner_health.cache_clear()
+        with _mock.patch.object(_runner, "_probe_result", return_value="") as probe:
+            for lesson in ("probe-a", "probe-b"):
+                probed = (await probe_service.admit(req(lesson, f"{lesson}-key"))).job
+                for _ in range(100):
+                    if len(probe_processes) > len(probed_jobs):
+                        break
+                    await _asyncio.sleep(0.01)
+                probe_processes[-1].finish(0)
+                probed_jobs.append(await _finished(probe_service, probed.job_id))
+        _runner.runner_health.cache_clear()
+        result["probe_once"] = (
+            [call.args[0] for call in probe.call_args_list] == [
+                ["/usr/bin/python3", "--version"], ["/usr/local/go/bin/go", "version"],
+            ]
+            and [job.state for job in probed_jobs] == [_runner.FINISHED] * 2
+        )
+
         natural_processes = []
 
         async def natural_spawn(_job):
@@ -735,9 +727,7 @@ def test_role_runner(client, suite_state):
         new = (await retention_service.admit(req("new", "new-key"))).job
         await _finished(retention_service, new.job_id)
         try:
-            await retention_service.preflight(
-                "old", "old-key", "blk_demo", "sha256:invented"
-            )
+            await retention_service.admit(req("old", "old-key"))
             old_replay_missing = False
         except _runner.JobMissingError:
             old_replay_missing = True
@@ -748,11 +738,8 @@ def test_role_runner(client, suite_state):
         )
         first_reader = await retention_service.attach_reader(new.job_id)
         second_reader = await retention_service.attach_reader(new.job_id)
-        try:
-            await retention_service.attach_reader(new.job_id)
-            third_reader_refused = False
-        except _runner.ReaderCapacityError:
-            third_reader_refused = True
+        third_reader = await retention_service.attach_reader(new.job_id)
+        readers_attached = new.reader_count
         new.finished_monotonic = (
             _time.monotonic() - _runner.TERMINAL_RETENTION_SECONDS - 1
         )
@@ -762,9 +749,7 @@ def test_role_runner(client, suite_state):
             saved_replay[0], saved_replay[1], saved_replay[2],
             _time.monotonic() - 1,
         )
-        attached_replay = await retention_service.preflight(
-            "new", "new-key", "blk_demo", "sha256:invented"
-        )
+        attached_replay = await retention_service.admit(req("new", "new-key"))
         later = (
             await retention_service.admit(req("later", "later-key"))
         ).job
@@ -774,18 +759,16 @@ def test_role_runner(client, suite_state):
         )
         await retention_service.detach_reader(first_reader)
         await retention_service.detach_reader(second_reader)
+        await retention_service.detach_reader(third_reader)
         detached_expired = await retention_service.get(new.job_id) is None
-        detached_replay = await retention_service.preflight(
-            "new", "new-key", "blk_demo", "sha256:invented"
-        )
-        result["reader_cap"] = (
-            third_reader_refused and new.reader_count == 0
-        )
+        detached_replay = await retention_service.admit(req("new", "new-key"))
+        await _finished(retention_service, detached_replay.job.job_id)
+        result["reader_fanout"] = readers_attached == 3 and new.reader_count == 0
         result["reader_retention"] = (
-            isinstance(attached_replay, _runner.Admission)
-            and attached_replay.job is new and attached_replay.replayed
+            attached_replay.job is new and attached_replay.replayed
             and attached_survived_pruning and detached_expired
-            and detached_replay is None
+            and not detached_replay.replayed
+            and detached_replay.job is not new
         )
 
         reader_bound_service = _runner.RunnerService(
@@ -811,18 +794,17 @@ def test_role_runner(client, suite_state):
         reader_lease_a_second = await reader_bound_service.attach_reader(
             reader_job_a.job_id
         )
-        try:
-            await reader_bound_service.attach_reader(reader_job_b.job_id)
-            distinct_reader_refused = False
-        except _runner.ReaderCapacityError:
-            distinct_reader_refused = True
+        reader_lease_b = await reader_bound_service.attach_reader(
+            reader_job_b.job_id
+        )
         await reader_bound_service.detach_reader(reader_lease_a)
         await reader_bound_service.detach_reader(reader_lease_a)
         count_after_double_detach = reader_job_a.reader_count
         await reader_bound_service.detach_reader(reader_lease_a_second)
-        result["reader_global_bound"] = (
-            distinct_reader_refused and count_after_double_detach == 1
-            and reader_job_a.reader_count == 0
+        await reader_bound_service.detach_reader(reader_lease_b)
+        result["reader_lease_idempotent"] = (
+            count_after_double_detach == 1
+            and reader_job_a.reader_count == 0 and reader_job_b.reader_count == 0
         )
 
         notify_processes = []
@@ -922,6 +904,7 @@ def test_role_runner(client, suite_state):
     ), f"F3 first terminal cause wins and releases capacity exactly once: {str(_f3_service)}"
     assert _f3_service.get("cancel_off_loop"), f"F3 cancel tree kills leave the event loop and service lock responsive: {str(_f3_service)}"
     assert _f3_service.get("health_off_loop"), f"F3 cold health probes leave the event loop and service lock responsive: {str(_f3_service)}"
+    assert _f3_service.get("probe_once"), f"F3 admission probes runner health once per process: {str(_f3_service)}"
     assert _f3_service.get("natural_exit_beats_cancel"), f"F3 a reaped natural exit cannot be relabelled by late cancel: {str(_f3_service)}"
     assert (
         _f3_service.get("per_lesson_race")
@@ -930,7 +913,6 @@ def test_role_runner(client, suite_state):
     assert (
         _f3_service.get("idempotency_first")
         and _f3_service.get("retention")
-        and _f3_service.get("reader_cap")
     ), f"F3 idempotency precedes capacity and terminal retention is bounded: {str(_f3_service)}"
     assert _f3_service.get("shutdown"), f"F3 shutdown stops jobs through the same exact-release path: {str(_f3_service)}"
 
@@ -985,10 +967,10 @@ def test_role_runner(client, suite_state):
     ), f"F4 concurrent starts preserve per-lesson and global caps: {str(_f3_service)}"
     assert (
         _f3_service.get("retention")
-        and _f3_service.get("reader_cap")
-    ), f"F4 retention tombstones and the two-reader cap stay bounded: {str(_f3_service)}"
+        and _f3_service.get("reader_fanout")
+    ), f"F4 retention tombstones stay bounded and a third reader attaches: {str(_f3_service)}"
     assert _f3_service.get("reader_retention"), f"F4 retention pruning preserves attached streams until detach: {str(_f3_service)}"
-    assert _f3_service.get("reader_global_bound"), f"F4 reader leases are idempotent and distinct-job protection is bounded: {str(_f3_service)}"
+    assert _f3_service.get("reader_lease_idempotent"), f"F4 reader leases are idempotent: {str(_f3_service)}"
     assert _f3_service.get("reader_notifications"), f"F4 both SSE readers wake and a raced terminal event is drained: {str(_f3_service)}"
 
     async def _f4_disconnect_before_body_contract():
@@ -1041,6 +1023,81 @@ def test_role_runner(client, suite_state):
 
     _f4_disconnect_readers = _asyncio.run(_f4_disconnect_before_body_contract())
     assert _f4_disconnect_readers == 0, f"F4 disconnect before SSE body iteration releases its reader lease: {str(_f4_disconnect_readers)}"
+
+    async def _f4_three_readers_contract():
+        from starlette.requests import Request as _StarletteRequest
+        from app.routers.learn import stream_lesson_run as _stream_lesson_run
+
+        service = _runner.RunnerService(health_hook=lambda: None)
+        request_data = _runner.RunnerRequest(
+            lesson_uid="invented-fanout-lesson", block_id="blk_demo",
+            file_rev="sha256:invented", idempotency_key="invented-fanout-key",
+            runner_id="python-script-v1", filename="main.py",
+            snapshot=b"print('invented')\n", bundle_dir="/tmp/invented-bundle",
+            bundle_root="/tmp",
+        )
+        job = _runner.RunnerJob(
+            "invented-fanout-job", request_data,
+            _runner_registry.RUNNER_REGISTRY["python-script-v1"],
+            state=_runner.RUNNING,
+        )
+        service._jobs[job.job_id] = job
+        service._active_by_lesson[request_data.lesson_uid] = 1
+        service._active_total = 1
+        original_service = app.state.runner_service
+        app.state.runner_service = service
+        scope = {
+            "type": "http", "asgi": {"version": "3.0"},
+            "http_version": "1.1", "method": "GET", "scheme": "http",
+            "path": f"/learn/runs/{job.job_id}/stream",
+            "raw_path": f"/learn/runs/{job.job_id}/stream".encode(),
+            "query_string": b"", "headers": [(b"host", b"127.0.0.1")],
+            "client": ("127.0.0.1", 50000),
+            "server": ("127.0.0.1", 8765), "app": app,
+        }
+        statuses = []
+        bodies = [[], [], []]
+
+        async def connected():
+            await _asyncio.Event().wait()
+
+        async def stream(index):
+            async def send(message):
+                if message["type"] == "http.response.start":
+                    statuses.append(message["status"])
+                elif message["type"] == "http.response.body":
+                    bodies[index].append(bytes(message.get("body", b"")))
+
+            response = await _stream_lesson_run(
+                _StarletteRequest(scope, receive=connected), job.job_id
+            )
+            await response(scope, connected, send)
+
+        try:
+            streams = [_asyncio.create_task(stream(index)) for index in range(3)]
+            for _ in range(100):
+                if len(job._waiters) == 3:
+                    break
+                await _asyncio.sleep(0.01)
+            attached = job.reader_count
+            async with service._lock:
+                service._begin_termination_locked(job, "exit")
+                job.exit_code = 0
+                job.process_reaped = True
+                job.stdout_eof = True
+                job.stderr_eof = True
+                service._finish_locked(job)
+            await _asyncio.wait_for(_asyncio.gather(*streams), timeout=2)
+            return (
+                attached, statuses,
+                [b"".join(chunks).count(b"event: exit") for chunks in bodies],
+                job.reader_count,
+            )
+        finally:
+            app.state.runner_service = original_service
+
+    _f4_three_readers = _asyncio.run(_f4_three_readers_contract())
+    assert _f4_three_readers == (3, [200, 200, 200], [1, 1, 1], 0), f"F4 the stream endpoint serves a third concurrent reader on one job: {str(_f4_three_readers)}"
 
     suite_state.update({
         name: value for name, value in locals().items()

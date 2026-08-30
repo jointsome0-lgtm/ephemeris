@@ -1087,7 +1087,6 @@ def _runner_refusal(exc: runner_core.RunnerError) -> JSONResponse:
     if isinstance(exc, (
         runner_core.LessonCapacityError,
         runner_core.GlobalCapacityError,
-        runner_core.ReaderCapacityError,
     )):
         return _run_refusal("busy", 409, "runner capacity is busy")
     return _run_refusal("runner-unavailable", 409, "runner is unavailable")
