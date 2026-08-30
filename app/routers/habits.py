@@ -16,7 +16,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from ..db import get_db, pretty_date, today_str
+from ..db import get_db, today_str
 from ..services import checkins, items, stats
 from ..templating import (
     _enrich_groups, _habit_detail_ctx, _safe_return, _validated_write_date,
@@ -60,7 +60,6 @@ def _render_habits(request: Request, conn, sel=None, month=None, edit=False, fla
     groups = _enrich_groups(raw_groups, hist, _date.fromisoformat(today))
     ctx = {
         "request": request, "rail": "habit", "date": today, "today": today,
-        "pretty_date": pretty_date(_date.fromisoformat(today)),
         "week": strip, "groups": groups, "flash": flash,
         "daily_note": checkins.get_daily_note(conn, today),
         "sections": items.list_sections(conn),

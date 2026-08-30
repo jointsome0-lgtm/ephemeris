@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% import "_icons.html" as ic %}
 {% import "_charts.html" as ch %}
 {% block title %}{{ page_title }} · Ephemeris{% endblock %}
 
@@ -9,9 +8,6 @@
   <header class="page-head">
     <h1>{{ page_title }}</h1>
     {% if pulse %}{{ ch.sky_strip(pulse) }}{% endif %}
-    <div class="head-actions">
-      <button class="head-btn head-btn-chip" title="Sort">{{ ic.icon('sort') }}</button>
-    </div>
   </header>
 
   {% if show_add %}

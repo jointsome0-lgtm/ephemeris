@@ -10,12 +10,6 @@
          placeholder="Search tasks, notes, lessons…" autocomplete="off">
 </form>
 
-<div class="search-filters" aria-hidden="true">
-  {% for f in ['All Dates', 'All Lists', 'All Tags', 'All Status', 'More'] %}
-  <span class="filter-pill">{{ f }} <span class="filter-caret">{{ ic.icon('caret-down') }}</span></span>
-  {% endfor %}
-</div>
-
 {% if q %}
   {% set has_lessons = lessons is defined and lessons %}
   {% if results or has_lessons %}
