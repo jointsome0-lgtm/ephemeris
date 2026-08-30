@@ -410,7 +410,7 @@ def _write_git_exclude(git_dir: Path) -> None:
     try:
         projection.publish(
             info_fd, exclude_name, BUNDLE_GIT_EXCLUDE.encode("utf-8"),
-            prefix=f".{exclude_name}-", aside=False,
+            prefix=f".{exclude_name}-", owned=False,
         )
     finally:
         os.close(info_fd)

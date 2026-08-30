@@ -525,7 +525,7 @@ def _write_through(fd: int, name: str, data: bytes) -> tuple:
     vouch for those bytes at the end, which is the failure this whole check
     exists to stop.
     """
-    return _identity_of(projection.publish(fd, name, data, prefix=f".{name}.", aside=False))
+    return _identity_of(projection.publish(fd, name, data, prefix=f".{name}.", owned=False))
 
 
 def _identity_of(info: os.stat_result) -> tuple:
