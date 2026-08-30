@@ -4,8 +4,7 @@ The panel is the only place a learner meets what the tutor concluded, so this
 covers the three things that made it unreadable: evidence notes cut into a
 tooltip, a verdict that arrives while the page is open and changes nothing,
 and a retired question whose history stands with no link to where the question
-went. Plus the manifest field the last of those needs, and the guard that lets
-the LIVE process render this template before its own restart.
+went. Plus the manifest field the last of those needs.
 """
 from __future__ import annotations
 
@@ -16,7 +15,6 @@ from pathlib import Path
 from app.db import get_conn
 from app.routers import learn
 from app.services import assessments, attempts, bundle_schema, lessons
-from app.templating import templates
 
 # Longer than the 200-character tooltip the note used to be truncated into, so
 # "the whole note is on the page" is a claim the assertion can actually make.
@@ -539,50 +537,3 @@ def test_the_record_panel_carries_the_poll_target_and_the_unread_badge(client):
     # Tier 1 adds no bridge operation: reading the record INTO the lesson page
     # is tier 2, and the ABI is frozen additive-only by design.
     assert "record.get" not in source and "record.read" not in source
-
-
-# --- the live-process guard --------------------------------------------------
-
-
-def test_learn_html_renders_under_a_pre_133_router_context(client, monkeypatch):
-    """Jinja re-reads templates per render, so the LIVE process renders this
-    working-tree template with its own (older) context until the restart. Every
-    field #133 adds is therefore `is defined`-guarded, and this proves it by
-    rendering the same page from a context with those fields removed."""
-    lesson, _dir, _manifest = _lesson_with_record("Template Guard Fixture")
-    captured: dict = {}
-    original = learn.templates.TemplateResponse
-
-    def capture(request, name, context, *args, **kwargs):
-        captured.update(context)
-        return original(request, name, context, *args, **kwargs)
-
-    monkeypatch.setattr(learn.templates, "TemplateResponse", capture)
-    assert client.get(f"/learn?lesson={lesson['id']}").status_code == 200
-    assert captured["selected"]["record"]["verdict_count"] == 1
-
-    selected = dict(captured["selected"])
-    selected.pop("record_counts_url")
-    record = dict(selected["record"])
-    record.pop("verdict_count")
-    record.pop("cursor")
-    record["questions"] = [
-        {k: v for k, v in q.items() if k != "successor"} for q in record["questions"]
-    ]
-    record["retired"] = [
-        {k: v for k, v in q.items() if k != "successor"} for q in record["retired"]
-    ]
-    selected["record"] = record
-    old = templates.env.get_template("learn.html").render(
-        {**captured, "selected": selected}
-    )
-
-    assert "Record" in old and "q_recold001" in old
-    # The additions omit themselves rather than half-drawing: no poll target
-    # (the route does not exist on that process), no verdicts count, no link.
-    assert "data-record-counts-url" not in old
-    assert 'data-record-count="verdicts"' not in old
-    assert "data-record-cursor" not in old
-    assert 'href="#rec-q-' not in old
-    # What the old context DOES carry still renders, including the full note.
-    assert LONG_NOTE in old

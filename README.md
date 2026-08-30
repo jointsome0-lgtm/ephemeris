@@ -130,6 +130,12 @@ Status: `systemctl --user status ephemeris` · logs: `journalctl --user -u ephem
 The template binds `127.0.0.1`; copy-and-edit (don't symlink) so local path and
 environment changes never land back in Git.
 
+Restart the service after every deploy (`systemctl --user restart ephemeris`).
+The app does not tolerate a running process older than the templates it
+serves: Jinja reads templates from the working tree on each render, so a
+checkout that moved under a still-running process renders new templates with
+the previous commit's Python.
+
 ## Configuration
 
 Every variable the app reads. The first six are read once at startup, so

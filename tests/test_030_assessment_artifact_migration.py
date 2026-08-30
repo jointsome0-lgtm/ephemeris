@@ -2042,9 +2042,7 @@ def test_assessment_artifact_migration(client, suite_state):
     ), "F1 armed metadata exposes block ids and health-gated run flags only"
     assert (
         f'data-artifacts-url="/learn/lessons/{_f1_id}/blocks"' in _f1_learn
-        and "{% if selected.artifacts_url is defined %}"
-            in (ROOT / "app/templates/learn.html").read_text(encoding="utf-8")
-    ), "F1 Learn template advertises the guarded artifact route prefix"
+    ), "F1 Learn template advertises the artifact route prefix"
 
     # ---- D5: Check through the bridge — parent derivation surface, byte-
     # bound page serving, attempt operation (lesson-bridge-abi.md §3.1) ----
@@ -2306,9 +2304,8 @@ def test_assessment_artifact_migration(client, suite_state):
         ), f"{_fe_name}: editor membrane anchors"
     _fe_template = (ROOT / "app" / "templates" / "learn.html").read_text(encoding="utf-8")
     assert (
-        "selected.artifacts_url is defined" in _fe_template
-        and 'data-artifacts-url="{{ selected.artifacts_url }}"' in _fe_template
-    ), "Learn template feature-detects the artifact endpoint"
+        'data-artifacts-url="{{ selected.artifacts_url }}"' in _fe_template
+    ), "Learn template advertises the artifact endpoint"
     assert (
         "const freshBlock = async" in _d2_ts
         and "const meta = await fetchMeta()" in _d2_ts.split("const freshBlock = async", 1)[1]
@@ -2427,10 +2424,9 @@ def test_assessment_artifact_migration(client, suite_state):
         and 'readOnly("editor capability not granted")' in _fe_fixture
     ), "editor degradation: welcome without grant stays read-only"
     assert (
-        "selected.artifacts_url is defined" in _fe_template
-        and 'const artifactsUrl = frame.dataset["artifactsUrl"] || null' in _d2_ts
-        and 'artifactsUrl !== null && armedBlocks.length > 0' in _d2_ts
-    ), "editor degradation: old backend attrs grant no capability"
+        'const artifactsUrl = frame.dataset["artifactsUrl"]!' in _d2_ts
+        and 'armedBlocks.length > 0 && want.includes("editor")' in _d2_ts
+    ), "editor degradation: a page without blocks is granted no editor"
     assert (
         "window.parent === window" in _fe_fixture
         and 'readOnly("direct open: no parent bridge")' in _fe_fixture
@@ -2453,9 +2449,8 @@ def test_assessment_artifact_migration(client, suite_state):
             and "RUN_SETTLE_MS" in _fr_text
         ), f"{_fr_name}: run membrane anchors"
     assert (
-        "selected.runs_url is defined" in _fe_template
-        and 'data-runs-url="{{ selected.runs_url }}"' in _fe_template
-    ), "Learn template feature-detects the run endpoint independently"
+        'data-runs-url="{{ selected.runs_url }}"' in _fe_template
+    ), "Learn template advertises the run endpoint"
     _fr_save_run = _d2_ts[_d2_ts.index("const saveAndRun"):
                           _d2_ts.index("const cancelRun")]
     assert (

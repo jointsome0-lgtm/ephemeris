@@ -236,9 +236,8 @@
     // Chord nav (g→t/c/f/…), single-key actions, and a help overlay. The palette
     // (palette.js) owns ⌘K and reuses these action handlers via window.alUI.
     (() => {
-        // `g t` goes wherever the rail's Tasks icon goes — the server decides that
-        // (the board once its route is running, /today in a process that predates
-        // it), and reading the rendered link keeps the two from ever disagreeing.
+        // `g t` goes wherever the rail's Tasks icon goes — the server decides that,
+        // and reading the rendered link keeps the two from ever disagreeing.
         const tasksIcon = document.querySelector('.rail-ico[title="Tasks"]');
         const NAV = {
             t: (tasksIcon && tasksIcon.getAttribute("href")) || "/today",

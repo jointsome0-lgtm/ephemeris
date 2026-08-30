@@ -87,10 +87,8 @@ shows the archive, `?edit=<id>` pre-fills the form), `POST /diary`,
 `POST /diary/{id}/unarchive`. Every write is a plain form post answered with
 a 303 redirect back to the list; a rejected write redirects with the error as
 a `flash` query parameter. There is no JSON response path (#214). Nav: rail +
-More sheet + command palette, `R == 'diary'`;
-the rail/sheet links are guarded by the `diary_home` Jinja global so the
-live pre-#2 process hides them instead of linking a 404 (live-template
-skew). An entry editing an already-private row shows a "can't be cleared"
+More sheet + command palette, `R == 'diary'`; the rail/sheet links read the
+`diary_home` Jinja global. An entry editing an already-private row shows a "can't be cleared"
 badge instead of a checkbox.
 
 ## 6. Gap-questions strip (config-only coupling)

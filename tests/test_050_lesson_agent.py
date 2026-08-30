@@ -482,13 +482,10 @@ def test_lesson_agent_learning(client, suite_state):
     # The panel is a pure read over the s1 authority rows: the active fold, the
     # retired-question split, and escaped agent/learner text. Everything below
     # asserts what /learn RENDERS, plus the context builder directly where the
-    # page cannot show it (the pure-manifest rule, the stale-process guard).
+    # page cannot show it (the pure-manifest rule).
     import shutil as _s4_shutil
 
-    from starlette.requests import Request as _s4_Request
-
     from app.routers.learn import _record_panel as _s4_panel
-    from app.templating import templates as _s4_templates
     from app.services import focus as _s4_focus
 
     def _s4_rows(lesson_id):
@@ -1379,31 +1376,6 @@ def test_lesson_agent_learning(client, suite_state):
         "S4 a page removed before the final manifest read is not persisted" + "  -- " + (f"order={_s4_read_order}, current_entry={_s4_entry_after_swap}")
     )
 
-    # The live process runs the OLD context until the owner's restart while
-    # serving this template from the working tree: the guard must omit the
-    # panel rather than half-draw it.
-    _s4_stale_selected = {
-        k: v for k, v in dict(
-            lessons_svc.with_bundle_info_read(_s4)[0],
-            file_url="", preview_url="", preview_meta_url="",
-            sandbox="allow-scripts", record=None,
-        ).items() if k != "record"
-    }
-    _s4_stale = _s4_templates.get_template("learn.html").render(
-        request=_s4_Request({"type": "http", "client": ("127.0.0.1", 50000),
-                             "headers": [], "method": "GET", "path": "/learn",
-                             "query_string": b"", "scheme": "http",
-                             "server": ("testserver", 80)}),
-        rows=[], counts={"all": 0, "archived": 0,
-                         **{k: 0 for k in lessons_svc.STATUSES}},
-        status_tabs=[], status_filter=None, show_archived=False, flash=None,
-        self_url="/learn", selected=_s4_stale_selected)
-    assert (
-        "record" not in _s4_stale_selected
-        and "lesson-record" not in _s4_stale and "lesson-frame" in _s4_stale
-    ), (
-        "S4 the template guard omits the panel when the context lacks it"
-    )
     _s4_all = _s4_rows(_s4_id)
     _s4_superseded = {r["supersedes"] for r in _s4_all if r["supersedes"]}
     _s4_conn = get_conn()

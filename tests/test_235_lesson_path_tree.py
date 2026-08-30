@@ -172,64 +172,6 @@ def test_nested_tracks(client, suite_state):
         and 'data-track="zt-cc/challenges" open>' not in _sel.text
     ), "the selected lesson's whole ancestor chain renders open"
 
-    # --- deploy safety -------------------------------------------------------
-    # Jinja re-reads templates per render, so the live pre-nesting process
-    # serves this template with FLAT groups: `path` and no `name`, no
-    # `children`. It must render the single level it always did, not raise.
-    from starlette.requests import Request as _Request
-
-    from app.templating import templates as _tpl
-
-    _req = _Request({
-        "type": "http", "method": "GET", "path": "/learn", "headers": [],
-        "query_string": b"", "client": ("127.0.0.1", 1234),
-    })
-    conn = get_conn()
-    try:
-        _live_rows = lessons_svc.list_lessons(conn)
-    finally:
-        conn.close()
-    _flat = _tpl.get_template("learn.html").render(
-        request=_req, rail="learn", status_filter=None, show_archived=False,
-        counts={"all": 0, "archived": 0,
-                **{k: 0 for k in lessons_svc.STATUSES}},
-        status_tabs=[], selected=None, self_url="/learn", flash=None,
-        rows=_live_rows, tracks=[],
-        groups=[{"path": "zt-cc", "studied": 1, "total": 4, "pct": 25,
-                 "selected": False, "next": None,
-                 "rows": [_live_rows[0]]}],
-        ungrouped=_live_rows[1:],
-    )
-    assert (
-        'data-track="zt-cc"' in _flat
-        and ">zt-cc</span>" in _flat
-        and len(_row_ids(_flat)) == len(_live_rows)
-    ), "a pre-nesting backend's flat groups render, headed by the full address"
-
-    # The live process has the globals it booted with, so a merged template
-    # calling `star_body()` there is an UndefinedError, not a missing colour.
-    # The `is defined` guard is tested with the global actually absent.
-    _saved = _tpl.env.globals.pop("star_body")
-    try:
-        _preglobal = _tpl.get_template("learn.html").render(
-            request=_req, rail="learn", status_filter=None, show_archived=False,
-            counts={"all": 0, "archived": 0,
-                    **{k: 0 for k in lessons_svc.STATUSES}},
-            status_tabs=[], selected=None, self_url="/learn", flash=None,
-            rows=_live_rows, tracks=[],
-            groups=[{"path": "zt-cc", "studied": 1, "total": 4, "pct": 25,
-                     "selected": False, "next": None,
-                     "rows": [_live_rows[0]]}],
-            ungrouped=_live_rows[1:],
-        )
-    finally:
-        _tpl.env.globals["star_body"] = _saved
-    assert (
-        'data-track="zt-cc"' in _preglobal
-        and '<details class="lesson-group-d" data-track="zt-cc"' in _preglobal
-        and 'data-readout="25% · 4 lessons"' in _preglobal
-    ), "without the global the tree still renders, unclassed and in the default gold"
-
     # --- the vine ------------------------------------------------------------
     # Each branch carries one shoot, filled to the same share its head counts.
     # The fill is a CSS gradient stop, so `--pct` on the rows box is the whole

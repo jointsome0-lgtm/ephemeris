@@ -547,10 +547,7 @@ def _migrate_to_8(conn: sqlite3.Connection) -> None:
 # v9 — persistent event identity (issue #17, audit-export slice): every ledger
 # row carries a service-owned UUID so an exported event can later be redelivered
 # idempotently downstream. The backfill stamps ONLY the new column on pre-v9
-# rows — payload_json / timestamp / type history is never rewritten. The unique
-# index tolerates NULLs (SQLite), so a not-yet-restarted pre-v9 process can
-# still insert rows into an already-migrated database; backfill_event_uuids()
-# runs on every init_db() to heal any such rows on the next start.
+# rows — payload_json / timestamp / type history is never rewritten.
 
 
 def backfill_event_uuids(conn: sqlite3.Connection) -> int:
@@ -610,12 +607,10 @@ def _migrate_to_10(conn: sqlite3.Connection) -> None:
 # source and the truth for lesson_uid; the bundle manifest only carries an
 # echo. Same idiom as events.uuid (v9): nullable column + unique index +
 # idempotent backfill that NEVER replaces an existing uid — a lesson is minted
-# exactly once, and rename/status/archive churn must not touch it. The
-# backfill also reruns on every init_db() to stamp rows a not-yet-restarted
-# pre-v11 process inserts after the migration ran. (This step shipped as v10
-# on its feature branch and was renumbered when retro_entries landed first;
-# it is column-existence-guarded, so a DB that already ran it as v10 upgrades
-# cleanly.)
+# exactly once, and rename/status/archive churn must not touch it. (This step
+# shipped as v10 on its feature branch and was renumbered when retro_entries
+# landed first; it is column-existence-guarded, so a DB that already ran it as
+# v10 upgrades cleanly.)
 
 
 def backfill_lesson_uids(conn: sqlite3.Connection) -> int:
@@ -867,20 +862,10 @@ ALTER TABLE tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'backlog'
 def backfill_task_status(conn: sqlite3.Connection) -> int:
     """Restore the status ⇔ completed_at invariant; returns how many rows moved.
 
-    Two writers can break it. The v18 migration itself, which lands the column
-    with every row defaulted to 'backlog' including the already-completed ones;
-    and the live service between the merge and its next restart — it runs the
-    pre-#53 code, so its completes and reopens write `completed_at` and know
-    nothing about `status`. Both leave the same footprint, so one rule repairs
-    both, and it is idempotent: on a consistent table it updates nothing.
-
-    A database older than v18 has no column to heal and no skew to heal it out
-    of, so it is answered with 0 rather than an error — the boot calls this
-    before knowing which schema it opened.
+    The v18 migration lands the column with every row defaulted to 'backlog',
+    including the already-completed ones; this rule repairs that, and it is
+    idempotent: on a consistent table it updates nothing.
     """
-    have = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
-    if "status" not in have:
-        return 0
     cur = conn.execute(
         "UPDATE tasks SET status = CASE WHEN completed_at IS NOT NULL "
         "THEN 'done' ELSE 'backlog' END "
@@ -1092,13 +1077,5 @@ def init_db() -> None:
                 conn.execute(f"PRAGMA user_version = {target}")
                 conn.commit()
                 version = target
-        # Heal rows a pre-v9/pre-v11/pre-v18 process may have written after the
-        # migration ran (the live service lags the working tree until its
-        # next restart).
-        healed = backfill_event_uuids(conn)
-        healed += backfill_lesson_uids(conn)
-        healed += backfill_task_status(conn)
-        if healed:
-            conn.commit()
     finally:
         conn.close()

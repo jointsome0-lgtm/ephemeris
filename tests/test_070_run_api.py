@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from conftest import ROOT, events_of
+from conftest import events_of
 
 
 
@@ -330,9 +330,7 @@ def test_run_api(client, suite_state):
         _f4_learn = c.get(f"/learn?lesson={_f1_id}").text
         assert (
             f'data-runs-url="/learn/lessons/{_f1_id}/blocks"' in _f4_learn
-            and "{% if selected.runs_url is defined %}"
-                in (ROOT / "app/templates/learn.html").read_text()
-        ), "F4 Learn template advertises the guarded runs route prefix"
+        ), "F4 Learn template advertises the runs route prefix"
     finally:
         app.state.runner_service = _f4_original_service
         _runs.RATE_MAX_PER_WINDOW = 10

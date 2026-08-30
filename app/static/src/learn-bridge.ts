@@ -148,7 +148,7 @@ interface RecordSnapshot {
 
 interface PreviewMeta {
   version?: unknown;
-  exists?: unknown;
+  exists: boolean;
   preview_url?: unknown;
   bridge?: unknown;
   bridge_page?: unknown;
@@ -160,21 +160,16 @@ const frame = document.getElementById("lesson-preview-frame") as HTMLIFrameEleme
 if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
   const metaUrl = frame.dataset["metaUrl"]!;
   const fallbackSrc = frame.getAttribute("src")!;
-  /* Attempt endpoint (D4). Absent on a stale template render: the attempts
-   * capability is then simply never granted (fail closed, no error). */
-  const attemptsUrl = frame.dataset["attemptsUrl"] || null;
-  /* Phase-F artifact endpoint prefix. An older live backend renders no data
-   * attribute, so `editor` is never granted while the static is ahead. */
-  const artifactsUrl = frame.dataset["artifactsUrl"] || null;
-  /* Phase-F run-start endpoint prefix. It is a separate feature-detection
-   * attribute because statics can temporarily run against the old backend. */
-  const runsUrl = frame.dataset["runsUrl"] || null;
+  /* Attempt endpoint (D4). */
+  const attemptsUrl = frame.dataset["attemptsUrl"]!;
+  /* Phase-F artifact endpoint prefix. */
+  const artifactsUrl = frame.dataset["artifactsUrl"]!;
+  /* Phase-F run-start endpoint prefix. */
+  const runsUrl = frame.dataset["runsUrl"]!;
   /* Read ONCE: it is a snapshot of the /learn render, not a live feed, and
-   * freezing it at module init is what makes that honest. `null` on an absent
-   * attribute (a backend predating read-back) and on anything unparseable —
-   * the welcome then carries no `record` field and existing pages behave
-   * exactly as before. Degrading beats throwing here: this block owns the
-   * reload poll and the handshake too. */
+   * freezing it at module init is what makes that honest. `null` on anything
+   * unparseable — the welcome then carries no `record` field. Degrading beats
+   * throwing here: this block owns the reload poll and the handshake too. */
   const recordSnapshot = ((raw: string | undefined): RecordSnapshot | null => {
     if (!raw) return null;
     try {
@@ -360,8 +355,8 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
 
   const applySandbox = (meta: PreviewMeta): void => {
     /* The server owns the token policy (one owner next to the CSP map); the
-     * client only re-applies it across profile flips. Absent/odd values
-     * (e.g. a pre-D2 backend) leave the attribute as rendered. */
+     * client only re-applies it across profile flips. Odd values leave the
+     * attribute as rendered. */
     const tokens = meta.sandbox;
     if (typeof tokens === "string" && SANDBOX_OK.test(tokens)
         && frame.getAttribute("sandbox") !== tokens) {
@@ -376,10 +371,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
      * under it would leave default black text unreadable. Live reload swaps the
      * document without re-rendering the template, so the class has to move with
      * it — a file appearing drops the dark canvas before the bundle paints, a
-     * file deleted restores it. Only a real boolean speaks; anything else (a
-     * pre-D2 backend) leaves the server-rendered class as it is, like
-     * `applySandbox` above. */
-    if (typeof meta.exists !== "boolean") return;
+     * file deleted restores it. */
     frame.closest(".lesson-frame-wrap")?.classList.toggle("no-file", !meta.exists);
   };
 
@@ -427,9 +419,9 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     });
   };
 
-  /* Block routing metadata for the armed page. `null` means a malformed or
-   * pre-F backend response; the attempts membrane remains independently
-   * usable, while editor capability fails closed. */
+  /* Block routing metadata for the armed page. `null` means a malformed
+   * response; the attempts membrane remains independently usable, while
+   * editor capability fails closed. */
   const metaBlocks = (meta: PreviewMeta): BridgeBlock[] | null => {
     if (typeof meta.bridge_page !== "object" || meta.bridge_page === null) return null;
     const list = (meta.bridge_page as Record<string, unknown>)["blocks"];
@@ -571,7 +563,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
   /* Declared question ids for the armed page, taken from FRESH metadata at
    * operation time (never the arm-time copy: a manifest-only edit can
    * declare or retire questions without moving the page's version token).
-   * null = absent or malformed — e.g. a pre-D5 backend — and fails closed. */
+   * null = absent or malformed, and fails closed. */
   const metaQuestions = (meta: PreviewMeta): string[] | null => {
     if (typeof meta.bridge_page !== "object" || meta.bridge_page === null) return null;
     const list = (meta.bridge_page as Record<string, unknown>)["questions"];
@@ -658,7 +650,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
   };
 
   const artifactEndpoint = (blockId: string): string =>
-    `${artifactsUrl!}/${encodeURIComponent(blockId)}/file`;
+    `${artifactsUrl}/${encodeURIComponent(blockId)}/file`;
 
   const readEndpointJson = async (
     url: string,
@@ -809,7 +801,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
   };
 
   const runStartEndpoint = (blockId: string): string =>
-    `${runsUrl!}/${encodeURIComponent(blockId)}/runs`;
+    `${runsUrl}/${encodeURIComponent(blockId)}/runs`;
 
   const runEndpoint = (runId: string, suffix: "stream" | "cancel"): string =>
     new URL(`/learn/runs/${encodeURIComponent(runId)}/${suffix}`, window.location.href).toString();
@@ -1161,7 +1153,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
       }
       let body: unknown;
       try {
-        const res = await fetch(attemptsUrl!, {
+        const res = await fetch(attemptsUrl, {
           method: "POST",
           cache: "no-store",
           headers: { "Content-Type": "application/json" },
@@ -1196,8 +1188,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
       }
       const result = rec["result"] === "duplicate" ? "duplicate" : "recorded";
       /* Which direction this record travels (#136). Server-derived from the
-       * manifest; the page never says. An older backend sends no `kind` at
-       * all, and everything then reads as the answer it always was. */
+       * manifest; the page never says. */
       const asked = rec["kind"] === "question";
       const reply: Record<string, unknown> = {
         op: "attempt",
@@ -1205,8 +1196,8 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         result,
         attempt_id: rec["attempt_id"],
         stale: rec["stale"] === true,
+        kind: rec["kind"],
       };
-      if (typeof rec["kind"] === "string") reply["kind"] = rec["kind"];
       if (result === "recorded") {
         reply["attempt_number"] = rec["attempt_number"];
         reply["projection"] = rec["projection"];
@@ -1244,7 +1235,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     }
     if (msg["op"] === "attempt") {
       if (requestId === null) return protocolError("malformed", null);
-      if (attemptsUrl === null || !capabilities.includes("attempts")) {
+      if (!capabilities.includes("attempts")) {
         return answerError(port, "capability-not-granted", requestId);
       }
       if (msg["v"] !== ATTEMPT_OP_VERSION) {
@@ -1275,7 +1266,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     }
     if (msg["op"] === "artifact.get" || msg["op"] === "artifact.save") {
       if (requestId === null) return protocolError("malformed", null);
-      if (artifactsUrl === null || !capabilities.includes("editor")) {
+      if (!capabilities.includes("editor")) {
         return answerError(port, "capability-not-granted", requestId);
       }
       if (msg["v"] !== EDITOR_OP_VERSION) {
@@ -1309,9 +1300,9 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     }
     if (msg["op"] === "artifact.save_run" || msg["op"] === "run.cancel") {
       if (requestId === null) return protocolError("malformed", null);
-      if (
-        artifactsUrl === null || runsUrl === null || !capabilities.includes("run")
-      ) return answerError(port, "capability-not-granted", requestId);
+      if (!capabilities.includes("run")) {
+        return answerError(port, "capability-not-granted", requestId);
+      }
       if (msg["v"] !== RUN_OP_VERSION) {
         return answerError(port, "unsupported-version", requestId);
       }
@@ -1408,14 +1399,11 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
      * block plus both save and start endpoints. */
     const want = Array.isArray(data.want) ? data.want : [];
     capabilities = [];
-    if (attemptsUrl !== null && want.includes("attempts")) capabilities.push("attempts");
-    if (artifactsUrl !== null && armedBlocks.length > 0 && want.includes("editor")) {
+    if (want.includes("attempts")) capabilities.push("attempts");
+    if (armedBlocks.length > 0 && want.includes("editor")) {
       capabilities.push("editor");
     }
-    if (
-      artifactsUrl !== null && runsUrl !== null
-      && armedBlocks.some((block) => block.run) && want.includes("run")
-    ) {
+    if (armedBlocks.some((block) => block.run) && want.includes("run")) {
       capabilities.push("run");
     }
     const welcome: {
@@ -1435,8 +1423,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     /* Read-back travels with the grant that would write the next answer, with
      * the owner's consent, and with nothing else: a page that did not ask for
      * `attempts` records none, so none crosses to it. Omitted whole rather
-     * than sent empty when there is no snapshot, so the pre-#133 welcome shape
-     * is reproduced exactly.
+     * than sent empty when there is no snapshot.
      *
      * The snapshot is bound to the document it was taken for, twice over,
      * because the frame can reload without a new /learn render behind it:
@@ -1527,16 +1514,13 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
       return;
     }
     const want = Array.isArray(data.want) ? data.want : [];
-    const needsBlockRefresh = artifactsUrl !== null && (
-      want.includes("editor") || (runsUrl !== null && want.includes("run"))
-    );
+    const needsBlockRefresh = want.includes("editor") || want.includes("run");
     /* A read-back grant reads the declared-id list, and a manifest-only edit
      * can retire a question while the page bytes, profile and identity stay
      * put — so the arm-time list can be older than the grant. Refresh for it
      * too, or an attempts-only child announcing late would be handed an
      * answer for an id the manifest no longer declares. */
-    const needsQuestionRefresh = attemptsUrl !== null
-      && recordSnapshot !== null && want.includes("attempts");
+    const needsQuestionRefresh = recordSnapshot !== null && want.includes("attempts");
     if (needsBlockRefresh || needsQuestionRefresh) {
       const gen = generation;
       const token = {};
@@ -1716,9 +1700,7 @@ const RECORD_ZERO_CURSOR = "0";
 interface RecordCounts {
   ok?: unknown;
   attempts?: unknown;
-  /* Questions to the tutor, counted apart from attempts (#136). Absent from a
-   * backend that predates it, which is why every count is type-checked before
-   * it is applied. */
+  /* Questions to the tutor, counted apart from attempts (#136). */
   questions?: unknown;
   assessments?: unknown;
   verdicts?: unknown;
@@ -1801,7 +1783,6 @@ if (recordPanel && recordCountsUrl && recordKey) {
 
   const setCount = (name: string, value: string): void => {
     const cell = recordPanel.querySelector(`[data-record-count="${name}"]`);
-    /* A pre-#133 backend renders no verdicts cell; the others always exist. */
     if (cell && cell.textContent !== value) cell.textContent = value;
     /* The asked chip (#136) is on the line at zero but hidden, because a
      * lesson nobody asked about should not carry a "0 asked". The first
@@ -1851,8 +1832,6 @@ if (recordPanel && recordCountsUrl && recordKey) {
       const current = recordPanel.querySelector(".lesson-record-body");
       if (!fresh || !current) return null;
       current.replaceWith(fresh);
-      /* Absent only on a backend that renders no cursor — which is also a
-       * backend with no poll route — so the empty (zero) cursor is right. */
       return panel.getAttribute("data-record-cursor") ?? "";
     } catch {
       return null;

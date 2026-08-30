@@ -62,10 +62,7 @@
   {%- endmacro -%}
   <div class="tt-shell">
     <nav class="rail" aria-label="Sections">
-      {# tasks_home is the board once the routes that serve it are running; the
-         live pre-#53 process has no such global and keeps pointing at /today,
-         so a merged template can never link a 404 (live-template skew). #}
-      <a class="rail-ico {% if R == 'tasks' %}active{% endif %}" href="{{ tasks_home | default('/today') }}" title="Tasks">{{ ic.icon('tasks') }}</a>
+      <a class="rail-ico {% if R == 'tasks' %}active{% endif %}" href="{{ tasks_home }}" title="Tasks">{{ ic.icon('tasks') }}</a>
       <a class="rail-ico {% if R == 'calendar' %}active{% endif %}" href="/calendar" title="Calendar">{{ ic.icon('calendar') }}</a>
       {# Focus is no longer a destination (#75): the timer is a drawer, so its
          rail slot toggles it instead of navigating away from whatever the
@@ -74,14 +71,9 @@
       <a class="rail-ico {% if R == 'habit' %}active{% endif %}" href="/habits" title="Habit">{{ ic.icon('habit') }}</a>
       <a class="rail-ico {% if R == 'learn' %}active{% endif %}" href="/learn" title="Learn">{{ ic.icon('learn') }}</a>
       <a class="rail-ico {% if R == 'retro' %}active{% endif %}" href="/retro" title="Retro">{{ ic.icon('retro') }}</a>
-      {# diary_home is a Jinja global (#2). The LIVE process renders this
-         template with the pre-#2 templating module, where it is undefined —
-         hiding the link keeps a not-yet-restarted service from linking a 404
-         (live-template skew, same guard as tasks_home). #}
-      {% if diary_home is defined %}<a class="rail-ico {% if R == 'diary' %}active{% endif %}" href="{{ diary_home }}" title="Diary">{{ ic.icon('diary') }}</a>{% endif %}
+      <a class="rail-ico {% if R == 'diary' %}active{% endif %}" href="{{ diary_home }}" title="Diary">{{ ic.icon('diary') }}</a>
       {# mirror_home is a callable global (#128): the gate is runtime config
-         (an exp2res mirror URL), on top of the same `is defined` live-skew
-         guard as diary_home. #}
+         (an exp2res mirror URL). #}
       {% if mirror_home is defined and mirror_home() %}<a class="rail-ico {% if R == 'mirror' %}active{% endif %}" href="{{ mirror_home() }}" title="Mirror">{{ ic.icon('mirror') }}</a>{% endif %}
       <a class="rail-ico {% if R == 'search' %}active{% endif %}" href="/search" title="Search">{{ ic.icon('search') }}</a>
 
@@ -108,7 +100,7 @@
      toggle via #more-toggle so it works without JS. #}
   <input type="checkbox" id="more-toggle" class="more-toggle" hidden>
   <nav class="bottom-nav" aria-label="Primary">
-    <a href="{{ tasks_home | default('/today') }}" class="nav-link {% if R == 'tasks' %}active{% endif %}">{{ ic.icon('tasks') }}<span>Tasks</span></a>
+    <a href="{{ tasks_home }}" class="nav-link {% if R == 'tasks' %}active{% endif %}">{{ ic.icon('tasks') }}<span>Tasks</span></a>
     <a href="/calendar" class="nav-link {% if R == 'calendar' %}active{% endif %}">{{ ic.icon('calendar') }}<span>Calendar</span></a>
     <button type="button" class="nav-link timer-toggle">{{ ic.icon('focus') }}<span>Timer</span><span class="timer-pip" aria-hidden="true"></span></button>
     <a href="/learn" class="nav-link {% if R == 'learn' %}active{% endif %}">{{ ic.icon('learn') }}<span>Learn</span></a>
@@ -119,7 +111,7 @@
   <aside class="more-sheet" id="more-sheet" aria-label="More destinations">
     <div class="more-grip" aria-hidden="true"></div>
     <a class="more-item {% if R == 'retro' %}active{% endif %}" href="/retro">{{ ic.icon('retro') }}<span>Retro</span></a>
-    {% if diary_home is defined %}<a class="more-item {% if R == 'diary' %}active{% endif %}" href="{{ diary_home }}">{{ ic.icon('diary') }}<span>Diary</span></a>{% endif %}
+    <a class="more-item {% if R == 'diary' %}active{% endif %}" href="{{ diary_home }}">{{ ic.icon('diary') }}<span>Diary</span></a>
     {% if mirror_home is defined and mirror_home() %}<a class="more-item {% if R == 'mirror' %}active{% endif %}" href="{{ mirror_home() }}">{{ ic.icon('mirror') }}<span>Mirror</span></a>{% endif %}
     <a class="more-item {% if R == 'search' %}active{% endif %}" href="/search">{{ ic.icon('search') }}<span>Search</span></a>
     <a class="more-item {% if R == 'export' %}active{% endif %}" href="/export">{{ ic.icon('download') }}<span>Export</span></a>

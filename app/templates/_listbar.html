@@ -3,13 +3,10 @@
 {% import "_icons.html" as ic %}
 <aside class="listbar" aria-label="Lists">
   <div class="listbar-inner">
-    {# Board first: it is the primary Tasks view. Guarded, because the live
-       pre-#53 process renders this template without the route behind it. #}
-    {% if tasks_home is defined %}
+    {# Board first: it is the primary Tasks view. #}
     <a class="lb-link {% if active == 'board' %}active{% endif %}" href="{{ tasks_home }}">
       <span class="lb-ico">{{ ic.icon('board') }}</span><span class="lb-name">Board</span>
     </a>
-    {% endif %}
     <a class="lb-link {% if active == 'today' %}active{% endif %}" href="/today">
       <span class="lb-ico">{{ ic.icon('today') }}</span><span class="lb-name">Today</span>
       {% if today_count %}<span class="lb-count">{{ today_count }}</span>{% endif %}

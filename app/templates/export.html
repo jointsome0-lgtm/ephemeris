@@ -36,9 +36,6 @@
   {% endif %}
 </div>
 
-{# `is defined`: templates are read per render, so a merged change reaches a
-   still-running process whose router has no `storage` in its context. #}
-{% if storage is defined %}
 <section class="export-card storage-card">
   <h2 class="storage-head">Storage</h2>
 
@@ -83,5 +80,4 @@
     exports here prune themselves.
   </p>
 </section>
-{% endif %}
 {% endblock %}

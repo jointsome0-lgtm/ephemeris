@@ -337,9 +337,7 @@ Pomodoro modes converted to countdown/open, target columns for habit and task,
 and `focus_runs` for the one timer currently running), and a persistent unique
 `events.uuid` (v9 —
 service-owned identity stamped by `append_event()` and returned to the caller;
-pre-v9 rows are backfilled once, payload history untouched; the backfill is
-idempotent and re-run on every `init_db()` to heal rows written by a not-yet-
-restarted pre-v9 process).
+pre-v9 rows are backfilled once by the migration, payload history untouched).
 
 ### 13.2 Status Enum
 
@@ -1166,8 +1164,7 @@ still linked from the calendar and the day view.
   binds the two: **status='done' ⇔ completed_at IS NOT NULL**. Completing sets
   `status='done'`, reopening returns the task to `'backlog'`, and moving in or
   out of Done through the board completes/reopens it. `db.backfill_task_status`
-  is that rule as a repair: it runs in the migration and again at every boot,
-  because the live service keeps writing pre-#53 completions until its restart.
+  is that rule as a repair, run once by the v18 migration.
 - **Writes.** `POST /tasks/{id}/status {status, return_to}` → validated move;
   `X-Partial:1` ⇒ JSON `{ok, task_id, status, completed}` (Mode B), else 303 PRG.
   It journals `task_status_changed` for the move plus the existing
@@ -1181,11 +1178,9 @@ still linked from the calendar and the day view.
   has a plain POST form behind it — the ←/→ buttons on each card — so the board
   is fully usable with JavaScript off; quick-add stays on top and files into
   Backlog.
-- **Live-restart guard.** The rail link is the Jinja global `tasks_home`
-  (`app/templating.py`), read as `tasks_home | default('/today')`. The live
-  process renders merged templates immediately but keeps its old routers, and an
-  undefined global keeps it pointing at `/today` instead of a 404 until the
-  restart lands `/board`.
+- **Rail link.** The rail link is the Jinja global `tasks_home`
+  (`app/templating.py`). The service restarts on every deploy (README, "Run as
+  a background service"), so templates read the global plainly.
 
 ## 31. Habit Tab (TickTick parity) — 2026-06-06
 

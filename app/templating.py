@@ -233,18 +233,10 @@ def due_label(date_str: str | None, today: str | None = None) -> str:
 
 
 # Where the Tasks rail icon points (#53). A Jinja global rather than a per-route
-# context variable so every surface agrees, and so the LIVE service — which
-# renders these templates from the working tree while still running the pre-#53
-# routers, i.e. without GET /board — resolves it as undefined and keeps sending
-# people to /today instead of a 404. Templates must therefore read it as
-# `tasks_home | default('/today')`, and `{% if tasks_home is defined %}` is what
-# guards board-only chrome.
+# context variable so every surface agrees.
 TASKS_HOME = "/board"
 
-# Where the Diary rail icon points (#2). A global for the same live-skew
-# reason as TASKS_HOME: the running pre-#2 service renders base.html from the
-# working tree without this module's update, resolves `diary_home` as
-# undefined, and the template hides the link instead of serving a 404.
+# Where the Diary rail icon points (#2).
 DIARY_HOME = "/diary"
 
 
@@ -252,8 +244,7 @@ def mirror_home() -> str | None:
     """Where the Mirror rail icon points (#128), or None when no exp2res
     mirror URL is configured — the nav entry disappears entirely instead of
     linking a 404. A callable, unlike TASKS_HOME/DIARY_HOME, because this
-    gate is runtime config, not just deploy skew; the `is defined` guard in
-    base.html still covers the live pre-#128 process the same way."""
+    gate is runtime config."""
     return "/mirror" if settings.settings.exp2res_mirror_url else None
 
 
