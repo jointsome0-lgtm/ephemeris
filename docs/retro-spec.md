@@ -91,11 +91,10 @@ entry is an idempotent no-op and appends nothing.
 
 `GET /retro` (list + create-or-edit form; `?archived=1` shows the archive,
 `?edit=<id>` pre-fills the form), `POST /retro`, `POST /retro/{id}/edit`,
-`POST /retro/{id}/archive`, `POST /retro/{id}/unarchive`. All writes follow the
-sec16.4 dual-mode contract (Mode A no-JS form + 303 PRG with flash; Mode B
-`x-partial: 1` → JSON, errors 422). The browser page currently submits Mode A
-only (like Manage/Habits forms); Mode B is the verified server contract for
-scripts and future enhancement. Nav: rail + More sheet + command palette,
+`POST /retro/{id}/archive`, `POST /retro/{id}/unarchive`. Every write is a
+plain form post answered with a 303 redirect back to the list; a rejected
+write redirects with the error as a `flash` query parameter. There is no JSON
+response path (#214). Nav: rail + More sheet + command palette,
 `R == 'retro'`. The precision dropdown's option labels double as period-format
 hints so the form explains itself without JS.
 

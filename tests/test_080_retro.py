@@ -37,17 +37,23 @@ def test_retro(client, suite_state):
         finally:
             conn.close()
 
+    def latest_retro_row():
+        conn = get_conn()
+        try:
+            return conn.execute(
+                "SELECT * FROM retro_entries ORDER BY id DESC LIMIT 1").fetchone()
+        finally:
+            conn.close()
+
     nrc_before = len(events_of("retro_entry_created"))
     r = c.post("/retro", data={
         "period": "Q1 2026", "precision": "quarter", "confidence": "medium",
         "project": "ephemeris", "text": "Built the retro capture slice.",
     }, follow_redirects=False)
-    assert r.status_code == 303, (
-        f"POST /retro (Mode A) -> 303 -- {r.status_code}"
+    assert r.status_code == 303 and r.headers["location"] == "/retro", (
+        f"POST /retro -> 303 back to the list -- {r.status_code}"
     )
-    conn = get_conn()
-    row_a = conn.execute("SELECT * FROM retro_entries ORDER BY id DESC LIMIT 1").fetchone()
-    conn.close()
+    row_a = latest_retro_row()
     assert row_a is not None and bool(row_a["uuid"]), (
         "retro row exists with a uuid"
     )
@@ -62,13 +68,12 @@ def test_retro(client, suite_state):
     r = c.post("/retro", data={
         "period": "2026-05-01/2026-06-15", "precision": "approximate_range",
         "confidence": "low", "project": "   ", "text": "Fuzzy: mostly exp2res spec work.",
-    }, headers={"x-partial": "1"})
-    assert (
-        r.status_code == 200 and r.json().get("ok") is True
-        and "id" in r.json() and "uuid" in r.json()
-    ), f"POST /retro (Mode B) ok + id + uuid -- {r.text}"
-    rid_b = r.json()["id"]
-    row_b = retro_row(rid_b)
+    }, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/retro", (
+        f"POST /retro (approximate range) -> 303 -- {r.status_code}"
+    )
+    row_b = latest_retro_row()
+    rid_b = row_b["id"]
     assert (
         row_b["period_start"].startswith("2026-05-01")
         and row_b["period_end"].startswith("2026-06-15")
@@ -91,10 +96,12 @@ def test_retro(client, suite_state):
     ), f"created payload is a full snapshot carrying retro_uuid -- {payload}"
 
     def retro_reject(label: str, data: dict) -> None:
-        rr = c.post("/retro", data=data, headers={"x-partial": "1"})
+        rr = c.post("/retro", data=data, follow_redirects=False)
         assert (
-            rr.status_code == 422 and rr.json().get("ok") is False
-        ), f"retro reject: {label} -- {rr.text}"
+            rr.status_code == 303
+            and rr.headers["location"].startswith("/retro?flash=")
+            and latest_retro_row()["id"] == rid_b
+        ), f"retro reject: {label} -> 303 with flash, no row -- {rr.headers.get('location')}"
 
     retro_reject("month 13", {"period": "2026-13", "precision": "month",
                               "confidence": "medium", "text": "x"})
@@ -128,10 +135,10 @@ def test_retro(client, suite_state):
     r = c.post(f"/retro/{rid_b}/edit", data={
         "period": "2026-05", "precision": "month", "confidence": "medium",
         "text": "Refined memory of the exp2res spec push.",
-    }, headers={"x-partial": "1"})
-    assert (
-        r.status_code == 200 and r.json().get("ok") is True
-    ), f"edit (Mode B) ok -- {r.text}"
+    }, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/retro", (
+        f"edit -> 303 -- {r.status_code}"
+    )
     row_b2 = retro_row(rid_b)
     assert (
         row_b2["uuid"] == row_b["uuid"] and row_b2["period_raw"] == "2026-05"

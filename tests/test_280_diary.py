@@ -29,35 +29,41 @@ def test_diary(client, suite_state, monkeypatch):
         finally:
             conn.close()
 
-    # --- create: Mode A, empty date defaults to today -----------------------
+    def latest_diary_row():
+        conn = get_conn()
+        try:
+            return conn.execute(
+                "SELECT * FROM diary_entries ORDER BY id DESC LIMIT 1").fetchone()
+        finally:
+            conn.close()
+
+    # --- create: empty date defaults to today -------------------------------
     n_created = len(events_of("diary_entry_created"))
     r = c.post("/diary", data={"text": "Wired the diary capture slice."},
                follow_redirects=False)
-    assert r.status_code == 303, f"POST /diary (Mode A) -> 303 -- {r.status_code}"
-    conn = get_conn()
-    row_a = conn.execute(
-        "SELECT * FROM diary_entries ORDER BY id DESC LIMIT 1").fetchone()
-    conn.close()
+    assert r.status_code == 303 and r.headers["location"] == "/diary", (
+        f"POST /diary -> 303 back to the list -- {r.status_code}"
+    )
+    row_a = latest_diary_row()
     assert row_a is not None and bool(row_a["uuid"]), "diary row exists with a uuid"
     assert row_a["entry_date"] == today_str(), "empty date defaults to today"
     assert row_a["private"] == 0 and row_a["tags_json"] == "[]", (
         "defaults: non-private, no tags"
     )
 
-    # --- create: Mode B with the structured fields --------------------------
+    # --- create: the structured fields --------------------------------------
     r = c.post("/diary", data={
         "entry_date": "2026-08-13",
         "text": "Read about B-trees; I think I understood splitting. #дневник",
         "tags": " atlas , deep-work, atlas, дневник ",
         "atlas_ref": "btrees-node-split",
         "private": "",
-    }, headers={"x-partial": "1"})
-    assert (
-        r.status_code == 200 and r.json().get("ok") is True
-        and "id" in r.json() and "uuid" in r.json()
-    ), f"POST /diary (Mode B) ok + id + uuid -- {r.text}"
-    rid_b = r.json()["id"]
-    row_b = diary_row(rid_b)
+    }, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/diary", (
+        f"POST /diary (structured fields) -> 303 -- {r.status_code}"
+    )
+    row_b = latest_diary_row()
+    rid_b = row_b["id"]
     assert json.loads(row_b["tags_json"]) == ["atlas", "deep-work", "дневник"], (
         "tags trimmed, deduped keeping order, stored as an opaque list"
         f" -- {row_b['tags_json']}"
@@ -83,19 +89,21 @@ def test_diary(client, suite_state, monkeypatch):
     # --- private entry ------------------------------------------------------
     r = c.post("/diary", data={
         "text": "Something for my eyes only.", "private": "on",
-    }, headers={"x-partial": "1"})
-    assert r.status_code == 200, f"private create -- {r.text}"
-    rid_p = r.json()["id"]
+    }, follow_redirects=False)
+    assert r.status_code == 303, f"private create -- {r.status_code}"
+    rid_p = latest_diary_row()["id"]
     assert diary_row(rid_p)["private"] == 1, "private stored"
     assert json.loads(events_of("diary_entry_created")[-1]["payload_json"])[
         "private"] is True, "private rides the payload as a bool"
 
     # --- rejections ---------------------------------------------------------
     def diary_reject(label: str, data: dict) -> None:
-        rr = c.post("/diary", data=data, headers={"x-partial": "1"})
+        rr = c.post("/diary", data=data, follow_redirects=False)
         assert (
-            rr.status_code == 422 and rr.json().get("ok") is False
-        ), f"diary reject: {label} -- {rr.status_code} {rr.text}"
+            rr.status_code == 303
+            and rr.headers["location"].startswith("/diary?flash=")
+            and latest_diary_row()["id"] == rid_p
+        ), f"diary reject: {label} -> 303 with flash, no row -- {rr.headers.get('location')}"
 
     diary_reject("empty text", {"text": "   "})
     diary_reject("bad date", {"text": "x", "entry_date": "2026-13-40"})
@@ -116,8 +124,10 @@ def test_diary(client, suite_state, monkeypatch):
         "text": "Read about B-trees; splitting clicked after drawing it.",
         "tags": "atlas",
         "atlas_ref": "btrees-node-split",
-    }, headers={"x-partial": "1"})
-    assert r.status_code == 200 and r.json().get("ok") is True, f"edit -- {r.text}"
+    }, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/diary", (
+        f"edit -> 303 -- {r.status_code}"
+    )
     row_b2 = diary_row(rid_b)
     assert (
         row_b2["uuid"] == row_b["uuid"] and row_b2["updated_at"] is not None
@@ -137,8 +147,8 @@ def test_diary(client, suite_state, monkeypatch):
     r = c.post(f"/diary/{rid_p}/edit", data={
         "text": "Still for my eyes only — tried to clear the flag.",
         "private": "",
-    }, headers={"x-partial": "1"})
-    assert r.status_code == 200, f"edit of private entry -- {r.text}"
+    }, follow_redirects=False)
+    assert r.status_code == 303, f"edit of private entry -- {r.status_code}"
     assert diary_row(rid_p)["private"] == 1, (
         "private survives an edit that omits it — one-way latch"
     )
@@ -148,8 +158,8 @@ def test_diary(client, suite_state, monkeypatch):
         "entry_date": "2026-08-13",
         "text": "Read about B-trees; splitting clicked after drawing it.",
         "tags": "atlas", "atlas_ref": "btrees-node-split", "private": "on",
-    }, headers={"x-partial": "1"})
-    assert r.status_code == 200 and diary_row(rid_b)["private"] == 1, (
+    }, follow_redirects=False)
+    assert r.status_code == 303 and diary_row(rid_b)["private"] == 1, (
         "private can be added on an existing entry"
     )
 
