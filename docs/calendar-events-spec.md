@@ -44,7 +44,7 @@ first-class entity, **calendar events**, that have:
 - No timezone *conversion* — single ledger zone (`app_tz`, sec13.3). DST note in §9.
 - Minute precision only; no seconds.
 - **Per-occurrence override** (move/rename just one instance, keeping the series)
-  is a **stretch goal** (§13.3), not v1. v1 supports skip-one + edit-whole-series.
+  is not v1. v1 supports skip-one + edit-whole-series.
 
 ---
 
@@ -219,7 +219,7 @@ in `calendar.html`.
   `by_date` from `tasks.due_between`, also merge `calendar_events.occurrences_between`
   for the same 42-day window into each cell's `events`, tagging
   `kind='event'` and carrying `start_time/end_time/all_day`. Sort each cell:
-  all-day & timed events first by `start_time`, then tasks. (Decide ordering in §13.)
+  all-day & timed events first by `start_time`, then tasks.
 - `GET /calendar/week?date=YYYY-MM-DD` *(new)* — a **Sunday-start week** (match the
   month grid's `firstweekday=6`) containing `date` (default today). Context:
   - 7 day columns (date, dow, is_today),
@@ -278,7 +278,7 @@ layout_day(occs):                      # occs: timed occurrences for ONE day
   `height = max(duration·px_per_min, MIN_BLOCK_PX)`, `left = e.left·100%`,
   `width = e.width·100%` of the day column. `MIN_BLOCK_PX` keeps a 15-min slot
   legible even if it then slightly overruns a neighbour — readability > pixel-exact.
-- **Optional refinement (`expand-to-fill`, §13.7):** after assigning columns, let an
+- **Optional refinement (`expand-to-fill`):** after assigning columns, let an
   event widen rightward across adjacent columns that have no event overlapping its
   span — fills whitespace exactly like Google Calendar. Defaults off for v1.
 - **All-day** events never enter this grid — they live in the separate sticky
@@ -372,48 +372,3 @@ Keep the suite green (the repo tracks a "N/N verified" bar).
 6. JSONL export contains the two demo series.
 7. Light/dark/system themes all render the week grid correctly.
 8. No regression in the existing month grid's task rendering.
-
----
-
-## 12. Staging (milestones)
-
-- **M1 — model+engine:** schema v5, `calendar_events.py`, occurrence expansion,
-  full unit tests. No UI yet. (De-risks the hard part first.)
-- **M2 — read views:** merge events into Month grid; build Week view (read-only).
-- **M3 — write path:** event form + create/update/archive/skip routes; route tests.
-- **M4 — polish:** export hook, theme pass, week-view UX (current-time line,
-  click-empty-slot-to-create).
-
-Before touching the **live** DB: `python -m scripts.backup_db --keep 20` first
-(docs/backup-restore.md), test the migration on the copy, and restart the service via
-`systemctl --user restart ephemeris` (never a broad `pkill`).
-
----
-
-## 13. Open decisions (confirm before/while building)
-
-These are choices I made with a default — flag to the user/implementer:
-
-1. **Separate table vs extend `tasks`.** I chose a **separate `calendar_events`**
-   table so recurring time-blocks don't pollute the task smart-lists/Matrix and so
-   events have no completion semantics (a class "happens", it isn't "done").
-   *Alt:* add time+recurrence columns to `tasks`, closer to TickTick's unified
-   model, but then recurrence-completion semantics must be designed. **Default:
-   separate table.**
-2. **Recurrence grammar.** I kept `once / daily / weekly-by-weekday + interval`,
-   which fully covers the sport case and most routines. *Alt:* full iCal RRULE
-   (monthly-by-nth-weekday, count-based ends, etc.) — much larger. **Default: the
-   compact grammar; extend later if needed.**
-3. **Per-occurrence override** (move/rename one instance) — **stretch.** v1 =
-   skip-one + edit-series only. If wanted in v1, add a `calendar_event_overrides`
-   child table `(event_id, date, patch_json)` consulted during expansion.
-4. **Week start.** I matched the month grid's **Sunday-start**. TickTick lets you
-   choose Mon/Sun. **Default: Sunday**, single setting later.
-5. **Default visible hour band** for the week view: **06:00–23:00**, auto-expanding
-   to fit out-of-band occurrences. Adjustable.
-6. **Cell ordering in the month grid** when a day has both events and tasks:
-   events (by time) first, then tasks. Confirm.
-7. **Overlap layout refinement** (§6.1): v1 ships **equal-width columns** within an
-   overlap cluster. The Google-style **expand-to-fill** (events widen into adjacent
-   free columns) is **off by default** — nicer but more layout code. Confirm whether
-   v1 or later.

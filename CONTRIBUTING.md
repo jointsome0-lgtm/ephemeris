@@ -14,17 +14,17 @@ Security problems go through [`SECURITY.md`](SECURITY.md), not a public issue.
 uv sync
 uv run ruff check .
 uv run pytest
-uv run pytest tests/test_010_platform_ui.py tests/test_020_bundle_attempts.py  # ordered prefix
 uv run python verify_restore.py
 uv run python scripts/check_public_hygiene.py
 ```
 
 All of these must pass before a PR, and CI must be green on the PR head.
 
-CI adds three things the local gate does not: the suite runs on Python 3.10, 3.12
-and 3.13 rather than only the deployed 3.10; `pip-audit` checks the locked
-runtime dependencies against the advisory database and blocks on a hit; and
-`gitleaks` scans both the history and the checked-out tree for credentials.
+CI runs the same gate on the one interpreter `.python-version` pins, the same
+one `uv run` starts the service with. It adds two things the local gate does
+not: `pip-audit` checks the locked runtime dependencies against the advisory
+database and blocks on a hit, and `gitleaks` scans both the history and the
+checked-out tree for credentials.
 Ruff's rule set is deliberately narrow (`E`, `F`, `W`) and there is no
 formatter — see the `TODO(#21)` comments in `pyproject.toml` for what is
 knowingly switched off and why.
