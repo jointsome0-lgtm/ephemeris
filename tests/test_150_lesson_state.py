@@ -3,13 +3,21 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
+import shutil
+import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from app.db import get_conn, now_iso
 from app.routers import learn
 from app.services import assessments, attempts, bundle_schema, focus, lessons
+
+
+def _git(bundle: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(bundle), *args], check=True, capture_output=True,
+        timeout=30,
+    )
 
 
 def _lesson_with_state_surface(title: str) -> tuple[dict, Path, dict]:
@@ -114,8 +122,6 @@ def test_state_regenerates_from_current_db_and_never_serializes_token(
     assert '- Current page (data): "index.html"' in first
     assert "`q_statealpha`: unanswered; verdict=none" in first
     assert "`q_statebeta`: unanswered; verdict=none" in first
-    assert "equal_to_starter=true" in first
-    assert '"attempts/notes.txt": mtime=' in first
     assert "- Summary exists: no" in first
     assert (
         '- Stages written: 1 of 1 declared; last written stage (data): '
@@ -127,16 +133,11 @@ def test_state_regenerates_from_current_db_and_never_serializes_token(
     assert secret not in first
 
     _record_answer_and_state(lesson, manifest)
-    artifact = lesson_dir / "attempts" / "blk_statecode" / "main.py"
-    artifact.write_text('print("learner changed this")\n', encoding="utf-8")
-    os.utime(artifact, (1_900_000_000, 1_900_000_000))
-
     assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
     second = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
     assert '- Current page (data): "related/state-next.html"' in second
     assert "`q_statealpha`: answered; verdict=partial" in second
     assert "`q_statebeta`: unanswered; verdict=none" in second
-    assert "mtime=2030-03-17T17:46:40Z; equal_to_starter=false" in second
     assert "- Summary exists: yes" in second
     assert (
         '- Stages written: 1 of 1 declared; last written stage (data): '
@@ -178,6 +179,8 @@ def test_state_stage_line_skips_missing_pages_and_counts_changed_editor_files(
     artifact = lesson_dir / "attempts" / "blk_stagecode" / "main.py"
     artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.write_text('print("stage")\n', encoding="utf-8")
+    _git(lesson_dir, "add", "-A")
+    _git(lesson_dir, "commit", "-q", "-m", "invented stage checkpoint")
 
     assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
     first = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
@@ -209,44 +212,64 @@ def test_state_stage_line_skips_missing_pages_and_counts_changed_editor_files(
     assert '"related/state-missing.html"' in third
 
 
-def test_starter_flag_survives_a_page_that_also_holds_answer_textareas(client):
-    """A real pedagogy page mixes answer/output textareas with the editor one
-    (lesson thank-go-concurrency-1-2: 8 textareas, 1 editor block). Only the
-    `data-block` marker identifies the starter there; pairing by document
-    order would take an answer textarea for it."""
-    lesson, lesson_dir, _manifest = _lesson_with_state_surface("Mixed Page Fixture")
-    artifact = lesson_dir / "attempts" / "blk_statecode" / "main.py"
+def _stage_with_one_editor(title: str) -> tuple[dict, Path, Path]:
+    lesson, lesson_dir, manifest = _lesson_with_state_surface(title)
+    manifest["blocks"] = [{
+        "id": "blk_stagecode",
+        "page": "pg_statepage2",
+        "kind": "editor",
+        "language": "python",
+        "file": "attempts/blk_stagecode/main.py",
+    }]
+    bundle_schema.write_manifest(lesson_dir / lessons.MANIFEST_NAME, manifest)
+    artifact = lesson_dir / "attempts" / "blk_stagecode" / "main.py"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text('print("stage")\n', encoding="utf-8")
+    return lesson, lesson_dir, artifact
 
-    unmarked = (
-        '<html><textarea data-q="q_statealpha"></textarea>'
-        '<textarea>print("starter")\n</textarea>'
-        '<textarea readonly>run output</textarea></html>'
-    )
-    (lesson_dir / "index.html").write_text(unmarked, encoding="utf-8")
+
+def test_state_says_the_count_is_unavailable_without_a_repository(
+    client, monkeypatch
+):
+    lesson, lesson_dir, artifact = _stage_with_one_editor("No Repository Fixture")
+    monkeypatch.setattr(lessons, "_ensure_bundle_repo", lambda lesson_dir: None)
+    shutil.rmtree(lesson_dir / lessons.GIT_DIR_NAME)
+    artifact.write_text('print("learner edited the stage")\n', encoding="utf-8")
+
     assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
     text = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
-    assert '"attempts/blk_statecode/main.py": mtime=' in text
-    assert "equal_to_starter=unknown" in text
-    assert "equal_to_starter=true" not in text
+    assert (
+        '- Stages written: 1 of 1 declared; last written stage (data): '
+        '"related/state-next.html"; on it 0 of 1 questions answered and '
+        "editor files changed from their starter: count unavailable "
+        "(the bundle has no git repository)"
+    ) in text
+    assert not (lesson_dir / lessons.GIT_DIR_NAME).exists()
 
-    marked = unmarked.replace(
-        '<textarea>print("starter")', '<textarea data-block="blk_statecode">print("starter")'
-    )
-    (lesson_dir / "index.html").write_text(marked, encoding="utf-8")
+
+def test_state_counts_only_editor_files_a_commit_has_seen(client):
+    lesson, lesson_dir, artifact = _stage_with_one_editor("Untracked Editor Fixture")
+    artifact.write_text('print("learner edited before any commit")\n', encoding="utf-8")
+
     assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
     text = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
-    assert '"attempts/blk_statecode/main.py": mtime=' in text
-    assert "equal_to_starter=true" in text
+    assert "0 of 1 editor files changed from their starter" in text
 
-    artifact.write_text('print("learner changed this")\n', encoding="utf-8")
+    _git(lesson_dir, "add", "-A")
+    _git(lesson_dir, "commit", "-q", "-m", "invented first checkpoint")
     assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
     text = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
-    assert "equal_to_starter=false" in text
-    assert 'data-block="blk_<id>"' in (
-        lesson_dir / lessons.REFERENCE_DIR_NAME / "bridge.md"
-    ).read_text(encoding="utf-8"), (
-        "the starter-marker convention rides along as a companion (#195)"
+    assert "0 of 1 editor files changed from their starter" in text
+
+    artifact.write_text('print("learner edited again")\n', encoding="utf-8")
+    _git(lesson_dir, "commit", "-q", "-a", "-m", "invented second checkpoint")
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    text = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
+    assert "1 of 1 editor files changed from their starter" in text, (
+        "the comparison is against the file's FIRST commit, not its latest"
     )
+    assert not hasattr(lessons, "_TextareaDefaults")
+    assert not hasattr(lessons, "_page_starters")
 
 
 def test_record_panel_keeps_the_shared_snapshot_counts_and_rendering(client):
@@ -292,3 +315,54 @@ def test_record_panel_keeps_the_shared_snapshot_counts_and_rendering(client):
     assert 'data-record-count="assessments">2</span> active' in record
     assert 'data-record-count="focus">2m</span> focused' in record
     assert "Invented provisional summary" in record
+
+
+def test_two_edited_editor_files_count_as_changed(client):
+    lesson, lesson_dir, manifest = _lesson_with_state_surface("Two Editors Fixture")
+    manifest["blocks"] = [
+        {
+            "id": "blk_stageone",
+            "page": "pg_statepage2",
+            "kind": "editor",
+            "language": "python",
+            "file": "attempts/blk_stageone/main.py",
+        },
+        {
+            "id": "blk_stagetwo",
+            "page": "pg_statepage2",
+            "kind": "editor",
+            "language": "go",
+            "file": "attempts/blk_stagetwo/main.go",
+        },
+    ]
+    bundle_schema.write_manifest(lesson_dir / lessons.MANIFEST_NAME, manifest)
+    (lesson_dir / "related" / "state-next.html").write_text(
+        '<html><textarea data-block="blk_stageone">print("one")\n</textarea>'
+        '<textarea data-block="blk_stagetwo">package main\n</textarea></html>',
+        encoding="utf-8",
+    )
+    one = lesson_dir / "attempts" / "blk_stageone" / "main.py"
+    two = lesson_dir / "attempts" / "blk_stagetwo" / "main.go"
+    for path, starter in ((one, 'print("one")\n'), (two, "package main\n")):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(starter, encoding="utf-8")
+    _git(lesson_dir, "add", "-A")
+    _git(lesson_dir, "commit", "-q", "-m", "invented stage checkpoint")
+
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    first = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
+    assert (
+        '- Stages written: 1 of 1 declared; last written stage (data): '
+        '"related/state-next.html"; on it 0 of 1 questions answered and '
+        "0 of 2 editor files changed from their starter"
+    ) in first
+
+    one.write_text('print("one, edited by the learner")\n', encoding="utf-8")
+    two.write_text("package main\n\nfunc main() {}\n", encoding="utf-8")
+    assert lessons.prepare_terminal_workspace(lesson["slug"]) is not None
+    second = (lesson_dir / lessons.AGENTS_FILENAME).read_text(encoding="utf-8")
+    assert (
+        '- Stages written: 1 of 1 declared; last written stage (data): '
+        '"related/state-next.html"; on it 0 of 1 questions answered and '
+        "2 of 2 editor files changed from their starter"
+    ) in second
