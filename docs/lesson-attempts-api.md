@@ -157,7 +157,9 @@ already defines:
    replaced by a special/multi-link file, the append falls back to an
    idempotent full rebuild from SQLite (ascending `created_at`, ties by
    `attempt_id`, atomic replace). Rebuild streams rows into the replacement
-   file rather than retaining history in memory. A row committed after the
+   file rather than retaining history in memory; a foreign node on the name
+   (a directory, a symlink, a multi-link file) is moved aside as
+   `attempts.jsonl.collision-<hex>`, §6.5's rule. A row committed after the
    rebuild's read snapshot cannot be projected by another process while the
    UID lock is held: a competing projector reports pending, and the next
    successful lock holder observes the row beyond the durable cursor and

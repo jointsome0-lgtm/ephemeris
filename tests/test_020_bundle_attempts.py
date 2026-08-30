@@ -688,6 +688,7 @@ def test_bundle_attempts(client, suite_state):
     # (learn-bundle-spec.md §6 / §8, docs/lesson-attempts-api.md)
     from uuid import uuid4 as _uuid4
     from app.services import attempts as attempts_svc
+    from app.services import projection as projection_svc
     _at_conn = get_conn()
     try:
         _at_id = lessons_svc.create_lesson(_at_conn, "Attempt Backend Demo")
@@ -1125,7 +1126,7 @@ def test_bundle_attempts(client, suite_state):
     _at_conn = get_conn()
     try:
         try:
-            with attempts_svc._projection_file_lock(_at):
+            with projection_svc.file_lock(attempts_svc.PROJECTION_STATE_DIR, _at):
                 pass
             _at_nofcntl_lock = "no error"
         except OSError as exc:              # ImportError is NOT an OSError
@@ -1329,7 +1330,7 @@ def test_bundle_attempts(client, suite_state):
     # detected: _write_all returns its immediate descriptor seal, so fsync's
     # later seal cannot advance the cursor over concurrently changed bytes.
     attempts_svc._rate.clear()
-    _at_real_write_all2 = attempts_svc._write_all
+    _at_real_write_all2 = projection_svc.write_all
     _at_append_mutation = {"done": False}
 
     def _at_write_then_mutate(fd, data):
@@ -1344,7 +1345,7 @@ def test_bundle_attempts(client, suite_state):
         return written_st
 
     with _mock.patch.object(
-            attempts_svc, "_write_all", _at_write_then_mutate):
+            projection_svc, "write_all", _at_write_then_mutate):
         _at_append_race = c.post(_at_url, json=dict(
             _at_body, idempotency_key="vera-append-race-1",
             answer="Vera Example: append publication raced."))
@@ -1436,7 +1437,7 @@ def test_bundle_attempts(client, suite_state):
     # Malformed private state is repair input, never a post-commit 500. A
     # recursively nested document stays under the fixed 4-KiB read cap but
     # exceeds Python's JSON nesting depth.
-    _at_state_path, _ = attempts_svc._state_paths(_at)
+    _at_state_path = attempts_svc._state_path(_at)
     _at_state_path.write_bytes(b"[" * 1100 + b"]" * 1100)
     _at_recursive_state = c.post(_at_url, json=dict(
         _at_body, idempotency_key="vera-recursive-state-1",
@@ -1452,7 +1453,7 @@ def test_bundle_attempts(client, suite_state):
     # lock contention returns pending after the authority commit, then the
     # next append heals both committed rows under the acquired uid lock.
     attempts_svc._rate.clear()
-    with attempts_svc._projection_file_lock(_at):
+    with projection_svc.file_lock(attempts_svc.PROJECTION_STATE_DIR, _at):
         _at_busy = c.post(_at_url, json=dict(
             _at_body, idempotency_key="vera-busy-lock-1",
             answer="Vera Example: projection lock is busy."))
@@ -1502,7 +1503,7 @@ def test_bundle_attempts(client, suite_state):
 
     def _at_replace_then_mutate(src, dst, *args, **kwargs):
         result = _at_real_replace2(src, dst, *args, **kwargs)
-        if Path(dst) == _at_proj and not _at_rebuild_mutation["done"]:
+        if dst == attempts_svc.PROJECTION_NAME and not _at_rebuild_mutation["done"]:
             published = _os.stat(_at_proj)
             with _at_proj.open("r+b") as fh:
                 original = fh.read(1)
@@ -1792,7 +1793,7 @@ def test_bundle_attempts(client, suite_state):
             201, "2030-01-01T00:04:01.000000+00:00")
         _at_concurrent_line = _at_real_projection_line(
             _at_growth_concurrent).encode("utf-8")
-        _at_real_write_all = attempts_svc._write_all
+        _at_real_write_all = projection_svc.write_all
         _at_projection_held = threading.Event()
         _at_projection_release = threading.Event()
         _at_projection_result = {}
@@ -1817,7 +1818,7 @@ def test_bundle_attempts(client, suite_state):
 
         _at_unrelated_ok = False
         with _mock.patch.object(
-                attempts_svc, "_write_all", _at_block_projection_write):
+                projection_svc, "write_all", _at_block_projection_write):
             _at_projection_thread = threading.Thread(
                 target=_at_project_in_thread)
             _at_projection_thread.start()

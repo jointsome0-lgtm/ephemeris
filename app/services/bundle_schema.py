@@ -24,6 +24,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+from .projection import has_control_chars
 from .runner_registry import RUNNER_REGISTRY
 
 SCHEMA_V1 = 1
@@ -219,17 +220,13 @@ def rejected_read(code: str, detail: str = "") -> ManifestRead:
 # --- path and value grammar (§4.1, §4.5) -------------------------------------
 
 
-def _has_control_chars(value: str) -> bool:
-    return any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
-
-
 def valid_v2_path(value: object, *, html: bool = False) -> bool:
     """§4.1 grammar for `entry`, `pages[].path`, `blocks[].file`,
     `artifact_roots[]`. Exact comparison, no normalization: a path that needs
     cleaning is invalid rather than repaired."""
     if not isinstance(value, str) or not 1 <= len(value) <= MAX_PATH_LEN:
         return False
-    if "\\" in value or _has_control_chars(value):
+    if "\\" in value or has_control_chars(value):
         return False
     if value != value.strip():
         # §4.1: the app's request-cleaning layer strips edge whitespace, so
@@ -253,7 +250,7 @@ def valid_opaque_ref(value: object) -> bool:
     return (
         isinstance(value, str)
         and 1 <= len(value) <= MAX_REF_LEN
-        and not _has_control_chars(value)
+        and not has_control_chars(value)
     )
 
 
@@ -285,7 +282,7 @@ def clean_v1_ref(value: object, *, html_only: bool = False) -> str | None:
     if not isinstance(value, str):
         return None
     value = value.strip()
-    if not value or "\\" in value or _has_control_chars(value):
+    if not value or "\\" in value or has_control_chars(value):
         return None
     ref = PurePosixPath(value)
     if ref.is_absolute() or ".." in ref.parts:
