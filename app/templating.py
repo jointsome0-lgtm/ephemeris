@@ -56,17 +56,11 @@ def _wants_json(request: Request) -> bool:
     return request.headers.get("x-partial") == "1"
 
 
-def _sunday_of(d: _date) -> _date:
-    """The Sunday starting d's week — weeks are Sunday-first everywhere (the week
-    strip, the month grid's firstweekday=6, and the calendar week view)."""
-    return d - timedelta(days=(d.weekday() + 1) % 7)
-
-
 def _week_strip(conn, active: str) -> list[dict]:
     """Sunday-start week containing `active`, with a per-day logged count."""
     d = _date.fromisoformat(active)
     today = _date.fromisoformat(today_str())
-    start = _sunday_of(d)
+    start = stats.sunday_of(d)
     days = [start + timedelta(days=i) for i in range(7)]
     iso = [x.isoformat() for x in days]
     rows = conn.execute(
@@ -89,12 +83,10 @@ def _week_strip(conn, active: str) -> list[dict]:
     ]
 
 
-def _enrich_groups(raw_groups, hist: dict, strip: list[dict], today_d: _date):
-    """Turn (group, [Row]) into (group, [dict]) with streaks + weekly dots.
+def _enrich_groups(raw_groups, hist: dict, today_d: _date):
+    """Turn (group, [Row]) into (group, [dict]) with streak + kept-day total.
 
-    Each item's `week_dots` align 1:1 with the week strip columns, coloured by the
-    four-status model so a row shows its last 7 days at a glance (sec16.2). Streaks
-    follow services.stats (light_done keeps the chain; skipped is neutral)."""
+    Streaks follow services.stats (light_done keeps the chain; skipped is neutral)."""
     groups = []
     for group_name, items in raw_groups:
         out = []
@@ -109,18 +101,8 @@ def _enrich_groups(raw_groups, hist: dict, strip: list[dict], today_d: _date):
                 "status": it["status"],
                 "note": it["note"],
                 "current_streak": stats.current_streak_from(smap, today_d, start),
-                "best_streak": stats.best_streak_from(smap, today_d, start),
                 # all-time kept days (full/light) — the "⚡ N Day" total on each row
-                "total": sum(1 for s in smap.values() if s in ("full_done", "light_done")),
-                "week_dots": [
-                    {
-                        "date": sd["date"],
-                        "status": smap.get(sd["date"]),
-                        "is_future": sd["is_future"],
-                        "is_active": sd["is_active"],
-                    }
-                    for sd in strip
-                ],
+                "total": sum(1 for s in smap.values() if s in stats.KEPT),
             })
         groups.append((group_name, out))
     return groups
@@ -176,7 +158,6 @@ def _habit_detail_ctx(conn, item_id: int, month: str | None, base: str) -> dict 
         "focus_total": focus.habit_total(conn, item_id),
         # Today check-in control in the pane (sec31)
         "today_status": today_row["status"] if today_row else None,
-        "today_note": (today_row["note"] if today_row else "") or "",
         "pane_return": base,
     }
 
@@ -199,34 +180,6 @@ def static_url(path: str) -> str:
     except OSError:
         v = 0
     return f"/static/{path}?v={v}"
-
-
-# Status display metadata (sec16.5): a distinct glyph per status so state reads
-# without color too. Order = how positive→negative the outcome is.
-STATUS_META = [
-    {"key": "full_done", "label": "Full", "glyph": "✓"},
-    {"key": "light_done", "label": "Light", "glyph": "◐"},
-    {"key": "skipped", "label": "Skip", "glyph": "–"},
-    {"key": "failed", "label": "Fail", "glyph": "✕"},
-]
-_GLYPH = {s["key"]: s["glyph"] for s in STATUS_META}
-
-# Short human description shown as a row's meta line once it's been logged
-# (replaces the redundant group name — the section header already shows that).
-STATUS_DESC = {
-    "full_done": "Done",
-    "light_done": "Light · chain kept",
-    "skipped": "Skipped",
-    "failed": "Missed",
-}
-
-
-def status_glyph(status: str | None) -> str:
-    return _GLYPH.get(status or "", "")
-
-
-def status_desc(status: str | None) -> str:
-    return STATUS_DESC.get(status or "", "")
 
 
 # Emoji avatars derived from the item title (our own mapping; no copied assets).
@@ -347,9 +300,6 @@ templates.env.globals.update(
     mirror_home=mirror_home,
     star_body=star_body,
     avatar=item_avatar,
-    status_glyph=status_glyph,
-    status_desc=status_desc,
-    status_meta=STATUS_META,
     due_label=due_label,
 )
 
@@ -357,19 +307,13 @@ templates.env.globals.update(
 # --- day view (shared by Today + History) ----------------------------------
 
 
-def _render_day(request: Request, conn, date: str, nav_active: str, flash: str | None,
-                rail: str = "habit"):
+def _render_day(request: Request, conn, date: str, flash: str | None, rail: str = "habit"):
     raw_groups = checkins.today_view(conn, date)
     daily_note = checkins.get_daily_note(conn, date)
     strip = _week_strip(conn, date)
     hist = stats.all_histories(conn)
     d = _date.fromisoformat(date)
-    groups = _enrich_groups(raw_groups, hist, strip, _date.fromisoformat(today_str()))
-    total = sum(len(items) for _, items in groups)
-    done = sum(
-        1 for _, items in groups for it in items
-        if it["status"] in ("full_done", "light_done")
-    )
+    groups = _enrich_groups(raw_groups, hist, _date.fromisoformat(today_str()))
     return templates.TemplateResponse(request,
         "habit_day.html",
         {
@@ -381,10 +325,7 @@ def _render_day(request: Request, conn, date: str, nav_active: str, flash: str |
             "groups": groups,
             "daily_note": daily_note,
             "week": strip,
-            "done": done,
-            "total": total,
             "flash": flash,
-            "nav_active": nav_active,
             "rail": rail,
         },
     )

@@ -504,41 +504,14 @@ def _price_and_record(conn: sqlite3.Connection, token: str, *,
 # --- write -----------------------------------------------------------------
 
 
-def record_session(conn: sqlite3.Connection, mode: str, seconds, *,
-                   target_seconds=None, note: str | None = None,
-                   started_at: str | None = None, ended_at: str | None = None,
-                   token: str | None = None,
-                   lesson_id=None, habit_id=None, task_id=None,
-                   targets: dict | None = None,
-                   run_id: int | None = None) -> int:
-    """Persist one finished span; returns its id. Row, run deletion and event in
-    one txn — the run must not outlive the session it became, and a session must
-    not exist without its ledger entry.
-
-    `targets` is the already-resolved column set a finishing run hands over; any
-    other caller passes raw ids and gets them coerced against live rows.
-
-    A finishing timer does not come through here: it needs the writer lock held
-    across its own read, so it opens the transaction itself and calls
-    `_write_session` directly.
-    """
-    with conn:
-        return _write_session(
-            conn, mode, seconds, target_seconds=target_seconds, note=note,
-            started_at=started_at, ended_at=ended_at, token=token,
-            lesson_id=lesson_id, habit_id=habit_id, task_id=task_id,
-            targets=targets, run_id=run_id,
-        )
-
-
 def _write_session(conn: sqlite3.Connection, mode: str, seconds, *,
                    target_seconds=None, note: str | None = None,
                    started_at: str | None = None, ended_at: str | None = None,
-                   token: str | None = None,
-                   lesson_id=None, habit_id=None, task_id=None,
-                   targets: dict | None = None,
-                   run_id: int | None = None) -> int:
-    """The write itself, inside a transaction the caller already opened."""
+                   token: str | None = None, targets: dict) -> int:
+    """Persist one finished span; returns its id. Row and event in one
+    transaction the caller already opened, so a session cannot exist without
+    its ledger entry. `targets` is the already-resolved column set the
+    finishing run hands over."""
     if mode not in MODES:
         raise FocusError("unknown timer mode")
     try:
@@ -550,21 +523,11 @@ def _write_session(conn: sqlite3.Connection, mode: str, seconds, *,
     seconds = min(seconds, MAX_SECONDS)
     note = (note or "").strip() or None
     limits.check(note, limits.FOCUS_NOTE, "focus note", FocusError)
-    if targets is None:
-        targets = _resolve_targets(conn, lesson_id, habit_id, task_id)
     ts = now_iso()
     # `ended_at` is when the span finished, `created_at` when it was written
     # down; they differ for a countdown finalised after the fact, and the day the
     # session counts towards follows the former.
     ended_at = ended_at or ts
-    # The run is claimed BEFORE the session is written: Stop and Discard can
-    # both be in flight, and whichever deletes the run owns the span. A finish
-    # that finds it already gone is recording time the user threw away, so it
-    # rolls back instead.
-    if run_id is not None and not conn.execute(
-        "DELETE FROM focus_runs WHERE id = ?", (run_id,)
-    ).rowcount:
-        raise FocusError("that timer is no longer running")
     cur = conn.execute(
         "INSERT INTO focus_sessions (mode, seconds, target_seconds, note, date, "
         "started_at, ended_at, created_at, lesson_id, habit_id, task_id, client_token) "

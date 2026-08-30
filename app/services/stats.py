@@ -33,6 +33,12 @@ from ..db import pretty_date, today_str
 KEPT = ("full_done", "light_done")
 
 
+def sunday_of(d: _date) -> _date:
+    """The Sunday starting d's week — weeks are Sunday-first everywhere (the week
+    strip, the month grid's firstweekday=6, and the calendar week view)."""
+    return d - timedelta(days=(d.weekday() + 1) % 7)
+
+
 # --- raw history fetches ---------------------------------------------------
 
 
@@ -240,7 +246,7 @@ def year_map(
     cell: {date, in_range, status, level, is_today}. level 0..3 dims the star:
     0 empty, 1 skipped, 2 light_done, 3 full_done (kept)."""
     end_d = _date.fromisoformat(end or today_str())
-    sun = end_d - timedelta(days=(end_d.weekday() + 1) % 7)  # Sunday of end's week
+    sun = sunday_of(end_d)
     start_sun = sun - timedelta(weeks=weeks - 1)
     smap = history(conn, item_id)
     cols: list[list[dict]] = []

@@ -153,8 +153,6 @@ def occurrences_between(conn, start: str, end: str) -> list[dict]:
     sorted by (date, all_day DESC, start_time, id). Each item:
         { 'event_id', 'date', 'all_day', 'start_time', 'end_time',
           'title', 'emoji', 'color', 'list_id', 'note' }"""
-
-def occurrences_on(conn, day: str) -> list[dict]: ...
 ```
 
 Implementation notes:
@@ -189,7 +187,6 @@ def skip_occurrence(conn, event_id, date: str) -> None      # append date to exd
 def unskip_occurrence(conn, event_id, date: str) -> None    # remove from exdates
 
 def occurrences_between(conn, start, end) -> list[dict]      # §4
-def occurrences_on(conn, day) -> list[dict]
 ```
 
 `_clean` rules:

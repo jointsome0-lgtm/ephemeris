@@ -57,7 +57,7 @@ def _render_habits(request: Request, conn, sel=None, month=None, edit=False, fla
     raw_groups = checkins.today_view(conn, today)
     strip = _week_strip(conn, today)
     hist = stats.all_histories(conn)
-    groups = _enrich_groups(raw_groups, hist, strip, _date.fromisoformat(today))
+    groups = _enrich_groups(raw_groups, hist, _date.fromisoformat(today))
     ctx = {
         "request": request, "rail": "habit", "date": today, "today": today,
         "pretty_date": pretty_date(_date.fromisoformat(today)),
@@ -114,7 +114,7 @@ def _checkin_state(conn, date: str, item_id: int) -> dict:
         # so Mode B can refresh the row's streak + total + that day's ring without a reload
         "current_streak": stats.current_streak_from(smap, today_d, start),
         "best_streak": stats.best_streak_from(smap, today_d, start),
-        "total": sum(1 for s in smap.values() if s in ("full_done", "light_done")),
+        "total": sum(1 for s in smap.values() if s in stats.KEPT),
     }
 
 
@@ -184,7 +184,6 @@ def post_daily_note(
 
 @write_router.post("/habits")
 def post_habit_create(
-    request: Request,
     title: str = Form(...),
     group_name: str = Form(""),
     emoji: str = Form(""),
@@ -209,7 +208,6 @@ def post_habit_create(
 
 @write_router.post("/habits/{item_id}/edit")
 def post_habit_edit(
-    request: Request,
     item_id: int,
     title: str = Form(...),
     group_name: str = Form(""),
@@ -235,7 +233,7 @@ def post_habit_edit(
 
 
 @write_router.post("/habits/{item_id}/archive")
-def post_habit_archive(request: Request, item_id: int, return_to: str = Form("/habits"),
+def post_habit_archive(item_id: int, return_to: str = Form("/habits"),
                        conn: sqlite3.Connection = Depends(get_db)):
     try:
         items.deactivate_item(conn, item_id)  # soft retire; history kept
@@ -245,7 +243,7 @@ def post_habit_archive(request: Request, item_id: int, return_to: str = Form("/h
 
 
 @write_router.post("/habits/{item_id}/delete")
-def post_habit_delete(request: Request, item_id: int, return_to: str = Form("/habits"),
+def post_habit_delete(item_id: int, return_to: str = Form("/habits"),
                       conn: sqlite3.Connection = Depends(get_db)):
     try:
         items.delete_item(conn, item_id)  # hard delete (events keep the audit trail)
@@ -286,14 +284,13 @@ def get_items(request: Request, flash: str | None = None,
             "inactive": inactive,
             "known_groups": list(index.keys()) or [items.DEFAULT_GROUP],
             "flash": flash,
-            "nav_active": "items",
             "rail": "items",
         },
     )
 
 
 @items_router.post("/items")
-def post_item_create(request: Request, title: str = Form(...), group_name: str = Form(""),
+def post_item_create(title: str = Form(...), group_name: str = Form(""),
                      conn: sqlite3.Connection = Depends(get_db)):
     try:
         items.create_item(conn, title, group_name)
@@ -303,7 +300,7 @@ def post_item_create(request: Request, title: str = Form(...), group_name: str =
 
 
 @items_router.post("/items/{item_id}/edit")
-def post_item_edit(request: Request, item_id: int, title: str = Form(...),
+def post_item_edit(item_id: int, title: str = Form(...),
                    group_name: str = Form(""),
                    conn: sqlite3.Connection = Depends(get_db)):
     try:
@@ -314,7 +311,7 @@ def post_item_edit(request: Request, item_id: int, title: str = Form(...),
 
 
 @items_router.post("/items/{item_id}/deactivate")
-def post_item_deactivate(request: Request, item_id: int,
+def post_item_deactivate(item_id: int,
                          conn: sqlite3.Connection = Depends(get_db)):
     try:
         items.deactivate_item(conn, item_id)
@@ -324,7 +321,7 @@ def post_item_deactivate(request: Request, item_id: int,
 
 
 @items_router.post("/items/{item_id}/reactivate")
-def post_item_reactivate(request: Request, item_id: int,
+def post_item_reactivate(item_id: int,
                          conn: sqlite3.Connection = Depends(get_db)):
     try:
         items.reactivate_item(conn, item_id)

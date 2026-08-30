@@ -139,7 +139,8 @@ def _service_cases(client):
         cal.update_event(_conn(), event_id, note=text)
 
     def focus_note(text):
-        focus.record_session(_conn(), "open", 60, note=text)
+        focus.start_run(_conn(), "open", f"limits-{len(text)}", note=text)
+        focus.discard_run(_conn(), f"limits-{len(text)}")
 
     def checkin_note(text):
         checkins.upsert_checkin(_conn(), today, item_id, status="full_done", note=text)

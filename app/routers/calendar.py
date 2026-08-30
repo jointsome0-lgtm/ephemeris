@@ -14,10 +14,8 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from ..db import get_db, is_valid_date, now_iso, pretty_date, today_str
-from ..services import calendar_events, lists, tasks
-from ..templating import (
-    _parse_month, _safe_return, _sunday_of, _wants_json, _with_flash, templates,
-)
+from ..services import calendar_events, lists, stats, tasks
+from ..templating import _parse_month, _safe_return, _wants_json, _with_flash, templates
 
 router = APIRouter()
 
@@ -126,7 +124,7 @@ _WEEK_BAND = (6, 23)        # default visible band 06:00–23:00, expands to fit
 
 def _week_ctx(conn, sun: _date) -> dict:
     """Build the Sunday-start week beginning at `sun` — the caller snaps via
-    _sunday_of (firstweekday=6, matching the month grid): 7 day columns, an
+    stats.sunday_of (firstweekday=6, matching the month grid): 7 day columns, an
     all-day row (all-day events + due tasks), and the timed grid with overlap
     columns (sec32 §6/§6.1)."""
     week_days = [sun + timedelta(days=i) for i in range(7)]
@@ -206,7 +204,7 @@ def get_calendar_week(request: Request, date: str | None = None, ev: str | None 
                       on: str | None = None, add: str | None = None,
                       at: str | None = None, flash: str | None = None,
                       conn: sqlite3.Connection = Depends(get_db)):
-    sun = _sunday_of(_parse_date(date))
+    sun = stats.sunday_of(_parse_date(date))
     self_url = f"/calendar/week?date={sun.isoformat()}"
     ctx = _week_ctx(conn, sun)
     ctx.update(_event_modal_ctx(conn, self_url, ev, on, add, at), flash=flash)
@@ -242,7 +240,6 @@ def _events_redirect(return_to: str, flash: str | None = None) -> RedirectRespon
 
 @router.post("/calendar/events")
 def post_event_create(
-    request: Request,
     title: str = Form(...),
     emoji: str = Form(""),
     list_id: str = Form(""),
@@ -271,7 +268,6 @@ def post_event_create(
 
 @router.post("/calendar/events/{event_id}")
 def post_event_update(
-    request: Request,
     event_id: int,
     title: str = Form(...),
     emoji: str = Form(""),
@@ -303,7 +299,7 @@ def post_event_update(
 
 
 @router.post("/calendar/events/{event_id}/archive")
-def post_event_archive(request: Request, event_id: int,
+def post_event_archive(event_id: int,
                        return_to: str = Form("/calendar"),
                        conn: sqlite3.Connection = Depends(get_db)):
     try:
@@ -314,7 +310,7 @@ def post_event_archive(request: Request, event_id: int,
 
 
 @router.post("/calendar/events/{event_id}/skip")
-def post_event_skip(request: Request, event_id: int, date: str = Form(...),
+def post_event_skip(event_id: int, date: str = Form(...),
                     return_to: str = Form("/calendar"),
                     conn: sqlite3.Connection = Depends(get_db)):
     try:
@@ -325,7 +321,7 @@ def post_event_skip(request: Request, event_id: int, date: str = Form(...),
 
 
 @router.post("/calendar/events/{event_id}/unskip")
-def post_event_unskip(request: Request, event_id: int, date: str = Form(...),
+def post_event_unskip(event_id: int, date: str = Form(...),
                       return_to: str = Form("/calendar"),
                       conn: sqlite3.Connection = Depends(get_db)):
     try:

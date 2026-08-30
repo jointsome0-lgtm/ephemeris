@@ -306,10 +306,6 @@ class RunnerService:
         self._global_limit = global_limit
         self._per_lesson_limit = per_lesson_limit
 
-    @property
-    def active_total(self) -> int:
-        return self._active_total
-
     @asynccontextmanager
     async def prepare_start(self, lesson_key: str):
         """Serialize one lesson's preflight/validation/admit pipeline."""
@@ -579,13 +575,6 @@ class RunnerService:
         if won and process is not None:
             await asyncio.to_thread(self._kill_tree, job)
         return won
-
-    async def wait(self, job_id: str) -> RunnerJob | None:
-        job = await self.get(job_id)
-        if job is None:
-            return None
-        await job.finished.wait()
-        return job
 
     async def shutdown(self) -> None:
         """Stop admission and converge every active job on the shared kill path."""

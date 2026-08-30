@@ -146,10 +146,6 @@ def occurrences_between(conn: sqlite3.Connection, start: str, end: str) -> list[
     return out
 
 
-def occurrences_on(conn: sqlite3.Connection, day: str) -> list[dict]:
-    return occurrences_between(conn, day, day)
-
-
 # --- week/day overlap layout (sec32 §6.1) — pure render geometry -----------
 # A render-only concern: the engine, model and month grid are untouched. Given
 # ONE day's TIMED occurrences it packs transitively-overlapping events into

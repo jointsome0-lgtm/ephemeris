@@ -286,8 +286,6 @@ def snapshot(conn: sqlite3.Connection):
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 20
-
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -412,17 +410,21 @@ ALTER TABLE routine_items ADD COLUMN constant_reminder INTEGER NOT NULL DEFAULT 
 """
 
 
-def _migrate_to_3(conn: sqlite3.Connection) -> None:
-    # ADD COLUMN isn't idempotent, but the user_version gate runs this exactly
-    # once; guard anyway so a half-applied upgrade can be re-run safely.
-    have = {r["name"] for r in conn.execute("PRAGMA table_info(routine_items)")}
-    for stmt in _SCHEMA_V3.strip().split(";"):
+def _add_columns(conn: sqlite3.Connection, table: str, ddl: str) -> None:
+    """Run each `ALTER TABLE ... ADD COLUMN` in `ddl` whose column `table` lacks.
+
+    ADD COLUMN has no IF NOT EXISTS. The user_version gate runs a migration
+    exactly once, but a half-applied upgrade or a hand-repaired database that
+    already carries the column is converged rather than crashed on."""
+    have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    for stmt in ddl.strip().split(";"):
         stmt = stmt.strip()
-        if not stmt:
-            continue
-        col = stmt.split("ADD COLUMN", 1)[1].split()[0]
-        if col not in have:
+        if stmt and stmt.split("ADD COLUMN", 1)[1].split()[0] not in have:
             conn.execute(stmt)
+
+
+def _migrate_to_3(conn: sqlite3.Connection) -> None:
+    _add_columns(conn, "routine_items", _SCHEMA_V3)
 
 
 # v4 — focus_sessions: persist completed Pomodoro / Stopwatch sessions so the
@@ -527,14 +529,7 @@ ALTER TABLE lessons ADD COLUMN last_opened_at TEXT;
 
 
 def _migrate_to_7(conn: sqlite3.Connection) -> None:
-    have = {r["name"] for r in conn.execute("PRAGMA table_info(lessons)")}
-    for stmt in _SCHEMA_V7.strip().split(";"):
-        stmt = stmt.strip()
-        if not stmt:
-            continue
-        col = stmt.split("ADD COLUMN", 1)[1].split()[0]
-        if col not in have:
-            conn.execute(stmt)
+    _add_columns(conn, "lessons", _SCHEMA_V7)
 
 
 # v8 — Focus ↔ Lesson link: a focus session may name the lesson being studied, so
@@ -546,14 +541,7 @@ ALTER TABLE focus_sessions ADD COLUMN lesson_id INTEGER REFERENCES lessons(id);
 
 
 def _migrate_to_8(conn: sqlite3.Connection) -> None:
-    have = {r["name"] for r in conn.execute("PRAGMA table_info(focus_sessions)")}
-    for stmt in _SCHEMA_V8.strip().split(";"):
-        stmt = stmt.strip()
-        if not stmt:
-            continue
-        col = stmt.split("ADD COLUMN", 1)[1].split()[0]
-        if col not in have:
-            conn.execute(stmt)
+    _add_columns(conn, "focus_sessions", _SCHEMA_V8)
 
 
 # v9 — persistent event identity (issue #17, audit-export slice): every ledger
@@ -579,9 +567,7 @@ def backfill_event_uuids(conn: sqlite3.Connection) -> int:
 
 
 def _migrate_to_9(conn: sqlite3.Connection) -> None:
-    have = {r["name"] for r in conn.execute("PRAGMA table_info(events)")}
-    if "uuid" not in have:
-        conn.execute("ALTER TABLE events ADD COLUMN uuid TEXT")
+    _add_columns(conn, "events", "ALTER TABLE events ADD COLUMN uuid TEXT")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_events_uuid ON events(uuid)")
     backfill_event_uuids(conn)
 
@@ -650,9 +636,7 @@ def _migrate_to_11(conn: sqlite3.Connection) -> None:
     # step above is skipped on its way here. The retro DDL is IF NOT EXISTS
     # throughout — re-running it converges that shape (fresh DBs no-op).
     conn.executescript(_SCHEMA_V10)
-    have = {r["name"] for r in conn.execute("PRAGMA table_info(lessons)")}
-    if "uid" not in have:
-        conn.execute("ALTER TABLE lessons ADD COLUMN uid TEXT")
+    _add_columns(conn, "lessons", "ALTER TABLE lessons ADD COLUMN uid TEXT")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_lessons_uid ON lessons(uid)")
     backfill_lesson_uids(conn)
 
@@ -861,12 +845,7 @@ ALTER TABLE lesson_attempts ADD COLUMN kind TEXT NOT NULL DEFAULT 'attempt'
 
 
 def _migrate_to_17(conn: sqlite3.Connection) -> None:
-    # ADD COLUMN has no IF NOT EXISTS. The user_version gate runs this exactly
-    # once per database, and a repaired/hand-upgraded database that already has
-    # the column is converged rather than crashed on.
-    have = {r["name"] for r in conn.execute("PRAGMA table_info(lesson_attempts)")}
-    if "kind" not in have:
-        conn.executescript(_SCHEMA_V17)
+    _add_columns(conn, "lesson_attempts", _SCHEMA_V17)
 
 
 # v18 — where a task IS on the board (#53). Tasks had priority and sort_order
@@ -912,12 +891,7 @@ def backfill_task_status(conn: sqlite3.Connection) -> int:
 
 
 def _migrate_to_18(conn: sqlite3.Connection) -> None:
-    # ADD COLUMN has no IF NOT EXISTS; the user_version gate runs this once per
-    # database, and one that already carries the column is converged, not
-    # crashed on (same shape as v17).
-    have = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
-    if "status" not in have:
-        conn.executescript(_SCHEMA_V18)
+    _add_columns(conn, "tasks", _SCHEMA_V18)
     backfill_task_status(conn)
 
 
@@ -1102,6 +1076,7 @@ _MIGRATIONS = [
     (19, _migrate_to_19),
     (20, _migrate_to_20),
 ]
+SCHEMA_VERSION = _MIGRATIONS[-1][0]
 
 
 def init_db() -> None:

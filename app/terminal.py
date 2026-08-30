@@ -35,7 +35,7 @@ import time
 from collections import deque
 from pathlib import Path
 from secrets import token_urlsafe
-from typing import Literal
+from typing import Literal, get_args
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -104,9 +104,7 @@ class _SessionRequestError(Exception):
 
 
 TerminalRole = Literal["plain", "lesson-agent", "lesson-learner"]
-_TERMINAL_ROLES: tuple[TerminalRole, ...] = (
-    "plain", "lesson-agent", "lesson-learner",
-)
+_TERMINAL_ROLES: tuple[TerminalRole, ...] = get_args(TerminalRole)
 _LEARNER_SID_PREFIX = "learner."
 
 
@@ -223,11 +221,8 @@ def _child_setup_for(slave_fd: int):
 # unrelated dev server and silently breaks the shell's egress.
 _HTTP_PROXY_PORT = 10809
 _SOCKS_PROXY_PORT = 10808
-# Loopback literals are honored by every client and cover this app's own calls.
-_NO_PROXY = "localhost,127.0.0.1,::1"
-# This app's own spellings. The composed sets below already carry them inside
-# _NO_PROXY; _with_loopback_direct is what guarantees them on the one branch that
-# cannot compose its value — the inherited one.
+# Loopback literals are honored by every client and cover this app's own calls;
+# _with_loopback_direct appends them to every proxied set, composed or inherited.
 _LOOPBACK_NO_PROXY = ("localhost", "127.0.0.1", "::1")
 # Presence of any of these => "already configured"; the full set is what we clear/re-emit.
 _PROXY_SET_VARS = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
@@ -278,7 +273,7 @@ def _with_loopback_direct(env: dict[str, str]) -> dict[str, str]:
     return env
 
 
-def _detect_proxy_env(role: TerminalRole) -> dict[str, str]:
+def _detect_proxy_env() -> dict[str, str]:
     """Pick an egress so agent CLIs (codex, claude) work from a geo-blocked network.
 
     The systemd service runs with NO proxy, so by default the agents dial
@@ -294,8 +289,7 @@ def _detect_proxy_env(role: TerminalRole) -> dict[str, str]:
     Contract: the return value is the COMPLETE set of proxy vars the child shell
     should have. The child env is built from _child_env(), whose allowlist admits
     no proxy vars, then this is applied on top — so an empty dict reliably means
-    "connect directly". Every role gets the same answer; ``role`` is kept so the
-    call site reads as the per-role step it is.
+    "connect directly". Every role gets the same answer.
     """
     override = os.environ.get("EPHEMERIS_TERM_PROXY", "").strip()
     if override.lower() in {"off", "none", "0", "false"}:
@@ -323,7 +317,6 @@ def _detect_proxy_env(role: TerminalRole) -> dict[str, str]:
     http_url = http_url or socks_url  # let HTTP(S) ride the socks proxy if that's all we found
 
     env = {
-        "NO_PROXY": _NO_PROXY, "no_proxy": _NO_PROXY,
         "HTTP_PROXY": http_url, "http_proxy": http_url,
         "HTTPS_PROXY": http_url, "https_proxy": http_url,
     }
@@ -786,7 +779,7 @@ async def _create_session(
         # returns is the whole story and EPHEMERIS_TERM_PROXY=off truly means direct.
         # Detection runs in a worker thread: its socket probes block (up to ~0.15s/port),
         # which must not stall the event loop (and every other PTY pump) mid-detect.
-        proxy = await asyncio.to_thread(_detect_proxy_env, role)
+        proxy = await asyncio.to_thread(_detect_proxy_env)
         env.update(proxy)
         if role == "lesson-agent":
             # Unconditional on this role, unlike the capability pair below: auth

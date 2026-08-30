@@ -840,21 +840,17 @@ def test_core_surfaces(client, suite_state):
     )
     c.post("/focus/timer/discard", data={"token": "tok-z"}, headers={"X-Partial": "1"})
 
-    # Discard beats a finish that read the run before it vanished: the span the
-    # user threw away must not be recorded by the request already in flight.
+    # Discard beats a finish: a Stop that arrives after the run is gone finds
+    # nothing to claim, and the span the user threw away is not recorded.
     c.post("/focus/timer/start", data={"token": "tok-y", "mode": "open"},
            headers={"X-Partial": "1"})
     _backdate("tok-y", 300)
     cy = get_conn()
     try:
-        stale = cy.execute("SELECT * FROM focus_runs WHERE client_token = 'tok-y'").fetchone()
         c.post("/focus/timer/discard", data={"token": "tok-y"}, headers={"X-Partial": "1"})
         from app.services import focus as _focus
         try:
-            _focus.record_session(cy, "open", 300, token="tok-y",
-                                  targets={"lesson_id": None, "habit_id": None,
-                                           "task_id": None},
-                                  run_id=stale["id"])
+            _focus.finish_run(cy, "tok-y")
             raise AssertionError("a discarded run was still recorded")
         except _focus.FocusError:
             pass
@@ -1409,7 +1405,8 @@ def test_core_surfaces(client, suite_state):
             + (str(wk2))
         )
         assert all(
-            o["start_time"] == "09:10" for o in ce.occurrences_on(cconn, "2027-04-14")
+            o["start_time"] == "09:10"
+            for o in ce.occurrences_between(cconn, "2027-04-14", "2027-04-14")
         ), "occurrences merged + time-sorted within a day"
 
         boundary = [
