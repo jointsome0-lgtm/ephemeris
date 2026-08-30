@@ -48,6 +48,7 @@ ID_KEYS = {
 _SEED = """
 import json
 import sys
+import time
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from fastapi.testclient import TestClient
@@ -65,9 +66,9 @@ def id_of(sql):
 
 writes = []
 with TestClient(app, base_url="http://localhost") as client:
-    def post(path, data=None):
+    def post(path, data=None, expected=303):
         response = client.post(path, data=data, follow_redirects=False)
-        writes.append([path, response.status_code])
+        writes.append([path, response.status_code, expected])
 
     post("/habits", {"title": "Demo Restore Walk", "group_name": "Demo Routine",
                      "emoji": "🧭", "start_date": "2024-01-01"})
@@ -84,6 +85,11 @@ with TestClient(app, base_url="http://localhost") as client:
     post("/checkins", {"date": "2024-01-15", "routine_item_id": habit_id,
                        "note": "Invented roundtrip note"})
     post("/daily-note", {"date": "2024-01-15", "text": "Invented roundtrip daily note"})
+    post("/focus/timer/start", {"token": "demo-restore-span", "mode": "open",
+                                "habit_id": str(habit_id)}, expected=200)
+    time.sleep(1.1)
+    post("/focus/timer/finish", {"token": "demo-restore-span"}, expected=200)
+    post("/learn/lessons", {"title": "Demo Restore Lesson"})
 
     post("/habits", {"title": "Demo Disposable Habit", "group_name": "Demo Routine"})
     deleted_id = id_of("SELECT id FROM routine_items WHERE title = 'Demo Disposable Habit'")
@@ -247,7 +253,9 @@ def source(work) -> Source:
     data_dir = work / "source"
     export_path = work / "demo-export.jsonl"
     seeded = json.loads(in_app(_SEED, data_dir, str(export_path)).stdout)
-    assert all(status == 303 for _, status in seeded["writes"]), seeded["writes"]
+    assert all(status == expected for _, status, expected in seeded["writes"]), (
+        seeded["writes"]
+    )
     assert seeded["export_status"] == 200
     records = records_of(export_path.read_text(encoding="utf-8"))
     assert records
@@ -349,14 +357,17 @@ def test_the_calendar_list_link_is_the_only_loss_and_is_reported(source, restore
 def test_id_namespaces_advance_past_every_retained_id(source, restored):
     """A table the restore leaves empty still had rows in the source, and the
     retained stream names their ids. The first post-restore write must not take
-    one of those ids back, or the next export becomes ambiguous."""
+    one of those ids back, or the next export becomes ambiguous. The habit
+    namespace is the one a focus event names: its rows are replayed, but the
+    bootstrap habits are inserted without an event, so a focus span on one of
+    them is the only thing that says the id was taken."""
     floors: dict[str, int] = {}
     for record in source.records:
         for key, table in ID_KEYS.items():
             value = record.get("payload", {}).get(key)
             if isinstance(value, int):
                 floors[table] = max(floors.get(table, 0), value)
-    assert floors
+    assert set(floors) == set(ID_KEYS.values()), "the fixture names every namespace"
 
     for each in restored:
         sequences = dict(query(each.db, "SELECT name, seq FROM sqlite_sequence"))
@@ -438,14 +449,18 @@ def test_two_fresh_restores_are_deterministic(restored):
     assert count(one.db, "events") == count(two.db, "events")
 
 
-def test_the_restored_instance_serves_its_pages(work, source):
+def test_the_restored_instance_serves_its_pages_with_its_stream_intact(work, source):
     """The projections above read the database. This asks what an operator
     asks: does the app RENDER on a restored ledger. Two read routes call
     `lists.inbox_id()` unconditionally, so a restored database without one
-    opens and then raises on its own home page."""
+    opens and then raises on its own home page. And the boot that served them
+    ran startup for real, so the stream is compared whole afterwards: not one
+    event added, and not one rewritten."""
     target = work / "restored-then-booted"
     assert restore(source.export_path, target).returncode == 0
 
     served = json.loads(in_app(_SERVE, target, "/", "/next7", "/today").stdout)
 
     assert served == {"/": 200, "/next7": 200, "/today": 200}
+    booted = records_of(in_app(_REEXPORT, target).stdout)
+    assert audit(booted) == audit(source.records)
