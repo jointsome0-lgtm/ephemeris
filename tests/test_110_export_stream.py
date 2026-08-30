@@ -311,8 +311,8 @@ def _counts(db_path: Path) -> dict[str, int]:
 # A hand-written stream rather than this suite's own export: the cumulative test
 # database is not fully replayable (it holds a cleared check-in whose upsert
 # predates the events table's current shape), and redelivery is a property of the
-# importer, which deserves an input it fully controls. verify_restore.py proves
-# the same property end to end on the real app's curated fixture data.
+# importer, which deserves an input it fully controls. test_300 proves the same
+# property end to end on the real app's curated fixture data.
 _STREAM = [
     {
         "id": "11111111-1111-4111-8111-111111111111",
