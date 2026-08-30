@@ -30,13 +30,12 @@ def test_bundle_attempts(client, suite_state):
     from app import db as db_mod
     from app.services import bundle_schema as bschema
 
-    # every cases.json expectation holds under the fixture-only runner registry
+    # every cases.json expectation holds under the real runner registry
     _fx_dir = ROOT / "fixtures" / "lesson-manifests"
     _fx_cases = json.loads((_fx_dir / "cases.json").read_text(encoding="utf-8"))
-    _fx_registry = frozenset(_fx_cases["context"]["runner_registry"]["known"])
     for _case in _fx_cases["cases"]:
         _fx_text = (_fx_dir / _case["file"]).read_text(encoding="utf-8")
-        _fx_read = bschema.read_manifest_text(_fx_text, runner_registry=_fx_registry)
+        _fx_read = bschema.read_manifest_text(_fx_text)
         assert (
             _fx_read.outcome == _case["expect"]
             and _fx_read.version == _case["read_as"]
@@ -216,14 +215,15 @@ def test_bundle_attempts(client, suite_state):
     (_v2_dir / "index.html").write_text("<html>Vera Example index</html>", encoding="utf-8")
     (_v2_dir / "related" / "01-stage.html").write_text(
         "<html>Vera Example stage</html>", encoding="utf-8")
-    _v2_view = lessons_svc.with_bundle_info(_v2)
+    _v2_view, _ = lessons_svc.with_bundle_info_read(_v2)
     assert (
         [p["entry"] for p in _v2_view["pages"]] == ["index.html", "related/01-stage.html"]
         and _v2_view["bundle"]["schema_version"] == 2
         and _v2_view["bundle"]["outcome"] == "ok"
         and _v2_view["bundle"]["profile"] == "interactive-local-v1"
     ), "v2 bundle lists exactly the declared pages, in order"
-    _v2_ghost = lessons_svc.bundle_info(_v2, entry="related/99-ghost.html")
+    _v2_ghost = lessons_svc.with_bundle_info_read(
+        _v2, "related/99-ghost.html")[0]["bundle"]
     assert (
         _v2_ghost["entry"] == "index.html"
         and all(p["entry"] != "related/99-ghost.html" for p in _v2_ghost["pages"])
@@ -272,7 +272,8 @@ def test_bundle_attempts(client, suite_state):
     bschema.write_manifest(_v2_dir / "lesson.json", _v2_cut)
     _v2_conn = get_conn()
     try:
-        _v2_stale = lessons_svc.bundle_info(lessons_svc.get_lesson(_v2_conn, _v2_id))
+        _v2_stale = lessons_svc.with_bundle_info_read(
+            lessons_svc.get_lesson(_v2_conn, _v2_id))[0]["bundle"]
         _learn_html = c.get(f"/learn?lesson={_v2_id}").text
         _v2_kept = lessons_svc.get_lesson(_v2_conn, _v2_id)["current_entry"]
     finally:
@@ -351,7 +352,7 @@ def test_bundle_attempts(client, suite_state):
     _v1_text = (_fx_dir / "v1-valid.json").read_text(encoding="utf-8")
     (_v1_dir / "lesson.json").write_text(_v1_text, encoding="utf-8")
     (_v1_dir / "index.html").write_text("<html>Vera Example v1</html>", encoding="utf-8")
-    _v1_view = lessons_svc.with_bundle_info(_v1)
+    _v1_view, _ = lessons_svc.with_bundle_info_read(_v1)
     assert (
         _v1_view["bundle"]["schema_version"] == 1
         and [p["entry"] for p in _v1_view["pages"]]
@@ -396,7 +397,7 @@ def test_bundle_attempts(client, suite_state):
     assert (
         _d1_meta["profile"] == "interactive-local-v1"
         and _d1_meta["bridge"] is True
-        and lessons_svc.bundle_info(_v2)["bridge"] is True
+        and lessons_svc.with_bundle_info_read(_v2)[0]["bundle"]["bridge"] is True
     ), "preview-meta surfaces interactive profile + bridge eligibility"
     # degraded v2 findings keep profile and bridge — identity stays valid,
     # D2 gates per page; only fail-closed-to-legacy paths revoke them
@@ -750,7 +751,7 @@ process.stdout.write(JSON.stringify([
     _at_body = {"question_id": "q_atpredict1", "page_id": _at_pg, "page_rev": _at_rev,
                 "answer": "Vera Example: I predict it prints hello.",
                 "idempotency_key": "vera-req-1"}
-    attempts_svc._reset_rate_limit()
+    attempts_svc._rate.clear()
 
     def _at_rows():
         _c = get_conn()
@@ -1336,7 +1337,7 @@ process.stdout.write(JSON.stringify([
     # A same-inode rewrite between the append descriptor's final fstat and
     # the name seal must not be blessed by the sidecar. The full seal mismatch
     # forces a rebuild from SQLite.
-    attempts_svc._reset_rate_limit()
+    attempts_svc._rate.clear()
     _at_real_lstat = _os.lstat
     _at_same_inode = {"mutated": False}
 
@@ -1371,7 +1372,7 @@ process.stdout.write(JSON.stringify([
     # A rewrite immediately after the append helper returns must also be
     # detected: _write_all returns its immediate descriptor seal, so fsync's
     # later seal cannot advance the cursor over concurrently changed bytes.
-    attempts_svc._reset_rate_limit()
+    attempts_svc._rate.clear()
     _at_real_write_all2 = attempts_svc._write_all
     _at_append_mutation = {"done": False}
 
@@ -1403,7 +1404,7 @@ process.stdout.write(JSON.stringify([
     # close(2) surfacing a delayed write error (PR-57 round 3): target the
     # append descriptor specifically now that the cursor sidecar also opens
     # bounded descriptors. The repair rebuild covers the durable row.
-    attempts_svc._reset_rate_limit()
+    attempts_svc._rate.clear()
     _at_real_close = _os.close
     _at_real_open3 = _os.open
     _at_real_projection_fd = attempts_svc._projection_fd
@@ -1494,7 +1495,7 @@ process.stdout.write(JSON.stringify([
     # A slow sibling projector never holds the HTTP request indefinitely:
     # lock contention returns pending after the authority commit, then the
     # next append heals both committed rows under the acquired uid lock.
-    attempts_svc._reset_rate_limit()
+    attempts_svc._rate.clear()
     with attempts_svc._projection_file_lock(_at):
         _at_busy = c.post(_at_url, json=dict(
             _at_body, idempotency_key="vera-busy-lock-1",
@@ -1518,7 +1519,7 @@ process.stdout.write(JSON.stringify([
     _at_ahead_state["cursor_attempt_id"] = str(_uuid4())
     _at_state_path.write_text(
         json.dumps(_at_ahead_state), encoding="ascii")
-    attempts_svc._reset_rate_limit()
+    attempts_svc._rate.clear()
     _at_ahead = c.post(_at_url, json=dict(
         _at_body, idempotency_key="vera-ahead-cursor-1",
         answer="Vera Example: restored authority wins."))
@@ -1538,7 +1539,7 @@ process.stdout.write(JSON.stringify([
     # same-inode rewrite immediately after publication changes its post-replace
     # seal relative to the rendered snapshot, returns pending, and is healed by
     # the next append instead of becoming trusted cursor state.
-    attempts_svc._reset_rate_limit()
+    attempts_svc._rate.clear()
     _at_proj.write_text("force a rebuild\n", encoding="utf-8")
     _at_real_replace2 = _os.replace
     _at_rebuild_mutation = {"done": False}
@@ -1609,7 +1610,7 @@ process.stdout.write(JSON.stringify([
     # the same re-check covers the rate limit (PR-57 round 11): an original
     # that committed after the early check wins over an exhausted window
     _at_roc_calls["n"] = 0
-    attempts_svc._reset_rate_limit()
+    attempts_svc._rate.clear()
     _at_rate_saved = attempts_svc.RATE_MAX_PER_WINDOW
     attempts_svc.RATE_MAX_PER_WINDOW = 1
     with attempts_svc._rate_lock:  # window pre-exhausted by the "original"
@@ -1624,7 +1625,7 @@ process.stdout.write(JSON.stringify([
     finally:
         _at_conn.close()
         attempts_svc.RATE_MAX_PER_WINDOW = _at_rate_saved
-        attempts_svc._reset_rate_limit()
+        attempts_svc._rate.clear()
     assert (
         _at_race429["result"] == "duplicate"
         and _at_race429["attempt_id"] == _at_row1["attempt_id"]
@@ -1635,7 +1636,7 @@ process.stdout.write(JSON.stringify([
     # slot (PR-57 round 12): retries racing a slow original are not new
     # writes and never starve the next real attempt of budget
     _at_roc_calls["n"] = 0
-    attempts_svc._reset_rate_limit()
+    attempts_svc._rate.clear()
     _at_rate_saved = attempts_svc.RATE_MAX_PER_WINDOW
     attempts_svc.RATE_MAX_PER_WINDOW = 3
     _at_conn = get_conn()
@@ -1648,7 +1649,7 @@ process.stdout.write(JSON.stringify([
     finally:
         _at_conn.close()
         attempts_svc.RATE_MAX_PER_WINDOW = _at_rate_saved
-        attempts_svc._reset_rate_limit()
+        attempts_svc._rate.clear()
     assert (
         _at_refund["result"] == "duplicate"
         and _at_roc_calls["n"] == 2
@@ -1658,7 +1659,7 @@ process.stdout.write(JSON.stringify([
     # rate limit: sliding per-lesson window, distinct code + Retry-After;
     # fresh keys spend budget, replays never do (PR-57 round 9) — a retry of
     # the window-exhausting attempt learns its attempt_id, not a 429
-    attempts_svc._reset_rate_limit()
+    attempts_svc._rate.clear()
     _at_rate_saved = attempts_svc.RATE_MAX_PER_WINDOW
     attempts_svc.RATE_MAX_PER_WINDOW = 3
     try:
@@ -1671,7 +1672,7 @@ process.stdout.write(JSON.stringify([
             _at_body, idempotency_key="vera-rl-2"))
     finally:
         attempts_svc.RATE_MAX_PER_WINDOW = _at_rate_saved
-        attempts_svc._reset_rate_limit()
+        attempts_svc._rate.clear()
     assert (
         _at_rl_ok.status_code == 200 and _at_rl_hit.status_code == 429
         and _at_rl_hit.json()["error"] == "rate-limited"

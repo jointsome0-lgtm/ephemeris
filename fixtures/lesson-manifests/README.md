@@ -8,11 +8,10 @@ file carries the "Vera Example" marker that
 
 - `cases.json` is the machine-readable expectation table. `expect` is the
   reader outcome (`ok` / `degraded` / `rejected`); `findings` lists finding
-  codes that MUST appear (informational extras MAY appear on top). Its
-  `context.runner_registry` is a fixture-only registry that tests MUST
-  install (runner expectations are not executable against the real, later
-  F3 registry); the migration case carries its DB context (`lesson_uid`,
-  `db_current_entry`) the same way.
+  codes that MUST appear (informational extras MAY appear on top). Runner
+  expectations hold under the real registry (`python-script-v1` known,
+  `quantum-teleport-v9` unknown); the migration case carries its DB context
+  (`lesson_uid`, `db_current_entry`) machine-readably.
 - Every `*.json` manifest is stored in the **canonical serialization** of
   spec §9.3 (`json.dumps(…, ensure_ascii=False, indent=2)` + newline,
   recursive key order): C3's verify round-trips each accepted fixture

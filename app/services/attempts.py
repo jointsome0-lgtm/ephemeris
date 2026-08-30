@@ -108,12 +108,6 @@ def _bundle_lock(slug: str) -> threading.RLock:
         return lock
 
 
-def _reset_rate_limit() -> None:
-    """Test hook: forget all rate-limit state."""
-    with _rate_lock:
-        _rate.clear()
-
-
 def _check_rate(lesson_id: int) -> float:
     """Charge one window slot; returns the charged stamp so outcomes that
     turn out not to be new writes can refund it (PR-57 round 12)."""

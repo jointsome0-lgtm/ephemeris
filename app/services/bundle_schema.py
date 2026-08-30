@@ -18,12 +18,13 @@ import os
 import re
 import stat as stat_module
 import tempfile
-from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 from uuid import uuid4
+
+from .runner_registry import RUNNER_REGISTRY
 
 SCHEMA_V1 = 1
 SCHEMA_V2 = 2
@@ -51,13 +52,6 @@ MAX_LABEL_LEN = 200
 MAX_SLUG_LEN = 80
 MAX_URL_LEN = 1000
 MAX_REF_LEN = 200
-# §4.5 address grammar. A conforming writer keeps every `path` segment within
-# MAX_PATH_SEG_LEN and the address within MAX_PATH_DEPTH levels, which caps the
-# whole string at 6*30 + 5 = 185 — comfortably under MAX_REF_LEN, so a writer
-# obeying the grammar can never produce the `invalid-ref` that drops a lesson
-# out of its track. These bind writers only; the reader below stays permissive.
-MAX_PATH_SEG_LEN = 30
-MAX_PATH_DEPTH = 6
 MIN_STEP, MAX_STEP = 1, 10000
 
 # Bounded finding materialization: a hostile manifest must not turn one
@@ -68,10 +62,6 @@ MAX_FINDING_DETAIL = 200
 PROFILE_LEGACY = "legacy-display"
 PROFILE_INTERACTIVE = "interactive-local-v1"
 PROFILES = (PROFILE_LEGACY, PROFILE_INTERACTIVE)
-
-# The schema leaf defaults to no known runners. Application call sites inject
-# F3's real mapping; manifest fixtures inject their own registry (§11).
-RUNNER_REGISTRY: frozenset[str] = frozenset()
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 PAGE_ID_RE = re.compile(r"^pg_[a-z0-9]{4,32}\Z")
@@ -169,7 +159,6 @@ class ManifestRead:
     concepts: list[str] = field(default_factory=list)
     profile: str = PROFILE_LEGACY
     artifact_roots: list[str] = field(default_factory=lambda: [DEFAULT_ARTIFACT_ROOT])
-    updated_by_agent_at: str | None = None
 
     @property
     def outcome(self) -> str:
@@ -373,23 +362,11 @@ def _too_deep(data: bytes) -> bool:
     return False
 
 
-def read_manifest_text(
-    text: str,
-    *,
-    db_lesson: dict | None = None,
-    runner_registry: Collection[str] | Mapping[str, object] = RUNNER_REGISTRY,
-) -> ManifestRead:
-    return read_manifest_bytes(
-        text.encode("utf-8"), db_lesson=db_lesson, runner_registry=runner_registry
-    )
+def read_manifest_text(text: str, *, db_lesson: dict | None = None) -> ManifestRead:
+    return read_manifest_bytes(text.encode("utf-8"), db_lesson=db_lesson)
 
 
-def read_manifest_bytes(
-    data: bytes,
-    *,
-    db_lesson: dict | None = None,
-    runner_registry: Collection[str] | Mapping[str, object] = RUNNER_REGISTRY,
-) -> ManifestRead:
+def read_manifest_bytes(data: bytes, *, db_lesson: dict | None = None) -> ManifestRead:
     """Dual-read dispatch (§9.1). Short-circuits only on manifest-too-large,
     manifest-unreadable, and unsupported-version; every other finding
     accumulates across the whole manifest."""
@@ -420,15 +397,10 @@ def read_manifest_bytes(
         return read
     if version == SCHEMA_V1:
         return _read_v1(raw)
-    return _read_v2(raw, db_lesson=db_lesson, runner_registry=runner_registry)
+    return _read_v2(raw, db_lesson=db_lesson)
 
 
-def read_manifest_path(
-    path: Path,
-    *,
-    db_lesson: dict | None = None,
-    runner_registry: Collection[str] | Mapping[str, object] = RUNNER_REGISTRY,
-) -> ManifestRead | None:
+def read_manifest_path(path: Path, *, db_lesson: dict | None = None) -> ManifestRead | None:
     """Read a manifest file without ever following a symlink at the manifest
     path itself (§2: a symlinked lesson.json is `symlinked-bundle`, never
     "missing" — a default skeleton there would mask a planted link).
@@ -460,9 +432,7 @@ def read_manifest_path(
     finally:
         if fd >= 0:
             os.close(fd)
-    return read_manifest_bytes(
-        data, db_lesson=db_lesson, runner_registry=runner_registry
-    )
+    return read_manifest_bytes(data, db_lesson=db_lesson)
 
 
 def _read_v1(raw: dict) -> ManifestRead:
@@ -498,8 +468,6 @@ def _read_v1(raw: dict) -> ManifestRead:
         seen.append(ref)
         read.pages.append({"id": None, "path": ref, "title": None})
 
-    updated = raw.get("updated_by_agent_at")
-    read.updated_by_agent_at = updated if isinstance(updated, str) else None
     read.profile = PROFILE_LEGACY  # v1 can never opt into interactivity (§5)
     return read
 
@@ -533,12 +501,7 @@ def _check_metadata_copies(read: ManifestRead, raw: dict, db_lesson: dict | None
             read.add("stale-metadata", f"{name} copy differs from the DB")
 
 
-def _read_v2(
-    raw: dict,
-    *,
-    db_lesson: dict | None,
-    runner_registry: Collection[str] | Mapping[str, object],
-) -> ManifestRead:
+def _read_v2(raw: dict, *, db_lesson: dict | None) -> ManifestRead:
     read = ManifestRead(version=SCHEMA_V2, raw=raw)
 
     # identity (§3): missing-identity accumulates — the rest is still checked.
@@ -573,7 +536,7 @@ def _read_v2(
     read.entry = entry if entry is not None else (page_paths[0] if page_paths else None)
 
     read.questions = _read_questions(read, raw, page_ids)
-    read.blocks = _read_blocks(read, raw, page_ids, runner_registry)
+    read.blocks = _read_blocks(read, raw, page_ids)
     _read_opaque_refs(read, raw)
 
     # runtime profile (§5): fail-closed to legacy-display.
@@ -607,7 +570,6 @@ def _read_v2(
         else:
             try:
                 datetime.fromisoformat(updated.replace("Z", "+00:00"))
-                read.updated_by_agent_at = updated
             except ValueError:
                 read.add("invalid-value", f"updated_by_agent_at {updated!r}")
     return read
@@ -768,12 +730,7 @@ def _under_root(file: str, roots: list[str]) -> bool:
     return any(file.startswith(root + "/") for root in roots)
 
 
-def _read_blocks(
-    read: ManifestRead,
-    raw: dict,
-    page_ids: set[str],
-    runner_registry: Collection[str] | Mapping[str, object],
-) -> list[dict]:
+def _read_blocks(read: ManifestRead, raw: dict, page_ids: set[str]) -> list[dict]:
     items = raw.get("blocks")
     if items is not None and not isinstance(items, list):
         read.add("type-mismatch", "blocks is not a list")
@@ -847,12 +804,10 @@ def _read_blocks(
                 # grammar violation: dropped field, same save-only editor as absent
                 read.add("invalid-value", f"block {bid} runner_id dropped")
                 runner_id = None
-            elif runner_id not in runner_registry:
+            elif runner_id not in RUNNER_REGISTRY:
                 read.add("unknown-runner", f"block {bid} runner_id {runner_id!r}")
             else:
-                spec = runner_registry.get(runner_id) if isinstance(runner_registry, Mapping) else None
-                suffixes = getattr(spec, "suffixes", None)
-                if suffixes is not None and not file.endswith(tuple(suffixes)):
+                if not RUNNER_REGISTRY[runner_id].accepts(file):
                     read.add(
                         "incompatible-runner",
                         f"block {bid} file {file!r} is incompatible with {runner_id!r}",

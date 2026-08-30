@@ -63,26 +63,26 @@ def _reset_rate_limit() -> None:
         _rate.clear()
 
 
-def _check_rate(lesson_key: str) -> float:
+def _check_rate(lesson_uid: str) -> float:
     now = _monotonic()
     with _rate_lock:
-        window = _rate.setdefault(lesson_key, deque())
+        window = _rate.setdefault(lesson_uid, deque())
         while window and now - window[0] > RATE_WINDOW_SECONDS:
             window.popleft()
         if len(window) >= RATE_MAX_PER_WINDOW:
             retry = max(1, int(RATE_WINDOW_SECONDS - (now - window[0])) + 1)
-            exc = runner.RateLimitedError(lesson_key)
+            exc = runner.RateLimitedError(lesson_uid)
             exc.retry_after = retry
             raise exc
         window.append(now)
         return now
 
 
-def _refund_rate(lesson_key: str, stamp: object) -> None:
+def _refund_rate(lesson_uid: str, stamp: object) -> None:
     if not isinstance(stamp, float):
         return
     with _rate_lock:
-        window = _rate.get(lesson_key)
+        window = _rate.get(lesson_uid)
         if window is None:
             return
         try:
@@ -133,7 +133,6 @@ def prepare_request(
 ) -> runner.RunnerRequest:
     snapshot = artifacts.get_run_snapshot(lesson, block_id, file_rev)
     return runner.RunnerRequest(
-        lesson_key=lesson["uid"],
         block_id=snapshot.block_id,
         file_rev=snapshot.file_rev,
         idempotency_key=idempotency_key,
@@ -756,15 +755,15 @@ async def start(
     block_id: str,
     payload: dict,
 ) -> runner.Admission:
-    lesson_key = lesson["uid"]
+    lesson_uid = lesson["uid"]
     try:
         file_rev, key = clean_start_payload(payload)
     except RunRequestError:
-        await service.charge_validation_refusal(lesson_key)
+        await service.charge_validation_refusal(lesson_uid)
         raise
 
-    async with service.prepare_start(lesson_key):
-        preflight = await service.preflight(lesson_key, key, block_id, file_rev)
+    async with service.prepare_start(lesson_uid):
+        preflight = await service.preflight(lesson_uid, key, block_id, file_rev)
         if isinstance(preflight, runner.Admission):
             return preflight
         request = await asyncio.to_thread(

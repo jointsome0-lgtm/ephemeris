@@ -137,12 +137,6 @@ def _lesson_lock(slug: str) -> threading.RLock:
         return lock
 
 
-def _reset_rate_limit() -> None:
-    """Test hook: forget all rate-limit state."""
-    with _rate_lock:
-        _rate.clear()
-
-
 def _check_rate(lesson_id: int) -> float:
     """Charge one window slot; returns the charged stamp so outcomes that turn
     out not to be new writes can refund it (the attempts idiom)."""
@@ -1119,14 +1113,6 @@ def _projection_unchanged(
     )
 
 
-def _reset_sweep_state() -> None:
-    """Test hook: forget which lessons this process has swept or published."""
-    with _swept_lock:
-        _swept.clear()
-    with _published_lock:
-        _published.clear()
-
-
 def _lock_path(lesson: dict) -> Path:
     """The app-private lock file for this lesson's assessment projection.
 
@@ -1402,13 +1388,11 @@ def _publish(lesson: dict, data: bytes) -> os.stat_result:
     return published
 
 
-def _rewrite_locked(
-    conn: sqlite3.Connection, lesson: dict, force: bool = False
-) -> bool:
+def _rewrite_locked(conn: sqlite3.Connection, lesson: dict) -> bool:
     """Render the committed state and publish it. Runs under the flock."""
     uid = lesson.get("uid")
     already_seq = None
-    if not force and isinstance(uid, str) and uid:
+    if isinstance(uid, str) and uid:
         with _published_lock:
             stamp = _published.get(uid)
         # The identity gate runs on the skip path too. The manifest can be
@@ -1452,9 +1436,7 @@ def _rewrite_locked(
     return True
 
 
-def reconcile_projection(
-    conn: sqlite3.Connection, lesson: dict, force: bool = False
-) -> bool:
+def reconcile_projection(conn: sqlite3.Connection, lesson: dict) -> bool:
     """Rewrite `assessments.jsonl` from the committed authority.
 
     The single projection entry point: the write path, the replay heal, the
@@ -1463,10 +1445,8 @@ def reconcile_projection(
     publishes the same bytes but for the meta line's `generated_at`.
 
     A reconcile that would republish exactly what this process last published
-    does nothing instead (it does not even materialize the fold). `force`
-    remains available to focused integrity probes that deliberately require a
-    fresh render; production callers rely on the metadata seal to detect a
-    missing or changed file.
+    does nothing instead (it does not even materialize the fold); the metadata
+    seal detects a missing or changed file.
 
     Returns True when the bundle now reflects the authority, False when it does
     not: an active transaction (filesystem work must never run inside one), an
@@ -1482,7 +1462,7 @@ def reconcile_projection(
         # worker queue instead of losing the non-blocking flock to each other.
         with _lesson_lock(lesson["slug"]):
             with _projection_file_lock(lesson):
-                return _rewrite_locked(conn, lesson, force)
+                return _rewrite_locked(conn, lesson)
     except Exception:
         # Deliberately every exception, not a curated list. The projection is
         # derived and best-effort; the durable write it follows has already

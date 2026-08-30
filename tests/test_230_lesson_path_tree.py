@@ -52,19 +52,11 @@ def test_path_ref_is_an_address():
         bs.split_path_ref(None) == [] and bs.split_path_ref("") == []
         and bs.split_path_ref("//") == []
     ), "an absent or all-separator ref places the lesson on no path"
-    # The whole point of the writer bounds: a conforming writer can never reach
-    # MAX_REF_LEN, where the ref is dropped and the lesson silently leaves its
-    # track with the finding visible only in /preview-meta.
+    # Reading stays permissive where writing is bounded (§4.5 allows six
+    # levels): an over-long address still groups rather than losing the tree.
+    _deep = "/".join(f"zt-seg-{n}" for n in range(10))
     assert (
-        bs.MAX_PATH_DEPTH * bs.MAX_PATH_SEG_LEN + (bs.MAX_PATH_DEPTH - 1)
-        < bs.MAX_REF_LEN
-    ), "the deepest conforming address stays under the ref length limit"
-    # Reading stays permissive where writing is bounded: an over-long address
-    # still groups. Losing the tree is the failure the bounds exist to avoid,
-    # so the reader must not reproduce it.
-    _deep = "/".join(f"zt-seg-{n}" for n in range(bs.MAX_PATH_DEPTH + 4))
-    assert (
-        len(bs.split_path_ref(_deep)) == bs.MAX_PATH_DEPTH + 4
+        len(bs.split_path_ref(_deep)) == 10
     ), "an address past the writer bounds still groups rather than vanishing"
 
 

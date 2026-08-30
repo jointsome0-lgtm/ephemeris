@@ -81,18 +81,6 @@ class RunnerShuttingDownError(RunnerError):
     code = "runner-unavailable"
 
 
-class UnknownRunnerError(RunnerError):
-    code = "unknown-runner"
-
-
-class IncompatibleRunnerError(RunnerError):
-    code = "incompatible-runner"
-
-
-class SnapshotTooLargeError(RunnerError):
-    code = "snapshot-too-large"
-
-
 class IdempotencyConflictError(RunnerError):
     code = "idempotency-conflict"
 
@@ -196,7 +184,7 @@ def require_runner_health() -> None:
 
 @dataclass(frozen=True)
 class RunnerRequest:
-    lesson_key: str
+    lesson_uid: str
     block_id: str
     file_rev: str
     idempotency_key: str
@@ -205,7 +193,6 @@ class RunnerRequest:
     snapshot: bytes
     bundle_dir: str
     bundle_root: str
-    lesson_uid: str = ""
     lesson_id: int = 0
     slug: str = ""
 
@@ -307,23 +294,23 @@ class RunnerService:
         self._per_lesson_limit = per_lesson_limit
 
     @asynccontextmanager
-    async def prepare_start(self, lesson_key: str):
+    async def prepare_start(self, lesson_uid: str):
         """Serialize one lesson's preflight/validation/admit pipeline."""
         async with self._lock:
-            lock = self._prepare_locks.get(lesson_key)
+            lock = self._prepare_locks.get(lesson_uid)
             if lock is None:
-                lock = self._prepare_locks[lesson_key] = asyncio.Lock()
+                lock = self._prepare_locks[lesson_uid] = asyncio.Lock()
         async with lock:
             yield
 
     def _replay_locked(
         self,
-        lesson_key: str,
+        lesson_uid: str,
         idempotency_key: str,
         block_id: str,
         file_rev: str,
     ) -> Admission | None:
-        replay = self._idempotency.get((lesson_key, idempotency_key))
+        replay = self._idempotency.get((lesson_uid, idempotency_key))
         if replay is None:
             return None
         saved_block, saved_rev, job_id, _expires = replay
@@ -336,7 +323,7 @@ class RunnerService:
 
     async def preflight(
         self,
-        lesson_key: str,
+        lesson_uid: str,
         idempotency_key: str,
         block_id: str,
         file_rev: str,
@@ -345,21 +332,21 @@ class RunnerService:
         async with self._lock:
             self._prune_locked()
             replay = self._replay_locked(
-                lesson_key, idempotency_key, block_id, file_rev
+                lesson_uid, idempotency_key, block_id, file_rev
             )
             if replay is not None:
                 return replay
             if not self._accepting:
                 raise RunnerShuttingDownError("runner service is shutting down")
-            if self._active_by_lesson.get(lesson_key, 0) >= self._per_lesson_limit:
-                raise LessonCapacityError(lesson_key)
+            if self._active_by_lesson.get(lesson_uid, 0) >= self._per_lesson_limit:
+                raise LessonCapacityError(lesson_uid)
             if self._active_total >= self._global_limit:
                 raise GlobalCapacityError("global runner capacity reached")
             rate_charge: object | None = None
             if self._rate_hook is not None:
-                rate_charge = self._rate_hook(lesson_key)
+                rate_charge = self._rate_hook(lesson_uid)
                 if rate_charge is False:
-                    raise RateLimitedError(lesson_key)
+                    raise RateLimitedError(lesson_uid)
             return AdmissionPermit(rate_charge)
 
     async def admit(
@@ -369,7 +356,7 @@ class RunnerService:
         rate_permit: object = _NO_RATE_PERMIT,
     ) -> Admission:
         """Validate health off-loop, then reserve under the admission lock."""
-        replay_key = (request.lesson_key, request.idempotency_key)
+        replay_key = (request.lesson_uid, request.idempotency_key)
         permit_supplied = rate_permit is not _NO_RATE_PERMIT
         supplied_charge = rate_permit if permit_supplied else None
 
@@ -381,44 +368,28 @@ class RunnerService:
             self._prune_locked()
             try:
                 replay = self._replay_locked(
-                    request.lesson_key, request.idempotency_key,
+                    request.lesson_uid, request.idempotency_key,
                     request.block_id, request.file_rev,
                 )
             except (IdempotencyConflictError, JobMissingError):
                 if permit_supplied:
                     self._refund_rate_locked(
-                        request.lesson_key, supplied_charge
+                        request.lesson_uid, supplied_charge
                     )
                 raise
             if replay is not None:
                 if permit_supplied:
                     self._refund_rate_locked(
-                        request.lesson_key, supplied_charge
+                        request.lesson_uid, supplied_charge
                     )
                 return replay
             if not self._accepting:
                 if permit_supplied:
                     self._refund_rate_locked(
-                        request.lesson_key, supplied_charge
+                        request.lesson_uid, supplied_charge
                     )
                 raise RunnerShuttingDownError("runner service is shutting down")
-            try:
-                if len(request.snapshot) > RUNNER_FILE_BYTES:
-                    raise SnapshotTooLargeError(
-                        f"runner snapshot exceeds {RUNNER_FILE_BYTES} bytes"
-                    )
-                spec = self._registry.get(request.runner_id)
-                if spec is None:
-                    raise UnknownRunnerError(request.runner_id)
-                basename = PurePosixPath(request.filename).name
-                if basename in ("", ".", "..") or not spec.accepts(basename):
-                    raise IncompatibleRunnerError(request.filename)
-            except RunnerError:
-                if permit_supplied:
-                    self._refund_rate_locked(
-                        request.lesson_key, supplied_charge
-                    )
-                raise
+            spec = self._registry[request.runner_id]
 
         try:
             await asyncio.to_thread(self._health_hook)
@@ -426,7 +397,7 @@ class RunnerService:
             if permit_supplied:
                 async with self._lock:
                     self._refund_rate_locked(
-                        request.lesson_key, supplied_charge
+                        request.lesson_uid, supplied_charge
                     )
             raise
 
@@ -437,38 +408,38 @@ class RunnerService:
             self._prune_locked()
             try:
                 replay = self._replay_locked(
-                    request.lesson_key, request.idempotency_key,
+                    request.lesson_uid, request.idempotency_key,
                     request.block_id, request.file_rev,
                 )
             except (IdempotencyConflictError, JobMissingError):
                 if permit_supplied:
                     self._refund_rate_locked(
-                        request.lesson_key, supplied_charge
+                        request.lesson_uid, supplied_charge
                     )
                 raise
             if replay is not None:
                 if permit_supplied:
                     self._refund_rate_locked(
-                        request.lesson_key, supplied_charge
+                        request.lesson_uid, supplied_charge
                     )
                 return replay
             if not self._accepting:
                 if permit_supplied:
                     self._refund_rate_locked(
-                        request.lesson_key, supplied_charge
+                        request.lesson_uid, supplied_charge
                     )
                 raise RunnerShuttingDownError("runner service is shutting down")
             rate_charge: object | None = supplied_charge
             if not permit_supplied and self._rate_hook is not None:
-                rate_charge = self._rate_hook(request.lesson_key)
+                rate_charge = self._rate_hook(request.lesson_uid)
                 if rate_charge is False:
-                    raise RateLimitedError(request.lesson_key)
-            lesson_active = self._active_by_lesson.get(request.lesson_key, 0)
+                    raise RateLimitedError(request.lesson_uid)
+            lesson_active = self._active_by_lesson.get(request.lesson_uid, 0)
             if lesson_active >= self._per_lesson_limit:
-                self._refund_rate_locked(request.lesson_key, rate_charge)
-                raise LessonCapacityError(request.lesson_key)
+                self._refund_rate_locked(request.lesson_uid, rate_charge)
+                raise LessonCapacityError(request.lesson_uid)
             if self._active_total >= self._global_limit:
-                self._refund_rate_locked(request.lesson_key, rate_charge)
+                self._refund_rate_locked(request.lesson_uid, rate_charge)
                 raise GlobalCapacityError("global runner capacity reached")
 
             job_id = str(uuid4())
@@ -477,25 +448,25 @@ class RunnerService:
             self._idempotency[replay_key] = (
                 request.block_id, request.file_rev, job.job_id, None
             )
-            self._active_by_lesson[request.lesson_key] = lesson_active + 1
+            self._active_by_lesson[request.lesson_uid] = lesson_active + 1
             self._active_total += 1
             job.task = asyncio.create_task(
                 self._drive_job(job), name=f"lesson-runner-{job.job_id}"
             )
             return Admission(job, False)
 
-    async def charge_validation_refusal(self, lesson_key: str) -> None:
+    async def charge_validation_refusal(self, lesson_uid: str) -> None:
         """Charge one expensive start validation that did not reach admit()."""
         async with self._lock:
             if self._rate_hook is None:
                 return
-            charge = self._rate_hook(lesson_key)
+            charge = self._rate_hook(lesson_uid)
             if charge is False:
-                raise RateLimitedError(lesson_key)
+                raise RateLimitedError(lesson_uid)
 
-    def _refund_rate_locked(self, lesson_key: str, charge: object | None) -> None:
+    def _refund_rate_locked(self, lesson_uid: str, charge: object | None) -> None:
         if charge is not None and self._rate_refund_hook is not None:
-            self._rate_refund_hook(lesson_key, charge)
+            self._rate_refund_hook(lesson_uid, charge)
 
     async def get(self, job_id: str) -> RunnerJob | None:
         async with self._lock:
@@ -786,7 +757,7 @@ class RunnerService:
             return
         job.reservation_released = True
         self._active_total -= 1
-        lesson = job.request.lesson_key
+        lesson = job.request.lesson_uid
         remaining = self._active_by_lesson.get(lesson, 0) - 1
         if remaining > 0:
             self._active_by_lesson[lesson] = remaining
@@ -820,7 +791,7 @@ class RunnerService:
         job._next_seq += 1
         self._notify_waiters(job)
         job.finished.set()
-        replay_key = (job.request.lesson_key, job.request.idempotency_key)
+        replay_key = (job.request.lesson_uid, job.request.idempotency_key)
         replay = self._idempotency.get(replay_key)
         if replay is not None and replay[2] == job.job_id:
             self._idempotency[replay_key] = (

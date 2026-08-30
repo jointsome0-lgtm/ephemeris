@@ -1107,7 +1107,7 @@ def test_002_ui_and_workspace(client, suite_state):
         and _old_aside[0].read_text(encoding="utf-8")
         == "Vera Example learner artifact\n"
     ), "a pre-reservation .claude/settings.json survives the first regen"
-    _v1s_view = lessons_svc.with_bundle_info(_v1s)
+    _v1s_view, _ = lessons_svc.with_bundle_info_read(_v1s)
     assert (
         _v1s_view["bundle"]["schema_version"] == 1
         and (_v1s_dir / ".claude" / "settings.json").is_file()

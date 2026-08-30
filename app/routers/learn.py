@@ -1109,14 +1109,6 @@ def _runner_refusal(exc: runner_core.RunnerError) -> JSONResponse:
         runner_core.ReaderCapacityError,
     )):
         return _run_refusal("busy", 409, "runner capacity is busy")
-    if isinstance(exc, runner_core.UnknownRunnerError):
-        return _run_refusal("unknown-runner", 422, "runner is not registered")
-    if isinstance(exc, runner_core.IncompatibleRunnerError):
-        return _run_refusal(
-            "incompatible-runner", 422, "artifact file is incompatible with runner"
-        )
-    if isinstance(exc, runner_core.SnapshotTooLargeError):
-        return _run_refusal("file-too-large", 413, "runner snapshot is too large")
     return _run_refusal("runner-unavailable", 409, "runner is unavailable")
 
 

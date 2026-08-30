@@ -91,11 +91,6 @@ def bundle_lock(slug: str) -> threading.RLock:
         return lock
 
 
-def _reset_rate_limit() -> None:
-    with _rate_lock:
-        _rate.clear()
-
-
 def _check_rate(lesson_id: int) -> float:
     now = _monotonic()
     with _rate_lock:

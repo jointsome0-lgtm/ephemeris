@@ -202,14 +202,14 @@ def test_assessment_artifact_migration(client, suite_state):
         "<html>Vera Example assessment page</html>", encoding="utf-8")
     _as_rev = "sha256:" + hashlib.sha256(
         (_as_dir / "index.html").read_bytes()).hexdigest()
-    attempts_svc._reset_rate_limit()
+    attempts_svc._rate.clear()
     _as_attempt = c.post(f"/learn/lessons/{_as_id}/attempts", json={
         "question_id": "q_asfirst001", "page_id": _as_pg, "page_rev": _as_rev,
         "answer": "Vera Example: the loop runs three times.",
         "idempotency_key": "vera-as-att-1"}).json()
     _as_attempt_id = _as_attempt["attempt_id"]
     _as_url = f"/learn/lessons/{_as_id}/assessments"
-    assess_svc._reset_rate_limit()
+    assess_svc._rate.clear()
 
     def _as_rows(lesson_id=None):
         conn_ = get_conn()
@@ -714,7 +714,7 @@ def test_assessment_artifact_migration(client, suite_state):
 
     # rate limit + refund table (D-S1-3): replays are not new writes
     _as_rate_url = f"/learn/lessons/{_as_fold_id}/assessments"
-    assess_svc._reset_rate_limit()
+    assess_svc._rate.clear()
     _as_rate_first = c.post(_as_rate_url, json={
         "kind": "summary", "note": "Vera Example: rate window seed.",
         "idempotency_key": "rate-seed"})
@@ -747,7 +747,7 @@ def test_assessment_artifact_migration(client, suite_state):
         and _as_rate_replay_over.status_code == 200
         and _as_rate_replay_over.json()["result"] == "duplicate"
     ), "rate limit is 30/60s per lesson; replays cost no window budget"
-    assess_svc._reset_rate_limit()
+    assess_svc._rate.clear()
 
     # The refund table proper: the checks above only prove that a replay found
     # BEFORE the rate charge costs nothing. A retry racing its own original
@@ -767,7 +767,7 @@ def test_assessment_artifact_migration(client, suite_state):
     _as_refund_body = {
         "kind": "summary", "note": "Vera Example: the racing retry.",
         "idempotency_key": "vera-as-refund-1"}
-    assess_svc._reset_rate_limit()
+    assess_svc._rate.clear()
     _as_refund_first = c.post(_as_url, json=_as_refund_body)
     _as_window_before = len(assess_svc._rate.get(_as_id, ()))
     with _mock.patch.object(
@@ -789,7 +789,7 @@ def test_assessment_artifact_migration(client, suite_state):
             f"window {_as_window_before}->{_as_window_after}"
         )
     )
-    assess_svc._reset_rate_limit()
+    assess_svc._rate.clear()
 
     # body admission (64 KiB) and the B2 write guard
     assert (
@@ -853,7 +853,7 @@ def test_assessment_artifact_migration(client, suite_state):
     finally:
         _s3_conn.close()
     _s3_les_url = f"/learn/lessons/{_s3_les_id}/assessments"
-    assess_svc._reset_rate_limit()
+    assess_svc._rate.clear()
 
     def _s3_open_sitting(sid, lesson_id, lesson_uid):
         """Register a capability exactly as a lesson-agent session mints one."""
@@ -1031,7 +1031,7 @@ def test_assessment_artifact_migration(client, suite_state):
         _s2_rep = lessons_svc.get_lesson(_s2_conn, _s2_rep_id)
     finally:
         _s2_conn.close()
-    assess_svc._reset_rate_limit()
+    assess_svc._rate.clear()
 
     def _s2_path(lesson_view):
         return (Path(lessons_svc.LESSONS_DIR) / lesson_view["slug"]
@@ -1157,10 +1157,10 @@ def test_assessment_artifact_migration(client, suite_state):
         _s2_during_txn = (sorted(p.name for p in _s2_txn_dir.iterdir()),
                           _s2_path(_s2).read_bytes())
         _s2_txn_conn.rollback()
-        # forced: the second call must actually rewrite, and this process has
-        # already published this watermark
-        _s2_after_txn = assess_svc.reconcile_projection(
-            _s2_txn_conn, _s2, force=True)
+        # this process has already published this watermark: forget that so
+        # the second call must actually rewrite
+        assess_svc._published.pop(_s2["uid"], None)
+        _s2_after_txn = assess_svc.reconcile_projection(_s2_txn_conn, _s2)
     finally:
         _s2_txn_conn.close()
     assert (
@@ -1258,8 +1258,8 @@ def test_assessment_artifact_migration(client, suite_state):
     _s2_snap_conn = get_conn()
     try:
         with _mock.patch.object(assess_svc, "active_state", _s2_snap_state):
-            _s2_snap_ok = assess_svc.reconcile_projection(
-                _s2_snap_conn, _s2_idm, force=True)
+            assess_svc._published.pop(_s2_idm["uid"], None)
+            _s2_snap_ok = assess_svc.reconcile_projection(_s2_snap_conn, _s2_idm)
     finally:
         _s2_snap_conn.close()
     _s2_snap_lines = _s2_lines(_s2_idm)
@@ -1440,7 +1440,8 @@ def test_assessment_artifact_migration(client, suite_state):
     # the skip is keyed on what THIS process published, so a projection it
     # never wrote is still rewritten — the heal triggers keep working
     _s2_path(_s2_rep).unlink()
-    assess_svc._reset_sweep_state()
+    assess_svc._swept.clear()
+    assess_svc._published.clear()
     _s2_rep_heal_conn = get_conn()
     try:
         _s2_rep_healed = assess_svc.reconcile_projection(
@@ -1515,7 +1516,8 @@ def test_assessment_artifact_migration(client, suite_state):
     # reconcile trigger (c): the first write per lesson per process sweeps even
     # when that write is REFUSED — a restart mid-pending heals on next contact
     _s2_path(_s2).unlink()
-    assess_svc._reset_sweep_state()
+    assess_svc._swept.clear()
+    assess_svc._published.clear()
     _s2_refused = c.post(f"/learn/lessons/{_s2_id}/assessments", json={
         "kind": "retraction", "supersedes": str(_as_uuid4()),
         "note": "Vera Example: retracts a record that does not exist.",
@@ -1718,7 +1720,7 @@ def test_assessment_artifact_migration(client, suite_state):
     (_f1_dir / "index.html").write_text(
         "<html>Vera Example editor page</html>", encoding="utf-8")
     _f1_url = f"/learn/lessons/{_f1_id}/blocks/blk_editor01/file"
-    artifacts_svc._reset_rate_limit()
+    artifacts_svc._rate.clear()
 
     # The phase-F reader treats missing bundle state as a refusal and does not
     # recreate any of the preview path's historical skeleton/directories.
@@ -1999,7 +2001,7 @@ def test_assessment_artifact_migration(client, suite_state):
         and _f1_huge_file.json()["error"] == "file-too-large"
     ), "F1 save refuses content over 64 KiB by raw UTF-8 bytes"
 
-    artifacts_svc._reset_rate_limit()
+    artifacts_svc._rate.clear()
     _f1_rate_max = artifacts_svc.RATE_MAX_PER_WINDOW
     artifacts_svc.RATE_MAX_PER_WINDOW = 1
     try:
@@ -2017,7 +2019,7 @@ def test_assessment_artifact_migration(client, suite_state):
             _f1_url, json={"content": "more bytes", "base_rev": "absent"})
     finally:
         artifacts_svc.RATE_MAX_PER_WINDOW = _f1_rate_max
-        artifacts_svc._reset_rate_limit()
+        artifacts_svc._rate.clear()
     assert (
         _f1_same1.json().get("result") == "unchanged"
         and _f1_same2.json().get("result") == "unchanged"
@@ -2620,11 +2622,11 @@ def test_assessment_artifact_migration(client, suite_state):
         _symp_info["outcome"] == "degraded"
         and any(f["code"] == "symlinked-path" for f in _symp_info["findings"])
     ), "symlinked page degrades the reported outcome (§9.2)"
-    _symp_bundle = lessons_svc.bundle_info(_symp)
+    _symp_bundle = lessons_svc.with_bundle_info_read(_symp)[0]["bundle"]
     assert (
         _symp_bundle["outcome"] == "degraded"
         and any(f["code"] == "symlinked-path" for f in _symp_bundle["findings"])
-    ), "symlinked current page degrades the TOP-LEVEL bundle_info outcome"
+    ), "symlinked current page degrades the TOP-LEVEL bundle outcome"
     _symp_manifest = _symp_dir / "lesson.json"
     _symp_manifest.unlink()
     _os.symlink(_symp_target, _symp_manifest)
