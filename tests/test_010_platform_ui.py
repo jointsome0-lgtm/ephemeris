@@ -1288,7 +1288,6 @@ def test_002_ui_and_workspace(client, suite_state):
     assert (
         "EPHEMERIS_VERIFY_CANARY" not in _child_env
         and "ACTIVITY_DATA_DIR" not in _child_env
-        and "EPHEMERIS_TRUSTED_HOSTS" not in _child_env
         and _child_env.get("TERM") == "xterm-256color"
         and _child_env.get("PATH", "").startswith(
             os.path.expanduser("~") + "/.local/bin:")

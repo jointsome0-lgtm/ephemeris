@@ -4,11 +4,11 @@ One ASGI middleware, installed once in main.py, owns three jobs that used to be
 per-route (or absent):
 
 1. Trusted-host allowlist. Every HTTP request and WebSocket handshake must
-   carry a Host whose hostname is in EPHEMERIS_TRUSTED_HOSTS (comma-separated;
-   default: the loopback names). Blocks DNS rebinding for the whole app, GET
-   routes included. Starlette's TrustedHostMiddleware is not used because it
-   splits Host on ":" and so mangles bracketed IPv6 ("[::1]:8765" -> "[");
-   we parse like app/terminal.py does, with urlsplit.
+   carry a Host whose hostname is one of the loopback names (TRUSTED_HOSTS).
+   Blocks DNS rebinding for the whole app, GET routes included. Starlette's
+   TrustedHostMiddleware is not used because it splits Host on ":" and so
+   mangles bracketed IPv6 ("[::1]:8765" -> "["); we parse like app/terminal.py
+   does, with urlsplit.
 
 2. Write guard. Every unsafe-method request (POST/PUT/PATCH/DELETE — anything
    a new route could add) passes one origin policy; a route cannot opt out by
@@ -36,14 +36,10 @@ per-route (or absent):
    bound their own bodies through app/request_body.py; ordinary form POSTs —
    tasks, habits, calendar — bounded nothing, so a multi-megabyte body was
    parsed and stored by whichever route received it. The ceiling is one number
-   (limits.MAX_BODY_BYTES, overridable at startup with EPHEMERIS_MAX_BODY_BYTES)
-   applied here, ABOVE the per-route caps and never instead of them: a Learn
-   endpoint whose own cap is 512 KiB still answers with its own 413 and its own
-   message, because the route's smaller counter trips first. The override obeys
-   that ordering as well — a value that does not clear the largest route cap by
-   a whole megabyte is refused and the default stands, so the perimeter can be
-   raised but never lowered onto the limits it exists to sit above, nor close
-   enough that one chunk crosses both.
+   (limits.MAX_BODY_BYTES) applied here, ABOVE the per-route caps and never
+   instead of them: a Learn endpoint whose own cap is 512 KiB still answers
+   with its own 413 and its own message, because the route's smaller counter
+   trips first.
 
    Same two-part shape as read_capped: Content-Length is an early refusal, the
    streaming count is the authority, so a chunked or dishonest request cannot
@@ -82,7 +78,6 @@ exact-origin).
 """
 from __future__ import annotations
 
-import os
 from urllib.parse import urlsplit
 
 from starlette.datastructures import Headers, MutableHeaders
@@ -94,50 +89,7 @@ from . import limits
 
 _UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
-_DEFAULT_TRUSTED_HOSTS = "localhost,127.0.0.1,::1"
-
-# Import-time read, like the terminal's kill switch: restart to change.
-TRUSTED_HOSTS = frozenset(
-    h.strip().lower()
-    for h in os.environ.get("EPHEMERIS_TRUSTED_HOSTS", _DEFAULT_TRUSTED_HOSTS).split(",")
-    if h.strip()
-)
-
-
-def _body_ceiling() -> int:
-    """limits.MAX_BODY_BYTES, or EPHEMERIS_MAX_BODY_BYTES if it is usable.
-
-    Read once at import for the same reason as the host allowlist: the
-    perimeter's shape is a startup decision, so a later os.environ write cannot
-    widen it under a running process. Junk or a non-positive value falls back to
-    the constant rather than disabling the ceiling — a typo in a unit file must
-    not be the way this protection turns itself off.
-
-    A value that does not clear limits.LARGEST_ROUTE_CAP by
-    limits.BODY_CEILING_HEADROOM falls back too, for the opposite reason: it
-    would not tighten anything the route caps do not already bound, it would
-    only start answering oversized Learn requests with this middleware's
-    plain-text 413 instead of the route's typed JSON — the perimeter overruling
-    a limit it was built to sit above. Merely being above is not enough,
-    because this counter works in whole chunks: it withholds the delivery that
-    crosses it, so two limits closer together than one chunk can both be
-    crossed at once and only the outer one answers. Both fallbacks are silent
-    because there is no honest failure mode here to report to: refusing to
-    start would take the app down over a body-size typo.
-    """
-    raw = os.environ.get("EPHEMERIS_MAX_BODY_BYTES")
-    if raw is None:
-        return limits.MAX_BODY_BYTES
-    try:
-        value = int(raw)
-    except ValueError:
-        return limits.MAX_BODY_BYTES
-    if value < limits.LARGEST_ROUTE_CAP + limits.BODY_CEILING_HEADROOM:
-        return limits.MAX_BODY_BYTES
-    return value
-
-
-MAX_BODY_BYTES = _body_ceiling()
+TRUSTED_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 _TOO_LARGE = "request body too large"
 
@@ -309,10 +261,10 @@ class SecurityMiddleware:
                 await self._refuse(scope, receive, send, 403, reason)
                 return
             declared = _declared_length(headers)
-            if declared is not None and declared > MAX_BODY_BYTES:
+            if declared is not None and declared > limits.MAX_BODY_BYTES:
                 await self._refuse(scope, receive, send, 413, _TOO_LARGE)
                 return
-            cap = _CappedBody(receive, MAX_BODY_BYTES)
+            cap = _CappedBody(receive, limits.MAX_BODY_BYTES)
 
         answered = False
 

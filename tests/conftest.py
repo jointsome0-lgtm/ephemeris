@@ -14,10 +14,6 @@ os.environ["ACTIVITY_DATA_DIR"] = tempfile.mkdtemp(prefix="al-verify-")
 # wiring; the in-process app opts in so the terminal surface itself (trust gate,
 # session ownership) is still exercised.
 os.environ["EPHEMERIS_ENABLE_TERMINAL"] = "1"
-# TestClient presents Host: testserver; force the allowlist to a known value
-# (app/security.py reads it at import) so an ambient host allowlist can't 400
-# every request under test.
-os.environ["EPHEMERIS_TRUSTED_HOSTS"] = "testserver,localhost,127.0.0.1,::1"
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -76,7 +72,7 @@ def client():
 
     from app.main import app
 
-    with TestClient(app) as value:
+    with TestClient(app, base_url="http://localhost") as value:
         yield value
 
 

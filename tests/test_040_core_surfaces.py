@@ -175,7 +175,7 @@ def test_core_surfaces(client, suite_state):
 
     r = c.post(
         "/verify-only/unguarded",
-        headers={"Origin": "http://evil.example", "Host": "testserver"},
+        headers={"Origin": "http://evil.example", "Host": "localhost"},
     )
     assert r.status_code == 403, (
         "guard: unguarded new route still rejects cross-origin"
@@ -188,28 +188,28 @@ def test_core_surfaces(client, suite_state):
     )
     r = c.post(
         "/verify-only/unguarded",
-        headers=[("Origin", "http://testserver"), ("Origin", "http://evil.example")],
+        headers=[("Origin", "http://localhost"), ("Origin", "http://evil.example")],
     )
     assert r.status_code == 403, (
         "guard: smuggled duplicate Origin -> 403" + "  -- " + (str(r.status_code))
     )
-    r = c.post("/verify-only/unguarded", headers={"Origin": "http://testserver"})
+    r = c.post("/verify-only/unguarded", headers={"Origin": "http://localhost"})
     assert r.status_code == 200 and r.json()["ok"] is True, (
         "guard: same-origin Origin accepted" + "  -- " + (str(r.status_code))
     )
-    r = c.post("/verify-only/unguarded", headers={"Origin": "https://testserver"})
+    r = c.post("/verify-only/unguarded", headers={"Origin": "https://localhost"})
     assert r.status_code == 403, (
         "guard: scheme mismatch (https origin, http app) -> 403"
         + "  -- "
         + (str(r.status_code))
     )
-    r = c.post("/verify-only/unguarded", headers={"Origin": "http://testserver:80"})
+    r = c.post("/verify-only/unguarded", headers={"Origin": "http://localhost:80"})
     assert r.status_code == 200, (
         "guard: default port normalized to the same origin"
         + "  -- "
         + (str(r.status_code))
     )
-    r = c.post("/verify-only/unguarded", headers={"Origin": "http://testserver/x"})
+    r = c.post("/verify-only/unguarded", headers={"Origin": "http://localhost/x"})
     assert r.status_code == 403, (
         "guard: non-serialized Origin (path) -> 403" + "  -- " + (str(r.status_code))
     )

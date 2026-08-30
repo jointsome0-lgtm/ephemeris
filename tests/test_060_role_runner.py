@@ -1033,7 +1033,7 @@ def test_role_runner(client, suite_state):
             "http_version": "1.1", "method": "GET", "scheme": "http",
             "path": f"/learn/runs/{job.job_id}/stream",
             "raw_path": f"/learn/runs/{job.job_id}/stream".encode(),
-            "query_string": b"", "headers": [(b"host", b"testserver")],
+            "query_string": b"", "headers": [(b"host", b"127.0.0.1")],
             "client": ("127.0.0.1", 50000),
             "server": ("127.0.0.1", 8765), "app": app,
         }

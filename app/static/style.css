@@ -1126,9 +1126,9 @@ html[data-theme="dark"] .lesson-frame-wrap.no-file .lesson-frame {
 .es-constellation .es-fig { fill: none; stroke: currentColor; stroke-width: 1.2; opacity: .75; }
 .learn-empty h2 { margin: 0; color: var(--muted); font-size: 16px; font-weight: 500; }
 @media (max-width: 860px) {
-  .term-drawer { left: 0; bottom: calc(58px + env(safe-area-inset-bottom, 0px)); }   /* the rail is hidden here */
+  .term-drawer { left: 0; bottom: 58px; }   /* the rail is hidden here */
   body.learner-term-open .term-drawer.agent-drawer:not(.right-dock) {
-    bottom: calc(var(--term-learner-h, 0px) + 58px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(var(--term-learner-h, 0px) + 58px);
   }
   .term-find { flex-basis: 160px; min-width: 120px; }
   .term-drawer.right-dock {
@@ -1145,7 +1145,7 @@ html[data-theme="dark"] .lesson-frame-wrap.no-file .lesson-frame {
   body.term-stack-open .tt-shell { padding-right: 0; }
   /* Single-column layout: the columns are height:auto below (the document
      scrolls), so pad the document under the drawer instead of shrinking them. */
-  body.term-open { padding-bottom: calc(var(--term-h, 0px) + 58px + env(safe-area-inset-bottom, 0px)); }
+  body.term-open { padding-bottom: calc(var(--term-h, 0px) + 58px); }
   /* The add form and the Archived pill are the lesson panel's, and the panel's
      own rules stack them at every width — these breakpoint copies never won on
      specificity and are gone. Reading them as the thing that stacks the form is
@@ -2022,7 +2022,7 @@ body.term-stack-open .timer-drawer { right: calc(18px + var(--term-stack-w, 0px)
   .stat-grid { grid-template-columns: 1fr 1fr; }
   /* the timer clears the bottom nav rather than hiding behind it */
   .timer-drawer {
-    --timer-gap: calc(60px + env(safe-area-inset-bottom, 0px));
+    --timer-gap: 60px;
     left: 10px; right: 10px; width: auto;
   }
   .cal-month { min-height: 0; }
@@ -2034,7 +2034,6 @@ body.term-stack-open .timer-drawer { right: calc(18px + var(--term-stack-w, 0px)
   .bottom-nav {
     display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 80;
     background: var(--panel); border-top: 1px solid var(--border);
-    padding-bottom: env(safe-area-inset-bottom, 0);
   }
   .nav-link { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 0 9px; color: var(--faint); font-size: 11px; }
   .nav-link svg { width: 22px; height: 22px; }
@@ -2047,7 +2046,7 @@ body.term-stack-open .timer-drawer { right: calc(18px + var(--term-stack-w, 0px)
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 121;
     background: var(--panel); border-top: 1px solid var(--border);
     border-radius: 18px 18px 0 0; box-shadow: var(--shadow);
-    padding: 6px 10px calc(12px + env(safe-area-inset-bottom, 0));
+    padding: 6px 10px 12px;
     transform: translateY(110%); transition: transform 0.22s ease;
   }
   #more-toggle:checked ~ .more-sheet { transform: translateY(0); }

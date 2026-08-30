@@ -137,10 +137,8 @@ routes the unauthenticated app exposes.
 first slice; issue #23 added the body ceiling). It owns four things:
 
 - **Trusted-host allowlist.** Every HTTP request and WebSocket handshake must
-  carry a `Host` whose hostname is in `EPHEMERIS_TRUSTED_HOSTS`
-  (comma-separated hostnames; default `localhost,127.0.0.1,::1`; read at
-  import, so restart to change). This blocks DNS rebinding for the whole app,
-  `GET` routes included.
+  carry a `Host` whose hostname is `localhost`, `127.0.0.1` or `::1`. This
+  blocks DNS rebinding for the whole app, `GET` routes included.
 - **Central write guard.** Every unsafe-method request (`POST`/`PUT`/`PATCH`/
   `DELETE`) passes one origin policy in middleware — a newly added route
   cannot forget it. Each case is deliberate: any present `Origin` (all values,
@@ -156,12 +154,7 @@ first slice; issue #23 added the body ceiling). It owns four things:
   `same-site` — a page on another local port must not write here, the same
   stance as the terminal gate.
 - **Request-body ceiling.** Every unsafe-method request is bounded at
-  2 MiB (`EPHEMERIS_MAX_BODY_BYTES` overrides it at startup; junk, a
-  non-positive value, or anything that does not clear the largest per-route cap
-  by a megabyte falls back to the default — the setting can raise the ceiling
-  but never lower it onto the limits it exists to sit above, and a ceiling
-  within one chunk of a route cap lets the perimeter answer first).
-  `Content-Length` is an early refusal and the streaming byte count
+  2 MiB. `Content-Length` is an early refusal and the streaming byte count
   is the authority, so a chunked or dishonest request buys nothing; nothing is
   buffered by the middleware itself. A body past the ceiling is not truncated
   into the route — the app is handed a disconnect, so no handler can act on a

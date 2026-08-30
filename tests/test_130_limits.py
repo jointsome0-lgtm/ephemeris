@@ -380,12 +380,6 @@ def test_the_ceiling_clears_every_per_route_cap():
         "assessment": learn._ASSESSMENT_MAX_BODY,
     }
     assert limits.MAX_BODY_BYTES > max(route_caps.values()), route_caps
-    assert security.MAX_BODY_BYTES == limits.MAX_BODY_BYTES, (
-        "the suite must run at the default ceiling; EPHEMERIS_MAX_BODY_BYTES is set"
-    )
-    # The floor under any override is the same number, spelled once in limits
-    # because the perimeter must not import a router to learn it.
-    assert limits.LARGEST_ROUTE_CAP == max(route_caps.values()), route_caps
 
 
 def test_an_oversized_form_post_is_refused(client):
@@ -524,7 +518,7 @@ def test_safe_methods_and_handshakes_get_the_original_receive():
         return None
 
     middleware = security.SecurityMiddleware(spy)
-    base = {"headers": [(b"host", b"testserver")], "scheme": "http"}
+    base = {"headers": [(b"host", b"localhost")], "scheme": "http"}
 
     async def drive():
         await middleware({"type": "http", "method": "GET", **base}, receive, send)
@@ -561,7 +555,7 @@ def test_a_streamed_response_passes_through_chunk_by_chunk():
 
     asyncio.run(security.SecurityMiddleware(sse)(
         {"type": "http", "method": "GET", "scheme": "http",
-         "headers": [(b"host", b"testserver")]}, receive, send))
+         "headers": [(b"host", b"localhost")]}, receive, send))
 
     bodies = [m for m in sent if m["type"] == "http.response.body"]
     assert [m["body"] for m in bodies] == [b"data: 0\n\n", b"data: 1\n\n",
@@ -590,37 +584,6 @@ def test_a_junk_content_length_is_left_to_the_route(client):
     assert security._declared_length(_headers({"content-length": "-1"})) is None
     assert security._declared_length(_headers({})) is None
     assert security._declared_length(_headers({"content-length": "17"})) == 17
-
-
-def test_a_bad_ceiling_setting_falls_back_to_the_constant(monkeypatch):
-    """A typo in a unit file must not be how this protection switches off."""
-    for junk in ("", "nonsense", "0", "-5"):
-        monkeypatch.setenv("EPHEMERIS_MAX_BODY_BYTES", junk)
-        assert security._body_ceiling() == limits.MAX_BODY_BYTES, junk
-    monkeypatch.setenv("EPHEMERIS_MAX_BODY_BYTES", str(8 * 1024 * 1024))
-    assert security._body_ceiling() == 8 * 1024 * 1024
-
-
-def test_the_ceiling_cannot_be_set_down_near_the_largest_route_cap(monkeypatch):
-    """An override may raise the perimeter, never lower it onto the route caps.
-
-    A ceiling under a Learn endpoint's own cap tightens nothing — that route
-    already bounds itself — but it does start answering oversized saves with
-    this middleware's plain-text 413 instead of the typed JSON the lesson agent
-    parses. Equality is refused for the same reason, and so is anything within
-    a chunk of it: this counter withholds the whole delivery that crosses it,
-    so two limits closer together than one chunk are crossed together and only
-    the outer one answers. The setting is declined and the default stands.
-    """
-    floor = limits.LARGEST_ROUTE_CAP + limits.BODY_CEILING_HEADROOM
-    for too_small in (1024, limits.LARGEST_ROUTE_CAP, limits.LARGEST_ROUTE_CAP + 1,
-                      floor - 1):
-        monkeypatch.setenv("EPHEMERIS_MAX_BODY_BYTES", str(too_small))
-        assert security._body_ceiling() == limits.MAX_BODY_BYTES, too_small
-    monkeypatch.setenv("EPHEMERIS_MAX_BODY_BYTES", str(floor))
-    assert security._body_ceiling() == floor
-    # The shipped default has to satisfy its own rule.
-    assert limits.MAX_BODY_BYTES >= floor
 
 
 # --- 3. export retention ---------------------------------------------------
