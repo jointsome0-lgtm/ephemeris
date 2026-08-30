@@ -122,10 +122,13 @@ def test_run_api(client, suite_state):
         ), "F4 cross-origin SSE is refused before reserving a reader slot"
 
         _f4_replay = c.post(_f4_alias_url, json=_f4_payload)
+        _f1_file.write_bytes(b"print('Run API Demo, edited')\n")
+        _f4_edited_rev = c.get(_f1_url).json()["file_rev"]
         _f4_conflict = c.post(_f4_run_url, json={
-            "file_rev": "sha256:" + "0" * 64,
+            "file_rev": _f4_edited_rev,
             "idempotency_key": _f4_payload["idempotency_key"],
         })
+        _f1_file.write_bytes(_f4_source)
         _f4_revision_conflict = c.post(_f4_run_url, json={
             "file_rev": "sha256:" + "1" * 64,
             "idempotency_key": "invented-stale-run",

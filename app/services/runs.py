@@ -516,9 +516,6 @@ async def start(
     file_rev, key = clean_start_payload(payload)
 
     async with service.prepare_start(lesson_uid):
-        replay = await service.preflight(lesson_uid, key, block_id, file_rev)
-        if replay is not None:
-            return replay
         request = await asyncio.to_thread(
             prepare_request, lesson, block_id, file_rev, key
         )

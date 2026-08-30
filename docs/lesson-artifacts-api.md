@@ -151,19 +151,20 @@ A start succeeds with the in-memory job identity and current state:
 ```
 
 `(lesson_uid, idempotency_key)` retains `(block_id, file_rev, job_id)` with the
-job. An identical replay returns the same job with `replayed: true`, before
-health, capacity, manifest, or filesystem work. Reuse for another block
-or revision is `idempotency-conflict`. A count-evicted job keeps a tombstone
+job. An identical replay returns the same job with `replayed: true` instead of
+a capacity refusal or a second job. Reuse for another block
+or revision is `idempotency-conflict`. The saved bytes are verified before the
+key is looked up, so a `file_rev` that no longer matches the artifact is
+`file-conflict` first. A count-evicted job keeps a tombstone
 until its 15-minute retention deadline and answers `job-missing`.
 
 All admission decisions live in the runner service: at most one active job per
-lesson and two globally, checked before manifest and filesystem work and again
-before the job is reserved.
+lesson and two globally. Replay, lifecycle and capacity are checked once, under
+the service lock, right before the job is reserved.
 
-Cold runner-health probes execute on a worker thread outside the service lock,
-so they do not stall status, stream, or cancel handling on the ASGI event loop.
-Admission rechecks replay, lifecycle, and capacity after the probe before
-reserving a job.
+Runner health is probed once per process, on a worker thread before the
+service lock is taken, so a cold or failing probe does not stall status,
+stream, or cancel handling on the ASGI event loop.
 
 Status is `Cache-Control: no-store` and returns the job/block/runner/revision,
 state, and `event_recorded`. A terminal status also returns `cause`, optional
@@ -175,7 +176,7 @@ The stream response is `text/event-stream`. `after` is the last applied
 sequence number; `Last-Event-ID` is accepted when `after` is absent. No cursor
 means replay from sequence zero. Browser requests must be same-origin (or
 `Sec-Fetch-Site: none`); origin-less non-browser loopback clients remain
-accepted. This check runs before a reader slot is reserved. Every later output
+accepted. This check runs before a reader lease is taken. Every later output
 record is:
 
 ```
@@ -187,8 +188,7 @@ data: {"seq":7,"stream":"stdout","text":"invented output\n"}
 Sequence numbers increase across stdout and stderr. Text chunks are at most
 32 KiB (the implementation reads 8 KiB raw chunks), and all readers share the
 job's one 1 MiB retained output ring by cursor—there are no per-reader queues.
-At most two readers attach to a job, and at most eight distinct jobs hold reader
-leases at once so attached streams cannot bypass the terminal-retention bound.
+Any number of readers may attach to a job.
 Idle streams emit a comment heartbeat about every 15 seconds. Each reader has
 its own waiter over the shared retained event list, so one reader cannot clear
 another's wakeup. A state snapshot and rechecked cursor ensure a finish racing
@@ -250,7 +250,7 @@ is activated; the iframe never receives raw HTTP status as authority.
 | 409 | `file-missing` | declared run artifact does not exist |
 | 409 | `file-conflict` | save base or run revision differs/current identity changed |
 | 409 | `runner-unavailable` | health or lifecycle prerequisite is unavailable |
-| 409 | `busy` | lesson/global job cap or two-reader cap is full |
+| 409 | `busy` | lesson/global job cap is full |
 | 409 | `idempotency-conflict` | key was used for another block/revision |
 | 413 | `payload-too-large`, `file-too-large` | request or artifact exceeds its byte cap |
 | 415 | `unsupported-media-type` | mutating request is not `application/json` |

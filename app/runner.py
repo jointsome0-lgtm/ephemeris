@@ -15,7 +15,6 @@ import shutil
 import signal
 import subprocess
 import tempfile
-import threading
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -97,10 +96,6 @@ class JobMissingError(RunnerError):
     code = "job-missing"
 
 
-class ReaderCapacityError(RunnerError):
-    code = "busy"
-
-
 @dataclass(frozen=True)
 class RunnerHealth:
     available: bool
@@ -132,7 +127,7 @@ def _probe_result(
 
 
 @cache
-def _cached_runner_health_unlocked() -> RunnerHealth:
+def runner_health() -> RunnerHealth:
     """Probe every registry executable once per process lifetime."""
     checked: set[str] = set()
     for runner_id, spec in RUNNER_REGISTRY.items():
@@ -149,27 +144,6 @@ def _cached_runner_health_unlocked() -> RunnerHealth:
         if detail:
             return RunnerHealth(False, f"{runner_id} executable probe failed: {detail}")
     return RunnerHealth(True)
-
-
-_runner_health_lock = threading.Lock()
-
-
-def _cached_runner_health() -> RunnerHealth:
-    """Return one process-lifetime probe result with a single-flight cache miss."""
-    with _runner_health_lock:
-        return _cached_runner_health_unlocked()
-
-
-def _clear_cached_runner_health() -> None:
-    with _runner_health_lock:
-        _cached_runner_health_unlocked.cache_clear()
-
-
-_cached_runner_health.cache_clear = _clear_cached_runner_health  # type: ignore[attr-defined]
-
-
-def runner_health() -> RunnerHealth:
-    return _cached_runner_health()
 
 
 def require_runner_health() -> None:
@@ -279,7 +253,7 @@ class RunnerService:
 
     @asynccontextmanager
     async def prepare_start(self, lesson_uid: str):
-        """Serialize one lesson's preflight/validation/admit pipeline."""
+        """Serialize one lesson's validation/admit pipeline."""
         async with self._lock:
             lock = self._prepare_locks.get(lesson_uid)
             if lock is None:
@@ -305,53 +279,10 @@ class RunnerService:
             raise JobMissingError(job_id)
         return Admission(job, True)
 
-    async def preflight(
-        self,
-        lesson_uid: str,
-        idempotency_key: str,
-        block_id: str,
-        file_rev: str,
-    ) -> Admission | None:
-        """Resolve replay and cheap refusals before filesystem validation."""
-        async with self._lock:
-            self._prune_locked()
-            replay = self._replay_locked(
-                lesson_uid, idempotency_key, block_id, file_rev
-            )
-            if replay is not None:
-                return replay
-            if not self._accepting:
-                raise RunnerShuttingDownError("runner service is shutting down")
-            if self._active_by_lesson.get(lesson_uid, 0) >= self._per_lesson_limit:
-                raise LessonCapacityError(lesson_uid)
-            if self._active_total >= self._global_limit:
-                raise GlobalCapacityError("global runner capacity reached")
-            return None
-
     async def admit(self, request: RunnerRequest) -> Admission:
-        """Validate health off-loop, then reserve under the admission lock."""
+        """Probe health off-loop, then check and reserve under the admission lock."""
         replay_key = (request.lesson_uid, request.idempotency_key)
-
-        # Keep replay/error ordering ahead of health, and reject cheap request
-        # defects without starting subprocess probes.  Health itself must run
-        # outside both the event loop and this lock so status/SSE/cancel remain
-        # responsive during a cold or unhealthy probe.
-        async with self._lock:
-            self._prune_locked()
-            replay = self._replay_locked(
-                request.lesson_uid, request.idempotency_key,
-                request.block_id, request.file_rev,
-            )
-            if replay is not None:
-                return replay
-            if not self._accepting:
-                raise RunnerShuttingDownError("runner service is shutting down")
-            spec = self._registry[request.runner_id]
-
         await asyncio.to_thread(self._health_hook)
-
-        # State may have changed while health ran.  Repeat all mutable checks;
-        # a concurrent identical winner replays before this one reserves.
         async with self._lock:
             self._prune_locked()
             replay = self._replay_locked(
@@ -367,6 +298,7 @@ class RunnerService:
                 raise LessonCapacityError(request.lesson_uid)
             if self._active_total >= self._global_limit:
                 raise GlobalCapacityError("global runner capacity reached")
+            spec = self._registry[request.runner_id]
 
             job_id = str(uuid4())
             job = RunnerJob(job_id, request, spec)
@@ -392,12 +324,6 @@ class RunnerService:
             job = self._jobs.get(job_id)
             if job is None:
                 raise JobMissingError(job_id)
-            if job.reader_count >= 2:
-                raise ReaderCapacityError(job_id)
-            if job.reader_count == 0 and sum(
-                retained.reader_count > 0 for retained in self._jobs.values()
-            ) >= self._max_terminal_jobs:
-                raise ReaderCapacityError(job_id)
             job.reader_count += 1
             return ReaderLease(job)
 
