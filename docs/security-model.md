@@ -81,6 +81,10 @@ so shells and agents launched from them can use the user's live SSH identity
 service's own `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` (either case) reach
 the child unchanged, credentials included; the app adds, probes for and
 rewrites nothing, and network egress for the shell is the host's business.
+That includes the exclusion list: an operator who sets a proxy on the service
+also puts loopback in `NO_PROXY`, or the lesson agent's verdict writes to the
+app's own address go to the proxy instead. The committed service unit sets no
+proxy at all.
 
 ### The study browser (host configuration, not app code)
 
