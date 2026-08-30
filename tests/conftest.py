@@ -1,7 +1,9 @@
 """Shared state for the cumulative Ephemeris verification suite."""
 from __future__ import annotations
 
+import json
 import os
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -43,6 +45,31 @@ def item_row(item_id: int):
         conn.close()
 
 
+def query(db_path: Path, sql: str) -> list[tuple]:
+    conn = sqlite3.connect(db_path)
+    try:
+        return conn.execute(sql).fetchall()
+    finally:
+        conn.close()
+
+
+def write_lesson_manifest(slug: str, uid: str, **extra) -> None:
+    """A valid v2 manifest for `slug`, plus whatever the case declares."""
+    from app.services import lessons as lessons_svc
+
+    bundle = Path(lessons_svc.LESSONS_DIR) / slug
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "index.html").write_text("<p>page</p>", encoding="utf-8")
+    manifest = {
+        "schema_version": 2,
+        "lesson_uid": uid,
+        "entry": "index.html",
+        "pages": [{"id": "pg_seeded0001", "path": "index.html"}],
+    }
+    manifest.update(extra)
+    (bundle / "lesson.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
 @pytest.fixture(scope="session")
 def client():
     from fastapi.testclient import TestClient
@@ -56,3 +83,8 @@ def client():
 @pytest.fixture(scope="session")
 def suite_state() -> dict:
     return {}
+
+
+@pytest.fixture(scope="module")
+def started_app(client):
+    """The app has been through its startup before any test in the module."""

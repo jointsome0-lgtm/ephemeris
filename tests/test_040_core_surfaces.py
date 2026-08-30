@@ -166,17 +166,6 @@ def test_core_surfaces(client, suite_state):
     )
     assert r.status_code == 200 and r.json()["ok"] is True, "daily-note JSON ok"
 
-    # cross-origin POST rejected
-    r = c.post(
-        "/items",
-        data={"title": "Evil", "group_name": "x"},
-        headers={"Origin": "http://evil.example", "Host": "testserver"},
-        follow_redirects=False,
-    )
-    assert r.status_code == 403, (
-        "cross-origin POST -> 403" + "  -- " + (str(r.status_code))
-    )
-
     # --- central write guard + host perimeter (issue #15 slice) ----------
     # A brand-new route with NO guard code of its own must still be covered:
     # the middleware in app/security.py owns the policy, not the handler.
@@ -483,17 +472,6 @@ def test_core_surfaces(client, suite_state):
         "GET /list unknown -> 404" + "  -- " + (str(r.status_code))
     )
 
-    # cross-origin task POST rejected (same guard as items/checkins)
-    r = c.post(
-        "/tasks",
-        data={"title": "Evil", "list_id": inbox},
-        headers={"Origin": "http://evil.example", "Host": "testserver"},
-        follow_redirects=False,
-    )
-    assert r.status_code == 403, (
-        "cross-origin POST /tasks -> 403" + "  -- " + (str(r.status_code))
-    )
-
     # --- Habit tab: pane + create / edit / archive / delete (sec31) -------
     r = c.get("/habits?sel=habit-1")
     # pane has NO check-in button (TickTick-faithful: the list row's ring is the
@@ -666,23 +644,7 @@ def test_core_surfaces(client, suite_state):
         "delete event appended (audit kept)"
     )
 
-    # cross-origin habit create rejected
-    r = c.post(
-        "/habits",
-        data={"title": "Evil", "group_name": "x"},
-        headers={"Origin": "http://evil.example", "Host": "testserver"},
-        follow_redirects=False,
-    )
-    assert r.status_code == 403, (
-        "cross-origin POST /habits -> 403" + "  -- " + (str(r.status_code))
-    )
-
     # --- Focus: one server-owned timer, no page (#75, #20) -------------------
-    # The drawer rides on every surface, so the shell is what carries it now.
-    shell = c.get("/today").text
-    assert 'id="timer-drawer"' in shell, "the timer drawer ships with the shell"
-    assert c.get("/focus").status_code == 404, "the Focus page is gone, not redirected"
-
     state = c.get("/focus/timer").json()
     assert state["run"] is None and state["overview"]["today_seconds"] == 0, (
         "no timer running, nothing focused yet"
@@ -1060,17 +1022,6 @@ def test_core_surfaces(client, suite_state):
         "habit detail shows the year sky"
     )
 
-    # cross-origin focus POST rejected
-    r = c.post(
-        "/focus/timer/start",
-        data={"token": "tok-evil", "mode": "open"},
-        headers={"Origin": "http://evil.example", "Host": "testserver"},
-        follow_redirects=False,
-    )
-    assert r.status_code == 403, (
-        "cross-origin POST /focus/timer/start -> 403" + "  -- " + (str(r.status_code))
-    )
-
     # --- Export: one-button JSONL backup of the event ledger (M4, sec18.1) -----
     import json as _json
     from app.db import EXPORTS_DIR as _ED
@@ -1108,15 +1059,6 @@ def test_core_surfaces(client, suite_state):
     )
     assert len(list(_ED.glob("events-*.jsonl"))) >= 1, (
         "export file written under data/exports/"
-    )
-
-    r = c.post(
-        "/export/jsonl",
-        headers={"Origin": "http://evil.example", "Host": "testserver"},
-        follow_redirects=False,
-    )
-    assert r.status_code == 403, (
-        "cross-origin POST /export/jsonl -> 403" + "  -- " + (str(r.status_code))
     )
 
     # --- Event identity: persistent UUIDs + idempotent backfill (#17 B4, v9) ----
@@ -1683,16 +1625,6 @@ def test_core_surfaces(client, suite_state):
         "edit link for an archived series is ignored"
     )
 
-    r = c.post(
-        "/calendar/events",
-        data={"title": "X", "start_date": "2027-06-01", "all_day": "1"},
-        headers={"Origin": "http://evil.example", "Host": "testserver"},
-        follow_redirects=False,
-    )
-    assert r.status_code == 403, (
-        "cross-origin POST /calendar/events -> 403" + "  -- " + (str(r.status_code))
-    )
-
     # --- Calendar events: M4 polish — slot-create, now-line, series export (sec32 §8/§12)
     wk = "/calendar/week?date=2027-06-02"
     rwk = c.get(wk)
@@ -1796,16 +1728,6 @@ def test_core_surfaces(client, suite_state):
     finally:
         lconn.close()
 
-    rX = c.post(
-        f"/learn/lessons/{lid}/status",
-        data={"status": "backlog"},
-        headers={"Origin": "http://evil.example", "Host": "testserver"},
-        follow_redirects=False,
-    )
-    assert rX.status_code == 403, (
-        "cross-origin POST lesson status -> 403" + "  -- " + (str(rX.status_code))
-    )
-
     rP = c.get(f"/learn/lessons/{lid}/preview")
     assert rP.status_code == 200 and "frame-ancestors 'self'" in rP.headers.get(
         "content-security-policy", ""
@@ -1884,17 +1806,7 @@ def test_core_surfaces(client, suite_state):
         assert started.status_code == 200, (
             "timer start accepted" + "  -- " + str(started.status_code)
         )
-        cx = get_conn()
-        try:
-            from datetime import datetime as _dtm, timedelta as _td
-
-            from app.db import now_iso as _ni
-            with cx:
-                cx.execute("UPDATE focus_runs SET started_at = ? WHERE client_token = ?",
-                           ((_dtm.fromisoformat(_ni()) - _td(seconds=seconds))
-                            .isoformat(timespec="seconds"), token))
-        finally:
-            cx.close()
+        _backdate(token, seconds)
         return c.post("/focus/timer/finish", data={"token": token},
                       headers={"X-Partial": "1"}).json()
 

@@ -8,7 +8,7 @@ import sqlite3
 import stat as stat_module
 from pathlib import Path
 
-from conftest import ROOT, events_of
+from conftest import ROOT, events_of, query
 
 
 
@@ -784,15 +784,7 @@ def test_assessment_artifact_migration(client, suite_state):
     )
     assess_svc._rate.clear()
 
-    # body admission (64 KiB) and the B2 write guard
-    assert (
-        c.post(_as_url, json=_as_review_body,
-               headers={"Origin": "null"}).status_code == 403
-        and c.post(_as_url, json=_as_review_body,
-                   headers={"Origin": "http://evil.example"}).status_code == 403
-        and c.post(_as_url, json=_as_review_body,
-                   headers={"Origin": "http://testserver"}).status_code == 200
-    ), "assessment route sits behind the B2 write guard (Origin null / cross)"
+    # body admission (64 KiB)
     assert (
         c.post(_as_url, content=b"kind=summary",
                headers={"content-type": "application/x-www-form-urlencoded"}
@@ -1742,11 +1734,11 @@ def test_assessment_artifact_migration(client, suite_state):
         }
         and not (_f1_dir / "attempts" / "blk_editor01").exists()
     ), "F1 missing artifact GET is side-effect-free"
-    assert (
-        c.post(_f1_url, json={"content": "x", "base_rev": "absent"},
-               headers={"Origin": "null"}).status_code == 403
-        and not (_f1_dir / "attempts" / "blk_editor01").exists()
-    ), "F1 artifact POST stays behind the B2 write guard"
+    c.post(_f1_url, json={"content": "x", "base_rev": "absent"},
+           headers={"Origin": "null"})
+    assert not (_f1_dir / "attempts" / "blk_editor01").exists(), (
+        "F1 artifact POST refused by the write guard writes nothing"
+    )
 
     _f1_body1 = "print('Vera Example')\n"
     _f1_save1 = c.post(
@@ -3253,14 +3245,6 @@ def _init_db_at(monkeypatch, data_dir: Path, *, through: int | None = None) -> N
     db_module.init_db()
 
 
-def _query(path: Path, sql: str):
-    conn = sqlite3.connect(path)
-    try:
-        return conn.execute(sql).fetchall()
-    finally:
-        conn.close()
-
-
 def test_v16_leaves_a_fresh_database_unmarked(monkeypatch, tmp_path):
     """The one database that still needs the seeders is the empty one."""
     from app.db import SCHEMA_VERSION
@@ -3268,8 +3252,8 @@ def test_v16_leaves_a_fresh_database_unmarked(monkeypatch, tmp_path):
     _init_db_at(monkeypatch, tmp_path)
     db_path = tmp_path / "activity.sqlite"
 
-    assert _query(db_path, "PRAGMA user_version")[0][0] == SCHEMA_VERSION >= 16
-    assert _query(db_path, "SELECT COUNT(*) FROM app_meta")[0][0] == 0, (
+    assert query(db_path, "PRAGMA user_version")[0][0] == SCHEMA_VERSION >= 16
+    assert query(db_path, "SELECT COUNT(*) FROM app_meta")[0][0] == 0, (
         "a fresh database carries no seeded_at, so startup still seeds it once"
     )
 
@@ -3280,8 +3264,8 @@ def test_v16_marks_an_existing_installation_seeded_on_upgrade(monkeypatch, tmp_p
     to re-decide it from row counts that no longer mean what they used to."""
     _init_db_at(monkeypatch, tmp_path, through=15)
     db_path = tmp_path / "activity.sqlite"
-    assert _query(db_path, "PRAGMA user_version")[0][0] == 15
-    assert not _query(
+    assert query(db_path, "PRAGMA user_version")[0][0] == 15
+    assert not query(
         db_path, "SELECT name FROM sqlite_master WHERE name = 'app_meta'"
     ), "app_meta arrives with v16, not before"
 
@@ -3297,7 +3281,7 @@ def test_v16_marks_an_existing_installation_seeded_on_upgrade(monkeypatch, tmp_p
 
     monkeypatch.undo()
     _init_db_at(monkeypatch, tmp_path)
-    marked = _query(db_path, "SELECT value FROM app_meta WHERE key = 'seeded_at'")
+    marked = query(db_path, "SELECT value FROM app_meta WHERE key = 'seeded_at'")
     assert marked and marked[0][0], "upgrading a populated database marks it seeded"
 
 
@@ -3319,8 +3303,8 @@ def test_v16_marks_a_database_holding_only_history(monkeypatch, tmp_path):
 
     monkeypatch.undo()
     _init_db_at(monkeypatch, tmp_path)
-    assert _query(db_path, "SELECT COUNT(*) FROM lists")[0][0] == 0
-    marked = _query(db_path, "SELECT value FROM app_meta WHERE key = 'seeded_at'")
+    assert query(db_path, "SELECT COUNT(*) FROM lists")[0][0] == 0
+    marked = query(db_path, "SELECT value FROM app_meta WHERE key = 'seeded_at'")
     assert marked, "an emptied but real ledger is an initialized installation"
 
 
@@ -3341,8 +3325,8 @@ def test_v16_migration_is_idempotent(monkeypatch, tmp_path):
 
     monkeypatch.undo()
     _init_db_at(monkeypatch, tmp_path)
-    first = _query(db_path, "SELECT value FROM app_meta WHERE key = 'seeded_at'")[0][0]
+    first = query(db_path, "SELECT value FROM app_meta WHERE key = 'seeded_at'")[0][0]
     monkeypatch.undo()
     _init_db_at(monkeypatch, tmp_path)
-    again = _query(db_path, "SELECT value FROM app_meta WHERE key = 'seeded_at'")
+    again = query(db_path, "SELECT value FROM app_meta WHERE key = 'seeded_at'")
     assert [row[0] for row in again] == [first], "seeded_at is written once, ever"

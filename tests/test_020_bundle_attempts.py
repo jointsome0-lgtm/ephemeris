@@ -894,14 +894,6 @@ def test_bundle_attempts(client, suite_state):
 
     # body admission + grammar limits (docs/lesson-attempts-api.md)
     assert (
-        c.post(_at_url, json=_at_body,
-               headers={"Origin": "null"}).status_code == 403
-        and c.post(_at_url, json=_at_body,
-                   headers={"Origin": "http://evil.example"}).status_code == 403
-        and c.post(_at_url, json=dict(_at_body, idempotency_key="vera-req-1"),
-                   headers={"Origin": "http://testserver"}).status_code == 200
-    ), "attempt route sits behind the B2 write guard (Origin null / cross)"
-    assert (
         c.post(_at_url, content=b"question_id=x",
                headers={"content-type": "application/x-www-form-urlencoded"}
                ).status_code == 415

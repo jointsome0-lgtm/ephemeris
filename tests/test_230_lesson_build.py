@@ -484,6 +484,26 @@ class _Site:
         self.thread.join(timeout=5)
 
 
+@pytest.fixture
+def serve(request):
+    """A `_Site` per call, closed when the test ends."""
+    def make(csp: str | None) -> _Site:
+        site = _Site(csp)
+        request.addfinalizer(site.close)
+        return site
+
+    return make
+
+
+@pytest.fixture
+def browser():
+    """A `_Browser` with its state and no Chrome behind it."""
+    value = render_check._Browser.__new__(render_check._Browser)
+    value.events, value.dropped = [], 0
+    value.fetched, value.executed, value.loaded = set(), set(), False
+    return value
+
+
 @pytest.fixture(scope="module")
 def lesson_csp() -> str:
     from app.routers.learn import _LESSON_PREVIEW_CSP_INTERACTIVE
@@ -501,34 +521,31 @@ def legacy_csp() -> str:
 
 
 @needs_browser
-def test_the_render_gate_reads_a_page_under_the_real_lesson_policy(lesson_csp):
+def test_the_render_gate_reads_a_page_under_the_real_lesson_policy(serve, lesson_csp):
     """One browser, four pages: what passes, and the three ways to fail."""
-    site = _Site(lesson_csp)
-    try:
-        clean = render_check.console_errors(f"{site.base}/clean.html")
-        assert clean == [], f"a working page must be silent, got {clean}"
+    site = serve(lesson_csp)
+    clean = render_check.console_errors(f"{site.base}/clean.html")
+    assert clean == [], f"a working page must be silent, got {clean}"
 
-        thrown = render_check.console_errors(f"{site.base}/throws.html")
-        assert any(e["source"] == "exception" and "TypeError" in e["text"] for e in thrown)
+    thrown = render_check.console_errors(f"{site.base}/throws.html")
+    assert any(e["source"] == "exception" and "TypeError" in e["text"] for e in thrown)
 
-        logged = render_check.console_errors(f"{site.base}/logged.html")
-        assert any(
-            e["source"] == "console" and "invented lesson failure" in e["text"]
-            for e in logged
-        )
+    logged = render_check.console_errors(f"{site.base}/logged.html")
+    assert any(
+        e["source"] == "console" and "invented lesson failure" in e["text"]
+        for e in logged
+    )
 
-        # The regression the IIFE build exists to prevent: an external MODULE
-        # script is fetched in cors mode and refused from an opaque origin,
-        # and it says so on the browser log, never on the console.
-        module = render_check.console_errors(f"{site.base}/module.html")
-        assert any(e["source"] == "browser" for e in module), module
-        assert any("ok.js" in e["text"] for e in module), module
-    finally:
-        site.close()
+    # The regression the IIFE build exists to prevent: an external MODULE
+    # script is fetched in cors mode and refused from an opaque origin,
+    # and it says so on the browser log, never on the console.
+    module = render_check.console_errors(f"{site.base}/module.html")
+    assert any(e["source"] == "browser" for e in module), module
+    assert any("ok.js" in e["text"] for e in module), module
 
 
 @needs_browser
-def test_an_error_with_nothing_to_say_is_still_an_error(lesson_csp):
+def test_an_error_with_nothing_to_say_is_still_an_error(serve, lesson_csp):
     """`console.error("")` has no text and every bit as much meaning: the page
     told the browser something went wrong.
 
@@ -537,17 +554,14 @@ def test_an_error_with_nothing_to_say_is_still_an_error(lesson_csp):
     an empty string does, and dropping it for having nothing to read would let
     the zero-console-error gate accept the page that raised it.
     """
-    site = _Site(lesson_csp)
-    try:
-        errors = render_check.console_errors(f"{site.base}/wordless.html")
-        assert errors, "the zero-console-error gate cannot pass this page"
-        assert any(e["source"] == "console" and e["text"] for e in errors), errors
-    finally:
-        site.close()
+    site = serve(lesson_csp)
+    errors = render_check.console_errors(f"{site.base}/wordless.html")
+    assert errors, "the zero-console-error gate cannot pass this page"
+    assert any(e["source"] == "console" and e["text"] for e in errors), errors
 
 
 @needs_browser
-def test_a_worker_cannot_start_here_and_says_so_where_the_gate_listens(lesson_csp):
+def test_a_worker_cannot_start_here_and_says_so_where_the_gate_listens(serve, lesson_csp):
     """Why the check does not attach to worker targets: there are none.
 
     Measured on this host, under the real lesson response. A classic worker is
@@ -560,21 +574,18 @@ def test_a_worker_cannot_start_here_and_says_so_where_the_gate_listens(lesson_cs
     forwarded to the page target the check is attached to, so nothing is
     missed there either.
     """
-    site = _Site(lesson_csp)
-    try:
-        classic = render_check.console_errors(f"{site.base}/w-file.html")
-        assert any("SecurityError" in e["text"] for e in classic), classic
-        assert any("origin 'null'" in e["text"] for e in classic), classic
+    site = serve(lesson_csp)
+    classic = render_check.console_errors(f"{site.base}/w-file.html")
+    assert any("SecurityError" in e["text"] for e in classic), classic
+    assert any("origin 'null'" in e["text"] for e in classic), classic
 
-        blob = render_check.console_errors(f"{site.base}/w-blob.html")
-        assert any(e["source"] == "browser" for e in blob), blob
-        assert any("worker" in e["text"].lower() for e in blob), blob
-    finally:
-        site.close()
+    blob = render_check.console_errors(f"{site.base}/w-blob.html")
+    assert any(e["source"] == "browser" for e in blob), blob
+    assert any("worker" in e["text"].lower() for e in blob), blob
 
 
 @needs_browser
-def test_a_worker_that_does_run_is_still_heard(legacy_csp):
+def test_a_worker_that_does_run_is_still_heard(serve, legacy_csp):
     """A v1 bundle renders under the permissive policy, which allows `blob:`
     scripts — so there a worker really does start, and the check is attached to
     the page target only.
@@ -584,35 +595,29 @@ def test_a_worker_that_does_run_is_still_heard(legacy_csp):
     the worker's own `blob:` URL in the text. Both fail the gate without the
     check attaching to worker sessions at all.
     """
-    site = _Site(legacy_csp)
-    try:
-        live = render_check.console_errors(f"{site.base}/w-live.html")
-        assert any("FROM WORKER" in e["text"] for e in live), live
-        assert any("blob:" in e["text"] for e in live), (
-            "the worker, not the page, is what said it", live
-        )
+    site = serve(legacy_csp)
+    live = render_check.console_errors(f"{site.base}/w-live.html")
+    assert any("FROM WORKER" in e["text"] for e in live), live
+    assert any("blob:" in e["text"] for e in live), (
+        "the worker, not the page, is what said it", live
+    )
 
-        threw = render_check.console_errors(f"{site.base}/w-throw.html")
-        assert any("TypeError" in e["text"] for e in threw), threw
-        assert any("blob:" in e["text"] for e in threw), threw
-    finally:
-        site.close()
+    threw = render_check.console_errors(f"{site.base}/w-throw.html")
+    assert any("TypeError" in e["text"] for e in threw), threw
+    assert any("blob:" in e["text"] for e in threw), threw
 
 
 @needs_browser
-def test_the_gate_refuses_a_page_that_did_not_come_back_opaque():
+def test_the_gate_refuses_a_page_that_did_not_come_back_opaque(serve):
     """No sandbox CSP means the run would not see an opaque-origin failure."""
-    site = _Site(None)
-    try:
-        with pytest.raises(render_check.RenderCheckUnavailable) as caught:
-            render_check.console_errors(f"{site.base}/clean.html")
-        assert "opaque" in str(caught.value)
-    finally:
-        site.close()
+    site = serve(None)
+    with pytest.raises(render_check.RenderCheckUnavailable) as caught:
+        render_check.console_errors(f"{site.base}/clean.html")
+    assert "opaque" in str(caught.value)
 
 
 @needs_browser
-def test_a_page_that_never_loads_the_artifact_is_no_evidence_about_it(lesson_csp):
+def test_a_page_that_never_loads_the_artifact_is_no_evidence_about_it(serve, lesson_csp):
     """The gate is about the built script, not about whatever page loads next.
 
     A page that does not reference the artifact renders perfectly well, so
@@ -620,51 +625,45 @@ def test_a_page_that_never_loads_the_artifact_is_no_evidence_about_it(lesson_csp
     first line — and the learner would meet it the day the `<script>` tag
     arrived.
     """
-    site = _Site(lesson_csp)
-    try:
-        missed = render_check.console_errors(
-            f"{site.base}/bare.html", expect_url=f"{site.base}/ok.js"
-        )
-        assert any(e["source"] == "artifact" for e in missed), missed
+    site = serve(lesson_csp)
+    missed = render_check.console_errors(
+        f"{site.base}/bare.html", expect_url=f"{site.base}/ok.js"
+    )
+    assert any(e["source"] == "artifact" for e in missed), missed
 
-        # Fetched and never executed is the same emptiness with a nicer
-        # network log; a preload proves nothing about the code.
-        preloaded = render_check.console_errors(
-            f"{site.base}/preload.html", expect_url=f"{site.base}/ok.js"
-        )
-        assert any(e["source"] == "artifact" for e in preloaded), preloaded
-        assert any("never ran it" in e["text"] for e in preloaded), preloaded
+    # Fetched and never executed is the same emptiness with a nicer
+    # network log; a preload proves nothing about the code.
+    preloaded = render_check.console_errors(
+        f"{site.base}/preload.html", expect_url=f"{site.base}/ok.js"
+    )
+    assert any(e["source"] == "artifact" for e in preloaded), preloaded
+    assert any("never ran it" in e["text"] for e in preloaded), preloaded
 
-        loaded = render_check.console_errors(
-            f"{site.base}/clean.html", expect_url=f"{site.base}/ok.js"
-        )
-        assert loaded == [], loaded
-        # The page's own relative reference and the URL the app composes need
-        # not be byte-identical; the file they name is what matters.
-        encoded = render_check.console_errors(
-            f"{site.base}/clean.html", expect_url=f"{site.base}/%6fk.js"
-        )
-        assert encoded == [], encoded
-    finally:
-        site.close()
+    loaded = render_check.console_errors(
+        f"{site.base}/clean.html", expect_url=f"{site.base}/ok.js"
+    )
+    assert loaded == [], loaded
+    # The page's own relative reference and the URL the app composes need
+    # not be byte-identical; the file they name is what matters.
+    encoded = render_check.console_errors(
+        f"{site.base}/clean.html", expect_url=f"{site.base}/%6fk.js"
+    )
+    assert encoded == [], encoded
 
 
 @needs_browser
-def test_the_gate_waits_for_the_page_to_finish_before_it_settles(lesson_csp):
+def test_the_gate_waits_for_the_page_to_finish_before_it_settles(serve, lesson_csp):
     """`Page.navigate` returns on commit, which is long before done.
 
     Settling from that moment would judge a page that is still fetching: here
     the throwing script is answered after the settle interval has expired.
     """
-    site = _Site(lesson_csp)
-    try:
-        started = time.monotonic()
-        late = render_check.console_errors(
-            f"{site.base}/slow.html", settle=_SLOW_SECONDS / 4
-        )
-        elapsed = time.monotonic() - started
-    finally:
-        site.close()
+    site = serve(lesson_csp)
+    started = time.monotonic()
+    late = render_check.console_errors(
+        f"{site.base}/slow.html", settle=_SLOW_SECONDS / 4
+    )
+    elapsed = time.monotonic() - started
     # The property, asserted on time rather than on which channel the failure
     # came through: a gate that settled from `Page.navigate` returns in about a
     # quarter of `_SLOW_SECONDS`, long before the script it is judging exists.
@@ -676,38 +675,29 @@ def test_the_gate_waits_for_the_page_to_finish_before_it_settles(lesson_csp):
 
 
 @needs_browser
-def test_running_out_of_time_is_a_refusal_and_never_a_pass(lesson_csp):
+def test_running_out_of_time_is_a_refusal_and_never_a_pass(serve, lesson_csp):
     """A budget too small to finish must not read as "checked, and clean"."""
-    site = _Site(lesson_csp)
-    try:
-        with pytest.raises(render_check.RenderCheckUnavailable):
-            render_check.console_errors(f"{site.base}/slow.html", timeout=1.0)
-    finally:
-        site.close()
+    site = serve(lesson_csp)
+    with pytest.raises(render_check.RenderCheckUnavailable):
+        render_check.console_errors(f"{site.base}/slow.html", timeout=1.0)
 
 
 @needs_browser
-def test_a_page_erroring_in_a_loop_is_bounded_not_absorbed(lesson_csp):
+def test_a_page_erroring_in_a_loop_is_bounded_not_absorbed(serve, lesson_csp):
     """A broken page must cost a refusal, not the app's memory.
 
     Every notification was retained until the deadline and only trimmed to
     `MAX_ERRORS` at the end, so a page looping over `console.error` could grow
     the process for a minute before being told no.
     """
-    site = _Site(lesson_csp)
-    try:
-        errors = render_check.console_errors(f"{site.base}/flood.html", settle=1.0)
-        assert errors, "a page shouting errors is not a clean page"
-        assert len(errors) <= render_check.MAX_ERRORS + 1
-    finally:
-        site.close()
+    site = serve(lesson_csp)
+    errors = render_check.console_errors(f"{site.base}/flood.html", settle=1.0)
+    assert errors, "a page shouting errors is not a clean page"
+    assert len(errors) <= render_check.MAX_ERRORS + 1
 
 
-def test_the_settle_window_will_not_start_until_the_document_is_done():
+def test_the_settle_window_will_not_start_until_the_document_is_done(browser):
     """The same property as the browser test, without a browser in it."""
-    browser = render_check._Browser.__new__(render_check._Browser)
-    browser.events, browser.dropped = [], 0
-    browser.fetched, browser.executed, browser.loaded = set(), set(), False
     # Nothing to read and no load: the wait must end as a refusal, never as a
     # quiet return that lets the caller settle on a half-loaded page.
     browser._read = lambda deadline: (_ for _ in ()).throw(TimeoutError())
@@ -717,7 +707,7 @@ def test_the_settle_window_will_not_start_until_the_document_is_done():
     browser.wait_for_load(time.monotonic() + 0.05)
 
 
-def test_the_blank_page_the_browser_started_on_does_not_count_as_loaded():
+def test_the_blank_page_the_browser_started_on_does_not_count_as_loaded(browser):
     """The browser opens `about:blank`, in the frame the lesson then uses.
 
     Its `Page.frameStoppedLoading` arrives after `Page.enable` and carries the
@@ -725,9 +715,6 @@ def test_the_blank_page_the_browser_started_on_does_not_count_as_loaded():
     page's completion as the lesson's and settles on a document that has not
     fetched anything yet.
     """
-    browser = render_check._Browser.__new__(render_check._Browser)
-    browser.events, browser.dropped = [], 0
-    browser.fetched, browser.executed, browser.loaded = set(), set(), False
     browser._main_frame = None
     browser._record({"method": "Page.frameStoppedLoading",
                      "params": {"frameId": "F1"}})
@@ -743,11 +730,8 @@ def test_the_blank_page_the_browser_started_on_does_not_count_as_loaded():
     assert browser.loaded
 
 
-def test_the_events_kept_for_a_report_are_capped(monkeypatch):
+def test_the_events_kept_for_a_report_are_capped(browser, monkeypatch):
     """The cap is on collection, and the signals the gate needs bypass it."""
-    browser = render_check._Browser.__new__(render_check._Browser)
-    browser.events, browser.dropped = [], 0
-    browser.fetched, browser.executed, browser.loaded = set(), set(), False
     for i in range(render_check.MAX_EVENTS * 3):
         browser._record({"method": "Runtime.consoleAPICalled", "params": {
             "type": "error", "args": [{"value": f"flood {i}"}],
@@ -765,7 +749,7 @@ def test_the_events_kept_for_a_report_are_capped(monkeypatch):
     assert browser.executed == {"http://x/a.js"} and browser.fetched == {"http://x/a.js"}
 
 
-def test_a_page_with_many_assets_is_not_charged_with_errors_it_never_had():
+def test_a_page_with_many_assets_is_not_charged_with_errors_it_never_had(browser):
     """The cap must count diagnostics, not traffic.
 
     Every subresource produces several `Network.*` notifications besides the
@@ -773,9 +757,6 @@ def test_a_page_with_many_assets_is_not_charged_with_errors_it_never_had():
     lesson with a hundred honest images report "further errors were not
     collected" — and be refused on every build, for rendering correctly.
     """
-    browser = render_check._Browser.__new__(render_check._Browser)
-    browser.events, browser.dropped = [], 0
-    browser.fetched, browser.executed, browser.loaded = set(), set(), False
     for i in range(render_check.MAX_EVENTS * 3):
         for method in ("Network.requestWillBeSent", "Network.loadingFinished",
                        "Network.dataReceived", "Runtime.executionContextCreated"):

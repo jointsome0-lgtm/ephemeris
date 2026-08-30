@@ -5,28 +5,10 @@ earlier file's lesson counts are settled before it starts.
 """
 from __future__ import annotations
 
-import json
 import re
-from pathlib import Path
 
-from conftest import ROOT
+from conftest import ROOT, write_lesson_manifest
 
-
-def _write_manifest(slug: str, uid: str, **extra) -> None:
-    """A valid v2 manifest for `slug`, plus whatever the case declares."""
-    from app.services import lessons as lessons_svc
-
-    bundle = Path(lessons_svc.LESSONS_DIR) / slug
-    bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "index.html").write_text("<p>page</p>", encoding="utf-8")
-    manifest = {
-        "schema_version": 2,
-        "lesson_uid": uid,
-        "entry": "index.html",
-        "pages": [{"id": "pg_tree000001", "path": "index.html"}],
-    }
-    manifest.update(extra)
-    (bundle / "lesson.json").write_text(json.dumps(manifest), encoding="utf-8")
 
 
 def _row_ids(html: str) -> list[int]:
@@ -84,17 +66,17 @@ def test_nested_tracks(client, suite_state):
     finally:
         conn.close()
 
-    _write_manifest(made["intro"]["slug"], made["intro"]["uid"],
+    write_lesson_manifest(made["intro"]["slug"], made["intro"]["uid"],
                     path="zt-cc", step=1)
-    _write_manifest(made["proto"]["slug"], made["proto"]["uid"],
+    write_lesson_manifest(made["proto"]["slug"], made["proto"]["uid"],
                     path="zt-cc/concepts/network-protocols", step=1)
     # A doubled separator: the same address as its sibling once normalized, so
     # both land in one node instead of two heads reading identically.
-    _write_manifest(made["dns"]["slug"], made["dns"]["uid"],
+    write_lesson_manifest(made["dns"]["slug"], made["dns"]["uid"],
                     path="zt-cc//concepts/dns", step=2)
-    _write_manifest(made["chal"]["slug"], made["chal"]["uid"],
+    write_lesson_manifest(made["chal"]["slug"], made["chal"]["uid"],
                     path="zt-cc/challenges/redis", step=1)
-    _write_manifest(made["other"]["slug"], made["other"]["uid"],
+    write_lesson_manifest(made["other"]["slug"], made["other"]["uid"],
                     path="zt-solo", step=1)
 
     conn = get_conn()
