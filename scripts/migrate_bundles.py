@@ -17,7 +17,7 @@ Guarantees (§10 invariants + C4 requirements):
   with a v2-owned key, or an object-form page item carrying `id`/`title`
   leaves the manifest untouched and fails the run visibly.
 - Idempotent: a v2 manifest is a no-op, so a rerun reports no changes.
-- Atomic replacement (the B1 writer idiom via `bundle_schema.atomic_write_text`)
+- Atomic replacement (the shared writer, `projection.replace_file`)
   and a rollback manifest written before any bundle is mutated.
 
 Usage:
@@ -48,14 +48,13 @@ import os
 import sqlite3
 import stat as stat_module
 import sys
-import tempfile
 from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.db import DATA_DIR, DB_PATH, now_iso, now_stamp  # noqa: E402
-from app.services import bundle_schema  # noqa: E402
+from app.services import bundle_schema, projection  # noqa: E402
 from app.services.lessons import LESSONS_DIR, MANIFEST_NAME  # noqa: E402
 
 MIGRATIONS_DIR = DATA_DIR / "migrations"
@@ -201,23 +200,8 @@ def _fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
-def _write_bytes_durable(path: Path, data: bytes) -> None:
-    """Rollback material must survive a crash that happens after the manifest
-    replacement: 0600 tempfile, file fsync, atomic replace, directory fsync."""
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".rollback-")
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp_name, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
-    _fsync_dir(path.parent)
+def _write_text(path: Path, text: str) -> None:
+    projection.replace_file(path, text.encode("utf-8"), prefix=".manifest-")
 
 
 def _check_item_collisions(label: str, item: dict, stops: list[str]) -> None:
@@ -473,7 +457,9 @@ def apply_plan(
     # fsynced file, then the ledger entry (rewritten per bundle and fsynced
     # with its directory) — a crash at any later point, power loss included,
     # leaves every already-migrated bundle restorable.
-    _write_bytes_durable(rollback_dir / f"{plan.slug}.lesson.json", plan.old_bytes)
+    projection.replace_file(
+        rollback_dir / f"{plan.slug}.lesson.json", plan.old_bytes, prefix=".rollback-"
+    )
     ledger_path = rollback_dir / ROLLBACK_MANIFEST
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
     ledger["entries"] = [e for e in ledger["entries"] if e["slug"] != plan.slug]
@@ -483,11 +469,8 @@ def apply_plan(
         "old_sha256": hashlib.sha256(plan.old_bytes).hexdigest(),
         "new_sha256": hashlib.sha256(plan.new_text.encode("utf-8")).hexdigest(),
     })
-    bundle_schema.atomic_write_text(ledger_path, json.dumps(ledger, indent=2) + "\n")
-    _fsync_dir(rollback_dir)
-
-    bundle_schema.atomic_write_text(manifest_path, plan.new_text)
-    _fsync_dir(bundle_dir)
+    _write_text(ledger_path, json.dumps(ledger, indent=2) + "\n")
+    _write_text(manifest_path, plan.new_text)
 
     # Post-verification by hashes: the manifest on disk is exactly the planned
     # bytes, it reads back as clean v2 against the DB row, and no declared
@@ -563,10 +546,7 @@ def rollback(rollback_dir: Path) -> int:
             print(f"[refused] {slug} — manifest changed since migration ({err or 'edited'})")
             failures += 1
             continue
-        bundle_schema.atomic_write_text(
-            manifest_path, old_bytes.decode("utf-8")
-        )
-        _fsync_dir(bundle_dir)  # same rename-durability rule as the migrate path
+        _write_text(manifest_path, old_bytes.decode("utf-8"))
         print(f"[restored] {slug}")
     return 1 if failures else 0
 
@@ -633,7 +613,7 @@ def run(*, dry_run: bool, slugs: list[str] | None) -> int:
             except FileExistsError:
                 rollback_dir = base.with_name(f"{base.name}-{suffix}")
                 suffix += 1
-        bundle_schema.atomic_write_text(
+        _write_text(
             rollback_dir / ROLLBACK_MANIFEST,
             json.dumps({"created_at": now_iso(), "entries": []}, indent=2) + "\n",
         )

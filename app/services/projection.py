@@ -1,7 +1,8 @@
 """Shared projection machinery for the lesson record services.
 
 One per-lesson lock registry, one idempotency-key grammar, one durable
-publisher (stage, fsync, replace, dirsync), one private cross-process lock
+publisher (stage, fsync, replace, dirsync) in a descriptor-relative and a
+path-taking form, one private cross-process lock
 under a projections directory, one file seal, the publication identity gate,
 and one record skeleton parameterised by the per-kind pieces.  No rate state
 lives here.
@@ -260,6 +261,7 @@ def publish(
     data: bytes | Callable[[int], None],
     *,
     prefix: str,
+    aside: bool = True,
     expect: dict | None = None,
     verify: Callable[[int, os.stat_result], None] | None = None,
 ) -> os.stat_result | None:
@@ -275,7 +277,8 @@ def publish(
                 return None
             if not seal_matches(holder, expect):
                 return None
-        move_aside(dir_fd, name)
+        if aside:
+            move_aside(dir_fd, name)
         os.replace(temp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
         temp_name = None
         os.fsync(dir_fd)
@@ -298,6 +301,18 @@ def publish(
                 os.unlink(temp_name, dir_fd=dir_fd)
             except OSError:
                 pass
+
+
+def replace_file(path: Path, data: bytes, *, prefix: str) -> os.stat_result | None:
+    """Atomically replace the file at `path`: stage, fsync, rename over
+    whatever single entry holds the name (a planted link or special file is
+    replaced, never followed or opened), dirsync. The parent is opened as a
+    directory through no link."""
+    dir_fd = os.open(path.parent, DIRECTORY_FLAGS)
+    try:
+        return publish(dir_fd, path.name, data, prefix=prefix, aside=False)
+    finally:
+        os.close(dir_fd)
 
 
 def record(

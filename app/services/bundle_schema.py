@@ -17,14 +17,13 @@ import math
 import os
 import re
 import stat as stat_module
-import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from .projection import has_control_chars
+from .projection import has_control_chars, replace_file
 from .runner_registry import RUNNER_REGISTRY
 
 SCHEMA_V1 = 1
@@ -995,33 +994,8 @@ def default_manifest_v2(
     return manifest
 
 
-def atomic_write_text(path: Path, text: str) -> None:
-    """Atomically replace a generated file (the B1 brief-writer idiom): write
-    and fsync a mode-0600 temporary file in the destination directory, then
-    replace the destination entry without ever opening it — a pre-planted
-    link or special file is replaced, not followed."""
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".manifest-")
-    try:
-        try:
-            fh = os.fdopen(fd, "w", encoding="utf-8")
-        except BaseException:
-            os.close(fd)
-            raise
-        with fh:
-            fh.write(text)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp_name, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
-
-
 def write_manifest(path: Path, raw: dict, version: int = SCHEMA_V2) -> None:
-    atomic_write_text(path, canonical_dumps(raw, version))
+    replace_file(path, canonical_dumps(raw, version).encode("utf-8"), prefix=".manifest-")
 
 
 # --- filesystem symlink policy (§2) -------------------------------------------
