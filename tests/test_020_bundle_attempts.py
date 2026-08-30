@@ -672,40 +672,6 @@ def test_bundle_attempts(client, suite_state):
                     _d2_cp.stdout + _d2_cp.stderr
                 )
             )
-        _d2_mjs = _d2_out / "learn-bridge.mjs"
-        _d2_mjs.write_text(_d2_js, encoding="utf-8")
-        _d2_sha_cp = subprocess.run(
-            [
-                "node", "--input-type=module", "-e",
-                """
-globalThis.document = {getElementById: () => null};
-const {sha256Hex} = await import(process.argv[1]);
-const encode = new TextEncoder();
-process.stdout.write(JSON.stringify([
-  sha256Hex(encode.encode("")),
-  sha256Hex(encode.encode("abc")),
-  sha256Hex(encode.encode("🪐 orbit")),
-  sha256Hex(encode.encode("x".repeat(70000))),
-]));
-""",
-                _d2_mjs.as_uri(),
-            ],
-            cwd=ROOT, capture_output=True, text=True, timeout=30,
-        )
-        _d2_sha_expected = [
-            hashlib.sha256(value).hexdigest()
-            for value in (b"", b"abc", "🪐 orbit".encode("utf-8"), b"x" * 70000)
-        ]
-        assert (
-            _d2_sha_cp.returncode == 0
-            and json.loads(_d2_sha_cp.stdout) == _d2_sha_expected
-        ), (
-            "emitted dependency-free SHA-256 matches standard vectors"
-            + "  -- "
-            + (
-                _d2_sha_cp.stdout + _d2_sha_cp.stderr
-            )
-        )
     else:
         if os.environ.get("CI"):
             assert (

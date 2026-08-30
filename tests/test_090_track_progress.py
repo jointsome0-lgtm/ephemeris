@@ -162,8 +162,7 @@ def test_track_progress(client, suite_state):
         'class="lesson-group-head"' in r.text
         and 'data-track="zz-track-one"' in r.text
         and ">1 of 3</span>" in r.text
-        and 'class="learn-tracks"' not in r.text
-    ), "each track is a group head with its count, and the strip is gone"
+    ), "each track is a group head with its count"
     assert (
         'style="width: 33%"' in r.text
     ), "the progress bar fills to the studied share of the track"
@@ -247,8 +246,7 @@ def test_track_progress(client, suite_state):
     # Jinja re-reads templates per render, so the live pre-change process serves
     # this template against a context with neither `groups` nor `ungrouped` (and
     # the pre-#81 one without `tracks` either). It must fall back to the flat
-    # list and the strip, not raise, or the merge breaks /learn until the next
-    # restart.
+    # list, not raise, or the merge breaks /learn until the next restart.
     from starlette.requests import Request as _Request
 
     from app.templating import templates as _tpl
@@ -265,31 +263,14 @@ def test_track_progress(client, suite_state):
     )
     _no_ctx = _tpl.get_template("learn.html").render(rows=[], **_base_ctx)
     assert (
-        "learn-tracks" not in _no_ctx and "Lesson title" in _no_ctx
-    ), "learn.html renders without a `tracks` variable, omitting the strip"
+        "Lesson title" in _no_ctx
+    ), "learn.html renders without a `tracks` variable"
 
-    # The pre-change backend of THIS commit: it has `tracks` but no `groups`, so
-    # the strip is what carries the numbers and every row renders flat.
-    conn = get_conn()
-    try:
-        _live_rows = lessons_svc.list_lessons(conn)
-    finally:
-        conn.close()
-    _pre = _tpl.get_template("learn.html").render(
-        rows=_live_rows, tracks=lessons_svc.track_progress(_live_rows), **_base_ctx)
-    assert (
-        'class="learn-tracks"' in _pre
-        and "1 of 2 studied" in _pre
-        and "lesson-group-head" not in _pre
-        and len(_row_ids(_pre)) == len(_live_rows)
-    ), "with `tracks` but no `groups`, the page is the strip over the flat list"
-
-    # The CSS the strip and the groups name actually exists.
+    # The CSS the groups name actually exists.
     _css = (ROOT / "app" / "static" / "style.css").read_text(encoding="utf-8")
     assert (
-        ".learn-tracks {" in _css and ".learn-track-next {" in _css
-        and ".lesson-group {" in _css and ".lesson-group-bar {" in _css
-    ), "the track strip and the groups have their styles"
+        ".lesson-group {" in _css and ".lesson-group-bar {" in _css
+    ), "the groups have their styles"
     # The bug this layout was fixed for: the panel's chrome shrank under a
     # column that no longer scrolls (#132), and the add form — the one child
     # whose explicit `min-height` replaced its automatic minimum — collapsed to

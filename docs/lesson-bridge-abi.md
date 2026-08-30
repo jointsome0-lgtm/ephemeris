@@ -500,9 +500,9 @@ parent → child   { "op": "run.cancel", "request_id": "cancel-1",
   This is a narrow D-FE-3 deviation from passing `request_id` verbatim: the
   original shape cannot preflight a server-retained key before the composite's
   first mutation, and the run-start API intentionally has no separate
-  idempotency-preflight route. The bounded parent module computes SHA-256
-  dependency-free, so the supported plain-HTTP loopback deployment does not
-  rely on secure-context-only Web Crypto.
+  idempotency-preflight route. The parent computes the digest with Web
+  Crypto (`crypto.subtle.digest`): the supported deployment is loopback, and
+  loopback origins are secure contexts even over plain HTTP.
   For this composite op the id must also be well-formed Unicode without ASCII
   control characters or DEL; the parent rejects an invalid idempotency key
   before it sends the artifact save.

@@ -49,14 +49,14 @@
     {% endif %}
   {% else %}
     <div class="empty-state es-full">
-      {% include "_search_illus.html" %}
+      {{ ic.constellation() }}
       <div class="es-title">Nothing found</div>
       <div>Nothing matches “{{ q }}”.</div>
     </div>
   {% endif %}
 {% else %}
   <div class="empty-state es-full">
-    {% include "_search_illus.html" %}
+    {{ ic.constellation() }}
     <div class="es-title">Search everything</div>
     <div>Find tasks, notes, and lessons across all your lists.</div>
   </div>

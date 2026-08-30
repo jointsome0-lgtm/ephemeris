@@ -134,7 +134,6 @@
         var U11JS = assetHost.dataset.unicode11Js, SJS = assetHost.dataset.searchJs, CJS = assetHost.dataset.clipboardJs;
         var keyStem = config.kind === 'agent' ? 'al-term-' : 'al-term-learner-';
         var OPEN_KEY = keyStem + 'open';
-        var LEGACY_SID_KEY = 'al-term-sid';
         var TABS_KEY = keyStem + 'tabs';
         var ACTIVE_KEY = keyStem + 'active';
         var H_KEY = keyStem + 'h';
@@ -198,11 +197,6 @@
                 raw = JSON.parse(localStorage.getItem(TABS_KEY) || 'null');
             }
             catch (_) { }
-            if (config.kind === 'agent' && (!Array.isArray(raw) || raw.length === 0)) {
-                var legacy = localStorage.getItem(LEGACY_SID_KEY);
-                if (legacy)
-                    raw = [{ id: newId(), sid: legacy, title: 'Terminal 1' }];
-            }
             var storedTabs = Array.isArray(raw) ? raw : [];
             // Agent tabs retain their historical first-eight bound. Learner tabs are
             // ordered least-to-most recently selected by persistTabs(), so keep the
@@ -232,8 +226,6 @@
                 ? storedActiveId : (tabs[0] ? tabs[0].id : null);
             if (allTabs.length)
                 persistTabs();
-            if (config.kind === 'agent')
-                localStorage.removeItem(LEGACY_SID_KEY);
             // A lesson tab must not be auto-active outside Learn: fall back to the
             // first plain tab (creating one in memory if every stored tab is a lesson
             // tab). Only the active *pointer* is transient — storedActiveId still names

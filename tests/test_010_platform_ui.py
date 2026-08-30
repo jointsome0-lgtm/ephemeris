@@ -394,7 +394,7 @@ def test_002_ui_and_workspace(client, suite_state):
     assert (
         "Cormorant Garamond" in css.text and "JetBrains Mono" in css.text
     ), "@font-face vendors Cormorant Garamond + JetBrains Mono"
-    dfont = c.get("/static/fonts/cormorant-garamond-400-latin.woff2")
+    dfont = c.get("/static/fonts/cormorant-garamond-600-latin.woff2")
     assert (
         dfont.status_code == 200 and dfont.content[:4] == b"wOF2"
     ), (
