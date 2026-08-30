@@ -26,9 +26,6 @@ def test_run_api(client, suite_state):
     from app.services import runs as _runs
 
     _f4_run_url = f"/learn/lessons/{_f1_id}/blocks/blk_editor01/runs"
-    _f4_alias_url = (
-        f"/learn/lessons/by-slug/{_f1['slug']}/blocks/blk_editor01/runs"
-    )
     _f4_source = b"print('Run API Demo')\n"
     _f1_file.write_bytes(_f4_source)
     _f4_file_rev = c.get(_f1_url).json()["file_rev"]
@@ -121,7 +118,7 @@ def test_run_api(client, suite_state):
             and _f4_service._jobs[_f4_job_id].reader_count == 0
         ), "F4 cross-origin SSE is refused before reserving a reader slot"
 
-        _f4_replay = c.post(_f4_alias_url, json=_f4_payload)
+        _f4_replay = c.post(_f4_run_url, json=_f4_payload)
         _f1_file.write_bytes(b"print('Run API Demo, edited')\n")
         _f4_edited_rev = c.get(_f1_url).json()["file_rev"]
         _f4_conflict = c.post(_f4_run_url, json={

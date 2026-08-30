@@ -23,16 +23,15 @@ unknown field and is refused.
 
 ```
 POST /learn/lessons/{lesson_id}/assessments
-POST /learn/lessons/by-slug/{slug}/assessments   (alias, same handler)
 ```
 
-Both are unsafe-method routes behind the app perimeter (`app/security.py`):
+This is an unsafe-method route behind the app perimeter (`app/security.py`):
 same-origin browser fetch and origin-less non-browser clients pass; a
 cross-origin or `Origin: null` request (the sandboxed lesson iframe itself) is
 refused with 403 before the handler runs. Requests must be `application/json`
 with a `Content-Length` ≤ 64 KiB.
 
-Unlike the attempt endpoint, these routes are **not** bridge-gated (D-S1-4):
+Unlike the attempt endpoint, this route is **not** bridge-gated (D-S1-4):
 no interactive runtime profile is required and the admission path reads no
 manifest. The tutor's memory must work on every lesson, including the
 `legacy-display` bundles that can never record attempts — a `review` implies
@@ -184,7 +183,7 @@ recorded once, by the write that actually lands.
 | 400 | `invalid-idempotency-key` | absent, > 128 chars, or carrying control characters |
 | 400 | `invalid-json`, `invalid-request` | body is not a JSON object; malformed `Content-Length` |
 | 403 | `invalid-capability` | the `X-Ephemeris-Assess-Token` header is present but names no live session capability (never minted, its session ended, or the app restarted). Never a silent fallback to the tokenless path |
-| 404 | `unknown-lesson` | no such lesson id/slug |
+| 404 | `unknown-lesson` | no such lesson id |
 | 409 | `capability-lesson-mismatch` | the capability is live but belongs to another lesson than the URL's |
 | 409 | `summary-exists` | this sitting already has an active `summary` and the new one does not supersede it (the detail names the `assessment_id` to supersede) |
 | 409 | `lesson-archived` | the lesson is archived — the owner restores it first; assessments are never written into a lesson that has been put away |

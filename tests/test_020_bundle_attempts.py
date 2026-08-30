@@ -806,15 +806,15 @@ def test_bundle_attempts(client, suite_state):
         and _at_rp_new.json()["error"] == "unknown-question"
     ), "replay survives question retirement; a fresh key rejects"
 
-    # slug alias records against the same lesson; uid comes from the DB row
-    _at_r2 = c.post(f"/learn/lessons/by-slug/{_at['slug']}/attempts",
+    # a second answer to the same question; uid comes from the DB row
+    _at_r2 = c.post(_at_url,
                     json=dict(_at_body, idempotency_key="vera-req-2",
                               answer="Vera Example: second thought."))
     assert (
         _at_r2.status_code == 200 and _at_r2.json()["result"] == "recorded"
         and _at_r2.json()["attempt_number"] == 2
         and _at_rows()[-1]["lesson_uid"] == _at["uid"]
-    ), "slug-alias route records; attempt_number counts per question"
+    ), "attempt_number counts per question"
 
     # §6.4 staleness matrix, server-derived at record time
     (_at_dir / "index.html").write_text(
@@ -859,9 +859,7 @@ def test_bundle_attempts(client, suite_state):
     ), "undeclared question: distinct unknown-question reject, nothing written"
     assert (
         c.post("/learn/lessons/999999/attempts", json=_at_body).status_code == 404
-        and c.post("/learn/lessons/by-slug/no-such-lesson/attempts",
-                   json=_at_body).status_code == 404
-    ), "unknown lesson id and slug both 404"
+    ), "unknown lesson id 404s"
 
     # eligibility fails closed (§5/§9.2): rejected manifest, v1, legacy
     # profile, identity mismatch — each with its own code, nothing written
@@ -961,19 +959,15 @@ def test_bundle_attempts(client, suite_state):
     _at_chunks = [b"x" * (64 * 1024) for _ in range(8)]
     _at_stream_id = _at_asyncio.run(
         _at_direct_asgi(_at_url, 1, _at_chunks))
-    _at_stream_slug = _at_asyncio.run(_at_direct_asgi(
-        f"/learn/lessons/by-slug/{_at['slug']}/attempts", 1, _at_chunks))
     assert (
-        _at_stream_id == (413, 5) and _at_stream_slug == (413, 5)
-    ), "attempt aliases abort dishonest multi-chunk bodies mid-stream"
+        _at_stream_id == (413, 5)
+    ), "attempt route aborts dishonest multi-chunk bodies mid-stream"
 
     _at_negative_id = _at_asyncio.run(
         _at_direct_asgi(_at_url, -1, [b"{}"]))
-    _at_negative_slug = _at_asyncio.run(_at_direct_asgi(
-        f"/learn/lessons/by-slug/{_at['slug']}/attempts", -1, [b"{}"]))
     assert (
-        _at_negative_id == (400, 0) and _at_negative_slug == (400, 0)
-    ), "attempt aliases reject negative Content-Length before body reads"
+        _at_negative_id == (400, 0)
+    ), "attempt route rejects negative Content-Length before body reads"
 
     # deep nesting under the byte cap raises RecursionError inside json.loads
     # (PR-57 round 4) — still the documented invalid-json 400, never a 500

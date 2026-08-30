@@ -1277,7 +1277,7 @@ def test_lesson_agent_learning(client, suite_state):
     _s4_ensure_real = lessons_svc._ensure_bundle_manifest
     _s4_readonly_real = lessons_svc.read_bundle_readonly
     _s4_mark_opened_real = lessons_svc.mark_opened
-    _s4_db_state_real = _s4_learn._record_panel_db_state
+    _s4_db_state_real = lessons_svc.record_panel_db_state
     _s4_panel_real = _s4_learn._record_panel
     _s4_read_order = []
     _s4_ensured_reads = []
@@ -1335,7 +1335,7 @@ def test_lesson_agent_learning(client, suite_state):
     lessons_svc._ensure_bundle_manifest = _s4_ensure_once
     lessons_svc.read_bundle_readonly = _s4_readonly_unexpected
     lessons_svc.mark_opened = _s4_mark_opened_spy
-    _s4_learn._record_panel_db_state = _s4_db_before_manifest
+    lessons_svc.record_panel_db_state = _s4_db_before_manifest
     _s4_learn._record_panel = _s4_panel_same_read
     try:
         _s4_same_manifest = c.get(
@@ -1346,7 +1346,7 @@ def test_lesson_agent_learning(client, suite_state):
         lessons_svc._ensure_bundle_manifest = _s4_ensure_real
         lessons_svc.read_bundle_readonly = _s4_readonly_real
         lessons_svc.mark_opened = _s4_mark_opened_real
-        _s4_learn._record_panel_db_state = _s4_db_state_real
+        lessons_svc.record_panel_db_state = _s4_db_state_real
         _s4_learn._record_panel = _s4_panel_real
     _s4_conn = get_conn()
     try:
