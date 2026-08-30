@@ -175,7 +175,6 @@ def get_learn(
         "status_filter": status,
         "show_archived": show_archived,
         "counts": counts,
-        "tracks": tracks,
         "groups": groups,
         "ungrouped": ungrouped,
         "status_tabs": [{"key": key, "label": lessons.STATUS_LABELS[key]} for key in lessons.STATUSES],

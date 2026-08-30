@@ -2487,9 +2487,7 @@ def test_assessment_artifact_migration(client, suite_state):
         and 'if (!afterStart.run)' in _fr_save_run
     ), "save_run revalidates page/block Run authority after start before relay"
     assert (
-        "export const sha256Hex" in _d2_ts
-        and "window.crypto" not in _d2_ts
-        and '"ephemeris:lesson-run:v1", requestId, blockId, content' in _d2_ts
+        '"ephemeris:lesson-run:v1", requestId, blockId, content' in _d2_ts
         and _fr_save_run.index("deriveRunIdempotencyKey")
         < _fr_save_run.index("artifactEndpoint(blockId)")
     ), "save_run derives parameter-bound idempotency before artifact mutation"

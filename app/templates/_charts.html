@@ -28,20 +28,6 @@
 </figure>
 {%- endmacro %}
 
-{# Horizontal per-entity bars — `rows` carry .title .minutes .label (+ optional .pomos) #}
-{% macro rank_bars(rows, unit='m') -%}
-{%- set maxm = (rows | map(attribute='minutes') | max) or 1 -%}
-<ul class="eph-rank">
-  {%- for r in rows %}
-  <li class="er-row" title="{{ r.title }} · {{ r.label }}{% if r.pomos %} · {{ r.pomos }} pomo{% endif %}">
-    <span class="er-name">{{ r.title }}</span>
-    <span class="er-track"><span class="er-fill" style="width: {{ (r.minutes / maxm * 100) | round(1) }}%"></span></span>
-    <span class="er-val">{{ r.label }}</span>
-  </li>
-  {%- endfor %}
-</ul>
-{%- endmacro %}
-
 {# Year sky — 52 Sunday-start week columns x 7 weekday rows of check-in stars.
    `weeks` from stats.year_map; level 0..3 brightens the star. #}
 {% macro star_year(weeks) -%}

@@ -15,6 +15,7 @@ tests skip when no Chrome is installed rather than pretending to have run.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import socket
@@ -35,6 +36,11 @@ ROOT = Path(__file__).resolve().parent.parent
 ANSWER = "invented-answer-orbit-7"
 NOTE = "invented-note-orbit-7"
 QUESTION_ID = "q_browser01"
+BLOCK_ID = "blk_browser01"
+RUN_REQUEST_ID = "r-run-orbit-7"
+RUN_CONTENT = "print('invented orbit \U0001fa90')\n"
+RUN_FILE_REV = "sha256:" + "c" * 64
+RUN_JOB_ID = "0badcafe-0000-4000-8000-000000c0ffee"
 
 SNAPSHOT = {
     "lesson_uid": "les_browser",
@@ -58,7 +64,7 @@ BRIDGE_PAGE = {
     "page_id": "pg_browser01",
     "page_rev": "sha256:" + "b" * 64,
     "questions": [QUESTION_ID],
-    "blocks": [],
+    "blocks": [{"id": BLOCK_ID, "run": True}],
 }
 
 PARENT_HTML = """<!doctype html>
@@ -68,6 +74,8 @@ PARENT_HTML = """<!doctype html>
         sandbox="allow-scripts"
         data-meta-url="/preview-meta"
         data-attempts-url="/attempts"
+        data-artifacts-url="/artifacts"
+        data-runs-url="/runs"
         data-src="/child.html"
         data-version="v1"
         data-loaded="0"
@@ -100,6 +108,7 @@ CHILD_HTML = """<!doctype html>
 <script>
   var params = new URLSearchParams(location.search);
   var announced = 0;
+  var ran = false;
   /* `legacy=1` announces the retired v1 way — no transferred port, listening
    * on the window. `navigate=<url>` commits a same-frame navigation and then
    * announces, so the successor is already in flight while the parent's
@@ -125,6 +134,14 @@ CHILD_HTML = """<!doctype html>
         }, "*");
       };
       ports[0].postMessage({ op: "ping", request_id: "r-probe" });
+      if (params.get("run") === "1" && !ran) {
+        ran = true;
+        ports[0].postMessage({
+          op: "artifact.save_run", v: 1, request_id: RUN_REQUEST_ID_JSON,
+          block_id: BLOCK_ID_JSON, content: RUN_CONTENT_JSON,
+          base_rev: "absent", after: 0,
+        });
+      }
     }
     /* The residual the gate is about: permitted script navigates the frame
      * and the private text rides along in the URL. */
@@ -142,7 +159,8 @@ CHILD_HTML = """<!doctype html>
 
   function announce() {
     var ready = {
-      ephemeris: "lesson-bridge", type: "ready", abi: [2], want: ["attempts"],
+      ephemeris: "lesson-bridge", type: "ready", abi: [2],
+      want: params.get("run") === "1" ? ["attempts", "run"] : ["attempts"],
     };
     if (legacy) return parent.postMessage(ready, "*");
     /* A transferred port is spent, so every retry mints its own channel. */
@@ -224,6 +242,8 @@ class _Site:
 
     def __init__(self, egress: bool, child_query: str = "doc=1") -> None:
         self.captured: list[dict] = []
+        self.saves: list[dict] = []
+        self.run_starts: list[dict] = []
         self.meta_reads = 0
         self.version = "v1"
         self.child_query = child_query
@@ -263,8 +283,13 @@ class _Site:
                     )
                     return self._send(body.encode("utf-8"), "text/html; charset=utf-8")
                 if path == "/child.html":
-                    return self._send(
-                        CHILD_HTML.encode("utf-8"), "text/html; charset=utf-8")
+                    body = (
+                        CHILD_HTML
+                        .replace("RUN_REQUEST_ID_JSON", json.dumps(RUN_REQUEST_ID))
+                        .replace("BLOCK_ID_JSON", json.dumps(BLOCK_ID))
+                        .replace("RUN_CONTENT_JSON", json.dumps(RUN_CONTENT))
+                    )
+                    return self._send(body.encode("utf-8"), "text/html; charset=utf-8")
                 if path == "/successor.html":
                     return self._send(
                         SUCCESSOR_HTML.encode("utf-8"), "text/html; charset=utf-8")
@@ -292,6 +317,22 @@ class _Site:
                 if path == "/captured":
                     site.captured.append(parse_qs(urlparse(self.path).query))
                     return self._send(b"captured", "text/plain")
+                self.send_error(404)
+
+            def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+                path = urlparse(self.path).path
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length) or b"{}")
+                if path == f"/artifacts/{BLOCK_ID}/file":
+                    site.saves.append(body)
+                    return self._send(json.dumps({
+                        "ok": True, "result": "saved", "file_rev": RUN_FILE_REV,
+                    }).encode("utf-8"), "application/json")
+                if path == f"/runs/{BLOCK_ID}/runs":
+                    site.run_starts.append(body)
+                    return self._send(json.dumps({
+                        "ok": True, "job_id": RUN_JOB_ID,
+                    }).encode("utf-8"), "application/json")
                 self.send_error(404)
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -683,6 +724,29 @@ def test_an_announcement_without_a_port_gets_neither_port_nor_record():
         assert _welcomes(browser) == []
         assert browser.dialogs == [], "silence is decided before the owner is asked"
         assert site.captured == []
+    finally:
+        browser.close()
+        site.close()
+
+
+def test_the_run_idempotency_key_is_the_sha256_of_the_bound_tuple():
+    """A run's idempotency key is the standard SHA-256 of the JSON tuple the
+    bridge binds it to, taken end to end: the page asks for a run, the bridge
+    saves and starts it, and the start request carries the key."""
+    browser, site = _run([False], child_query="doc=1&run=1")
+    try:
+        deadline = time.monotonic() + 10
+        while not site.run_starts and time.monotonic() < deadline:
+            browser.pump(0.5)
+        assert site.saves == [{"content": RUN_CONTENT, "base_rev": "absent"}]
+        bound = json.dumps(
+            ["ephemeris:lesson-run:v1", RUN_REQUEST_ID, BLOCK_ID, RUN_CONTENT],
+            separators=(",", ":"), ensure_ascii=False,
+        ).encode("utf-8")
+        assert site.run_starts == [{
+            "file_rev": RUN_FILE_REV,
+            "idempotency_key": hashlib.sha256(bound).hexdigest(),
+        }]
     finally:
         browser.close()
         site.close()
