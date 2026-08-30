@@ -37,17 +37,8 @@ STATUS_LABELS = {
     "studied": "Studied",
 }
 LESSONS_DIR = DATA_DIR / "lessons"
-# Where each lesson's installed packages live: a sibling of the bundles, linked
-# into each bundle as `node_modules` so the bundle on disk never carries them
-# (see _ensure_build_workspace).
 BUILD_WORKSPACES_DIR = DATA_DIR / "lesson-builds"
-# The one name a build workspace occupies inside the bundle: the link the
-# bundle carries and the directory it points at. Node resolution only looks
-# for this name, so naming it once keeps the link and the bundle spec's
-# reserved entry from drifting apart.
 BUILD_WORKSPACE_LINK = "node_modules"
-# Each bundle is its own local git repository (#186), initialized on the read
-# path and never served.
 GIT_DIR_NAME = ".git"
 GIT_INIT_TIMEOUT_SECONDS = 10
 # What history is for is authored work: the lesson's pages and the learner's
@@ -55,13 +46,10 @@ GIT_INIT_TIMEOUT_SECONDS = 10
 # repository's own exclude file rather than a `.gitignore` — that name belongs
 # to the agent, and a bundle that already has one must neither be overwritten
 # nor able to bypass these rules.
-#   node_modules  the link to the build workspace above
 #   *.jsonl       app-owned projections, read-only for the agent. A checkpoint
 #                 that tracked them would let a learner's `git reset --hard`
 #                 roll them back too, and `runs.jsonl` output tails exist
 #                 nowhere else — rollback must not be able to destroy them.
-#   briefs        regenerated verbatim on every terminal open, so tracking them
-#                 buys a diff per session and no history worth reading
 # Anchored, every one of them: a pattern with no slash matches that NAME at any
 # depth, and the artifact roots hold learner-authored files this app has no
 # opinion about — an `attempts/parser/runs.jsonl` the learner wrote is exactly
@@ -70,16 +58,7 @@ GIT_INIT_TIMEOUT_SECONDS = 10
 # depth, whoever created the directory — and carries no trailing slash, which
 # would match only a directory and leave the bundle's link itself untracked.
 GIT_EXCLUDE_PATH = ("info", "exclude")
-# What git refuses to work without (gitrepository-layout), and what a restore
-# can therefore be missing — see _bundle_repo_is_ready.
 GIT_REQUIRED_DIRS = ("objects", "refs")
-# Where a new repository is built before it is moved into a bundle. A sibling
-# of the bundles, for the reason the other two siblings above exist and one
-# more: `git init` and `git config` follow a link at any name they write, and
-# a bundle is writable from inside its own session while this runs outside it.
-# Building here and renaming the finished `.git` in leaves no window at all —
-# no partial repository is ever visible, and no git process ever writes to a
-# path the session could have replaced a moment earlier.
 GIT_STAGING_DIR = DATA_DIR / "lesson-git-staging"
 BUNDLE_GIT_EXCLUDE = """\
 # Written by the Learn app when it set this repository up (#186).
@@ -94,13 +73,8 @@ node_modules
 /.claude/
 /reference/
 """
-# A repository-local identity, because the account running the agent need not
-# have a `.gitconfig` and the session gets no `GIT_AUTHOR_*` in its
-# environment: without this, the first commit the brief asks for dies on
-# "unable to auto-detect email address". Deliberately not the owner's identity
-# — nothing here is authored by them, and these repositories have no remote.
 # An honest git config is a few hundred bytes; this is the ceiling on what the
-# app will read from a name a lesson session can write (see #186 review).
+# app will read from a name a lesson session can write.
 GIT_CONFIG_MAX_BYTES = 256 * 1024
 BUNDLE_GIT_IDENTITY = (
     ("user.name", "Ephemeris Learn"),
@@ -242,8 +216,7 @@ def _entry_label(entry: str) -> str:
 
 
 def _default_manifest(lesson: dict) -> dict:
-    """The v2 creation skeleton (learn-bundle-spec.md §5). The DB-minted uid
-    is echoed so the bundle is self-describing for the agent and adapters."""
+    """The v2 creation skeleton (learn-bundle-spec.md §5)."""
     return bundle_schema.default_manifest_v2(
         lesson_uid=lesson["uid"],
         slug=lesson["slug"],
@@ -257,7 +230,6 @@ def _manifest_path(slug: str) -> Path:
 
 
 def _write_manifest(path: Path, data: dict) -> None:
-    """Canonical serialization + atomic replace (§9.3; the B1 writer idiom)."""
     bundle_schema.write_manifest(path, data)
 
 
@@ -301,19 +273,18 @@ def _read_regular_no_follow(
     return _RegularRead(data, opened, closed)
 
 
-# Digest cache for the metadata poll (D2 drain L3): the client polls every
-# ~1.2s and each eligible poll would otherwise stream the whole page through
-# sha256. Keyed by the full inode identity INCLUDING ctime_ns — a writer can
-# restore mtime after replacing bytes, but any in-place write or utime call
-# moves ctime (only privileged clock games defeat it), and a rename swap
-# changes the inode, so the mtime-preserving replacement the drain probed
-# (L2) misses this cache and gets re-hashed.
+# Digest cache for the metadata poll: the client polls every ~1.2s and each
+# eligible poll would otherwise stream the whole page through sha256. Keyed by
+# the full inode identity INCLUDING ctime_ns — a writer can restore mtime after
+# replacing bytes, but any in-place write or utime call moves ctime, and a
+# rename swap changes the inode, so an mtime-preserving replacement misses
+# this cache and gets re-hashed.
 _PAGE_DIGEST_CACHE: dict[str, tuple[tuple, str]] = {}
 _PAGE_DIGEST_CACHE_MAX = 64
 _PAGE_DIGEST_CACHE_LOCK = Lock()
 
-# Supported page-size bound (D2 drain L3, D5): a page larger than this carries
-# no bridge identity — it is never hashed for `page_rev`, never snapshotted
+# Supported page-size bound: a page larger than this carries no bridge
+# identity — it is never hashed for `page_rev`, never snapshotted
 # into memory by the serving route, and record-time re-hashes of it report the
 # revision unknowable (attempts record `stale`). Display still works via the
 # streaming file response. Real lesson pages are tens of KiB; the bound is a
@@ -327,9 +298,6 @@ def _cache_page_digest(path: Path, key: tuple, digest: str) -> None:
         if _PAGE_DIGEST_CACHE_MAX <= 0:
             return
         if cache_key not in _PAGE_DIGEST_CACHE:
-            # Keep admission and eviction in one critical section. The loop
-            # also converges a cache already above the limit rather than
-            # preserving its excess with one pop followed by one insert.
             while len(_PAGE_DIGEST_CACHE) >= _PAGE_DIGEST_CACHE_MAX:
                 try:
                     _PAGE_DIGEST_CACHE.pop(next(iter(_PAGE_DIGEST_CACHE)), None)
@@ -352,13 +320,9 @@ def _digest_key(st: os.stat_result) -> tuple:
 
 def _read_page_snapshot(path: Path) -> tuple[bytes, str, os.stat_result] | None:
     """One-descriptor page snapshot: the bytes, their sha256, and the closing
-    stat all describe the SAME open (§6.3: `page_rev` covers the bytes the
-    parent loaded, so hash and token must describe one file object). A
-    mid-read rewrite bumps mtime past what the token is built from, so the
-    poller sees a version change and re-binds rather than trusting a torn
-    hash; the digest is looked up and cached only when the identity stayed
-    stable across the read. None when the name is not a regular non-symlink
-    file within the supported size bound."""
+    stat all describe the SAME open, so hash and token describe one file
+    object (§6.3). None when the name is not a regular non-symlink file
+    within the supported size bound."""
     read = _read_regular_no_follow(path, PAGE_IDENTITY_MAX_BYTES)
     if read is None:
         return None
@@ -372,8 +336,6 @@ def _read_page_snapshot(path: Path) -> tuple[bytes, str, os.stat_result] | None:
 
 
 def _mkdir_no_follow(path: Path) -> None:
-    """Create a standard bundle subdir only when nothing (including a
-    pre-planted symlink) occupies its name — never through a link (§2)."""
     if not path.is_symlink() and not path.exists():
         path.mkdir()
 
@@ -387,18 +349,11 @@ def _is_regular_no_follow(path: Path) -> bool:
 
 def _write_git_exclude(git_dir: Path) -> None:
     """Put the app-owned rules in `.git/info/exclude`, atomically and through
-    no link at all.
-
-    Both properties are load-bearing, and for the same reason: the bundle is
-    writable from inside the lesson's own session while this runs outside that
-    session, as the app. A plain `write_text` would follow whatever the name
-    points at — a session that replaced `exclude` (or `info`) with a link to a
-    file of the app user's would have this method write the app's bytes there.
-    So every component is opened `O_NOFOLLOW` from a descriptor on the one
-    directory already known to be real, and the file arrives by rename: the
-    marker never exists half-written, which is what lets the readiness gate
-    trust it, and a rename replaces a planted link rather than following it.
-    """
+    no link at all: the bundle is writable from inside the lesson's own
+    session while this runs outside it, so every component is opened
+    `O_NOFOLLOW` from a descriptor on the one directory already known to be
+    real, and the file arrives by rename, so the readiness marker never
+    exists half-written."""
     info_name, exclude_name = GIT_EXCLUDE_PATH
     git_fd = os.open(git_dir, projection.DIRECTORY_FLAGS)
     try:
@@ -417,25 +372,14 @@ def _write_git_exclude(git_dir: Path) -> None:
 def _bundle_repo_is_ready(git_dir: Path) -> bool:
     """Three stats deciding whether the setup below has anything left to do.
 
-    `objects/` and `refs/` say git still considers this a repository — it
-    refuses one that is missing either, and both are directories a repository
-    can carry EMPTY. Empty directories are not files, so they do not survive
-    an instance backup/restore round trip (`scripts/backup_db.py`: the archive
-    is a list of files), and the two empty in practice are not the same
-    repository: a never-committed bundle restores without `objects/`, while a
-    packed one restores with its packs and `packed-refs` but without `refs/`,
-    every reference having moved into a file. Either way git calls what comes
-    back "not a git repository", so both are checked.
-
-    `info/exclude` is this app's completion marker, renamed into place last:
-    reaching it means the identity and the rules are in place, so a run that
-    died halfway through a transient error is retried rather than frozen
-    forever behind the directory it managed to create. Its CONTENT is the
-    marker, not its existence — `git init` writes a template of its own at
-    that name from the first moment, so mere presence would call every
-    half-finished setup, and every repository predating this app's rules,
-    finished. The read follows no link (§2) and takes a mismatch as unready,
-    which also means a later change to the rules re-applies itself.
+    `objects/` and `refs/` are directories a repository can carry EMPTY, and
+    empty directories do not survive an instance backup/restore round trip
+    (`scripts/backup_db.py`: the archive is a list of files); git refuses a
+    repository missing either. `info/exclude` is this app's completion
+    marker, renamed into place last. Its CONTENT is the marker, not its
+    existence — `git init` writes a template of its own at that name from the
+    first moment. A mismatch reads as unready, so a later change to the rules
+    re-applies itself.
     """
     rules = BUNDLE_GIT_EXCLUDE.encode("utf-8")
     marker = _read_regular_no_follow(git_dir.joinpath(*GIT_EXCLUDE_PATH), len(rules))
@@ -450,24 +394,15 @@ def _install_bundle_repo(git_dir: Path) -> None:
     """Build a whole repository somewhere the session cannot reach, then move
     it in.
 
-    `git init` and `git config` follow a link at every name they write —
-    `config`, `HEAD`, the template files — and the bundle is writable from
-    inside the lesson's own session while this runs outside it, as the app.
-    Checking those names first would only narrow the window: the session runs
-    concurrently and can plant a link between the check and the write.
-
-    So git is never pointed at the bundle at all. The repository is built in
-    an app-private directory and arrives by `rename`, which is atomic, follows
-    no link, and cannot overwrite a non-empty directory — if something took
-    the name meanwhile, this loses and leaves it alone. A half-built
-    repository is never visible either: what appears under the bundle is a
-    finished one or nothing.
+    `git init` and `git config` follow a link at every name they write, and
+    the bundle is writable from inside the lesson's own session while this
+    runs outside it, so git is never pointed at the bundle at all. The
+    repository arrives by `rename`, which follows no link and cannot
+    overwrite a non-empty directory: what appears under the bundle is a
+    finished repository or nothing.
     """
     staged: Path | None = None
     try:
-        # Inside the guard, both of them: an occupied name, a read-only parent
-        # or a quota hiccup here is one more way this can fail, and none of
-        # them is a reason for a bundle to stop being readable.
         GIT_STAGING_DIR.mkdir(parents=True, exist_ok=True)
         staged = Path(tempfile.mkdtemp(dir=GIT_STAGING_DIR))
         work = staged / "repo"
@@ -498,23 +433,11 @@ def _repair_bundle_repo(git_dir: Path) -> None:
     """Finish a repository that exists but is not ready — without git.
 
     The one case that reaches here is a repository restored from a backup,
-    which is an archive of files and so comes back missing whichever of
-    `objects/` and `refs/` was empty. Recreating a directory is all that is
-    needed, and `mkdir` follows no link, so this asks nothing of git: running
-    `git init` over an existing repository would put the app back to writing
-    through names the session controls.
-
-    For the same reason the identity is not touched here. A restored
-    repository brings its `config` with it — a regular file, archived like any
-    other — and one this app never created is not its to configure.
-
-    What must NOT reach the repair is a `.git` that is no repository at all:
-    the name was servable and unreserved until this change, so a bundle may
-    hold an ordinary directory under it. Creating `objects/` and the marker
-    there would leave something this app calls ready and git calls "not a git
-    repository", permanently. `HEAD` is the cheap discriminator — every
-    repository has one, an authored directory does not — and its absence means
-    hands off, as it does for every other name the app did not write.
+    missing whichever of `objects/` and `refs/` was empty. `mkdir` follows no
+    link, so this asks nothing of git; running `git init` over an existing
+    repository would put the app back to writing through names the session
+    controls, and a restored `config` is not this app's to touch. A `.git`
+    with no `HEAD` is no repository but an authored directory: hands off.
     """
     if not _is_regular_no_follow(git_dir / "HEAD"):
         _log.warning("lesson bundle git repair skipped for %s: no HEAD, so "
@@ -538,9 +461,6 @@ def _repair_bundle_repo(git_dir: Path) -> None:
     finally:
         os.close(fd)
     if not _ensure_repo_identity(git_dir):
-        # No marker, so the next read comes back: a repository recorded as
-        # finished while its commits still cannot name an author is the one
-        # outcome this whole path exists to prevent.
         return
     try:
         _write_git_exclude(git_dir)
@@ -552,29 +472,18 @@ def _repair_bundle_repo(git_dir: Path) -> None:
 def _ensure_repo_identity(git_dir: Path) -> bool:
     """Give a repository the app did not build the identity a commit needs.
 
-    A repository that reaches the repair — restored from a backup, or one an
-    agent created itself in a session after an init the app could not do —
-    may carry no local `user.name`/`user.email`, and the session is handed
-    neither. Without them the checkpoint the brief asks for dies on "unable to
-    auto-detect email address", and the marker written just after would make
-    that permanent.
-
-    Whatever is already configured is kept; only a missing value is filled.
-    Git parses the file, since a config is not something to edit by hand — but
-    it parses a COPY, in the app-private staging directory, and the result is
-    renamed in. Pointing `git config` at the bundle is the one thing this
-    module will not do, for the reason `_install_bundle_repo` gives.
+    Without a local `user.name`/`user.email` the checkpoint the brief asks
+    for dies on "unable to auto-detect email address", and the marker written
+    just after would make that permanent. Whatever is configured is kept.
+    Git parses a COPY of the config in the app-private staging directory and
+    the result is renamed in through ONE descriptor on `.git`, opened before
+    the read: a path resolved twice is a directory that can be swapped in
+    between.
 
     Returns whether the repository can be called finished. A config that is
-    not a plain readable file is not a failure and not the app's to solve — a
-    session that replaced its own repository's config gets to live with it —
-    but anything that went wrong while filling one in is, because the caller
-    is about to write the marker that stops it ever looking again.
-
-    Read and rename both go through ONE descriptor on `.git`, opened before
-    either. A path resolved twice is a directory that can be swapped in
-    between: rename the whole `.git` aside, leave a link at the name, and a
-    path-based replace would land in whatever it points at.
+    not a plain readable file is not the app's to solve, but anything that
+    went wrong while filling one in is, because the caller is about to write
+    the marker that stops it ever looking again.
     """
     try:
         git_fd = os.open(git_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -606,9 +515,6 @@ def _ensure_repo_identity(git_dir: Path) -> bool:
             )
             filled = True
         if filled:
-            # Relative to the pinned `.git`, so the name replaced is the one
-            # that was read. A config the session rewrote in this same instant
-            # loses — its own repository, and the alternative is the race.
             staged_fd = os.open(staged, os.O_RDONLY | os.O_DIRECTORY)
             try:
                 os.replace(copy.name, "config",
@@ -627,21 +533,14 @@ def _ensure_repo_identity(git_dir: Path) -> bool:
 
 
 def _ensure_bundle_repo(lesson_dir: Path) -> None:
-    """Give the bundle a usable local git repository (#186).
+    """Give the bundle a usable local git repository.
 
-    Per-lesson history is what lets the learner roll a broken experiment back
-    and lets a later tutor session read `git log` instead of guessing what
-    earlier ones did. The app only guarantees the repository exists and works;
-    committing is the tutor agent's job (see the brief) — which is why setup
-    leaves behind the two things a commit from inside the session needs and
-    cannot get anywhere else: the app-owned exclude rules and a local identity.
-
-    Two shapes, because they are two different problems: creating a repository
-    where there is none, and finishing one that came back from a backup
-    incomplete. Both are best-effort — a bundle read must never fail because
-    git is missing or refused — and neither writes through a link (§2), at the
-    `.git` name or below it. A `.git` that is not a plain directory is left
-    alone entirely.
+    The app only guarantees the repository exists and works; committing is
+    the tutor agent's job, so setup leaves behind the two things a commit
+    from inside the session needs: the app-owned exclude rules and a local
+    identity. Both shapes — creating a repository and finishing one that came
+    back from a backup incomplete — are best-effort, write through no link,
+    and leave a `.git` that is not a plain directory alone.
     """
     git_dir = lesson_dir / GIT_DIR_NAME
     if git_dir.is_symlink():
@@ -679,15 +578,11 @@ def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:
                 "manifest-unreadable", "manifest vanished after creation"
             )
     if read.version == bundle_schema.SCHEMA_V2 and not read.rejected:
-        # the default artifact root exists for learner work; v1 bundles stay
-        # byte-untouched (the 14 migrated-later real bundles are v1)
         _mkdir_no_follow(lesson_dir / bundle_schema.DEFAULT_ARTIFACT_ROOT)
 
     # Non-destructive bridge from the earlier flat-file prototype:
     # data/lessons/<slug>.html -> data/lessons/<slug>/index.html. Neither
-    # side may be (or pass through) a symlink (§2): the destination is never
-    # written through a planted link, and the source's regular-file decision
-    # is bound to the descriptor the bytes are read from (no stat/open gap).
+    # side may be (or pass through) a symlink (§2).
     index = lesson_dir / DEFAULT_ENTRY
     if not index.exists() and not index.is_symlink():
         legacy = _read_regular_no_follow(
@@ -700,10 +595,9 @@ def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:
 
 
 def _manifest_version(lesson: dict) -> str:
-    """Manifest mtime token (lstat — never follows a planted link). Folded
-    into placeholder versions so the Learn live-reload poller sees
-    placeholder-to-placeholder transitions (missing ↔ rejected ↔ fixed),
-    which all used to report the same version \"0\"."""
+    """Manifest mtime token (lstat — never follows a planted link), folded
+    into placeholder versions so the live-reload poller sees
+    placeholder-to-placeholder transitions (missing ↔ rejected ↔ fixed)."""
     try:
         return str(os.lstat(_manifest_path(lesson["slug"])).st_mtime_ns)
     except OSError:
@@ -721,13 +615,9 @@ def _finding_views(read: bundle_schema.ManifestRead) -> list[dict]:
 def _bridge_block_views(
     read: bundle_schema.ManifestRead, page_id: str
 ) -> list[dict]:
-    """Block identities for one armed page, with health folded into Run.
-
-    The manifest reader already applies the registry and suffix gates.  Health
-    is the final process-local condition, and is consulted only when at least
-    one block could otherwise run so ordinary preview reads do not start the
-    runner probe unnecessarily.
-    """
+    """Block identities for one armed page, with runner health folded into
+    Run. Health is consulted only when at least one block could otherwise
+    run, so ordinary preview reads do not start the runner probe."""
     blocks = [block for block in read.blocks if block["page"] == page_id]
     healthy = False
     if any(block["run_enabled"] for block in blocks):
@@ -736,8 +626,6 @@ def _bridge_block_views(
 
             healthy = runner_health().available
         except Exception:
-            # Metadata is fail-closed: a broken or unavailable health probe
-            # removes Run authority instead of breaking the preview surface.
             healthy = False
     return [
         {"id": block["id"], "run": bool(block["run_enabled"] and healthy)}
@@ -747,11 +635,9 @@ def _bridge_block_views(
 
 def _resolve_entry(lesson: dict, read: bundle_schema.ManifestRead, entry: str | None) -> str:
     """One owner of the page-selection rule. v2 accepts only declared
-    `pages[].path`, compared exactly (§4.1/§4.2) — a normalizable variant
-    (`./index.html`, doubled slashes) is not silently repaired; it falls back
-    to the manifest entry with a visible `invalid-entry` finding, like any
-    other stale/undeclared selection. v1 keeps its historical tolerance of
-    undeclared (but well-formed) refs, where malformed input raises."""
+    `pages[].path`, compared exactly (§4.1/§4.2); anything else falls back to
+    the manifest entry with a visible `invalid-entry` finding. v1 keeps its
+    historical tolerance of undeclared well-formed refs; malformed input raises."""
     candidate = entry or lesson.get("current_entry")
     if read.version == bundle_schema.SCHEMA_V2:
         if candidate:
@@ -763,23 +649,13 @@ def _resolve_entry(lesson: dict, read: bundle_schema.ManifestRead, entry: str | 
 
 
 def selected_page_ref(lesson: dict, entry: str) -> str:
-    """The spelling `entry` has to resolve to for the bundle to have accepted it.
-
-    `_resolve_entry` falls back to the manifest entry for a selection it will
-    not take, which is right for a preview and wrong for a caller that needs to
-    know whether it got the page it asked for. Comparing against the resolved
-    entry answers that — but only if the comparison uses the same spelling the
-    resolver would: v2 matches declared pages exactly (§4.1), while v1 keeps
-    its historical normalization, so `./index.html` is a fallback under one
-    version and a synonym under the other. Raises `LessonError` on a ref no
-    version would take.
-    """
+    """The spelling `entry` has to resolve to for the bundle to have accepted
+    it: v2 matches declared pages exactly (§4.1) while v1 normalizes, so
+    `./index.html` is a fallback under one version and a synonym under the
+    other. Raises `LessonError` on a ref no version would take."""
     read = _ensure_bundle_manifest(lesson)
     if read.version != bundle_schema.SCHEMA_V2:
         return _clean_html_ref(entry)
-    # Raised for its refusal, not its result: a malformed ref is a bad request
-    # under either version, and only the well-formed ones reach the exact
-    # comparison v2 requires.
     _clean_bundle_ref(entry)
     return entry
 
@@ -792,8 +668,6 @@ def _file_info(
     bridge_identity: bool = False,
 ) -> dict:
     if read.rejected:
-        # No page is renderable; the preview shows an explicit placeholder
-        # and the metadata carries the findings (§9.1).
         return {
             "entry": None,
             "label": "Manifest",
@@ -804,9 +678,6 @@ def _file_info(
             "size": 0,
             "outcome": read.outcome,
             "findings": _finding_views(read),
-            # a rejected read has no trusted runtime profile: the accessor
-            # forces legacy-display even when the raw v2 manifest declared
-            # interactive before a later finding rejected it; bridge off (§5)
             "profile": read.effective_profile,
             "bridge": read.bridge_eligible,
             "bridge_page": None,
@@ -814,9 +685,8 @@ def _file_info(
     entry = _resolve_entry(lesson, read, entry)
     findings = _finding_views(read)
     outcome = read.outcome
-    # §2 symlink policy: a path that resolves through a symlink is missing —
-    # checked before any resolve() so the link is never followed. The finding
-    # degrades the reported outcome too (§9.2 severity aggregation).
+    # §2: a path that resolves through a symlink is missing — checked before
+    # any resolve() so the link is never followed.
     if bundle_schema.path_has_symlink(_lesson_dir(lesson["slug"]), entry):
         findings.append({
             "code": "symlinked-path",
@@ -830,26 +700,18 @@ def _file_info(
     else:
         path = _entry_path(lesson["slug"], entry)
         exists = path.is_file()
-    # Bridge page identity (§6.3, D2): the parent runtime — never the iframe
-    # document — supplies lesson_uid/page_id/page_rev. Granted per page: the
-    # manifest must be bridge-eligible (§5) AND the resolved entry must be a
-    # declared v2 page whose regular file is readable. `lesson_uid` is the DB
-    # row's uid (the minting authority, §3/§12) — the manifest only echoes it,
-    # and an identity-mismatch finding is already visible in the metadata.
-    # Computed on request only (the metadata poll), not for every page listing.
+    # Bridge page identity (§6.3): granted per page, when the manifest is
+    # bridge-eligible and the resolved entry is a declared v2 page whose
+    # regular file is readable. Computed on request only, not per listing.
     stat = None
     bridge_page = None
     digest = None
     if exists and bridge_identity and read.bridge_eligible and lesson.get("uid"):
         page_id = next((p["id"] for p in read.pages if p["path"] == entry), None)
         try:
-            # size pre-check only, and no-follow (PR-60 rounds 3-4): a page
-            # vanishing here falls through to the hash path, whose
-            # descriptor-bound open reports it missing instead of a 500 —
-            # and a symlink raced in after the path_has_symlink() check
-            # must not have its TARGET sized (§2): lstat + S_ISREG sends
-            # anything non-regular to the same O_NOFOLLOW open, which
-            # fails closed.
+            # lstat + S_ISREG: a symlink raced in after the path_has_symlink()
+            # check must not have its TARGET sized, and anything non-regular
+            # goes to the O_NOFOLLOW open below, which fails closed.
             pre_stat = os.lstat(path) if page_id else None
         except OSError:
             pre_stat = None
@@ -858,9 +720,6 @@ def _file_info(
             and stat_module.S_ISREG(pre_stat.st_mode)
             and pre_stat.st_size > PAGE_IDENTITY_MAX_BYTES
         ):
-            # Supported-size bound (D5): the page renders (streaming route)
-            # but carries no bridge identity — no page_rev exists for it, so
-            # no attempt can bind to it. Visible, never silent.
             findings.append({
                 "code": "page-too-large",
                 "severity": bundle_schema.DEGRADED,
@@ -873,11 +732,9 @@ def _file_info(
         else:
             snapshot = _read_page_snapshot(path) if page_id else None
             if snapshot is None:
-                # Not a regular file after all (or undeclared): no identity,
-                # and nothing renderable to hash — report the page as missing
-                # rather than serving bytes the token/hash pair does not
-                # describe. (An oversized file racing past the pre-check above
-                # lands here too: the hash bound is authoritative.)
+                # No snapshot (not a regular file, or oversized past the
+                # pre-check): report the page missing rather than serve bytes
+                # the token/hash pair does not describe.
                 exists = False
             else:
                 _, digest, stat = snapshot
@@ -885,15 +742,9 @@ def _file_info(
                     "lesson_uid": lesson["uid"],
                     "page_id": page_id,
                     "page_rev": f"sha256:{digest}",
-                    # D5: the questions declared for THIS page — the parent
-                    # runtime refuses attempt operations naming any other id
-                    # before spending a server round-trip (the server's
-                    # record-time §4.3 check stays authoritative).
                     "questions": [
                         q["id"] for q in read.questions if q["page"] == page_id
                     ],
-                    # F1: file paths stay server-side.  The parent sees only
-                    # block identity and the fail-closed Run affordance.
                     "blocks": _bridge_block_views(read, page_id),
                 }
     elif exists:
@@ -907,17 +758,10 @@ def _file_info(
         # server's absolute filesystem layout (home dir, username) to clients.
         "rel_path": f"{lesson['slug']}/{entry}",
         "exists": exists,
-        # The reload token folds the effective profile in (drain C1): a
-        # manifest-only profile flip must reload the open page so the
-        # displayed document was actually served under the CSP the metadata
-        # now advertises — D2 grants the bridge against this binding. For a
-        # bridge-carrying page the token is additionally content-bound
-        # (drain D2 L2): an mtime-preserving byte replacement still moves it,
-        # so the client's version-equality check tracks the bytes, not a
-        # restorable timestamp. (A swap-and-restore BETWEEN two polls remains
-        # invisible in the token — inherent TOCTOU; the next poll's digest
-        # self-heals, and D4's server-side page_rev check stays the
-        # authoritative stale-attempt handler.)
+        # The reload token folds the effective profile in, so a manifest-only
+        # profile flip reloads the open page under the CSP the metadata now
+        # advertises, and for a bridge page the content digest, so an
+        # mtime-preserving byte replacement still moves it.
         "version": (
             (f"{stat.st_mtime_ns}:{read.effective_profile}"
              + (f":{digest[:16]}" if digest else ""))
@@ -926,34 +770,25 @@ def _file_info(
         "size": stat.st_size if stat else 0,
         "outcome": outcome,
         "findings": findings,
-        # Effective runtime profile + bridge eligibility (§5, D1). The serving
-        # routes pick the CSP by profile; D2 reads `bridge` before offering
-        # the postMessage port. Both are manifest-level facts — a degraded
-        # entry (symlinked/stale selection) does not flip them here.
+        # Manifest-level facts: a degraded entry (symlinked/stale selection)
+        # does not flip them here.
         "profile": read.effective_profile,
         "bridge": read.bridge_eligible,
-        # Per-page grant (D2): non-None only when this specific page may be
-        # handed a bridge port — and only on identity-requesting reads.
         "bridge_page": bridge_page,
     }
 
 
 def read_bundle(lesson: dict) -> bundle_schema.ManifestRead:
-    """Public record-time bundle read for the attempt backend (D4): the same
-    dual-read every other consumer uses — standard dirs ensured, skeleton
-    created only when the manifest is genuinely missing, visible rejects."""
+    """Public record-time bundle read for the attempt backend: the same
+    dual-read every other consumer uses."""
     return _ensure_bundle_manifest(lesson)
 
 
 def read_bundle_readonly(lesson: dict) -> bundle_schema.ManifestRead:
-    """Pure record-time read for phase-F APIs.
-
-    Unlike :func:`read_bundle`, this entry point never creates the lessons
-    root, bundle directory, standard subdirectories, a manifest skeleton, an
-    artifact root, or a legacy flat-file copy.  Missing state is an explicit
-    rejected read so every F caller can fail visibly without turning a GET
-    into a write.
-    """
+    """Pure record-time read: unlike :func:`read_bundle`, never creates the
+    lessons root, bundle directory, standard subdirectories, a manifest
+    skeleton, an artifact root, or a legacy flat-file copy. Missing state is
+    an explicit rejected read, so a GET never turns into a write."""
     try:
         lesson_dir = _lesson_dir(lesson["slug"])
         if not lesson_dir.exists():
@@ -983,12 +818,9 @@ def record_panel_db_state(
 ) -> tuple[dict, dict, dict]:
     """Read every SQLite-backed Record-panel input from one snapshot.
 
-    FastAPI can run a GET and an assessment POST concurrently even with one
-    worker. A deferred read transaction establishes its snapshot on the
-    attempt query, then keeps the assessment fold/hydration/counts and focus
-    total on that same committed version. Reuse a caller transaction when one
-    exists; otherwise roll back our read-only transaction on exit.
-    """
+    A GET and an assessment POST can run concurrently even with one worker,
+    so a deferred read transaction keeps every read on one committed version.
+    A caller's transaction is reused; otherwise ours is rolled back on exit."""
     from . import assessments, attempts, focus
 
     own_snapshot = not conn.in_transaction
@@ -1025,8 +857,7 @@ def hash_bundle_page(lesson: dict, ref: str) -> str | None:
 
 def lesson_file_info(lesson: dict, entry: str | None = None) -> dict:
     """Runtime HTML artifact metadata for one bundle entry, including the
-    bridge page identity when the page qualifies (the preview-meta read is
-    what the D2 parent runtime binds its handshake to)."""
+    bridge page identity when the page qualifies."""
     read = _ensure_bundle_manifest(lesson)
     return _file_info(lesson, read, entry, bridge_identity=True)
 
@@ -1035,19 +866,13 @@ def bundle_resource_info(lesson: dict, ref: str) -> dict:
     """Runtime metadata for a bundle-relative file, including assets."""
     read = _ensure_bundle_manifest(lesson)
     ref = _clean_bundle_ref(ref)
-    # This route serves the preview surface only. For v2 that is a positive
-    # allowlist — declared pages plus the `assets/` area — minus learner work
-    # under artifact roots (§7: that surface belongs to dedicated
-    # attempt/editor APIs). v1 keeps its historical tolerance (undeclared
-    # pages may be selected) behind a denylist of the same exclusions. Both
-    # versions: nothing under a rejected manifest (§9.2 — no page render),
-    # no reserved names, no §2 symlinked paths (checked before any resolve()
-    # so the link is never followed).
-    # The preview surface always stays servable: a declared page — and for
-    # v2 the standard `assets/` area its pages reference — wins over an
-    # overlapping artifact root. Otherwise a manifest claiming `related` or
-    # `assets` as a root would 404 content the read model reports as
-    # renderable, with no finding.
+    # This route serves the preview surface only: for v2 the declared pages
+    # plus the `assets/` area, minus learner work under artifact roots (§7);
+    # v1 keeps its historical tolerance behind a denylist of the same
+    # exclusions. Nothing under a rejected manifest, no reserved names, no
+    # symlinked paths. A declared page (and for v2 `assets/`) wins over an
+    # overlapping artifact root, so a manifest claiming `assets` as a root
+    # cannot 404 content the read model reports as renderable.
     declared_page = ref in read.page_paths()
     if read.version == bundle_schema.SCHEMA_V2:
         preview_surface = declared_page or ref.startswith("assets/")
@@ -1056,9 +881,6 @@ def bundle_resource_info(lesson: dict, ref: str) -> dict:
             ref == root or ref.startswith(root + "/") for root in read.artifact_roots
         )
     else:
-        # v1 predates artifact roots entirely; its historical surface (any
-        # non-reserved file, incl. an undeclared selected page) stays
-        # servable — only the reject/reserved/symlink blocks apply.
         allowed = ref.split("/", 1)[0] not in bundle_schema.RESERVED_NAMES
         in_artifact_root = False
     blocked = (
@@ -1079,18 +901,10 @@ def bundle_resource_info(lesson: dict, ref: str) -> dict:
     suffix = path.suffix.lower()
     html = media_type in ("text/html", "application/xhtml+xml") or suffix in (".html", ".htm")
     active = html or media_type == "image/svg+xml" or suffix == ".svg"
-    # Single served-content snapshot (drain D2 L2): a declared v2 page is
-    # served from bytes read on ONE descriptor, and when the page qualifies
-    # for bridge identity the version token carries the digest of exactly
-    # those bytes — what the learner receives and what `page_rev` describes
-    # can no longer be split by a replacement between two opens. The token
-    # formula is the SAME one `_file_info` renders and the poll answers
-    # (mtime:profile[:digest16] — PR-60 round 2), for every declared v2
-    # page including legacy-display and other non-bridge profiles, so the
-    # route's `?v` comparison never 409s a page the metadata advertises.
-    # Oversized or vanished-under-us pages return no snapshot (the
-    # `PAGE_IDENTITY_MAX_BYTES` bound); their token then carries no digest,
-    # which is exactly what the metadata reports for them.
+    # A declared v2 page is served from bytes read on ONE descriptor, and the
+    # version token carries the digest of exactly those bytes, in the same
+    # mtime:profile[:digest16] formula `_file_info` renders, so the route's
+    # `?v` comparison never 409s a page the metadata advertises.
     content = None
     version = str(stat.st_mtime_ns) if stat else "0"
     versioned_page = (
@@ -1113,16 +927,10 @@ def bundle_resource_info(lesson: dict, ref: str) -> dict:
         "media_type": media_type,
         "html": html,
         "active": active,
-        # CSP selector for the serving route (§5, D1) — v1 and every
-        # fail-closed read report legacy-display.
         "profile": read.effective_profile,
-        # Snapshot bytes when this response must be byte-bound (None = the
-        # route streams the file as before).
         "content": content,
         # True for a declared v2 page: the serving route enforces the `?v`
-        # binding on this surface even when no snapshot could be taken
-        # (fail closed — PR-60 round 2), so a raced replacement can never
-        # slip through the streaming fallback.
+        # binding even when no snapshot could be taken (fail closed).
         "versioned_page": versioned_page,
     }
 
@@ -1155,26 +963,16 @@ def _bundle_info(
         current = _resolve_entry(lesson, read, entry)
     except LessonError:
         current = read.entry
-    # §4.2: a v2 selection that fell back is reported, not silently repaired.
-    # `stale_selection` carries the rejected candidate so callers can keep it
-    # observable (metadata polls, skipped persistence) instead of letting the
-    # fallback overwrite the evidence. For non-rejected v2 the manifest entry
-    # is always declared, so `current != candidate` holds exactly when
-    # `_resolve_entry` fell back with an invalid-entry finding.
+    # §4.2: a v2 selection that fell back is reported, not silently repaired;
+    # `stale_selection` carries the rejected candidate.
     stale_selection = (
         candidate
         if read.version == bundle_schema.SCHEMA_V2 and candidate and candidate != current
         else None
     )
-    # The top-level outcome/findings snapshot is the CURRENT file's — a
-    # superset of the manifest read's, taken after selection resolution and
-    # the entry's own §2/§9.2 checks. Both a stale selection's invalid-entry
-    # finding and a symlinked current page's degradation stay visible at the
-    # top of the agent-facing bundle, not only in the nested file info.
-    # The current entry takes the identity path so the version token the
-    # Learn page renders (data-version) is the same content-bound token the
-    # metadata poll will answer with — otherwise every bridge page would
-    # "mismatch" on its first poll. The per-page listing below stays cheap.
+    # The current entry takes the identity path so the version token the Learn
+    # page renders is the same content-bound token the metadata poll answers
+    # with; the per-page listing below stays cheap.
     file = _file_info(lesson, read, current, bridge_identity=True)
     info = {
         **base,
@@ -1328,27 +1126,18 @@ TUTOR_PROMPT = "Read my record and review my answers."
 
 
 def tutor_launch_command() -> str | None:
-    """The command the "Review my answers" button types, or None (PR #149).
-
-    Which agent CLI is installed is a fact about this machine, not something a
-    template may assume: hard-coding `claude` on a codex-only install promises
-    a one-click review and delivers `command not found`. So the button is
-    rendered from what is on the agent shell's PATH — the same probe the
-    generated STATE reports Go with — and when nothing is there it is not
-    rendered at all. An unkeepable promise is worse than no button.
-    """
+    """The command the "Review my answers" button types, or None when no
+    tutor CLI is on the agent shell's PATH: the button is rendered from what
+    is installed rather than promising a `claude` that is not there."""
     for program, template in TUTOR_CLIS:
         if _on_agent_path(program):
             return template.format(prompt=TUTOR_PROMPT)
     return None
 
 
-# Per-excerpt byte bound for STATE's learner-text lines. The upstream cut
-# (STATE_QUESTION_CHARS) is char-based, and json.dumps sextuples non-ASCII
-# via \uXXXX — 12 CJK questions alone would outgrow _STATE_MAX_BYTES and the
-# tail cap would eat the very section the brief says to answer first (#197
-# round 3). Bounding the DUMPED form keeps the whole open-question section
-# inside the budget: 12 × (700 + line overhead) stays far under 16 KiB.
+# Per-excerpt byte bound for STATE's learner-text lines, on the DUMPED form:
+# json.dumps sextuples non-ASCII via \uXXXX, so a char-based cut alone would
+# let a dozen CJK questions outgrow _STATE_MAX_BYTES.
 _STATE_LINE_MAX_BYTES = 700
 
 
@@ -1372,13 +1161,9 @@ def _render_lesson_state(
     """Serialize the current lesson record for the regenerated agent brief."""
     from . import attempts as attempts_service
 
-    # What the learner asked and nobody has answered yet (#136) comes from the
-    # same committed version as the rest of the panel state — the debt and the
-    # verdicts that clear it cannot be read from two. Derived from the RECORDED
-    # kind rather than from the manifest, so retiring a control cannot retire
-    # the debt, and counted per ATTEMPT rather than per question: one control
-    # is asked through repeatedly, and a reply to the newest question must not
-    # close the ones before it (PR #149).
+    # Open questions come from the same committed version as the rest of the
+    # panel state, derived from the RECORDED kind so retiring a control cannot
+    # retire the debt, and counted per ATTEMPT rather than per question.
     own_snapshot = not conn.in_transaction
     if own_snapshot:
         conn.execute("BEGIN")
@@ -1485,9 +1270,6 @@ def _render_lesson_state(
         review = reviewed(attempt)
         verdict = review["level"] if review else "none"
         if attempts_service.row_is_question(attempt, question["kind"]):
-            # This control asks nothing — the learner writes into it. So the
-            # two facts worth serializing are reversed: whether they used it,
-            # and whether YOU have replied.
             lines.append(
                 f"  - `{question['id']}` (the learner asks YOU): "
                 f"{'asked' if attempt else 'nothing asked'}; "
@@ -1530,11 +1312,8 @@ _REF_PACKAGES = _brief_text("packages.md")
 _REF_MANIFEST = _brief_text("manifest.md")
 
 
-# The reference companions written into every bundle beside the brief —
-# progressive disclosure for the always-on core above. Regenerated on every
-# terminal open through the same replace-don't-follow writer as the briefs;
-# constant templates, like `.claude/settings.json` (#84): no lesson data is
-# interpolated into a file an agent harness may read as instructions.
+# The reference companions written into every bundle beside the brief,
+# regenerated on every terminal open; constant templates, no lesson data.
 _REFERENCE_FILES: dict[str, str] = {
     "record.md": _REF_RECORD,
     "bridge.md": _REF_BRIDGE,
@@ -1543,9 +1322,8 @@ _REFERENCE_FILES: dict[str, str] = {
 }
 
 
-# Claude Code loads CLAUDE.md (following @-includes); Codex and most other agent
-# CLIs read AGENTS.md directly. One brief, two entry points — same pattern as the
-# app repo's own root CLAUDE.md.
+# Claude Code loads CLAUDE.md (following @-includes); Codex and most other
+# agent CLIs read AGENTS.md directly. One brief, two entry points.
 _CLAUDE_TEMPLATE = """\
 @AGENTS.md
 
@@ -1556,12 +1334,9 @@ _CLAUDE_TEMPLATE = """\
 
 
 # Claude Code resolves `.claude/settings.json` from the directory the session
-# starts in when that directory sits outside any repository — which is exactly
-# where a bundle lives (the data dir is outside the checkout). Scoping the
-# style to the bundle keeps lesson-authoring sessions elsewhere on Default.
-# The file is a constant: no lesson metadata is interpolated into a file an
-# agent harness reads as configuration (#84, same rule as the constant brief).
-# Strict JSON, no comment — Claude Code rejects a malformed settings file.
+# starts in when that directory sits outside any repository, as a bundle does.
+# A constant: no lesson metadata is interpolated into a file an agent harness
+# reads as configuration. Strict JSON, no comment.
 _SETTINGS_TEMPLATE = """\
 {
   "outputStyle": "Learning"
@@ -1573,11 +1348,8 @@ _SETTINGS_BYTES = _SETTINGS_TEMPLATE.encode("utf-8")
 
 def _bundle_dir_is_safe(lesson_dir: Path) -> bool:
     """Refuse a lesson dir reached through a symlink, so a pre-planted link at
-    data/lessons/<slug> can't redirect the manifest/AGENTS.md write or the shell
-    cwd outside the bundle tree. A not-yet-created dir is fine (it'll be made real);
-    an existing one must be a real directory that is a direct child of the resolved
-    lessons root. Best-effort against a hostile/imported bundle, not a same-user
-    TOCTOU race (that user already owns the process)."""
+    data/lessons/<slug> can't redirect the manifest/AGENTS.md write or the
+    shell cwd outside the bundle tree. A not-yet-created dir is fine."""
     if lesson_dir.is_symlink():
         return False  # incl. a dangling link: exists() follows and says False
     if not lesson_dir.exists():
@@ -1591,10 +1363,8 @@ def _bundle_dir_is_safe(lesson_dir: Path) -> bool:
 
 
 def _write_brief(path: Path, text: str) -> None:
-    """Atomically replace a generated agent-facing file (AGENTS.md, CLAUDE.md,
-    `.claude/settings.json`, the `reference/` companions) at mode 0600: a
-    pre-planted link or special file on the name is replaced, never followed
-    or opened."""
+    """Atomically replace a generated agent-facing file at mode 0600: a
+    pre-planted link or special file on the name is replaced, never followed."""
     projection.replace_file(path, text.encode("utf-8"), prefix=".brief-")
 
 
@@ -1602,18 +1372,10 @@ def _preserve_foreign(path: Path, expected: bytes | None = None) -> None:
     """Move whatever sits at `path` and did not come from this writer aside,
     keeping its bytes under `<name>.collision-<hex>`.
 
-    Spec §2 reserves `.claude`, but a bundle authored before that reservation
-    could hold an ordinary file there under the older contract, and
-    regenerating over it must not destroy it. Same rule and same aside name as
-    the assessment projection uses for its own reserved name.
-
-    A node that is not an ordinary single-link file is moved aside unread, so a
-    planted link or special file is neither followed nor opened. An ordinary
-    file matching `expected` is left alone — that is this writer's own output,
-    which :func:`_write_brief` then republishes in place rather than piling up
-    an aside copy on every terminal open. The comparison reads only a file
-    whose size already equals `expected`. `expected=None` matches nothing,
-    which is what the directory name wants.
+    A node that is not an ordinary single-link file is moved aside unread. An
+    ordinary file matching `expected` is this writer's own output and is left
+    alone, so a reopen does not pile up aside copies; `expected=None` matches
+    nothing, which is what the directory names want.
     """
     try:
         st = os.lstat(path)
@@ -1629,10 +1391,6 @@ def _preserve_foreign(path: Path, expected: bytes | None = None) -> None:
         try:
             ours = path.read_bytes() == expected
         except OSError:
-            # Unreadable is not "ours". Falling through moves it aside, which
-            # the bundle directory permits without opening the file — refusing
-            # the whole workspace over one unreadable generated file would cost
-            # the lesson its terminal for nothing.
             ours = False
     if ours:
         return
@@ -1640,39 +1398,23 @@ def _preserve_foreign(path: Path, expected: bytes | None = None) -> None:
 
 
 def _ensure_settings_dir(lesson_dir: Path) -> Path:
-    """Return the bundle's `.claude/` directory, creating it if needed.
-
-    Same posture as :func:`_write_brief` one level up: a pre-planted link or
-    special file on the name is moved aside rather than followed, so a link at
-    `<bundle>/.claude` cannot redirect the settings write outside the bundle.
-    A real directory already there is kept — the app owns only `settings.json`
-    inside it, never the directory's other contents.
-    """
+    """Return the bundle's `.claude/` directory, creating it if needed. A
+    link or special file on the name is moved aside rather than followed; a
+    real directory is kept, since the app owns only `settings.json` in it."""
     path = lesson_dir / CLAUDE_DIR_NAME
     if path.is_symlink() or (path.exists() and not path.is_dir()):
         _preserve_foreign(path)  # incl. a dangling link: exists() follows, says False
     try:
         os.mkdir(path, 0o700)
     except FileExistsError:
-        # Something took the name between the check and the create. Refuse
-        # rather than write through it; the caller turns this into "no
-        # workspace", which is the safe answer for a bundle under mutation.
         if path.is_symlink() or not path.is_dir():
             raise NotADirectoryError(f"{CLAUDE_DIR_NAME} is not a directory")
     return path
 
 
 def _ensure_reference_dir(lesson_dir: Path) -> Path:
-    """Return the bundle's `reference/` directory, creating it if needed.
-
-    Same posture as :func:`_ensure_settings_dir`: a pre-planted link or
-    special file on the name is moved aside rather than followed, so a link
-    at `<bundle>/reference` cannot redirect the companion writes outside the
-    bundle. A real directory already there is kept — the app owns only the
-    :data:`_REFERENCE_FILES` names inside it, never the directory's other
-    contents (spec §2 reserves the name, so nothing served or declared may
-    claim it either way).
-    """
+    """Return the bundle's `reference/` directory, creating it if needed;
+    same posture as :func:`_ensure_settings_dir`."""
     path = lesson_dir / REFERENCE_DIR_NAME
     if path.is_symlink() or (path.exists() and not path.is_dir()):
         _preserve_foreign(path)  # incl. a dangling link: exists() follows, says False
@@ -1685,13 +1427,8 @@ def _ensure_reference_dir(lesson_dir: Path) -> Path:
 
 
 def _write_reference_files(lesson_dir: Path) -> None:
-    """Regenerate the on-demand reference companions beside the brief.
-
-    Same contract as the briefs: atomic replace, destination links never
-    followed, and a foreign file holding one of our names is moved aside
-    with its bytes kept. Our own previous output is recognized and simply
-    republished, so a reopen does not pile up collision copies.
-    """
+    """Regenerate the reference companions beside the brief, under the same
+    replace-don't-follow contract as the briefs."""
     reference_dir = _ensure_reference_dir(lesson_dir)
     for name, text in _REFERENCE_FILES.items():
         path = reference_dir / name
@@ -1722,13 +1459,9 @@ _SOURCE_KEEP_NO = """\
 
 
 def _source_brief(template: str, source_dir: Path | None) -> str:
-    """Fill the brief's source-material slots for the bundle as it stands.
-
-    A brief that advertises `source/` where prep could not create one sends
-    the tutor at a plain file (every save fails) or through a link (every
-    save lands somewhere else). The instructions therefore follow the
-    directory, not the intention.
-    """
+    """Fill the brief's source-material slots for the bundle as it stands:
+    the instructions follow the directory, not the intention, so the tutor is
+    never sent to a `source/` that prep could not create."""
     made = source_dir is not None
     return (
         template
@@ -1760,37 +1493,21 @@ def _cap_state(state: str) -> str:
 
 
 def _render_agents_brief(source_dir: Path | None, state: str) -> str:
-    """The one brief a session gets: source slots filled, STATE injected.
-
-    STATE lands in the template's `%STATE%` slot near the top rather than
-    being appended at the end — agent harnesses cap how much project brief
-    they load (Codex reads the first `project_doc_max_bytes` = 32 KiB by
-    default and silently drops the rest, #195), and the tail is the wrong
-    place for the one part that changes every session. STATE itself is
-    capped to half that budget so the fixed sections after it load whole
-    no matter how the lesson grows. The template scan happens before the
-    insertion, so token-shaped learner data inside STATE is never itself
-    substituted.
-    """
+    """The one brief a session gets: source slots filled, STATE injected near
+    the top, because agent harnesses cap how much project brief they load
+    (Codex reads the first 32 KiB by default) and STATE is the one part that
+    changes every session. The template scan happens before the insertion,
+    so token-shaped learner data inside STATE is never itself substituted."""
     return _source_brief(_AGENTS_TEMPLATE, source_dir).replace(
         "%STATE%", _cap_state(state), 1
     )
 
 
 def _ensure_source_dir(lesson_dir: Path) -> Path | None:
-    """Return the bundle's `source/` directory, creating it if it is free.
-
-    Where fetched source material lands, so that the raw input a lesson was
-    built from is a file on disk with a provenance record beside it rather
-    than a claim in a transcript.
-
-    Unlike the brief paths and `.claude`, the app writes nothing here — the
-    tutor does — so a name already taken is left exactly as it is rather than
-    renamed aside: relocating it could only break a bundle that legitimately
-    put something there before the name was reserved. A link is not followed
-    for the same reason it is not moved: the directory is simply not offered,
-    and the tutor works without one.
-    """
+    """Return the bundle's `source/` directory, creating it if the name is
+    free. The app writes nothing here — the tutor does — so a name already
+    taken is left as it is rather than moved aside, and a link is not
+    followed: the directory is simply not offered."""
     path = lesson_dir / SOURCE_DIR_NAME
     if path.is_symlink():
         return None
@@ -1804,35 +1521,18 @@ def _ensure_source_dir(lesson_dir: Path) -> Path | None:
 def _ensure_build_workspace(slug: str, lesson_dir: Path) -> Path:
     """Return this lesson's persistent build workspace, creating it if needed.
 
-    What lives here is what the agent installs — the packages a lesson page is
-    built from. `<bundle>/node_modules` is a symlink to the workspace's
-    `node_modules`, so the agent and the bundler work in an ordinary project
-    layout while the bundle on disk never carries a byte of it.
+    `<bundle>/node_modules` is a symlink to the workspace's `node_modules`, so
+    the agent and the bundler work in an ordinary project layout while the
+    bundle on disk never carries a byte of it. On the bundle side anything
+    that is not this link is moved aside, a populated directory too: a link
+    placed over a directory that already held something would hide it from
+    the agent while leaving it on disk. An OSError here becomes "no
+    workspace", so the caller refuses to open a shell rather than one whose
+    installs land in the bundle.
 
-    Kept out of the bundle because a bundle is served, walked by the manifest
-    reader, and writable from inside its own session — none of which packages
-    want. Same posture as :func:`_ensure_settings_dir` on each name — a link or
-    special file is moved aside rather than followed — and the same failure
-    contract: an OSError here becomes "no workspace", so the caller refuses to
-    open a shell rather than opening one whose installs land in the bundle.
-
-    This does NOT isolate one lesson's packages from another's. A package
-    manager that hardlinks out of one shared cache hands every lesson the same
-    inode, so an edit through any copy reaches all of them wherever
-    `node_modules` sits (measured: `>>` into one, no chmod, and the next
-    install elsewhere receives the tampered file). Whatever writable cache the
-    build step needs arrives with that step, which can force a copying backend
-    on its own command line.
-
-    `node_modules` is reserved in §2 of the bundle spec for the same reason
-    `.claude` is: the app owns the name, so no page, block file or artifact
-    root may claim it and the preview surface will not serve through it. On
-    the bundle side anything that is not this link is moved aside — a
-    *populated* directory too: `node_modules` was an ordinary authorable name
-    before this reservation, and a link placed over a directory that already
-    held something would hide it from the agent while leaving it on disk. An
-    empty directory is simply replaced. On the workspace side a populated
-    directory is exactly what is wanted — it is the last install.
+    This does NOT isolate one lesson's packages from another's: a package
+    manager that hardlinks out of one shared cache hands every lesson the
+    same inode.
     """
     if not _SLUG_RE.match(slug or ""):
         raise LessonError("invalid lesson slug")
@@ -1842,8 +1542,6 @@ def _ensure_build_workspace(slug: str, lesson_dir: Path) -> Path:
     # against the process cwd a relative data directory was spelled from.
     target = (workspace / BUILD_WORKSPACE_LINK).absolute()
     for path in (workspace, target):
-        # exists() follows links, so a dangling one reads as absent here; the
-        # is_symlink() term is what catches it.
         if path.is_symlink() or (path.exists() and not path.is_dir()):
             _preserve_foreign(path)
         try:
@@ -1859,9 +1557,6 @@ def _ensure_build_workspace(slug: str, lesson_dir: Path) -> Path:
             os.rmdir(link)
         else:
             if not link.is_symlink() and link.is_dir():
-                # Recoverable — the aside copy keeps the bytes and a reinstall
-                # rebuilds the tree — but not something to discover by noticing
-                # a directory is empty.
                 _log.warning(
                     "moved a populated %s aside in %s; reinstall to restore it",
                     link.name, lesson_dir,
@@ -1877,10 +1572,7 @@ def _ensure_build_workspace(slug: str, lesson_dir: Path) -> Path:
     return workspace
 
 
-# The three seams the build step (`lesson_build.py`) needs, named rather than
-# reached for: where a lesson's bundle is, where its packages are, and how a
-# caller-supplied bundle-relative reference is vetted. Each is the public face
-# of a helper above; the rules stay in one place.
+# The seams the build step (`lesson_build.py`) uses.
 
 def lesson_bundle_dir(slug: str) -> Path:
     """This lesson's bundle directory (not created here)."""
@@ -1928,16 +1620,10 @@ def _workspace_view(
     lesson_dir: Path,
     build_workspace: Path | None = None,
 ) -> dict:
-    """What a PTY role learns about the lesson it opens on.
-
-    `id` and `uid` are the DB's own identity for the bundle: the terminal binds
-    the lesson-agent session's assessment capability to them (S-DESIGN D-S2-2),
-    which is why they travel with the workspace rather than being re-resolved
-    from the slug on the websocket path.
-
-    `build_workspace` is None for every role but lesson-agent: it is the only
-    role that installs packages.
-    """
+    """What a PTY role learns about the lesson it opens on. `id` and `uid`
+    are the DB's own identity: the terminal binds the lesson-agent session's
+    assessment capability to them. `build_workspace` is None for every role
+    but lesson-agent, the only one that installs packages."""
     return {
         "slug": slug,
         "title": lesson["title"],
@@ -1951,13 +1637,9 @@ def _workspace_view(
 
 
 def resolve_terminal_workspace(slug: str | None) -> dict | None:
-    """Resolve an existing lesson bundle for a no-regeneration PTY role.
-
-    This is the learner counterpart to :func:`prepare_terminal_workspace`.
-    It shares the same slug, database, and bundle-directory safety checks but
-    deliberately performs no manifest or brief writes. A missing bundle is a
-    refusal rather than a request to create files on the learner path.
-    """
+    """Resolve an existing lesson bundle for a no-regeneration PTY role: the
+    same checks as :func:`prepare_terminal_workspace`, but no manifest or
+    brief writes. A missing bundle is a refusal."""
     try:
         resolved = _resolve_terminal_lesson(slug)
         if resolved is None:
@@ -1981,12 +1663,9 @@ _RECONCILE_AFTER_BRIEF = (
 
 
 def _reconcile_projections(lesson: dict, steps) -> None:
-    """Run the terminal-open projection triggers, best effort in every
-    direction: a projection the app cannot repair must not keep the terminal
-    from opening. Each service imports this module, so it is imported here
-    on demand. `attempts.jsonl` heals BEFORE the brief because STATE sends
-    the tutor there for the rest of a long question and for every answer it
-    names; the others run after the briefs are in place."""
+    """Run the terminal-open projection triggers, best effort: a projection
+    the app cannot repair must not keep the terminal from opening. Each
+    service imports this module, so it is imported here on demand."""
     for module_name, step in steps:
         try:
             service = importlib.import_module(f".{module_name}", __package__)
@@ -2004,17 +1683,9 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
 
     Runs in a worker thread off the websocket accept path. Total by design —
     returns None (meaning "REFUSE") for an unknown/invalid slug, a
-    symlink-redirected bundle dir, or any DB/filesystem error. Resolution and
-    bundle safety are shared with the learner's no-regeneration entry point.
-    Briefs are atomically replaced without following destination links.
-
-    The build workspace is prepared here too, and on the same terms: this is
-    the only role that installs packages, and a workspace that cannot be
-    created is a refusal rather than a shell whose installs land in the bundle.
-    It waits for the bundle: its link lives inside the bundle, and
-    `_ensure_bundle_manifest` is what recreates a bundle directory that went
-    missing. Preparing it earlier would turn that recoverable case into a
-    refused terminal.
+    symlink-redirected bundle dir, or any DB/filesystem error. The build
+    workspace is prepared after `_ensure_bundle_manifest`, which is what
+    recreates a bundle directory that went missing.
     """
     try:
         resolved = _resolve_terminal_lesson(slug)
@@ -2023,15 +1694,10 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
         slug, lesson, lesson_dir = resolved
         read = _ensure_bundle_manifest(lesson)
         build_workspace = _ensure_build_workspace(slug, lesson_dir)
-        # Before the brief: what the brief says about `source/` depends on
-        # whether this bundle has one, and a taken name means it does not.
         source_dir = _ensure_source_dir(lesson_dir)
-        # Before the brief, unlike the steps after it: STATE quotes the
-        # open questions but sends the tutor to `attempts.jsonl` for the rest
-        # of a long one, and for every answer it names. Healing the file first
-        # is what makes that pointer true after a `projection: pending` write
-        # or a deleted file (review round 3). Best effort, like its siblings —
-        # a projection that cannot be repaired still costs no brief.
+        # Before the brief: STATE sends the tutor to `attempts.jsonl` for the
+        # rest of a long question, so the file heals before that pointer is
+        # written. Best effort, like its siblings.
         _reconcile_projections(lesson, _RECONCILE_BEFORE_BRIEF)
         conn = get_conn()
         try:
@@ -2057,10 +1723,8 @@ def prepare_terminal_workspace(slug: str | None) -> dict | None:
 
 def create_lesson(conn: sqlite3.Connection, title: str, source_url: str | None = None) -> int:
     """Create one backlog lesson and append its ledger event in the same txn.
-
-    The lesson uid is minted here, exactly once (learn-bundle-spec.md §3):
-    SQLite is the mint source and the truth; the v2 bundle manifest written
-    right after only carries an echo."""
+    The lesson uid is minted here, exactly once (learn-bundle-spec.md §3);
+    the manifest written right after only carries an echo."""
     title = _clean_title(title)
     source_url = _clean_url(source_url)
     slug = _unique_slug(conn, title)
@@ -2092,10 +1756,8 @@ def create_lesson(conn: sqlite3.Connection, title: str, source_url: str | None =
 
 
 def mark_opened(conn: sqlite3.Connection, lesson_id: int, entry: str) -> None:
-    """Persist lightweight UI state without adding a noisy ledger event.
-    Callers pass an entry already resolved against the bundle read model
-    (with_bundle_info_read), so v2 selections are declared pages by
-    construction."""
+    """Persist lightweight UI state without a ledger event. Callers pass an
+    entry already resolved against the bundle read model."""
     entry = _clean_html_ref(entry)
     _require_lesson(conn, lesson_id)
     ts = now_iso()
@@ -2107,10 +1769,8 @@ def mark_opened(conn: sqlite3.Connection, lesson_id: int, entry: str) -> None:
 
 
 def set_current_entry(conn: sqlite3.Connection, lesson_id: int, entry: str) -> None:
-    """Explicitly set the lesson entry, e.g. from an agent curl call.
-
-    For a v2 bundle only declared `pages[].path` values are accepted, compared
-    exactly — never normalized first (learn-bundle-spec.md §4.1/§4.2); a
+    """Explicitly set the lesson entry. For a v2 bundle only declared
+    `pages[].path` values are accepted, compared exactly (§4.1/§4.2); a
     rejected manifest refuses the write."""
     row = _require_lesson(conn, lesson_id)
     read = _ensure_bundle_manifest(_lesson_view(row))
@@ -2292,19 +1952,10 @@ _PLACEHOLDER_NIGHT = """\
 
 
 def _placeholder_scheme_css(scheme: str | None) -> str:
-    """The colour-scheme half of the placeholder's stylesheet.
-
-    A lesson with no file is a full-height sheet of app chrome, not lesson
-    content, so it follows the reader's theme instead of blinding them with
-    paper in a dark room. `scheme` is the theme the app actually resolved,
-    which is NOT always what the OS reports — the app theme is a tri-state and
-    can be pinned against it, and a placeholder that read the OS directly would
-    hand the pinned reader the inverse of the same complaint.
-
-    `None` means nobody said: no hint from the app, or this page was opened
-    outside it. Then, and only then, the OS answers — which is what the app's
-    default (`system`) theme resolves to anyway.
-    """
+    """The colour-scheme half of the placeholder's stylesheet. `scheme` is
+    the theme the app resolved, which is NOT always what the OS reports: the
+    app theme is a tri-state and can be pinned against it. `None` means
+    nobody said, and only then does the OS answer."""
     if scheme == "dark":
         return f"    :root {{ color-scheme: dark; }}\n{_PLACEHOLDER_NIGHT}"
     if scheme == "light":
@@ -2362,17 +2013,12 @@ def _placeholder_html(title: str, message: str, code_line: str,
 def preview_html(lesson: dict, entry: str | None = None, *,
                  scheme: str | None = None) -> tuple[str, dict]:
     """Return the current lesson HTML, or a small generated placeholder —
-    including the explicit rejected-manifest placeholder (§9.1): the lesson
-    stays listed, nothing is silently coerced to defaults.
-
-    `scheme` is the reader's resolved app theme, used only when a placeholder
-    is generated (see `_placeholder_scheme_css`). Real lesson HTML is returned
-    byte for byte: a bundle owns its own colours."""
+    including the explicit rejected-manifest placeholder (§9.1). `scheme` is
+    the reader's resolved app theme, used only for a placeholder; real lesson
+    HTML is returned byte for byte."""
     info = lesson_file_info(lesson, entry)
     if info["exists"]:
         return Path(info["path"]).read_text(encoding="utf-8", errors="replace"), info
-    # Bundle-relative on purpose: this document reaches any client that can open
-    # the preview, so the server's absolute filesystem layout stays out of it.
     if info["outcome"] == bundle_schema.REJECTED:
         codes = sorted({f["code"] for f in info["findings"]
                         if f["severity"] == bundle_schema.REJECTED})
@@ -2386,13 +2032,12 @@ def preview_html(lesson: dict, entry: str | None = None, *,
     return html, info
 
 
-# --- track progress (#81) ----------------------------------------------------
+# --- track progress ----------------------------------------------------------
 #
-# Movement through a track, in lesson-status terms. Track membership lives ONLY
-# in `lesson.json` (`path`/`step`) — the ownership table in
-# docs/learn-bundle-spec.md keeps those agent-writable and app-read-only, so
-# they are derived per render rather than mirrored into the `lessons` table.
-# The read is the readonly one: rendering /learn must not create bundle state.
+# Track membership lives ONLY in `lesson.json` (`path`/`step`), agent-written
+# and app-read-only, so it is derived per render rather than mirrored into the
+# `lessons` table. The read is the readonly one: rendering /learn must not
+# create bundle state.
 
 def track_progress(
     rows: list[dict],
@@ -2401,41 +2046,24 @@ def track_progress(
 ) -> list[dict]:
     """Per-track "N of M studied" plus the first unstudied step, from manifests.
 
-    `rows` are lesson views (`list_lessons`); each contributes to a track when
-    its manifest declares a `path`. A lesson whose manifest is missing, absent
-    a `path`, or unreadable simply belongs to no track — no error surfaces on
-    the page, and when no lesson declares one the result is empty.
-
-    `reads` supplies manifests the caller has already read, by lesson id. The
-    /learn render passes the selected lesson's read that way: that one read is
-    the single authority for its bundle metadata, selection and record, and
-    re-reading the file here could disagree with it mid-render.
-
-    Members order by `step`, then slug so a track without steps still renders
-    deterministically; tracks order by `path` (no notion of a "main" track).
-    `ids` carries that member order out, so a caller rendering the track as a
-    group of lesson rows groups by the same membership rule that produced the
-    counts — the gate below is subtle enough that a second derivation of it
-    elsewhere would drift, and a row counted in "N of M" but filed outside its
-    group (or the reverse) is exactly the disagreement the learner would see.
+    A lesson contributes to a track when its manifest declares a `path`; one
+    whose manifest is missing or unreadable belongs to no track. `reads`
+    supplies manifests the caller already read, by lesson id, so the /learn
+    render's one read stays the single authority for its bundle. Members
+    order by `step`, then slug; tracks by `path`. `ids` carries the member
+    order out, so a caller grouping rows uses the same membership rule that
+    produced the counts.
     """
     by_path: dict[str, list[dict]] = {}
     for row in rows:
         read = (reads or {}).get(row["id"]) or read_bundle_readonly(row)
-        # Only a usable manifest speaks for its lesson. `_read_v2` parses
-        # `path` before the checks that reject the manifest, so a rejected read
-        # can still carry one — but `ManifestRead` promises its model fields
-        # mean nothing on a reject, and the rest of the app honours that. An
-        # `identity-mismatch` is degraded rather than rejected, and matters
-        # more here than anywhere: the bundle on disk belongs to a DIFFERENT
-        # lesson, so its declaration would enrol this row in a track on the
-        # strength of another lesson's file.
+        # A rejected read's model fields mean nothing, and an `identity-mismatch`
+        # means the bundle on disk belongs to a DIFFERENT lesson, whose
+        # declaration must not enrol this row in a track.
         if read.rejected or read.lesson_uid != row["uid"]:
             continue
-        # The address in normalized form (§4.5): membership is by the segments
-        # the tree groups on, so a stray doubled or trailing slash cannot file
-        # a lesson under an address that renders identically to its neighbour's
-        # yet counts separately.
+        # Normalized (§4.5): a stray doubled or trailing slash cannot file a
+        # lesson under an address that renders like its neighbour's.
         segments = bundle_schema.split_path_ref(read.path_ref)
         if not segments:
             continue
@@ -2464,22 +2092,12 @@ def track_progress(
 def path_tree(tracks: list[dict]) -> list[dict]:
     """`track_progress` output nested by address segment, counts rolled up.
 
-    One address per node, so `codecrafters/concepts/network-protocols` yields
-    three: the leaf carries the lessons, and its two ancestors exist purely to
-    hold it. An ancestor may also be a track in its own right — a lesson whose
-    path is exactly `codecrafters` sits directly in that node — so every node
-    can have both `rows_ids` of its own and `children`.
-
-    `studied`/`total`/`ids`/`next` are the whole SUBTREE's, which is the only
-    reading that makes a folded ancestor honest: "2 of 9" over a collapsed
-    `codecrafters` has to count what unfolding it would reveal. `track_progress`
-    keeps the per-address numbers unrolled, and nothing here re-derives
-    membership — the ancestor's total is its descendants' totals summed, never
-    a second pass over the rows.
-
-    Traversal order is own rows first (already in step order), then children by
-    address. `next` follows it, so the resume link of an ancestor is the first
-    unstudied lesson a reader walking the subtree top-down would reach.
+    One node per address: `codecrafters/concepts/network-protocols` yields
+    three, and an ancestor may be a track in its own right, so a node can
+    have both `rows_ids` and `children`. `studied`/`total`/`ids`/`next` are
+    the whole SUBTREE's, so a folded ancestor's "2 of 9" counts what
+    unfolding it would reveal; nothing here re-derives membership. Traversal
+    is own rows first, then children by address, and `next` follows it.
     """
     by_address = {track["path"]: track for track in tracks}
     nodes: dict[str, dict] = {}
@@ -2491,9 +2109,6 @@ def path_tree(tracks: list[dict]) -> list[dict]:
         segments = address.split("/")
         node = {
             "path": address,
-            # What the header shows. The full address is the identity (and the
-            # localStorage key); repeating every ancestor's name inside a tree
-            # that already indents them would be noise.
             "name": segments[-1],
             "depth": len(segments) - 1,
             "children": [],
