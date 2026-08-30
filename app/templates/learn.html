@@ -57,23 +57,19 @@
 
 {# One node of the track tree, rows then sub-groups. Recursive: a nested group
    is the same shape as a top-level one, and the CSS indents it for free by
-   sitting inside the parent's rows box. `group.children` is guarded with
-   `or []` for the live pre-nesting backend, whose flat groups have no such
-   key — the page then renders exactly the single level it always did. #}
+   sitting inside the parent's rows box. #}
 {% macro lesson_group(group, shoot=0) -%}
-{# `is defined` because the live process serves this template with the globals
-   of the previous commit; without it the branch keeps the one gold it had. #}
-{% set body = star_body(group.total) if star_body is defined else none %}
+{% set body = star_body(group.total) %}
 <section class="lesson-group{% if group.selected %} has-sel{% endif %}">
-  <details class="lesson-group-d{% if body %} {{ body.cls }}{% endif %}" data-track="{{ group.path }}"{% if group.selected %} open{% endif %}>
+  <details class="lesson-group-d {{ body.cls }}" data-track="{{ group.path }}"{% if group.selected %} open{% endif %}>
     <summary class="lesson-group-head">
-      <span class="lesson-body" aria-hidden="true"{% if body and body.size %} style="--bh: {{ body.size }}px"{% endif %}></span>
+      <span class="lesson-body" aria-hidden="true"{% if body.size %} style="--bh: {{ body.size }}px"{% endif %}></span>
       <span class="lesson-group-name">{{ group.name or group.path }}</span>
       {# The bar restates the count for the eye; the count is the text an
          assistive reader gets, so the bar stays decorative. `data-readout`
          is what hovering prints. #}
       <span class="lesson-group-bar" aria-hidden="true" data-pct="{{ group.pct }}"
-            data-readout="{{ group.pct }}% · {{ group.total }} lesson{{ '' if group.total == 1 else 's' }}{% if body %} · {{ body.label }}{% endif %}"><i style="width: {{ group.pct }}%"></i></span>
+            data-readout="{{ group.pct }}% · {{ group.total }} lesson{{ '' if group.total == 1 else 's' }} · {{ body.label }}"><i style="width: {{ group.pct }}%"></i></span>
       <span class="lesson-group-count">{{ group.studied }} of {{ group.total }}</span>
     </summary>
     {# The vine: one shape stretched down the whole branch, always drawn
@@ -84,7 +80,7 @@
     <div class="lesson-group-rows" style="--pct: {{ group.pct }}%">
       <span class="lesson-vine vine-{{ shoot % 4 }}" aria-hidden="true"></span>
       {% for lesson in group.rows %}{{ lesson_row(lesson) }}{% endfor %}
-      {% for child in group.children or [] %}{{ lesson_group(child, loop.index0) }}{% endfor %}
+      {% for child in group.children %}{{ lesson_group(child, loop.index0) }}{% endfor %}
     </div>
   </details>
   {# Where a collapsed track is resumed from. Deliberately a sibling of
@@ -100,9 +96,8 @@
 {% macro record_question(q) -%}
 {# #136: a row the LEARNER wrote into is not an answer to be judged — it is a
    question waiting for a reply, and the panel has to be readable as that at a
-   glance. `is defined` guards a live pre-#136 backend rendering this template:
-   without the flag every row simply reads as before. #}
-{% set asked = q.ask_tutor is defined and q.ask_tutor %}
+   glance. #}
+{% set asked = q.ask_tutor %}
 <li class="rec-q{% if q.retired %} rec-q-retired{% endif %}{% if asked %} rec-q-ask{% endif %}" id="rec-q-{{ q.question_id }}">
   <div class="rec-q-head">
     <span class="rec-q-label">{{ q.label }}</span>
@@ -113,9 +108,8 @@
     {% if q.unvalidated %}<span class="rec-tag rec-unvalidated" title="Still declared, but the manifest entry did not validate">unread</span>{% endif %}
   </div>
   {# #133: the manifest's `replaces` claim, the only thing that can say a
-     retired id and a declared one are the same question. `is defined` guards
-     a live pre-#133 backend rendering this template. #}
-  {% if q.successor is defined and q.successor %}
+     retired id and a declared one are the same question. #}
+  {% if q.successor %}
   <p class="rec-succ">Continued as
     <a href="#rec-q-{{ q.successor.question_id }}">{{ q.successor.label }}</a>
   </p>
@@ -183,19 +177,12 @@
         </a>
       </nav>
 
-      {# Grouped rendering needs both new context vars; without them (the live
-         pre-change process) `flat_rows` is the whole list and the page is
-         exactly what it was. #}
-      {% set grouped = groups is defined and ungrouped is defined %}
-      {% set flat_rows = ungrouped if grouped else rows %}
       {% if rows %}
       <div class="lesson-list">
-        {% if grouped %}
         {% for group in groups %}{{ lesson_group(group, loop.index0) }}{% endfor %}
-        {% endif %}
-        {% for lesson in flat_rows %}{{ lesson_row(lesson) }}{% endfor %}
+        {% for lesson in ungrouped %}{{ lesson_row(lesson) }}{% endfor %}
       </div>
-      {% if grouped and groups %}
+      {% if groups %}
       {# Which tracks the learner keeps open, one key per track. Inline and
          synchronous for the same reason the record sheet's script is (below):
          it must beat the first paint, or a group the learner folded away
@@ -288,7 +275,7 @@
              sends; nothing here executes anything. The command names whichever
              agent CLI this machine actually has; with none installed there is
              nothing to prefill, so the button is absent rather than broken. #}
-          {% if selected.tutor_command is defined and selected.tutor_command %}
+          {% if selected.tutor_command %}
           <button type="button" class="btn-text" id="lesson-review-btn"
                   data-lesson="{{ selected.slug }}" data-lesson-title="{{ selected.title }}"
                   data-term-command="{{ selected.tutor_command }}"
@@ -303,9 +290,7 @@
          lesson HTML, so its canvas may follow the reader's colour scheme
          (style.css) instead of the paper white a real bundle needs. #}
       <div class="lesson-frame-wrap{% if not selected.file.exists %} no-file{% endif %}">
-        {# sandbox tokens follow the effective runtime profile (D2); the
-           `is defined` guard keeps the legacy tokens while a stale live
-           process (pre-D2 Python, working-tree templates) renders this. #}
+        {# sandbox tokens follow the effective runtime profile (D2). #}
         <iframe
           id="lesson-preview-frame"
           class="lesson-frame"
@@ -317,16 +302,15 @@
           data-src="{{ selected.file_url }}"
           data-meta-url="{{ selected.preview_meta_url }}"
           data-attempts-url="/learn/lessons/{{ selected.id }}/attempts"
-    {% if selected.artifacts_url is defined %}data-artifacts-url="{{ selected.artifacts_url }}"{% endif %}
-    {% if selected.runs_url is defined %}data-runs-url="{{ selected.runs_url }}"{% endif %}
+          data-artifacts-url="{{ selected.artifacts_url }}"
+          data-runs-url="{{ selected.runs_url }}"
           {# #133 tier 2: what is already recorded for the questions this page
              declares, for the bridge to hand over in its `welcome`. Ordinary
              escaped text — the runtime JSON-parses the value back — so it
-             stays inert markup either way. `is defined` guards a live pre-#133
-             backend: no attribute, no `record` field, pages unchanged. #}
-    {% if selected.record_snapshot is defined %}data-record="{{ selected.record_snapshot }}"{% endif %}
+             stays inert markup either way. #}
+          data-record="{{ selected.record_snapshot }}"
           data-version="{{ selected.file.version }}"
-          sandbox="{{ selected.sandbox if selected.sandbox is defined else 'allow-scripts allow-forms allow-popups allow-downloads' }}"></iframe>
+          sandbox="{{ selected.sandbox }}"></iframe>
         {# Early load observer: parses (and runs) synchronously right after
            the iframe, before any load task can dispatch — so learn-bridge.js
            (a separately fetched module that may arrive late) can tell a
@@ -337,43 +321,30 @@
           });
         </script>
       </div>
-      {# The record panel: what the tutor concluded (#4 phase S). The whole
-         context is computed on GET, so a live process still running pre-S
-         Python renders this working-tree template with `record` undefined —
-         the guard omits the panel instead of half-drawing it. #}
-      {% if selected.record is defined %}
+      {# The record panel: what the tutor concluded (#4 phase S). #}
       {% set rec = selected.record %}
       {# #133: the counts poll target and the read-state key live on the
-         element the runtime drives. Both are `is defined`-guarded — a live
-         pre-#133 backend renders no URL, and the runtime then leaves the
-         server-rendered counts alone instead of polling a route that 404s. #}
+         element the runtime drives. #}
       <details class="lesson-record" open id="lesson-record"
-      {% if selected.record_counts_url is defined %}
                data-record-counts-url="{{ selected.record_counts_url }}"
                data-record-key="{{ selected.id }}"
-      {% endif %}
-      {% if rec.cursor is defined %}data-record-cursor="{{ rec.cursor }}"{% endif %}>
+               data-record-cursor="{{ rec.cursor }}">
         <summary class="lesson-record-head">
           <span class="lesson-record-title">Record</span>
           <span class="lesson-record-counts">
             <span data-record-count="attempts">{{ rec.counts.attempts }}</span> attempts
             {# The chip is rendered even at zero, hidden, so the FIRST question
                sent while the page is open has a cell to land in — the counts
-               poll can fill a target, not create one. `is defined` still
-               guards a live pre-#136 backend, which renders no chip at all. #}
-            {% if rec.counts.questions is defined %}
+               poll can fill a target, not create one. #}
             <span class="rec-asked"{% if not rec.counts.questions %} hidden{% endif %}>· <span data-record-count="questions">{{ rec.counts.questions }}</span> asked</span>
-            {% endif %}
             · <span data-record-count="assessments">{{ rec.counts.assessments }}</span> active
-            {% if rec.verdict_count is defined %}
             · <span data-record-count="verdicts">{{ rec.verdict_count }}</span> verdicts
-            {% endif %}
             · <span data-record-count="focus">{{ rec.counts.focus }}</span> focused
           </span>
           {# Unread is the LEARNER's state, not the record's: the runtime keeps
              the acknowledged stamp in this browser and fills this in. It
-             starts hidden and empty so a page without the runtime — or with an
-             older backend — simply never shows it. #}
+             starts hidden and empty so a page without the runtime simply never
+             shows it. #}
           <button type="button" class="rec-unread" id="rec-unread" hidden
                   aria-label="New verdicts — show and mark seen"></button>
         </summary>
@@ -491,7 +462,6 @@
           fit();
         })();
       </script>
-      {% endif %}
       {% else %}
       <div class="learn-empty">
         {{ ic.constellation_book('learn-mark') }}

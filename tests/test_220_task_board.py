@@ -4,10 +4,8 @@ Tasks had no notion of being in flight — a task was open or completed, and the
 board's middle column had nowhere to live. Schema v18 adds `status`, bound to
 the completion timestamp by one rule: status='done' ⇔ completed_at IS NOT NULL.
 These cases pin that rule from every writer that can touch it (the checkbox,
-the arrow forms, the drag handler's JSON call, the migration's backfill), pin
-that the board is reachable and complete without JavaScript, and pin the guard
-that keeps a merged template from linking a route the live process has not
-restarted into yet.
+the arrow forms, the drag handler's JSON call, the migration's backfill) and
+pin that the board is reachable and complete without JavaScript.
 
 Runs late in the cumulative suite because it creates and completes tasks, which
 the earlier files' counts would otherwise have to absorb.
@@ -95,8 +93,8 @@ def test_schema_v18_adds_the_status_column(client):
 
 
 def test_backfill_heals_what_the_pre_board_process_wrote(client):
-    """The live service keeps completing tasks with the old code until it is
-    restarted, so the boot repairs both directions of the skew it leaves."""
+    """The repair rule moves a row in either direction and leaves a
+    consistent table alone."""
     from app.db import backfill_task_status, get_conn
 
     done_id = _mk_task("Board heal — completed")
@@ -300,30 +298,3 @@ def test_the_move_event_is_known_to_the_restore_tool(client):
         "a board move is a task event the restore tool counts"
     )
     assert "task_status_changed" in restore.KNOWN_EVENT_TYPES, "and knows"
-
-
-# --- the live-restart guard -------------------------------------------------
-
-
-def test_rail_points_at_today_until_the_board_route_is_running(client):
-    """A merged template renders in the OLD process before the restart, and its
-    routers have no /board. The rail link is a Jinja global for exactly that
-    reason: absent, it falls back to the route that process does serve."""
-    from app.templating import TASKS_HOME, templates
-
-    live = client.get("/board").text
-    assert f'href="{TASKS_HOME}"' in live, "the running app points the rail at the board"
-
-    palette = client.get("/palette.json").json()["views"]
-    assert [v["href"] for v in palette if v["label"] == "Tasks"] == [TASKS_HOME], (
-        "the command palette reaches the same Tasks surface the rail does"
-    )
-
-    templates.env.globals.pop("tasks_home")
-    try:
-        old = client.get("/today").text
-        assert "/board" not in old, "nothing links the board before the restart"
-        assert 'href="/today" title="Tasks"' in old, "the rail keeps its old destination"
-    finally:
-        templates.env.globals["tasks_home"] = TASKS_HOME
-    assert 'href="/board"' in client.get("/today").text, "and the global is back"

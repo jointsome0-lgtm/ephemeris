@@ -11,8 +11,7 @@
 </form>
 
 {% if q %}
-  {% set has_lessons = lessons is defined and lessons %}
-  {% if results or has_lessons %}
+  {% if results or lessons %}
     {% if results %}
     <div class="tsection-head" style="padding:14px 4px 6px">
       <span class="tsection-name">Tasks</span>
@@ -22,7 +21,7 @@
       {% for t in results %}{% include "_task_row.html" %}{% endfor %}
     </div>
     {% endif %}
-    {% if has_lessons %}
+    {% if lessons %}
     <div class="tsection-head" style="padding:14px 4px 6px">
       <span class="tsection-name">Lessons</span>
       <span class="tsection-count">{{ lessons|length }}</span>

@@ -906,8 +906,7 @@ def latest_is_question(attempt: dict | None) -> bool:
     """Whether a panel attempt view is a question the learner asked the tutor.
 
     One owner for the test, because three readers ask it (the Record panel, the
-    generated STATE, and the tests) and a pre-#136 view — from a live process
-    that has not restarted — simply carries no `kind` at all.
+    generated STATE, and the tests).
     """
     return bool(attempt) and attempt.get("kind") == RECORD_KIND_QUESTION
 

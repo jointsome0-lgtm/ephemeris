@@ -107,20 +107,15 @@ def get_learn(
             selected["bundle"]["stale_selection"] or selected["entry"],
             meta=True,
         )
-        # F1 endpoint discovery.  The template guards this field so a running
-        # pre-F backend rendering the new working-tree template omits the
-        # capability instead of advertising a route it does not have.
+        # F1 endpoint discovery.
         selected["artifacts_url"] = f"/learn/lessons/{selected['id']}/blocks"
         selected["runs_url"] = f"/learn/lessons/{selected['id']}/blocks"
-        # #133 endpoint discovery, guarded in the template for the same
-        # reason: a live pre-#133 backend rendering this template must render
-        # no poll target rather than one that 404s every few seconds.
+        # #133 endpoint discovery: the record-counts poll target.
         selected["record_counts_url"] = f"/learn/lessons/{selected['id']}/record-counts"
         # #136: what the "Review my answers" button types. None when no agent
         # CLI is installed here — the template then renders no button, because
         # a one-click review that ends in `command not found` is worse than the
-        # bare terminal it replaces. Guarded in the template as well, for the
-        # live pre-#136 backend that renders it without this key.
+        # bare terminal it replaces.
         selected["tutor_command"] = lessons.tutor_launch_command()
         # D2: the iframe sandbox attribute follows the effective profile
         # (same owner as the header-level directive); the profile is folded

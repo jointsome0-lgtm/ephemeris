@@ -28,7 +28,6 @@ import pytest
 from app.db import get_conn
 from app.routers import learn
 from app.services import assessments, attempts, bundle_schema, lessons
-from app.templating import templates
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -731,10 +730,9 @@ def test_a_page_that_ignores_record_completes_the_handshake_unchanged(tmp_path):
     assert "record" not in without["message"]
 
 
-def test_a_backend_without_the_snapshot_sends_the_pre_133_welcome(tmp_path):
-    """The static can run ahead of the Python half (the live process renders
-    working-tree templates until its restart). No attribute, no field — not an
-    empty one, which a page could not tell from a truly empty record."""
+def test_a_frame_without_the_snapshot_sends_no_record_field(tmp_path):
+    """No attribute, no field — not an empty one, which a page could not tell
+    from a truly empty record."""
     result = _drive_bridge(tmp_path, want=["attempts"], record=None)
     assert "record" not in result["message"]
     assert result["keys"] == ["abi", "capabilities", "ephemeris", "lesson", "type"]
@@ -937,34 +935,3 @@ def test_the_source_and_the_committed_emit_carry_the_same_rules():
     # Still no read OPERATION: the port stays write-only by design (ABI §2.1).
     for absent in ("record.get", "record.read", '"record.'):
         assert absent not in source and absent not in emitted, absent
-
-
-# --- the live-process guard --------------------------------------------------
-
-
-def test_learn_html_renders_under_a_pre_tier2_router_context(client, monkeypatch):
-    """Jinja re-reads templates per render, so the LIVE process renders this
-    working-tree template with its own (older) context until the restart. The
-    attribute is therefore `is defined`-guarded, and this proves it by
-    rendering the same page from a context without the new key."""
-    lesson = _lesson_for_readback("Readback Template Guard Fixture")
-    captured: dict = {}
-    original = learn.templates.TemplateResponse
-
-    def capture(request, name, context, *args, **kwargs):
-        captured.update(context)
-        return original(request, name, context, *args, **kwargs)
-
-    monkeypatch.setattr(learn.templates, "TemplateResponse", capture)
-    assert client.get(f"/learn?lesson={lesson['id']}").status_code == 200
-    assert "record_snapshot" in captured["selected"]
-
-    selected = dict(captured["selected"])
-    selected.pop("record_snapshot")
-    old = templates.env.get_template("learn.html").render(
-        {**captured, "selected": selected}
-    )
-    assert "data-record=" not in old
-    # Everything else about the page — the frame, the panel — still renders.
-    assert 'id="lesson-preview-frame"' in old
-    assert 'id="rec-q-q_rbanswer1"' in old

@@ -46,14 +46,13 @@
     target?: TimerTargetRef | null;
   }
   /** Every /focus/timer answer carries the whole state; the write routes add
-   *  `recorded` when a span was stored. Each field is read through a guard
-   *  because a process that predates #75 answers none of them. */
+   *  `recorded` when a span was stored. A refusal carries `error` instead. */
   interface TimerState {
-    ok?: boolean;
+    ok: boolean;
     error?: string;
-    run?: TimerRun | null;
-    overview?: TimerOverview | null;
-    recent?: TimerRecord[];
+    run: TimerRun | null;
+    overview: TimerOverview;
+    recent: TimerRecord[];
     recorded?: TimerRecord | null;
   }
   /** GET /focus/timer/targets — what the picker can offer, by kind. */
@@ -126,9 +125,7 @@
       if (channel) channel.postMessage(1);
       return data;
     } catch (_) {
-      // A pre-#75 process still serving these pages has no /focus/timer route;
-      // say so once instead of failing silently.
-      showError("timer unavailable — is the app up to date?");
+      showError("timer unavailable");
       // An answer that never arrives says nothing about the server: the write
       // may well have committed just before the connection dropped. Ask what is
       // actually running, rather than assuming nothing happened and sitting
@@ -177,14 +174,12 @@
   function absorb(data: TimerState, ticket: number, keepError?: boolean): void {
     if (ticket <= appliedSeq) return;
     appliedSeq = ticket;
-    run = data.run || null;
+    run = data.run;
     syncedAt = Date.now();
-    if (data.overview) {
-      const ov = data.overview;
-      els.today.textContent = ov.today_seconds
-        ? ov.today_focus.value + ov.today_focus.unit + " today" : "";
-    }
-    if (data.recent) renderRecent(data.recent);
+    const ov = data.overview;
+    els.today.textContent = ov.today_seconds
+      ? ov.today_focus.value + ov.today_focus.unit + " today" : "";
+    renderRecent(data.recent);
     // ...except the one that sent us here: a resync after a refusal is what
     // explains the refusal, so its message stays on screen.
     if (!keepError) showError("");

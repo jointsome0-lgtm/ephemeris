@@ -37,10 +37,8 @@
 
     <div class="dp-bottom">
       <span class="trow-tag">{{ task.list_emoji or '📥' }} {{ task.list_name }}</span>
-      {# #75: a task is a timer target, so its focused time is readable here —
-         `is defined` guards the live process, which still renders the pre-#75
-         context. #}
-      {% if focus_total is defined and focus_total.seconds %}
+      {# #75: a task is a timer target, so its focused time is readable here. #}
+      {% if focus_total.seconds %}
       <span class="trow-tag">{{ focus_total.label }} focused</span>
       {% endif %}
       {% if not task.completed_at %}

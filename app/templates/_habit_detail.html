@@ -17,9 +17,8 @@
       <h2>{{ item.title }}</h2>
       <p class="subtitle">{{ item.group_name }}{% if not item.active %} · archived{% endif %}
         {# #75: this habit's share of focused time, where the habit lives —
-           there is no global Focus dashboard any more. `is defined` guards the
-           live process, which renders this template with the older context. #}
-        {% if focus_total is defined and focus_total.seconds %} · {{ focus_total.label }} focused{% endif %}
+           there is no global Focus dashboard any more. #}
+        {% if focus_total.seconds %} · {{ focus_total.label }} focused{% endif %}
       </p>
     </div>
     {% if item.active %}
@@ -99,12 +98,10 @@
     </div>
   </section>
 
-  {% if year_map is defined %}
   <section class="year-sky">
     <h3 class="log-head">A year of check-ins</h3>
     {{ ch.star_year(year_map) }}
   </section>
-  {% endif %}
 
   <h3 class="log-head">Habit Log on {{ month_label.split(" ")[0] }}</h3>
   {% if log %}

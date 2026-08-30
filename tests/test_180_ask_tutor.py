@@ -13,7 +13,6 @@ import json
 from pathlib import Path
 
 from app.db import get_conn
-from app.routers import learn
 from app.services import assessments, attempts, bundle_schema, lessons
 from app.templating import templates
 
@@ -470,49 +469,6 @@ def test_the_launch_button_names_a_tutor_this_machine_actually_has(
     ), "with nothing to launch the button is gone, the bare terminal stays"
 
 
-def test_learn_html_renders_under_a_pre_136_router_context(client, monkeypatch):
-    """The live process renders this working-tree template against its OWN
-    (older) context until the restart, so the flag #136 adds is `is defined`-
-    guarded — proven here by rendering the same page without it."""
-    lesson, lesson_dir, page_id = _ask_lesson("Ask Tutor Template Guard")
-    _submit(
-        client, lesson, lesson_dir, page_id, ASK_ID,
-        "Invented question under the old context", "ask-guard-ask",
-    )
-
-    captured: dict = {}
-    original = learn.templates.TemplateResponse
-
-    def capture(request, name, context, *args, **kwargs):
-        captured.update(context)
-        return original(request, name, context, *args, **kwargs)
-
-    monkeypatch.setattr(learn.templates, "TemplateResponse", capture)
-    assert client.get(f"/learn?lesson={lesson['id']}").status_code == 200
-    assert captured["selected"]["record"]["questions"], "the panel rendered"
-
-    selected = dict(captured["selected"])
-    record = dict(selected["record"])
-    record["questions"] = [
-        {k: v for k, v in q.items() if k != "ask_tutor"}
-        for q in record["questions"]
-    ]
-    record["retired"] = [
-        {k: v for k, v in q.items() if k != "ask_tutor"}
-        for q in record["retired"]
-    ]
-    selected["record"] = record
-    old = templates.env.get_template("learn.html").render(
-        {**captured, "selected": selected}
-    )
-    assert (
-        f'id="rec-q-{ASK_ID}"' in old
-        and "asked the tutor" not in old
-        and "Waiting for the tutor to answer." not in old
-        and "No verdict yet." in old
-    ), "without the flag every row simply renders the way it did before"
-
-
 def test_the_kind_column_lands_on_a_populated_pre_v17_database(tmp_path):
     """The live database is not empty when this migration reaches it — it holds
     the attempts that motivated the issue. Those rows are answers by definition
@@ -730,7 +686,7 @@ def test_the_learner_is_told_a_question_was_sent_not_an_answer_recorded():
         'const asked = rec["kind"] === "question";' in source
         and 'toast("question sent to the tutor")' in source
         and 'toast(asked ? "question already sent"' in source
-        and 'if (typeof rec["kind"] === "string") reply["kind"]' in source
+        and 'kind: rec["kind"],' in source
     ), "the toast and the reply both carry the server-derived direction"
     assert "question sent to the tutor" in emitted, (
         "the committed .js is re-emitted from the .ts (npm run build)"
