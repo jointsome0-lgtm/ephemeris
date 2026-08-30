@@ -246,10 +246,10 @@ _SELECT = """
 
 
 def today_tasks(conn: sqlite3.Connection, today: str | None = None) -> list[sqlite3.Row]:
-    """Incomplete tasks due today or overdue."""
+    """Incomplete tasks due today or overdue (kind='task')."""
     today = today or today_str()
     return conn.execute(
-        _SELECT + "WHERE t.completed_at IS NULL "
+        _SELECT + "WHERE t.completed_at IS NULL AND t.kind='task' "
         "AND t.due_date IS NOT NULL AND t.due_date <= ? "
         "ORDER BY t.priority DESC, t.due_date, t.sort_order, t.id",
         (today,),
@@ -269,7 +269,7 @@ def next7(conn: sqlite3.Connection, today: str | None = None) -> list[sqlite3.Ro
     today = today or today_str()
     end = (_date.fromisoformat(today) + timedelta(days=6)).isoformat()
     return conn.execute(
-        _SELECT + "WHERE t.completed_at IS NULL "
+        _SELECT + "WHERE t.completed_at IS NULL AND t.kind='task' "
         "AND t.due_date IS NOT NULL AND t.due_date >= ? AND t.due_date <= ? "
         "ORDER BY t.due_date, t.priority DESC, t.sort_order",
         (today, end),
@@ -278,7 +278,7 @@ def next7(conn: sqlite3.Connection, today: str | None = None) -> list[sqlite3.Ro
 
 def list_tasks(conn: sqlite3.Connection, list_id: int) -> list[sqlite3.Row]:
     return conn.execute(
-        _SELECT + "WHERE t.list_id = ? "
+        _SELECT + "WHERE t.list_id = ? AND t.kind='task' "
         "ORDER BY t.completed_at IS NOT NULL, t.priority DESC, t.sort_order, t.id",
         (list_id,),
     ).fetchall()
@@ -293,7 +293,7 @@ def board(conn: sqlite3.Connection, done_limit: int = DONE_LIMIT) -> dict[str, l
     is board material.
     """
     open_rows = conn.execute(
-        _SELECT + "WHERE t.status IN ('backlog','doing') "
+        _SELECT + "WHERE t.kind='task' AND t.status IN ('backlog','doing') "
         "ORDER BY t.priority DESC, t.due_date IS NULL, t.due_date, t.sort_order, t.id"
     ).fetchall()
     columns: dict[str, list] = {key: [] for key in STATUSES}
@@ -302,7 +302,7 @@ def board(conn: sqlite3.Connection, done_limit: int = DONE_LIMIT) -> dict[str, l
         # stored, so every open row has a column to land in.
         columns[row["status"]].append(row)
     columns["done"] = conn.execute(
-        _SELECT + "WHERE t.status='done' "
+        _SELECT + "WHERE t.kind='task' AND t.status='done' "
         "ORDER BY t.completed_at DESC, t.id DESC LIMIT ?",
         (done_limit,),
     ).fetchall()
@@ -317,7 +317,7 @@ def recent_completed(conn: sqlite3.Connection, limit: int = 100) -> list[sqlite3
 
 
 def due_between(conn: sqlite3.Connection, start: str, end: str) -> list[sqlite3.Row]:
-    """Every task with a due date in [start, end] — for the calendar grid."""
+    """Every task (any kind) with a due date in [start, end] — for the calendar grid."""
     return conn.execute(
         _SELECT + "WHERE t.due_date IS NOT NULL AND t.due_date >= ? AND t.due_date <= ? "
         "ORDER BY t.due_date, t.priority DESC, t.id",
@@ -344,7 +344,7 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 100) -> list[sqlit
 def today_count(conn: sqlite3.Connection, today: str | None = None) -> int:
     today = today or today_str()
     return conn.execute(
-        "SELECT COUNT(*) FROM tasks WHERE completed_at IS NULL "
+        "SELECT COUNT(*) FROM tasks WHERE completed_at IS NULL AND kind='task' "
         "AND due_date IS NOT NULL AND due_date <= ?",
         (today,),
     ).fetchone()[0]
@@ -354,7 +354,7 @@ def next7_count(conn: sqlite3.Connection, today: str | None = None) -> int:
     today = today or today_str()
     end = (_date.fromisoformat(today) + timedelta(days=6)).isoformat()
     return conn.execute(
-        "SELECT COUNT(*) FROM tasks WHERE completed_at IS NULL "
+        "SELECT COUNT(*) FROM tasks WHERE completed_at IS NULL AND kind='task' "
         "AND due_date IS NOT NULL AND due_date >= ? AND due_date <= ?",
         (today, end),
     ).fetchone()[0]
