@@ -52,7 +52,6 @@ def _app_env(data_dir: Path) -> dict[str, str]:
     env["ACTIVITY_DATA_DIR"] = str(data_dir)
     env.pop("ACTIVITY_DB", None)
     env.pop("EPHEMERIS_ENABLE_TERMINAL", None)  # opt-in; stay at the default (off)
-    env["EPHEMERIS_TRUSTED_HOSTS"] = "testserver,localhost,127.0.0.1,::1"
     return env
 
 

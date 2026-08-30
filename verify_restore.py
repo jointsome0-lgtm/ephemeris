@@ -19,9 +19,6 @@ SOURCE_DIR = WORK_DIR / "source"
 os.environ["ACTIVITY_DATA_DIR"] = str(SOURCE_DIR)
 os.environ.pop("ACTIVITY_DB", None)
 os.environ.pop("EPHEMERIS_ENABLE_TERMINAL", None)  # terminal is opt-in; stay at the default (off)
-# TestClient presents Host: testserver; force the allowlist to a known value
-# so an ambient host allowlist can't 400 every request under test.
-os.environ["EPHEMERIS_TRUSTED_HOSTS"] = "testserver,localhost,127.0.0.1,::1"
 sys.path.insert(0, str(ROOT))
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -152,7 +149,7 @@ def reexport(target: Path) -> subprocess.CompletedProcess[str]:
 _BOOT_AND_REEXPORT = """
 from fastapi.testclient import TestClient
 from app.main import app
-with TestClient(app) as client:
+with TestClient(app, base_url="http://localhost") as client:
     response = client.post('/export/jsonl')
     response.raise_for_status()
     print(response.text, end='')
@@ -178,7 +175,7 @@ def boot_app_and_reexport(target: Path) -> subprocess.CompletedProcess[str]:
 _SERVE = """
 from fastapi.testclient import TestClient
 from app.main import app
-with TestClient(app) as client:
+with TestClient(app, base_url="http://localhost") as client:
     for path in ('/', '/next7', '/today'):
         print(path, client.get(path).status_code)
 """
@@ -194,7 +191,7 @@ def serve_restored(target: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-with TestClient(app) as client:
+with TestClient(app, base_url="http://localhost") as client:
     # All fixtures are invented demo data and all writes go through real routes.
     response = client.post(
         "/habits",

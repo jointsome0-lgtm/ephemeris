@@ -132,7 +132,7 @@ environment changes never land back in Git.
 
 ## Configuration
 
-Every variable the app reads. The first eight are read once at startup, so
+Every variable the app reads. The first six are read once at startup, so
 restart the process after changing one; the proxy and Chrome variables are read
 each time a terminal shell or a render gate starts.
 
@@ -143,8 +143,6 @@ each time a terminal shell or a render gate starts.
 | `APP_TIMEZONE` | host local zone | The ledger clock; defines "today" (system design §13.3). |
 | `SELFOS_EXP2RES_URL` | unset (no strip) | Loopback http(s) URL of the Exp2Res gap-questions view the Diary tab embeds. A non-loopback URL is ignored with a warning. |
 | `SELFOS_EXP2RES_MIRROR_URL` | unset (`/mirror` answers 404) | Loopback http(s) URL of the Exp2Res Mirror view the `/mirror` surface embeds. Same loopback rule. |
-| `EPHEMERIS_TRUSTED_HOSTS` | `localhost,127.0.0.1,::1` | Comma-separated hostnames a request's `Host` may name; anything else is refused. |
-| `EPHEMERIS_MAX_BODY_BYTES` | 2 MiB | Ceiling on an unsafe-method request body. Junk, a non-positive value, or a value below the largest per-route cap plus headroom falls back to the default; it can raise the ceiling, never lower it. |
 | `EPHEMERIS_ENABLE_TERMINAL` | unset (terminal off) | Opt-in: `1`/`true`/`yes`/`on` registers the loopback-only terminal websocket and UI. |
 | `EPHEMERIS_TERM_PROXY` | unset | Egress proxy for the terminal shell: `off` forces a direct connection, an `http://` or `socks5h://` URL is used as given. Unset: the service's own proxy variables are inherited, else the xray client on `127.0.0.1:10809` (http) / `10808` (socks) is auto-detected. |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `FTP_PROXY` (either case) | unset | The service's proxy configuration, passed to the terminal shell verbatim (loopback kept direct) when `EPHEMERIS_TERM_PROXY` is unset and at least one of `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` is set. `NO_PROXY` and `FTP_PROXY` ride along only in that case; on their own they are dropped. |

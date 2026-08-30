@@ -943,12 +943,12 @@ def test_bundle_attempts(client, suite_state):
             "query_string": b"",
             "root_path": "",
             "headers": [
-                (b"host", b"testserver"),
+                (b"host", b"localhost"),
                 (b"content-type", b"application/json"),
                 (b"content-length", str(declared_length).encode("ascii")),
             ],
             "client": ("127.0.0.1", 50000),
-            "server": ("testserver", 80),
+            "server": ("localhost", 80),
         }
         await app(scope, receive, send)
         status = next(

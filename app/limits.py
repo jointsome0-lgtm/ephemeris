@@ -98,34 +98,6 @@ Bytes, not characters: nothing has decoded the body yet at the point this
 applies. Two MiB comfortably clears the largest route cap (512 KiB, the Learn
 artifact save) and every form this app renders, while keeping an unbounded
 upload from being buffered by a route that forgot to bound itself.
-`EPHEMERIS_MAX_BODY_BYTES` overrides it at startup; see app/security.py.
-"""
-
-LARGEST_ROUTE_CAP = 512 * 1024
-"""The biggest per-route body cap in the app — the floor under any ceiling.
-
-The routes that bound their own bodies are the Learn JSON endpoints (artifact
-512 KiB, attempt 256 KiB, assessment 64 KiB, run 16 KiB) and this is the
-largest of the four; `tests/test_130_limits.py` reads the real constants and
-fails if that stops being true. Spelled here rather than imported from
-`app/routers/learn.py` because the perimeter must not import a router.
-
-It exists so the *override* obeys the same invariant the default does. A
-ceiling at or below this would not tighten anything — the route caps already
-bind — it would only convert a Learn endpoint's typed JSON refusal, which the
-lesson agent parses, into the perimeter's blunt plain-text 413.
-"""
-
-BODY_CEILING_HEADROOM = 1024 * 1024
-"""How far a ceiling must clear `LARGEST_ROUTE_CAP` before it is safe.
-
-Not decoration on "strictly above". The perimeter counts whole ASGI chunks and
-withholds the one that crosses it, so if the two limits are less than a chunk
-apart, a single delivery can cross both and the route never sees the bytes that
-would have tripped its own counter — the blunt 413 again, just harder to
-notice. Clearing the largest cap by a megabyte puts them further apart than any
-chunk this stack produces: Uvicorn reads in tens of kilobytes, and Starlette's
-form parser refuses a single field over 1 MB.
 """
 
 # --- retention -------------------------------------------------------------
