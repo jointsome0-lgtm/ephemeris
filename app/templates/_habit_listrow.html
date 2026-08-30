@@ -1,22 +1,23 @@
-{# One habit row in the Habit tab (binary, TickTick): emoji avatar · name ·
-   "✓total Day  streak Day" instrument line · a circular check-in ring on the
-   right (toggles today's check-in). Body links to the detail pane
-   (?sel=habit-{id}). Context: it (enriched: id/title/emoji/status/
-   current_streak/total), sel, sel_id, today. #}
+{# One habit row (binary, TickTick): emoji avatar · name · "✓total Day  streak
+   Day" instrument line · a circular check-in ring on the right (toggles the
+   day's check-in). Context: it (enriched: id/title/emoji/status/
+   current_streak/total), sel, sel_id, date, and from the including page
+   return_to (where the ring's form lands), row_link (the body link, completed
+   by the habit id) and for_today (timer button and "for today" wording). #}
 {% import "_icons.html" as ic %}
 {% set a = avatar(it.title) %}
 <div class="habit-row{% if sel == 'habit' and sel_id == it.id %} sel{% endif %}"
-     id="item-{{ it.id }}" data-item="{{ it.id }}" data-date="{{ today }}" data-status="{{ it.status or '' }}">
+     id="item-{{ it.id }}" data-item="{{ it.id }}" data-date="{{ date }}" data-status="{{ it.status or '' }}">
 
   {# external form lets the ring submit a full_done toggle with no JS (Mode A) #}
   <form id="dot-{{ it.id }}" method="post" action="/checkins" hidden>
-    <input type="hidden" name="date" value="{{ today }}">
+    <input type="hidden" name="date" value="{{ date }}">
     <input type="hidden" name="routine_item_id" value="{{ it.id }}">
     <input type="hidden" name="status" value="full_done">
-    <input type="hidden" name="return_to" value="/habits">
+    <input type="hidden" name="return_to" value="{{ return_to }}">
   </form>
 
-  <a class="hl-main" href="?sel=habit-{{ it.id }}">
+  <a class="hl-main" href="{{ row_link }}{{ it.id }}">
     <span class="avatar" {% if not (it.emoji or a.emoji) %}style="background:hsl({{ a.hue }} 55% 55%)"{% endif %}>
       {{ it.emoji or a.emoji or a.letter }}
     </span>
@@ -29,13 +30,15 @@
     </span>
   </a>
 
+  {% if for_today %}
   {# start the timer on this habit without drilling into it (#75) — the drawer
      opens prefilled, so "an hour of X" costs one click from the list #}
   <button type="button" class="hl-timer timer-here" data-timer-target="habit:{{ it.id }}"
           title="Start the focus timer on {{ it.title }}"
           aria-label="Start the focus timer on {{ it.title }}">{{ ic.icon('focus') }}</button>
+  {% endif %}
 
   <button type="submit" form="dot-{{ it.id }}" data-dot
           class="hl-check{% if it.status %} done{% endif %}"
-          aria-label="Check in {{ it.title }} for today"><span class="wd-glyph">✓</span></button>
+          aria-label="Check in {{ it.title }}{% if for_today %} for today{% endif %}"><span class="wd-glyph">✓</span></button>
 </div>

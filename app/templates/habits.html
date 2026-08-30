@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_icons.html" as ic %}
+{% from "_week_strip.html" import week_strip %}
 {% block title %}Habit · Ephemeris{% endblock %}
 {% block content_class %}habit-page{% endblock %}
 
@@ -12,19 +13,7 @@
     </div>
   </header>
 
-  <nav class="week-strip" aria-label="Week">
-    {% for d in week %}
-      {% if d.is_future %}
-        <span class="day future"><span class="dow">{{ d.dow }}</span><span class="num">{{ d.day }}</span><span class="ring"></span></span>
-      {% else %}
-        <a class="day{% if d.is_today %} today active{% endif %}{% if not d.is_today and not d.logged %} past{% endif %}"
-           href="{% if d.is_today %}/habits{% else %}/history?date={{ d.date }}{% endif %}">
-          <span class="dow">{{ d.dow }}</span><span class="num">{{ d.day }}</span>
-          <span class="ring{% if d.logged %} done{% endif %}">{% if d.logged %}✓{% endif %}</span>
-        </a>
-      {% endif %}
-    {% endfor %}
-  </nav>
+  {{ week_strip(week) }}
 
   {% if flash %}<p class="flash" role="status">{{ flash }}</p>{% endif %}
 
@@ -37,7 +26,9 @@
         <span class="tsection-count">{{ habits|length }}</span>
       </summary>
       <div class="tsection-body">
+        {% with return_to='/habits', row_link='?sel=habit-', for_today=true %}
         {% for it in habits %}{% include "_habit_listrow.html" %}{% endfor %}
+        {% endwith %}
       </div>
     </details>
     {% endfor %}

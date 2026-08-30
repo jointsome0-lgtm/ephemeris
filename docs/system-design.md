@@ -1231,8 +1231,9 @@ request/response server).
 - `POST /habits/{id}/delete` → `items.delete_item` (**hard**: deletes the row and its
   `checkins` in one `with conn:`, appends a `routine_item_deleted` audit event so the
   ledger still records it).
-- The rich day-review view moved to `GET /history` (still `today.html`,
-  `day-layout`); `GET /habit/{id}` stays the standalone full detail page.
+- The rich day-review view moved to `GET /history` (`habit_day.html`, the same
+  week-strip macro and `_habit_listrow` rows as the tab); `GET /habit/{id}` stays
+  the standalone full detail page.
 
 All four POSTs carry the same-origin guard (docs/security-model.md) and a validated `return_to`
 (`_safe_return`), 303-redirecting back to the tab/open pane; `ItemError` (e.g. empty
@@ -1244,12 +1245,15 @@ title) round-trips as a `?flash=` message.
   Frequency / Goal / Start Date / Goal Days / **Section** (text + `<datalist>` of
   existing sections) / Reminder / Constant Reminder, hidden `return_to`, Cancel +
   Save. `item` (row|None) drives prefill.
-- `_habit_listrow.html` — a row whose name is a **pane link** (`?sel=habit-{id}`),
-  not a `<details>`: colour icon · title · `🔥 N days streak`, with a **circular
-  check-in ring** (`.hl-check`) on the right (TickTick's row affordance). The ring is
-  the full_done toggle — `data-dot` for Mode B (app.js now selects the check via
-  `[data-dot]`, so it drives both this ring and the day-view dot) and a hidden
-  `dot-{id}` form for the Mode-A fallback. Ring colour/glyph track the four statuses.
+- `_habit_listrow.html` — a row whose name is a link, not a `<details>`: colour
+  icon · title · kept-day total · streak, with a **circular check-in ring**
+  (`.hl-check`) on the right (TickTick's row affordance). The including page
+  passes `row_link` (the tab links to the pane, `?sel=habit-`; `/history` to the
+  full page, `/habit/`), `return_to` for the ring's form, and `for_today`, which
+  adds the timer button and the "for today" wording on the tab only. The ring is
+  the full_done toggle — `data-dot` for Mode B (app.js selects the check via
+  `[data-dot]`, so it drives both pages) and a hidden `dot-{id}` form for the
+  Mode-A fallback. Ring colour/glyph track the four statuses.
 - `_habit_detail.html` (rewritten) — in the pane it adds a close ×, the **⋯ menu**
   (`<details class="rowmenu">` → Edit / Open full page / Archive / Delete, Delete
   behind `confirm()`), and either the inline edit form or a **Today** check-in card.

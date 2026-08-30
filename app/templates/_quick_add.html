@@ -1,0 +1,10 @@
+{% if show_add %}
+<form class="quick-add" method="post" action="/tasks" autocomplete="off">
+  <input type="hidden" name="return_to" value="{{ cur_path }}">
+  <input type="hidden" name="smart" value="1">
+  <input type="hidden" name="list_id" value="{{ add_list_id }}">
+  {% if add_due %}<input type="hidden" name="due_date" value="{{ add_due }}">{% endif %}
+  <span class="qa-plus" aria-hidden="true">+</span>
+  <input type="text" name="title" class="qa-input" placeholder="{{ add_placeholder }}" required>
+</form>
+{% endif %}

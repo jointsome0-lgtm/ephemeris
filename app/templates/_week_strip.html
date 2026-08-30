@@ -1,0 +1,15 @@
+{% macro week_strip(week) %}
+<nav class="week-strip" aria-label="Week">
+  {% for d in week %}
+    {% if d.is_future %}
+      <span class="day future"><span class="dow">{{ d.dow }}</span><span class="num">{{ d.day }}</span><span class="ring"></span></span>
+    {% else %}
+      <a class="day{% if d.is_today %} today{% endif %}{% if d.is_active %} active{% endif %}{% if not d.is_active and not d.logged %} past{% endif %}"
+         href="{% if d.is_today %}/habits{% else %}/history?date={{ d.date }}{% endif %}">
+        <span class="dow">{{ d.dow }}</span><span class="num">{{ d.day }}</span>
+        <span class="ring{% if d.logged %} done{% endif %}">{% if d.logged %}✓{% endif %}</span>
+      </a>
+    {% endif %}
+  {% endfor %}
+</nav>
+{% endmacro %}
