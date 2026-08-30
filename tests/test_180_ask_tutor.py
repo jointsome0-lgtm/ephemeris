@@ -105,7 +105,7 @@ def _events(lesson_uid: str) -> list[dict]:
 
 def _submit(client, lesson: dict, lesson_dir: Path, page_id: str,
             question_id: str, answer: str, key: str) -> dict:
-    attempts._reset_rate_limit()
+    attempts._rate.clear()
     return client.post(
         f"/learn/lessons/{lesson['id']}/attempts",
         json={

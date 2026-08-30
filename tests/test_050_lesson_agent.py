@@ -586,8 +586,8 @@ def test_lesson_agent_learning(client, suite_state):
     _s4_rev = "sha256:" + hashlib.sha256(
         (_s4_dir / "index.html").read_bytes()).hexdigest()
     _s4_url = f"/learn/lessons/{_s4_id}/assessments"
-    attempts_svc._reset_rate_limit()
-    assess_svc._reset_rate_limit()
+    attempts_svc._rate.clear()
+    assess_svc._rate.clear()
 
     def _s4_attempt(question_id, answer, key):
         return c.post(f"/learn/lessons/{_s4_id}/attempts", json={
@@ -1435,7 +1435,7 @@ def test_lesson_agent_learning(client, suite_state):
     # panel rather than half-draw it.
     _s4_stale_selected = {
         k: v for k, v in dict(
-            lessons_svc.with_bundle_info(_s4),
+            lessons_svc.with_bundle_info_read(_s4)[0],
             file_url="", preview_url="", preview_meta_url="",
             sandbox="allow-scripts", record=None,
         ).items() if k != "record"

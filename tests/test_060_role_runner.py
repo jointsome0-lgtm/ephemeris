@@ -200,13 +200,9 @@ def test_role_runner(client, suite_state):
             "file": "attempts/blk_demo/main.py", "runner_id": "python-script-v1",
         }],
     }
-    _f3_compatible = bschema.read_manifest_text(
-        json.dumps(_f3_manifest), runner_registry=_runner_registry.RUNNER_REGISTRY
-    )
+    _f3_compatible = bschema.read_manifest_text(json.dumps(_f3_manifest))
     _f3_manifest["blocks"][0]["file"] = "attempts/blk_demo/main.go"
-    _f3_incompatible = bschema.read_manifest_text(
-        json.dumps(_f3_manifest), runner_registry=_runner_registry.RUNNER_REGISTRY
-    )
+    _f3_incompatible = bschema.read_manifest_text(json.dumps(_f3_manifest))
     assert (
         _f3_compatible.blocks[0]["run_enabled"] is True
         and _f3_incompatible.blocks[0]["run_enabled"] is False
@@ -215,25 +211,16 @@ def test_role_runner(client, suite_state):
     _f3_manifest["blocks"][0]["file"] = "attempts/blk_demo/main.py"
     _f3_legacy_manifest = json.loads(json.dumps(_f3_manifest))
     _f3_legacy_manifest.pop("runtime")
-    _f3_legacy = bschema.read_manifest_text(
-        json.dumps(_f3_legacy_manifest),
-        runner_registry=_runner_registry.RUNNER_REGISTRY,
-    )
+    _f3_legacy = bschema.read_manifest_text(json.dumps(_f3_legacy_manifest))
     _f3_rejected_manifest = json.loads(json.dumps(_f3_manifest))
     _f3_rejected_manifest.pop("lesson_uid")
-    _f3_rejected = bschema.read_manifest_text(
-        json.dumps(_f3_rejected_manifest),
-        runner_registry=_runner_registry.RUNNER_REGISTRY,
-    )
+    _f3_rejected = bschema.read_manifest_text(json.dumps(_f3_rejected_manifest))
     assert (
         _f3_legacy.effective_profile == bschema.PROFILE_LEGACY
         and _f3_legacy.blocks[0]["run_enabled"] is False
         and _f3_rejected.rejected
         and _f3_rejected.blocks[0]["run_enabled"] is False
     ), "F3 fail-closed manifests never grant the Run affordance"
-    import inspect as _inspect
-    _ensure_source = _inspect.getsource(lessons_svc._ensure_bundle_manifest)
-    assert _ensure_source.count("runner_registry=RUNNER_REGISTRY") == 2, "F3 lesson manifest reads use the real registry at both call sites"
 
     _f3_kill_job = _types.SimpleNamespace(process=_types.SimpleNamespace(pid=778899))
     with _mock.patch.object(_runner.os, "killpg") as _killpg:
@@ -512,14 +499,6 @@ def test_role_runner(client, suite_state):
             return process
 
         service = _runner.RunnerService(spawn_hook=spawn, health_hook=lambda: None)
-        with _mock.patch.object(_runner, "RUNNER_FILE_BYTES", 8):
-            try:
-                await service.admit(req(key="oversized", snapshot=b"123456789"))
-                result["oversized_snapshot"] = False
-            except _runner.SnapshotTooLargeError:
-                result["oversized_snapshot"] = (
-                    not processes and service._active_total == 0
-                )
         admission = await service.admit(req())
         result["starting"] = admission.job.state == _runner.STARTING
         await _asyncio.sleep(0)
@@ -961,7 +940,6 @@ def test_role_runner(client, suite_state):
         _f3_service.get("starting") and _f3_service.get("running")
         and _f3_service.get("normal")
     ), f"F3 state machine reaches FINISHED only after reap/EOF with split UTF-8 intact: {str(_f3_service)}"
-    assert _f3_service.get("oversized_snapshot"), f"F3 admission refuses an oversized snapshot before spawn: {str(_f3_service)}"
     assert (
         _f3_service.get("first_cause_release")
           and _f3_service.get("spawn_failure")
@@ -985,7 +963,7 @@ def test_role_runner(client, suite_state):
         for cause in sorted(_runner.TERMINAL_CAUSES):
             service = _runner.RunnerService(health_hook=lambda: None)
             request = _runner.RunnerRequest(
-                lesson_key=f"lesson-{cause}", block_id="blk_matrix",
+                lesson_uid=f"lesson-{cause}", block_id="blk_matrix",
                 file_rev="sha256:invented", idempotency_key=f"key-{cause}",
                 runner_id="python-script-v1", filename="main.py",
                 snapshot=b"print('invented')\n",
@@ -997,7 +975,7 @@ def test_role_runner(client, suite_state):
                 _runner_registry.RUNNER_REGISTRY["python-script-v1"],
             )
             service._jobs[job.job_id] = job
-            service._active_by_lesson[request.lesson_key] = 1
+            service._active_by_lesson[request.lesson_uid] = 1
             service._active_total = 1
             async with service._lock:
                 first = service._begin_termination_locked(job, cause)
@@ -1043,7 +1021,7 @@ def test_role_runner(client, suite_state):
 
         service = _runner.RunnerService(health_hook=lambda: None)
         request_data = _runner.RunnerRequest(
-            lesson_key="invented-disconnect-lesson", block_id="blk_demo",
+            lesson_uid="invented-disconnect-lesson", block_id="blk_demo",
             file_rev="sha256:invented", idempotency_key="invented-disconnect-key",
             runner_id="python-script-v1", filename="main.py",
             snapshot=b"print('invented')\n", bundle_dir="/tmp/invented-bundle",

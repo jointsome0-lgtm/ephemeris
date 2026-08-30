@@ -25,7 +25,6 @@ def _job(
     bundle_dir, output: str, *, exit_code: int = 2, finished_ago: float = 0.0,
 ) -> runner.RunnerJob:
     request = runner.RunnerRequest(
-        lesson_key="invented-runs-projection",
         block_id="blk_runs01",
         file_rev="sha256:" + "1" * 64,
         idempotency_key=str(uuid4()),

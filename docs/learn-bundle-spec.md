@@ -1202,12 +1202,10 @@ when this spec was written).
 | `v2-unreadable.json.broken` | `rejected`: `manifest-unreadable` (`.broken` keeps it out of `*.json` globs) |
 | `v99-unsupported-version.json` | `rejected`: `unsupported-version` |
 
-Runner-dependent expectations are executable only against a registry:
-`cases.json` carries a fixture-only `runner_registry` context
-(`python-script-v1` known, `quantum-teleport-v9` unknown) that C3 tests
-MUST install regardless of what the real F3 registry contains. The
-migration case likewise carries its DB context (`lesson_uid`,
-`db_current_entry`) machine-readably.
+Runner-dependent expectations run against the real registry
+(`python-script-v1` known, `quantum-teleport-v9` unknown). The migration
+case carries its DB context (`lesson_uid`, `db_current_entry`)
+machine-readably.
 
 The projection record example lives inline in §6.2 (a committed
 `attempts.jsonl` would trip the repo-wide `*.jsonl` hygiene denial — the

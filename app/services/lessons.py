@@ -28,7 +28,6 @@ from uuid import uuid4
 
 from ..db import DATA_DIR, append_event, get_conn, now_iso
 from . import bundle_schema
-from .runner_registry import RUNNER_REGISTRY
 
 STATUSES = ("backlog", "studying", "paused", "studied")
 STATUS_LABELS = {
@@ -779,14 +778,10 @@ def _ensure_bundle_manifest(lesson: dict) -> bundle_schema.ManifestRead:
     _ensure_bundle_repo(lesson_dir)
 
     manifest_path = _manifest_path(lesson["slug"])
-    read = bundle_schema.read_manifest_path(
-        manifest_path, db_lesson=lesson, runner_registry=RUNNER_REGISTRY
-    )
+    read = bundle_schema.read_manifest_path(manifest_path, db_lesson=lesson)
     if read is None:  # genuinely missing: creation, not migration (§9.1)
         _write_manifest(manifest_path, _default_manifest(lesson))
-        read = bundle_schema.read_manifest_path(
-            manifest_path, db_lesson=lesson, runner_registry=RUNNER_REGISTRY
-        )
+        read = bundle_schema.read_manifest_path(manifest_path, db_lesson=lesson)
         if read is None:
             return bundle_schema.rejected_read(
                 "manifest-unreadable", "manifest vanished after creation"
@@ -1076,9 +1071,7 @@ def read_bundle_readonly(lesson: dict) -> bundle_schema.ManifestRead:
                 "symlinked-bundle", "lesson bundle dir is not a real directory"
             )
         read = bundle_schema.read_manifest_path(
-            _manifest_path(lesson["slug"]),
-            db_lesson=lesson,
-            runner_registry=RUNNER_REGISTRY,
+            _manifest_path(lesson["slug"]), db_lesson=lesson
         )
     except (KeyError, OSError, LessonError):
         return bundle_schema.rejected_read(
@@ -1309,11 +1302,6 @@ def _bundle_info(
     }
 
 
-def bundle_info(lesson: dict, entry: str | None = None) -> dict:
-    """Agent-facing file bundle plus the app's current entry selection."""
-    return _bundle_info(lesson, _ensure_bundle_manifest(lesson), entry)
-
-
 def with_bundle_info_read(
     lesson: dict | None,
     entry: str | None = None,
@@ -1328,11 +1316,6 @@ def with_bundle_info_read(
     lesson["file"] = lesson["bundle"]["file"]
     lesson["pages"] = lesson["bundle"]["pages"]
     return lesson, read
-
-
-def with_bundle_info(lesson: dict | None, entry: str | None = None) -> dict | None:
-    lesson, _read = with_bundle_info_read(lesson, entry)
-    return lesson
 
 
 def _require_lesson(conn: sqlite3.Connection, lesson_id: int) -> sqlite3.Row:
@@ -3169,7 +3152,8 @@ def create_lesson(conn: sqlite3.Connection, title: str, source_url: str | None =
 def mark_opened(conn: sqlite3.Connection, lesson_id: int, entry: str) -> None:
     """Persist lightweight UI state without adding a noisy ledger event.
     Callers pass an entry already resolved against the bundle read model
-    (bundle_info), so v2 selections are declared pages by construction."""
+    (with_bundle_info_read), so v2 selections are declared pages by
+    construction."""
     entry = _clean_html_ref(entry)
     _require_lesson(conn, lesson_id)
     ts = now_iso()
