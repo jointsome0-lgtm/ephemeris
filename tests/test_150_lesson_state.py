@@ -4,9 +4,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from app.db import get_conn
+from app.db import get_conn, now_iso
 from app.routers import learn
 from app.services import assessments, attempts, bundle_schema, focus, lessons
 
@@ -255,7 +256,17 @@ def test_record_panel_keeps_the_shared_snapshot_counts_and_rendering(client):
     _record_answer_and_state(lesson, manifest)
     conn = get_conn()
     try:
-        focus.record_session(conn, "open", 2 * 60, lesson_id=lesson["id"])
+        # A countdown that ran out is credited exactly its length, so backdating
+        # the start past the target records 120 seconds through the real path.
+        focus.start_run(conn, "countdown", "record-state-focus", target_seconds=120,
+                        lesson_id=lesson["id"])
+        with conn:
+            conn.execute(
+                "UPDATE focus_runs SET started_at = ? WHERE client_token = ?",
+                ((datetime.fromisoformat(now_iso()) - timedelta(minutes=3))
+                 .isoformat(timespec="seconds"), "record-state-focus"),
+            )
+        focus.finish_run(conn, "record-state-focus")
         lesson = lessons.get_lesson(conn, lesson["id"])
         read = lessons.read_bundle_readonly(lesson)
         db_state = lessons.record_panel_db_state(conn, lesson["id"])

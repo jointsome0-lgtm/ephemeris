@@ -119,7 +119,7 @@ def get_list_view(request: Request, list_id: int, sel: str | None = None,
     lst = lists.get_list(conn, list_id)
     if lst is None or lst["archived_at"] is not None:
         raise HTTPException(status_code=404, detail="unknown list")
-    every = tasks.list_tasks(conn, list_id, include_done=True)
+    every = tasks.list_tasks(conn, list_id)
     sections = [
         {"title": "Tasks", "kind": "task", "rows": [t for t in every if not t["completed_at"]]},
         {"title": "Completed", "kind": "task", "rows": [t for t in every if t["completed_at"]]},
@@ -173,15 +173,14 @@ def get_history(request: Request, date: str | None = None, flash: str | None = N
                 conn: sqlite3.Connection = Depends(get_db)):
     date = date or today_str()
     date = _validated_write_date(date)  # valid + not future
-    nav = "today" if date == today_str() else "history"
-    return _render_day(request, conn, date, nav, flash, rail="habit")
+    return _render_day(request, conn, date, flash, rail="habit")
 
 
 # --- Tasks write contract (sec21) ------------------------------------------
 
 
 @write_router.post("/lists")
-def post_list_create(request: Request, name: str = Form(...), emoji: str = Form(""),
+def post_list_create(name: str = Form(...), emoji: str = Form(""),
                      conn: sqlite3.Connection = Depends(get_db)):
     """Create a user list from the sidebar's + modal, then open it."""
     try:
@@ -270,7 +269,6 @@ def post_task_status(request: Request, task_id: int, status: str = Form(...),
 
 @write_router.post("/tasks/{task_id}/update")
 def post_task_update(
-    request: Request,
     task_id: int,
     title: str = Form(...),
     note: str = Form(""),

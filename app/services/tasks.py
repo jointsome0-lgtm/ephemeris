@@ -279,12 +279,12 @@ def next7(conn: sqlite3.Connection, today: str | None = None) -> list[sqlite3.Ro
     ).fetchall()
 
 
-def list_tasks(conn: sqlite3.Connection, list_id: int, include_done: bool = False) -> list[sqlite3.Row]:
-    q = _SELECT + "WHERE t.list_id = ? AND t.kind='task'"
-    if not include_done:
-        q += " AND t.completed_at IS NULL"
-    q += " ORDER BY t.completed_at IS NOT NULL, t.priority DESC, t.sort_order, t.id"
-    return conn.execute(q, (list_id,)).fetchall()
+def list_tasks(conn: sqlite3.Connection, list_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        _SELECT + "WHERE t.list_id = ? AND t.kind='task' "
+        "ORDER BY t.completed_at IS NOT NULL, t.priority DESC, t.sort_order, t.id",
+        (list_id,),
+    ).fetchall()
 
 
 def board(conn: sqlite3.Connection, done_limit: int = DONE_LIMIT) -> dict[str, list]:

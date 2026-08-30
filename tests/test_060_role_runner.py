@@ -17,6 +17,12 @@ from pathlib import Path
 from conftest import ROOT, events_of, item_row
 
 
+async def _finished(service, job_id):
+    job = await service.get(job_id)
+    await job.finished.wait()
+    return job
+
+
 
 def test_role_runner(client, suite_state):
     from app.db import SCHEMA_VERSION, get_conn, pretty_date, today_str
@@ -134,7 +140,7 @@ def test_role_runner(client, suite_state):
         call = spawn.call_args
         result = (
             resolve.call_count == 1 and prepare.call_count == 0
-            and proxy.call_args.args == ("lesson-learner",)
+            and proxy.call_count == 1
             and call.args == ("/bin/bash", "-i")
             and call.kwargs["cwd"] == workspace["dir"]
             and session.role == "lesson-learner"
@@ -366,7 +372,7 @@ def test_role_runner(client, suite_state):
         )
         with _mock.patch.object(_runner, "_create_leader", side_effect=fake_exec):
             job = (await service.admit(request)).job
-            await service.wait(job.job_id)
+            await _finished(service, job.job_id)
         observed["workdir"] = job.workdir
         observed["workdir_removed"] = (
             not os.path.exists(job.workdir) and not os.path.exists(f"{job.workdir}.tmp")
@@ -383,7 +389,7 @@ def test_role_runner(client, suite_state):
                 _runner, "_create_leader",
                 side_effect=OSError("invented exec refusal")):
             failed = (await service.admit(failed_request)).job
-            await service.wait(failed.job_id)
+            await _finished(service, failed.job_id)
         observed["failed_cause"] = failed.cause
         observed["failed_workdir_removed"] = bool(failed.workdir) and not any(
             os.path.exists(p) for p in (failed.workdir, f"{failed.workdir}.tmp")
@@ -428,7 +434,7 @@ def test_role_runner(client, suite_state):
 
         async def run(key, snapshot):
             job = (await service.admit(req(key, snapshot))).job
-            await service.wait(job.job_id)
+            await _finished(service, job.job_id)
             await job.event_attempted.wait()
             output = "".join(
                 event["text"] for event in job.events if event["event"] == "output"
@@ -512,7 +518,7 @@ def test_role_runner(client, suite_state):
                 result["oversized_snapshot"] = False
             except _runner.SnapshotTooLargeError:
                 result["oversized_snapshot"] = (
-                    not processes and service.active_total == 0
+                    not processes and service._active_total == 0
                 )
         admission = await service.admit(req())
         result["starting"] = admission.job.state == _runner.STARTING
@@ -523,7 +529,7 @@ def test_role_runner(client, suite_state):
         await _asyncio.sleep(0)
         processes[0].stdout.feed_data(b"\x82\xac\n")
         processes[0].finish(0)
-        finished = await service.wait(admission.job.job_id)
+        finished = await _finished(service, admission.job.job_id)
         result["normal"] = (
             finished.state == _runner.FINISHED
             and finished.cause == "exit" and finished.exit_code == 0
@@ -574,7 +580,7 @@ def test_role_runner(client, suite_state):
                 break
             await _asyncio.sleep(0.01)
         health_processes[0].finish(0)
-        await health_service.wait(health_admission.job.job_id)
+        await _finished(health_service, health_admission.job.job_id)
         result["health_off_loop"] = (
             health_started.is_set()
             and health_threads == [health_threads[0]]
@@ -604,7 +610,7 @@ def test_role_runner(client, suite_state):
                 _runner.RunnerService, "_kill_tree") as natural_kill:
             natural_cancelled = await natural_service.cancel(natural.job_id)
         natural_processes[0].finish(0)
-        natural = await natural_service.wait(natural.job_id)
+        natural = await _finished(natural_service, natural.job_id)
         result["natural_exit_beats_cancel"] = (
             not natural_cancelled and natural_kill.call_count == 0
             and natural.cause == "exit" and natural.exit_code == 0
@@ -653,11 +659,11 @@ def test_role_runner(client, suite_state):
             first = await cancel_task
             second = await cancel_service.cancel(cancelled.job_id)
         cancel_processes[0].finish(-9)
-        cancelled = await cancel_service.wait(cancelled.job_id)
+        cancelled = await _finished(cancel_service, cancelled.job_id)
         result["first_cause_release"] = (
             first and not second and cancelled.cause == "cancelled"
             and cancelled.reservation_released
-            and cancel_service.active_total == 0 and kill.call_count == 1
+            and cancel_service._active_total == 0 and kill.call_count == 1
             and sum(event["event"] == "exit" for event in cancelled.events) == 1
         )
         result["cancel_off_loop"] = (
@@ -672,10 +678,10 @@ def test_role_runner(client, suite_state):
             spawn_hook=broken_spawn, health_hook=lambda: None
         )
         broken = (await broken_service.admit(req("lesson-d", "key-d"))).job
-        broken = await broken_service.wait(broken.job_id)
+        broken = await _finished(broken_service, broken.job_id)
         result["spawn_failure"] = (
             broken.cause == "spawn-failed" and broken.state == _runner.FINISHED
-            and broken.reservation_released and broken_service.active_total == 0
+            and broken.reservation_released and broken_service._active_total == 0
         )
 
         race_processes = []
@@ -713,7 +719,7 @@ def test_role_runner(client, suite_state):
             process.finish(0)
         for item in per_lesson:
             if isinstance(item, _runner.Admission):
-                await race_service.wait(item.job.job_id)
+                await _finished(race_service, item.job.job_id)
 
         global_processes = []
 
@@ -738,7 +744,7 @@ def test_role_runner(client, suite_state):
             process.finish(0)
         for item in global_results:
             if isinstance(item, _runner.Admission):
-                await global_service.wait(item.job.job_id)
+                await _finished(global_service, item.job.job_id)
 
         rate_calls = []
         replay_processes = []
@@ -759,20 +765,20 @@ def test_role_runner(client, suite_state):
         result["idempotency_first"] = (
             replay_results[0].job is replay_results[1].job
             and {item.replayed for item in replay_results} == {False, True}
-            and len(rate_calls) == 1 and replay_service.active_total == 1
+            and len(rate_calls) == 1 and replay_service._active_total == 1
         )
         await _asyncio.sleep(0)
         replay_processes[0].finish(0)
-        await replay_service.wait(replay_results[0].job.job_id)
+        await _finished(replay_service, replay_results[0].job.job_id)
 
         retention_service = _runner.RunnerService(
             spawn_hook=broken_spawn, health_hook=lambda: None,
             max_terminal_jobs=1,
         )
         old = (await retention_service.admit(req("old", "old-key"))).job
-        await retention_service.wait(old.job_id)
+        await _finished(retention_service, old.job_id)
         new = (await retention_service.admit(req("new", "new-key"))).job
-        await retention_service.wait(new.job_id)
+        await _finished(retention_service, new.job_id)
         try:
             await retention_service.preflight(
                 "old", "old-key", "blk_demo", "sha256:invented"
@@ -807,7 +813,7 @@ def test_role_runner(client, suite_state):
         later = (
             await retention_service.admit(req("later", "later-key"))
         ).job
-        await retention_service.wait(later.job_id)
+        await _finished(retention_service, later.job_id)
         attached_survived_pruning = (
             await retention_service.get(new.job_id) is new
         )
@@ -905,7 +911,7 @@ def test_role_runner(client, suite_state):
             await notify_service.events_after(notify_job.job_id, output_cursor)
         )
         notify_processes[0].finish(0)
-        await notify_service.wait(notify_job.job_id)
+        await _finished(notify_service, notify_job.job_id)
         await _asyncio.wait_for(
             notify_service.wait_for_update(notify_job.job_id, output_cursor),
             timeout=0.2,
@@ -946,7 +952,7 @@ def test_role_runner(client, suite_state):
             shutdown_job.cause == "shutdown"
             and shutdown_job.state == _runner.FINISHED
             and shutdown_job.reservation_released
-            and shutdown_service.active_total == 0
+            and shutdown_service._active_total == 0
         )
         return result
 
@@ -1008,7 +1014,7 @@ def test_role_runner(client, suite_state):
             exits = [event for event in job.events if event["event"] == "exit"]
             results[cause] = (
                 first and not second and job.state == _runner.FINISHED
-                and job.reservation_released and service.active_total == 0
+                and job.reservation_released and service._active_total == 0
                 and len(exits) == 1 and exits[0]["cause"] == cause
                 and job.event_attempted.is_set()
             )

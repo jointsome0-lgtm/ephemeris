@@ -93,7 +93,7 @@ def test_lesson_agent_learning(client, suite_state):
             lesson_sess is not None
             and lesson_sess.role == "lesson-agent"
             and lesson_sess.workspace == expected_workspace
-            and proxy_detect.call_args.args == ("lesson-agent",)
+            and proxy_detect.call_count == 1
             and spawn_call.args == (os.environ.get("SHELL") or "/bin/bash", "-i")
             and spawn_call.kwargs["cwd"] == expected_workspace
             and spawn_call.kwargs["preexec_fn"].__qualname__.startswith(
@@ -145,7 +145,7 @@ def test_lesson_agent_learning(client, suite_state):
             plain_sess is not None
             and plain_sess.role == "plain"
             and plain_sess.workspace == str(_terminal._REPO_ROOT)
-            and proxy_detect.call_args.args == ("plain",)
+            and proxy_detect.call_count == 1
             and plain_call.args == (os.environ.get("SHELL") or "/bin/bash", "-i")
             and plain_call.kwargs["cwd"] == str(_terminal._REPO_ROOT)
             and plain_call.kwargs["preexec_fn"].__qualname__.startswith(
@@ -221,37 +221,30 @@ def test_lesson_agent_learning(client, suite_state):
     with _mock.patch.dict(
             os.environ,
             {"EPHEMERIS_TERM_PROXY": "http://127.0.0.1:19091"}):
-        _proxy_plain = _terminal._detect_proxy_env("plain")
-        _proxy_agent = _terminal._detect_proxy_env("lesson-agent")
-        _proxy_learner = _terminal._detect_proxy_env("lesson-learner")
+        _proxy_plain = _terminal._detect_proxy_env()
     with _mock.patch.dict(
             os.environ, {"EPHEMERIS_TERM_PROXY": "off"}):
-        _proxy_off = (
-            _terminal._detect_proxy_env("plain"),
-            _terminal._detect_proxy_env("lesson-agent"),
-        )
+        _proxy_off = _terminal._detect_proxy_env()
     assert (
         _proxy_plain.get("HTTP_PROXY") == "http://127.0.0.1:19091"
-        and _proxy_agent.get("HTTPS_PROXY") == "http://127.0.0.1:19091"
-        and _proxy_learner == _proxy_agent
-        and _proxy_off == ({}, {})
+        and _proxy_plain.get("HTTPS_PROXY") == "http://127.0.0.1:19091"
+        and _proxy_off == {}
     ), (
-        "E2 proxy env reaches every host-network role (learner matches agent) "
-        "and honors override-off"
+        "E2 proxy env honors an explicit override and override-off"
     )
     # A proxied child must still reach this app directly: the s3 capability URL
     # is a loopback address, and an inherited proxy can arrive with no NO_PROXY
     # at all (or one that never mentions loopback).
     with _mock.patch.dict(
             os.environ, {"HTTP_PROXY": "http://proxy.invalid:3128"}, clear=True):
-        _proxy_inherited = _terminal._detect_proxy_env("lesson-agent")
+        _proxy_inherited = _terminal._detect_proxy_env()
     with _mock.patch.dict(
             os.environ,
             {"HTTP_PROXY": "http://proxy.invalid:3128",
              # both spellings, deliberately different: neither list may be lost
              "NO_PROXY": "example.invalid", "no_proxy": "lower.invalid"},
             clear=True):
-        _proxy_kept = _terminal._detect_proxy_env("lesson-agent")
+        _proxy_kept = _terminal._detect_proxy_env()
     _proxy_none = _terminal._with_loopback_direct({})
     assert (
         _proxy_inherited["HTTP_PROXY"] == "http://proxy.invalid:3128"
@@ -265,7 +258,7 @@ def test_lesson_agent_learning(client, suite_state):
         and _proxy_kept["HTTP_PROXY"] == "http://proxy.invalid:3128"
         # the composed sets already spell it out, and a proxy-less child is
         # left exactly as it was
-        and _proxy_plain["NO_PROXY"] == _terminal._NO_PROXY
+        and _proxy_plain["NO_PROXY"] == ",".join(_terminal._LOOPBACK_NO_PROXY)
         and _proxy_none == {}
     ), (
         "an inherited proxy never swallows this app's own loopback address"
@@ -558,11 +551,24 @@ def test_lesson_agent_learning(client, suite_state):
         finally:
             conn_.close()
 
+    from datetime import datetime as _s4_dtm, timedelta as _s4_td
+
+    from app.db import now_iso as _s4_now_iso
     _s4_conn = get_conn()
     try:
         _s4_id = lessons_svc.create_lesson(_s4_conn, "Record Panel Fixture")
         _s4 = lessons_svc.get_lesson(_s4_conn, _s4_id)
-        _s4_focus.record_session(_s4_conn, "countdown", 25 * 60, lesson_id=_s4_id)
+        # A countdown that ran out is credited exactly its length, so backdating
+        # the start past the target records 25 minutes through the real path.
+        _s4_focus.start_run(_s4_conn, "countdown", "s4-focus", target_seconds=25 * 60,
+                            lesson_id=_s4_id)
+        with _s4_conn:
+            _s4_conn.execute(
+                "UPDATE focus_runs SET started_at = ? WHERE client_token = ?",
+                ((_s4_dtm.fromisoformat(_s4_now_iso()) - _s4_td(minutes=26))
+                 .isoformat(timespec="seconds"), "s4-focus"),
+            )
+        _s4_focus.finish_run(_s4_conn, "s4-focus")
     finally:
         _s4_conn.close()
     _s4_dir = Path(lessons_svc.LESSONS_DIR) / _s4["slug"]
