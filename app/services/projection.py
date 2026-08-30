@@ -200,6 +200,8 @@ def publish(
     temp_name, fd = stage(dir_fd, data, prefix=prefix)
     try:
         staged = os.fstat(fd)
+        if not stat_module.S_ISREG(staged.st_mode) or staged.st_nlink != 1:
+            raise OSError("staged projection is not a single-link regular file")
         move_aside(dir_fd, name)
         os.replace(temp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
         temp_name = None

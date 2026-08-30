@@ -41,13 +41,11 @@ import os
 import sqlite3
 import stat as stat_module
 import threading
-from contextlib import contextmanager
 from datetime import datetime, timezone
-from pathlib import Path
 from uuid import uuid4
 
 from ..db import DATA_DIR, append_event
-from . import bundle_schema, lessons
+from . import bundle_schema, lessons, projection
 
 KINDS = ("review", "evidence", "summary", "retraction")
 MODES = ("tutoring", "exam")
@@ -64,7 +62,6 @@ BASES = ("attempts", "artifacts", "runs", "live", "mixed")
 
 MAX_NOTE_BYTES = 8 * 1024        # D-S1-3/S-M4: notes diagnose BY REFERENCE
 MAX_NEXT_ACTION_BYTES = 512      # S-L1: one machine-readable next step
-MAX_KEY_LEN = 128                # the attempts §6.3 bound
 MAX_CONCEPTS = 8                 # D-S1-2: 1–8 opaque refs per evidence row
 
 PROJECTION_PENDING = "pending"
@@ -85,12 +82,6 @@ META_VERSION = 1
 # request without the header is the owner/manual path and is still admitted —
 # it simply records no sitting.
 CAPABILITY_HEADER = "X-Ephemeris-Assess-Token"
-
-# One lock per lesson: the duplicate check and the transactional insert
-# serialize in-process, so a retry racing its own original resolves as a
-# duplicate instead of racing the UNIQUE constraint.
-_lesson_locks_lock = threading.Lock()
-_lesson_locks: dict[str, threading.RLock] = {}
 
 # Accepted top-level request fields. Anything else is a 400 (strict, unlike the
 # attempt endpoint's forward-compatible stance): a tutor typo such as
@@ -113,14 +104,6 @@ class AssessmentError(Exception):
         self.code = code
         self.status = status
         self.detail = detail
-
-
-def _lesson_lock(slug: str) -> threading.RLock:
-    with _lesson_locks_lock:
-        lock = _lesson_locks.get(slug)
-        if lock is None:
-            lock = _lesson_locks[slug] = threading.RLock()
-        return lock
 
 
 def _utc_now_iso() -> str:
@@ -293,15 +276,11 @@ def _clean_submission(payload: dict) -> dict:
         )
 
     key = payload.get("idempotency_key")
-    if (
-        not isinstance(key, str)
-        or not 1 <= len(key) <= MAX_KEY_LEN
-        or _utf8_len(key) is None
-        or any(ord(ch) < 32 or ord(ch) == 127 for ch in key)
-    ):
+    if not projection.valid_idempotency_key(key):
         raise AssessmentError(
             "invalid-idempotency-key", 400,
-            f"idempotency_key must be 1-{MAX_KEY_LEN} chars, no control characters",
+            f"idempotency_key must be 1-{projection.MAX_KEY_LEN} chars, "
+            "no control characters",
         )
 
     return {
@@ -534,20 +513,10 @@ def record_assessment(
     # retry mechanism.
     _sweep_once(conn, lesson)
 
-    # D-S1-3: the replay lookup precedes every mutable-state refusal — the
-    # archive check and the attempt/supersedes references. The original write
-    # is already durable, so a client retry must learn its assessment_id even
-    # if the lesson was archived meanwhile; the refusals below govern only NEW
-    # writes. The work a replay can repeat stays cheap: one indexed SELECT
-    # here, and a reconcile that returns after reading a watermark unless the
-    # state actually moved since this process last published (see
-    # `_published`).
-    with _lesson_lock(lesson["slug"]):
-        replay = _replay_or_conflict(conn, lesson, submission, fingerprint)
-    if replay is not None:
-        return replay
+    def replay() -> dict | None:
+        return _replay_or_conflict(conn, lesson, submission, fingerprint)
 
-    try:
+    def validate() -> str | None:
         if lesson.get("archived"):
             # D-S1-4: the owner unarchives first — a distinct 409, never a
             # silent write into a lesson that has been put away. This is the
@@ -561,21 +530,30 @@ def record_assessment(
             raise AssessmentError("lesson-unavailable", 409, "lesson has no uid")
         question_id = _resolve_attempt(conn, lesson, submission["attempt_id"])
         _require_supersedes(conn, lesson, submission["supersedes"])
-    except AssessmentError:
-        # A retry racing its own original (timeout resend) can see the key
-        # uncommitted at the early check above and then hit a refusal here
-        # after the original committed. The durable outcome still wins —
-        # re-check before refusing.
-        with _lesson_lock(lesson["slug"]):
-            replay = _replay_or_conflict(conn, lesson, submission, fingerprint)
-        if replay is not None:
-            return replay
-        raise
+        return question_id
 
-    with _lesson_lock(lesson["slug"]):
+    def write(question_id: str | None) -> dict:
         return _record_locked(
             conn, lesson, submission, fingerprint, question_id, sitting_id,
         )
+
+    def project(row: dict) -> dict:
+        # Post-commit, outside the transaction: the projection reads the
+        # freshly committed state itself rather than this row (D-S1-5).
+        return _row_response(conn, lesson, row, "recorded")
+
+    # D-S1-3: the replay lookup precedes every mutable-state refusal — the
+    # archive check and the attempt/supersedes references. The original write
+    # is already durable, so a client retry must learn its assessment_id even
+    # if the lesson was archived meanwhile; the refusals govern only NEW
+    # writes. The work a replay can repeat stays cheap: one indexed SELECT
+    # here, and a reconcile that returns after reading a watermark unless the
+    # state actually moved since this process last published (see
+    # `_published`).
+    return projection.record(
+        conn, lesson, AssessmentError,
+        replay=replay, validate=validate, write=write, project=project,
+    )
 
 
 def _record_locked(
@@ -586,113 +564,82 @@ def _record_locked(
     question_id: str | None,
     sitting_id: str | None,
 ) -> dict:
-    """The lesson-locked write section of `record_assessment`."""
-    # Re-check under the lock: another in-process writer may have landed the
-    # same key between the early replay check and here.
-    replay = _replay_or_conflict(conn, lesson, submission, fingerprint)
-    if replay is None:
-        assessment_id = str(uuid4())
-        # The event echoes `seq`, which is the row's own rowid, so the row must
-        # be inserted before the event — hence the uuid is minted here and
-        # handed to the ledger writer rather than returned by it.
-        event_uuid = str(uuid4())
-        created_at = _utc_now_iso()
-        concepts = submission["concepts"]
-        try:
-            # ONE transaction (D-S1-1): the row and its `lesson_assessment`
-            # event commit or roll back together. No filesystem work runs
-            # inside it (D-S1-5) — the s2 projection is post-commit work.
-            #
-            # BEGIN IMMEDIATE rather than the usual `with conn:`, because the
-            # archive re-check below must be part of THIS transaction. Python's
-            # sqlite3 opens its implicit transaction at the first DML statement,
-            # so a SELECT inside `with conn:` would still read in autocommit and
-            # leave the same window the caller's stale view has: lesson read,
-            # archive committed elsewhere, assessment inserted anyway. Taking
-            # the write lock up front gives the archive and this write a
-            # definitive order.
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                current = conn.execute(
-                    "SELECT archived_at FROM lessons WHERE id = ?",
-                    (lesson["id"],),
-                ).fetchone()
-                if current is None:
-                    raise AssessmentError(
-                        "unknown-lesson", 404, "the lesson no longer exists"
-                    )
-                if current["archived_at"] is not None:
-                    # The binding refusal: whatever the caller's view said, the
-                    # committed state at write time is what decides.
-                    raise AssessmentError(
-                        "lesson-archived", 409,
-                        "this lesson is archived; restore it before recording",
-                    )
-                _require_summary_slot(conn, lesson, submission, sitting_id)
-                cursor = conn.execute(
-                    "INSERT INTO lesson_assessments "
-                    "(assessment_id, event_uuid, lesson_id, lesson_uid, "
-                    " sitting_id, mode, idempotency_key, fingerprint, kind, "
-                    " level, basis, attempt_id, question_id, concepts_json, "
-                    " note, next_action, supersedes, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        assessment_id, event_uuid, lesson["id"], lesson["uid"],
-                        # The sitting comes from the write capability, resolved
-                        # server-side; NULL is the owner/manual path.
-                        sitting_id,
-                        submission["mode"], submission["idempotency_key"],
-                        fingerprint, submission["kind"], submission["level"],
-                        submission["basis"], submission["attempt_id"],
-                        question_id,
-                        json.dumps(concepts, ensure_ascii=False)
-                        if concepts is not None else None,
-                        submission["note"], submission["next_action"],
-                        submission["supersedes"], created_at,
-                    ),
-                )
-                seq = cursor.lastrowid
-                append_event(conn, "lesson_assessment", {
-                    # D-S1-1 echo policy: identity and the record itself.
-                    "lesson_uid": lesson["uid"],
-                    "lesson_id": lesson["id"],
-                    "slug": lesson["slug"],
-                    "assessment_id": assessment_id,
-                    "seq": seq,
-                    "kind": submission["kind"],
-                    "mode": submission["mode"],
-                    "sitting_id": sitting_id,
-                    "level": submission["level"],
-                    "basis": submission["basis"],
-                    "attempt_id": submission["attempt_id"],
-                    "question_id": question_id,
-                    "concepts": concepts,
-                    "note": submission["note"],
-                    "next_action": submission["next_action"],
-                    "supersedes": submission["supersedes"],
-                    "created_at": created_at,
-                }, event_uuid=event_uuid)
-            except BaseException:
-                conn.rollback()
-                raise
-            conn.commit()
-        except sqlite3.IntegrityError:
-            # The same idempotency key landed from another PROCESS (a stale
-            # second server; in-process writers serialize on the lesson lock) —
-            # answer with its outcome instead of a 500.
-            replay = _replay_or_conflict(conn, lesson, submission, fingerprint)
-            if replay is None:
-                raise
-        else:
-            # Post-commit, outside the transaction: the projection reads the
-            # freshly committed state itself rather than this row (D-S1-5).
-            return _row_response(
-                conn, lesson,
-                {"assessment_id": assessment_id, "event_uuid": event_uuid,
-                 "id": seq},
-                "recorded",
-            )
-    return replay
+    """The write transaction of `record_assessment`: runs under the lesson
+    lock, inside `BEGIN IMMEDIATE`, and returns the row identity the response
+    echoes."""
+    assessment_id = str(uuid4())
+    # The event echoes `seq`, which is the row's own rowid, so the row must
+    # be inserted before the event — hence the uuid is minted here and
+    # handed to the ledger writer rather than returned by it.
+    event_uuid = str(uuid4())
+    created_at = _utc_now_iso()
+    concepts = submission["concepts"]
+    # ONE transaction (D-S1-1): the row and its `lesson_assessment` event
+    # commit or roll back together. No filesystem work runs inside it
+    # (D-S1-5) — the s2 projection is post-commit work. The writer lock is
+    # taken up front (BEGIN IMMEDIATE) so the archive re-check below is part
+    # of THIS transaction and the archive and this write have a definitive
+    # order.
+    current = conn.execute(
+        "SELECT archived_at FROM lessons WHERE id = ?",
+        (lesson["id"],),
+    ).fetchone()
+    if current is None:
+        raise AssessmentError(
+            "unknown-lesson", 404, "the lesson no longer exists"
+        )
+    if current["archived_at"] is not None:
+        # The binding refusal: whatever the caller's view said, the
+        # committed state at write time is what decides.
+        raise AssessmentError(
+            "lesson-archived", 409,
+            "this lesson is archived; restore it before recording",
+        )
+    _require_summary_slot(conn, lesson, submission, sitting_id)
+    cursor = conn.execute(
+        "INSERT INTO lesson_assessments "
+        "(assessment_id, event_uuid, lesson_id, lesson_uid, "
+        " sitting_id, mode, idempotency_key, fingerprint, kind, "
+        " level, basis, attempt_id, question_id, concepts_json, "
+        " note, next_action, supersedes, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            assessment_id, event_uuid, lesson["id"], lesson["uid"],
+            # The sitting comes from the write capability, resolved
+            # server-side; NULL is the owner/manual path.
+            sitting_id,
+            submission["mode"], submission["idempotency_key"],
+            fingerprint, submission["kind"], submission["level"],
+            submission["basis"], submission["attempt_id"],
+            question_id,
+            json.dumps(concepts, ensure_ascii=False)
+            if concepts is not None else None,
+            submission["note"], submission["next_action"],
+            submission["supersedes"], created_at,
+        ),
+    )
+    seq = cursor.lastrowid
+    append_event(conn, "lesson_assessment", {
+        # D-S1-1 echo policy: identity and the record itself.
+        "lesson_uid": lesson["uid"],
+        "lesson_id": lesson["id"],
+        "slug": lesson["slug"],
+        "assessment_id": assessment_id,
+        "seq": seq,
+        "kind": submission["kind"],
+        "mode": submission["mode"],
+        "sitting_id": sitting_id,
+        "level": submission["level"],
+        "basis": submission["basis"],
+        "attempt_id": submission["attempt_id"],
+        "question_id": question_id,
+        "concepts": concepts,
+        "note": submission["note"],
+        "next_action": submission["next_action"],
+        "supersedes": submission["supersedes"],
+        "created_at": created_at,
+    }, event_uuid=event_uuid)
+    return {"assessment_id": assessment_id, "event_uuid": event_uuid, "id": seq}
 
 
 # --- read model: the active-state fold (D-S1-2) ------------------------------
@@ -999,13 +946,6 @@ def panel_state(
 # committed state is re-read FRESH under it, so whoever holds the lock renders
 # the newest fold and a slow writer cannot publish an older file last.
 
-_DIRECTORY_FLAGS = (
-    os.O_RDONLY
-    | getattr(os, "O_DIRECTORY", 0)
-    | getattr(os, "O_NOFOLLOW", 0)
-    | getattr(os, "O_CLOEXEC", 0)
-)
-
 # Reconcile trigger (c): the lessons already swept in this process. Membership
 # is recorded before the sweep runs, so a failing sweep is not retried on every
 # subsequent write — triggers (a) and (b) are the retry mechanism.
@@ -1054,70 +994,6 @@ def _projection_unchanged(
             st.st_ctime_ns,
         ) == stamp[1:]
     )
-
-
-def _lock_path(lesson: dict) -> Path:
-    """The app-private lock file for this lesson's assessment projection.
-
-    Named by the immutable lesson uid and kept outside the bundle, so a lesson
-    dir the agent can write cannot influence the lock. A lesson without a
-    usable uid has no safe lock name — that is an unavailable lock, i.e. a
-    pending projection, never a write into a guessed path."""
-    uid = lesson.get("uid")
-    if not isinstance(uid, str) or bundle_schema.UUID_RE.match(uid) is None:
-        raise OSError("lesson has no safe projection-lock identity")
-    return PROJECTION_STATE_DIR / f"{uid}.lock"
-
-
-@contextmanager
-def _projection_file_lock(lesson: dict):
-    """Private per-lesson cross-process exclusion for assessment projection
-    work (the attempts `_projection_file_lock` idiom, its own lock file).
-
-    Non-blocking: a busy lock is an unavailable lock, which callers report as
-    `projection: pending` — the row is already durable and the next reconcile
-    trigger heals the file. Two open descriptors of the same lock file conflict
-    even inside one process, so this also serializes threads that did not take
-    the in-process lesson lock."""
-    # Unix-only, and this module is on main.py's import chain, so fcntl is
-    # imported here rather than at module level. A platform without it is an
-    # unavailable lock, not a crash: callers degrade to pending, exactly as the
-    # attempts projection does.
-    try:
-        import fcntl
-    except ImportError as exc:
-        raise OSError("advisory file locking (fcntl.flock) is unavailable") from exc
-
-    lock_path = _lock_path(lesson)
-    PROJECTION_STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if not stat_module.S_ISDIR(os.lstat(PROJECTION_STATE_DIR).st_mode):
-        raise OSError("projection lock root is not a directory")
-    fd = os.open(
-        lock_path,
-        os.O_RDWR | os.O_CREAT | os.O_NONBLOCK
-        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
-        0o600,
-    )
-    try:
-        st = os.fstat(fd)
-        if not stat_module.S_ISREG(st.st_mode) or st.st_nlink != 1:
-            raise OSError("unsafe projection lock file")
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        yield
-    finally:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
-
-
-def _write_all(fd: int, data: bytes) -> None:
-    view = memoryview(data)
-    while view:
-        count = os.write(fd, view)
-        if count <= 0:
-            raise OSError("short write on the assessment projection")
-        view = view[count:]
 
 
 def _fold_records(
@@ -1223,67 +1099,6 @@ def _projection_exists(lesson: dict) -> bool:
     return True
 
 
-def _clear_collision(dir_fd: int) -> str | None:
-    """Make the projection name replaceable, never adopting what sits there.
-
-    A regular single-link file is the normal case and is left for `os.replace`.
-    Anything else — a directory (which `os.replace` cannot overwrite), a
-    symlink, a multi-link file, a device or socket — is a foreign object: an
-    empty directory is removed, everything else is moved aside under a unique
-    name. Deterministic, never silent adoption, and never a permanent
-    projection-pending state (the attempts collision idiom). The file's content
-    is never read, so a planted file cannot influence what is published."""
-    try:
-        st = os.lstat(PROJECTION_NAME, dir_fd=dir_fd)
-    except FileNotFoundError:
-        return None
-    if stat_module.S_ISREG(st.st_mode) and st.st_nlink == 1:
-        return None
-    if stat_module.S_ISDIR(st.st_mode):
-        try:
-            os.rmdir(PROJECTION_NAME, dir_fd=dir_fd)
-            return None
-        except OSError:
-            pass  # non-empty: move it aside with its content intact
-    aside = f"{PROJECTION_NAME}.collision-{uuid4().hex[:8]}"
-    os.rename(PROJECTION_NAME, aside, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-    return aside
-
-
-def _stage_temp(dir_fd: int, data: bytes) -> tuple[str, int]:
-    """Write the rendered bytes to a fresh 0600 temp file in the bundle and
-    fsync it. `O_EXCL` means an attacker-planted name is never opened.
-
-    Returns the name and the still-open descriptor: the caller publishes under
-    it, so it must be able to ask the staged inode what it has become."""
-    for _ in range(20):
-        name = f".assessments-{uuid4().hex}.tmp"
-        try:
-            fd = os.open(
-                name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
-                0o600,
-                dir_fd=dir_fd,
-            )
-        except FileExistsError:
-            continue
-        try:
-            _write_all(fd, data)
-            os.fsync(fd)
-        except BaseException:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            try:
-                os.unlink(name, dir_fd=dir_fd)
-            except OSError:
-                pass
-            raise
-        return name, fd
-    raise OSError("could not allocate an assessment projection temp file")
-
-
 def _publish(lesson: dict, data: bytes) -> os.stat_result:
     """Atomically replace the projection over the verified bundle root,
     and report the identity of the file left behind.
@@ -1292,43 +1107,13 @@ def _publish(lesson: dict, data: bytes) -> os.stat_result:
     symlinked or non-directory bundle root refuses here rather than being
     followed — and every later step is relative to that descriptor, so the
     published name cannot be redirected between the checks and the rename."""
-    dir_fd = os.open(lessons._lesson_dir(lesson["slug"]), _DIRECTORY_FLAGS)
+    dir_fd = os.open(lessons._lesson_dir(lesson["slug"]), projection.DIRECTORY_FLAGS)
     try:
-        # Stage first, clear second: a failure while rendering must not leave
-        # the reader with the published file already moved out of the way.
-        temp_name, temp_fd = _stage_temp(dir_fd, data)
-        try:
-            # The temp carries a visible name in a directory the lesson agent
-            # can write, so a link planted there would survive the rename and
-            # publish a multiply-linked projection — exactly the shape
-            # `_clear_collision` refuses to accept on the way in. The staged
-            # descriptor is still open, so ask the inode itself.
-            if os.fstat(temp_fd).st_nlink != 1:
-                raise OSError("the staged assessment projection gained a link")
-            _clear_collision(dir_fd)
-            os.replace(
-                temp_name, PROJECTION_NAME, src_dir_fd=dir_fd, dst_dir_fd=dir_fd
-            )
-            # the descriptor now names the published file: its identity is
-            # what a later skip decision is checked against
-            published = os.fstat(temp_fd)
-            closing_fd, temp_fd = temp_fd, -1
-            os.close(closing_fd)
-        except BaseException:
-            if temp_fd >= 0:
-                try:
-                    os.close(temp_fd)
-                except OSError:
-                    pass
-            try:
-                os.unlink(temp_name, dir_fd=dir_fd)
-            except OSError:
-                pass
-            raise
-        os.fsync(dir_fd)
+        return projection.publish(
+            dir_fd, PROJECTION_NAME, data, prefix=".assessments-"
+        )
     finally:
         os.close(dir_fd)
-    return published
 
 
 def _rewrite_locked(conn: sqlite3.Connection, lesson: dict) -> bool:
@@ -1403,8 +1188,8 @@ def reconcile_projection(conn: sqlite3.Connection, lesson: dict) -> bool:
         # The in-process lesson lock first (it is re-entrant, and the write
         # path already holds it), so concurrent same-lesson requests in this
         # worker queue instead of losing the non-blocking flock to each other.
-        with _lesson_lock(lesson["slug"]):
-            with _projection_file_lock(lesson):
+        with projection.lesson_lock(lesson["slug"]):
+            with projection.file_lock(PROJECTION_STATE_DIR, lesson):
                 return _rewrite_locked(conn, lesson)
     except Exception:
         # Deliberately every exception, not a curated list. The projection is

@@ -32,19 +32,14 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-import stat as stat_module
-from uuid import uuid4
 
-from . import bundle_schema, lessons
+from . import bundle_schema, lessons, projection
 from .assessments import (
     ACTIVE_FOLD_KEYS_SQL,
-    _DIRECTORY_FLAGS,
+    PROJECTION_STATE_DIR,
     _fold_keys,
     _hydrate,
-    _lesson_lock,
-    _projection_file_lock,
     _utc_now_iso,
-    _write_all,
     fold_rows,
 )
 
@@ -259,72 +254,15 @@ def _projection_exists(lesson: dict) -> bool:
     return True
 
 
-def _clear_collision(dir_fd: int) -> None:
-    """Make the projection name replaceable, never adopting what sits there.
-
-    A regular single-link file is the normal case and is left for
-    `os.replace`. Anything else is a foreign node the agent put there: an
-    empty directory is removed, everything else is moved aside under a unique
-    name. Its content is never read, so a planted file cannot influence what
-    is published."""
-    try:
-        st = os.lstat(PROJECTION_NAME, dir_fd=dir_fd)
-    except FileNotFoundError:
-        return
-    if stat_module.S_ISREG(st.st_mode) and st.st_nlink == 1:
-        return
-    if stat_module.S_ISDIR(st.st_mode):
-        try:
-            os.rmdir(PROJECTION_NAME, dir_fd=dir_fd)
-            return
-        except OSError:
-            pass  # non-empty: move it aside with its content intact
-    os.rename(
-        PROJECTION_NAME, f"{PROJECTION_NAME}.collision-{uuid4().hex[:8]}",
-        src_dir_fd=dir_fd, dst_dir_fd=dir_fd,
-    )
-
-
 def _publish(lesson: dict, data: bytes) -> None:
     """Stage the bytes in the bundle, then take the name atomically.
 
     The bundle root is opened once with `O_NOFOLLOW | O_DIRECTORY` and every
     later step is relative to that descriptor, so the published name cannot be
-    redirected between the checks and the rename. The staged inode is asked
-    for its link count after the write: a link planted on the visible temp
-    name would otherwise survive the rename and hand the agent a writable
-    second name for the live projection."""
-    dir_fd = os.open(lessons._lesson_dir(lesson["slug"]), _DIRECTORY_FLAGS)
+    redirected between the checks and the rename."""
+    dir_fd = os.open(lessons._lesson_dir(lesson["slug"]), projection.DIRECTORY_FLAGS)
     try:
-        temp_name = f".memory-{uuid4().hex}.tmp"
-        temp_fd = os.open(
-            temp_name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL
-            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
-            0o600,
-            dir_fd=dir_fd,
-        )
-        try:
-            try:
-                _write_all(temp_fd, data)
-                os.fsync(temp_fd)
-                staged = os.fstat(temp_fd)
-                if not stat_module.S_ISREG(staged.st_mode) or staged.st_nlink != 1:
-                    raise OSError("the staged learner-memory projection gained a link")
-            finally:
-                os.close(temp_fd)
-            _clear_collision(dir_fd)
-            os.replace(
-                temp_name, PROJECTION_NAME, src_dir_fd=dir_fd, dst_dir_fd=dir_fd
-            )
-            temp_name = ""
-            os.fsync(dir_fd)
-        finally:
-            if temp_name:
-                try:
-                    os.unlink(temp_name, dir_fd=dir_fd)
-                except OSError:
-                    pass
+        projection.publish(dir_fd, PROJECTION_NAME, data, prefix=".memory-")
     finally:
         os.close(dir_fd)
 
@@ -367,8 +305,8 @@ def reconcile_projection(conn: sqlite3.Connection, lesson: dict) -> bool:
         # The per-lesson bundle-projection lock, shared with the assessment
         # projection: both publish into the same bundle root, and the terminal
         # open runs them one after the other, never nested.
-        with _lesson_lock(lesson["slug"]):
-            with _projection_file_lock(lesson):
+        with projection.lesson_lock(lesson["slug"]):
+            with projection.file_lock(PROJECTION_STATE_DIR, lesson):
                 return _rewrite_locked(conn, lesson)
     except Exception:
         return False
