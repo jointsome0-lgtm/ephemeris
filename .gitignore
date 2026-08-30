@@ -23,11 +23,6 @@ playwright/.auth/
 test-results/
 playwright-report/
 
-# --- Local agent/tool state (may contain prompts, paths, or private context) ---
-.agents/
-.claude/
-.codex/
-
 # --- TickTick UX-reference captures: keep LOCAL, never commit (private data) ---
 docs/reference/screenshots/
 
@@ -35,22 +30,11 @@ docs/reference/screenshots/
 my-*.png
 my-*.jpeg
 
-# --- App data / source of truth (private by default; never commit raw data) ---
-data/
-*.sqlite
-*.sqlite3
-*.sqlite-shm
-*.sqlite-wal
-*.db
-*.jsonl
-
 # --- Python ---
 __pycache__/
 *.py[cod]
 .venv/
 venv/
-.env
-.env.*
 !.env.example
 
 # --- OS / editor noise ---
