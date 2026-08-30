@@ -6,7 +6,7 @@
 {% block content %}
 <div class="habit-tab-body">
   <header class="page-head">
-    <h1 class="head-title">Habit <span class="head-caret" aria-hidden="true">{{ ic.icon('caret-down') }}</span></h1>
+    <h1>Habit</h1>
     <div class="head-actions">
       <a class="head-btn" href="#new-habit" title="Create habit">{{ ic.icon('plus') }}</a>
     </div>
@@ -25,8 +25,6 @@
       {% endif %}
     {% endfor %}
   </nav>
-
-  <div class="date-chip"><span class="dc-ico" aria-hidden="true">🎗</span> {{ pretty_date }} <a class="x" href="/habits" aria-label="Clear date">×</a></div>
 
   {% if flash %}<p class="flash" role="status">{{ flash }}</p>{% endif %}
 
