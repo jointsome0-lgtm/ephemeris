@@ -18,7 +18,6 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
-import socket
 import subprocess
 import tempfile
 import threading
