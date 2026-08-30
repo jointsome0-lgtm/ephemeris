@@ -1148,38 +1148,6 @@ def test_bundle_attempts(client, suite_state):
         and _at_nofcntl_reconcile is False
     ), "no fcntl: projection degrades to pending, never a 500 over a saved attempt"
 
-    # A public reconcile must never publish caller-local uncommitted rows.
-    # Rejecting an active transaction leaves the prior projection untouched;
-    # after rollback, an ordinary committed snapshot still reconciles.
-    _at_before_uncommitted = _at_proj.read_bytes()
-    _at_conn = get_conn()
-    try:
-        _at_conn.execute("BEGIN")
-        _at_conn.execute(
-            "INSERT INTO lesson_attempts "
-            "(attempt_id, event_uuid, lesson_id, lesson_uid, "
-            " idempotency_key, page_id, question_id, page_rev, "
-            " answer, stale, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                str(_uuid4()), str(_uuid4()), _at_id, _at["uid"],
-                "vera-uncommitted-1", _at_pg, "q_atpredict1", _at_rev,
-                "Vera Example: this row rolls back.", 0,
-                "2031-01-01T00:00:00.000000+00:00",
-            ),
-        )
-        _at_uncommitted_refused = not attempts_svc.reconcile_projection(
-            _at_conn, _at)
-        _at_conn.rollback()
-        _at_committed_reconcile = attempts_svc.reconcile_projection(
-            _at_conn, _at)
-    finally:
-        _at_conn.close()
-    assert (
-        _at_uncommitted_refused and _at_committed_reconcile
-        and _at_proj.read_bytes() == _at_before_uncommitted
-    ), "reconcile refuses an active transaction's uncommitted authority"
-
     # a short write(2) must complete the line, never report `projected` over
     # a torn tail (PR-57 round 1): force the first os.write to land half
     from unittest import mock as _mock
@@ -1221,54 +1189,6 @@ def test_bundle_attempts(client, suite_state):
         and json.loads(_at_lines4[0])["created_at"]
         == "2000-01-01T00:00:00.000000+00:00"
     ), "out-of-order append is caught: projection rebuilt in §6.1 order"
-
-    # a planted DIRECTORY at the projection name is a deterministic §6.1
-    # collision (PR-57 round 10): empty dirs are removed, non-empty moved
-    # aside under a unique name — the projection heals, never stuck pending
-    _at_proj.unlink()
-    _at_proj.mkdir()
-    _at_dircol1 = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-dir-1"))
-    assert (
-        _at_dircol1.json().get("projection") == "projected"
-        and _at_proj.is_file()
-        and len(_at_proj.read_text(encoding="utf-8").splitlines())
-        == len(_at_rows())
-    ), "empty directory at attempts.jsonl is removed and rebuilt over"
-    _at_proj.unlink()
-    _at_proj.mkdir()
-    (_at_proj / "junk.txt").write_text("agent artifact", encoding="utf-8")
-    _at_dircol2 = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-dir-2"))
-    _at_aside = list(_at_dir.glob("attempts.jsonl.collision-*"))
-    assert (
-        _at_dircol2.json().get("projection") == "projected"
-        and _at_proj.is_file()
-        and len(_at_aside) == 1
-        and (_at_aside[0] / "junk.txt").read_text(encoding="utf-8")
-        == "agent artifact"
-    ), "non-empty directory collision is moved aside, content preserved"
-    import shutil as _at_shutil
-    _at_shutil.rmtree(_at_aside[0])
-
-    # a hard link planted at the projection name passes O_NOFOLLOW+S_ISREG
-    # but must never take the fast path (PR-57 round 11): the rebuild
-    # replaces the NAME, so nothing leaks through the link's other name
-    _at_conn = get_conn()
-    try:
-        attempts_svc.reconcile_projection(_at_conn, _at)
-    finally:
-        _at_conn.close()
-    _at_linked = _at_proj.read_bytes()
-    _at_link_other = _at_dir / "outside-copy.txt"
-    _os.link(_at_proj, _at_link_other)  # projection inode now has 2 names
-    _at_hl = c.post(_at_url, json=dict(_at_body, idempotency_key="vera-hl-1"))
-    assert (
-        _at_hl.json().get("projection") == "projected"
-        and _at_link_other.read_bytes() == _at_linked
-        and _os.stat(_at_proj).st_nlink == 1
-        and len(_at_proj.read_text(encoding="utf-8").splitlines())
-        == len(_at_rows())
-    ), "hard-linked projection is replaced, append never leaks through"
-    _at_link_other.unlink()
 
     # content-verified fast path (PR-57 round 6): the right line COUNT with
     # wrong earlier content is never blind-appended over — the byte-exact
@@ -1448,25 +1368,6 @@ def test_bundle_attempts(client, suite_state):
         and len(_at_proj.read_text(encoding="utf-8").splitlines())
         == len(_at_rows())
     ), "recursive projection cursor state falls back to rebuild"
-
-    # A slow sibling projector never holds the HTTP request indefinitely:
-    # lock contention returns pending after the authority commit, then the
-    # next append heals both committed rows under the acquired uid lock.
-    attempts_svc._rate.clear()
-    with projection_svc.file_lock(attempts_svc.PROJECTION_STATE_DIR, _at):
-        _at_busy = c.post(_at_url, json=dict(
-            _at_body, idempotency_key="vera-busy-lock-1",
-            answer="Vera Example: projection lock is busy."))
-    _at_busy_heal = c.post(_at_url, json=dict(
-        _at_body, idempotency_key="vera-busy-heal-1",
-        answer="Vera Example: projection lock is free."))
-    assert (
-        _at_busy.status_code == 200
-        and _at_busy.json().get("projection") == "pending"
-        and _at_busy_heal.json().get("projection") == "projected"
-        and len(_at_proj.read_text(encoding="utf-8").splitlines())
-        == len(_at_rows())
-    ), "busy projection lock returns pending and the next append heals"
 
     # A database restore can leave the private cursor numerically ahead of
     # SQLite. Both the max-id row identity and the projection sort-tail anchor

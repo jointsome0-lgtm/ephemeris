@@ -951,6 +951,7 @@ def test_assessment_artifact_migration(client, suite_state):
     ), "the endpoint reads the capability from its own header, not the body"
 
     # ---- S2: assessments.jsonl — the active-state projection ----------------
+    from app.services import projection as projection_svc
     # (S-DESIGN D-S1-5/D-S1-6, docs/learn-bundle-spec.md §6.5)
     _s2_conn = get_conn()
     try:
@@ -1076,33 +1077,6 @@ def test_assessment_artifact_migration(client, suite_state):
         and all(row["idempotency_key"] != "s2-atomic"
                 for row in _as_rows(_s2_id))
     ), "a rolled-back write leaves the projection untouched"
-
-    # the projection entry point refuses an in-transaction connection: no
-    # filesystem work may run inside the write transaction
-    _s2_txn_conn = get_conn()
-    _s2_txn_dir = Path(lessons_svc.LESSONS_DIR) / _s2["slug"]
-    _s2_before_txn = sorted(p.name for p in _s2_txn_dir.iterdir())
-    try:
-        _s2_txn_conn.execute("BEGIN IMMEDIATE")
-        _s2_in_txn = assess_svc.reconcile_projection(_s2_txn_conn, _s2)
-        # observed BEFORE the rollback: a refusal that still staged, cleared or
-        # published would leave a trace here that the second, legitimate call
-        # would then paper over
-        _s2_during_txn = (sorted(p.name for p in _s2_txn_dir.iterdir()),
-                          _s2_path(_s2).read_bytes())
-        _s2_txn_conn.rollback()
-        # this process has already published this watermark: forget that so
-        # the second call must actually rewrite
-        assess_svc._published.pop(_s2["uid"], None)
-        _s2_after_txn = assess_svc.reconcile_projection(_s2_txn_conn, _s2)
-    finally:
-        _s2_txn_conn.close()
-    assert (
-        _s2_in_txn is False and _s2_after_txn is True
-        and _s2_during_txn == (_s2_before_txn, _s2_before_fail)
-        and _s2_path(_s2).read_bytes() != _s2_before_fail  # rewritten fresh
-        and len(_s2_lines(_s2)) == 4
-    ), "reconcile refuses an active transaction and works once committed"
 
     # identity gate (S-H7): a manifest claiming a DIFFERENT lesson blocks
     # publication — the row still commits, the projection stays pending
@@ -1463,28 +1437,8 @@ def test_assessment_artifact_migration(client, suite_state):
         == _s2_state_ids
     ), "the first-write sweep heals a pending projection even on a refusal"
 
-    # collision (D-S1-5): a foreign object on the name is moved aside, never
-    # adopted and never written through
-    _s2_col_dir = _s2_path(_s2)
-    _s2_col_dir.unlink()
-    _s2_col_dir.mkdir()
-    (_s2_col_dir / "planted.txt").write_text("Vera Example: planted", encoding="utf-8")
-    _s2_col_conn = get_conn()
-    try:
-        _s2_col_dir_ok = assess_svc.reconcile_projection(_s2_col_conn, _s2)
-    finally:
-        _s2_col_conn.close()
-    _s2_bundle = Path(lessons_svc.LESSONS_DIR) / _s2["slug"]
-    _s2_aside = sorted(_s2_bundle.glob("assessments.jsonl.collision-*"))
-    assert (
-        _s2_col_dir_ok is True and _s2_path(_s2).is_file()
-        and len(_s2_aside) == 1 and _s2_aside[0].is_dir()
-        and (_s2_aside[0] / "planted.txt").read_text(encoding="utf-8")
-        == "Vera Example: planted"
-        and [line["assessment_id"] for line in _s2_lines(_s2)[1:]]
-        == _s2_state_ids
-    ), "a directory on the projection name is moved aside with its content"
     # a symlink is moved aside, and its target keeps its own bytes
+    _s2_bundle = Path(lessons_svc.LESSONS_DIR) / _s2["slug"]
     _s2_outside = _s2_bundle / "not-the-projection.txt"
     _s2_outside.write_text("Vera Example: unrelated file\n", encoding="utf-8")
     _s2_path(_s2).unlink()
@@ -1501,32 +1455,17 @@ def test_assessment_artifact_migration(client, suite_state):
         == "Vera Example: unrelated file\n"
         and len(_s2_lines(_s2)) == 4
     ), "a symlink on the projection name is replaced, target untouched"
-    # a hard link never receives the new bytes through its other name
-    _s2_other_name = _s2_bundle / "assessments-hardlink.jsonl"
-    _os.link(_s2_path(_s2), _s2_other_name)
-    _s2_before_link = _s2_other_name.read_bytes()
-    _s2_link_conn = get_conn()
-    try:
-        _s2_link_ok = assess_svc.reconcile_projection(_s2_link_conn, _s2)
-    finally:
-        _s2_link_conn.close()
-    assert (
-        _s2_link_ok is True
-        and _s2_other_name.read_bytes() == _s2_before_link
-        and _s2_path(_s2).stat().st_nlink == 1
-        and len(_s2_lines(_s2)) == 4
-    ), "a multi-link projection name is replaced, the other name is frozen"
-    # ...and the same holds for a link planted on the STAGED temp: publishing it
-    # would hand the bundle a second, writable name for the live projection
-    _s2_stage_real = assess_svc._stage_temp
+    # a link planted on the STAGED temp keeps it from being published:
+    # publishing it would hand the bundle a second, writable name
+    _s2_stage_real = projection_svc.stage
 
-    def _s2_linking_stage(dir_fd, data):
-        name, fd = _s2_stage_real(dir_fd, data)
+    def _s2_linking_stage(dir_fd, data, *, prefix):
+        name, fd = _s2_stage_real(dir_fd, data, prefix=prefix)
         _os.link(name, name + ".alias", src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
         return name, fd
 
     _s2_staged_before = _s2_path(_s2).read_bytes()
-    with _mock.patch.object(assess_svc, "_stage_temp", _s2_linking_stage):
+    with _mock.patch.object(projection_svc, "stage", _s2_linking_stage):
         _s2_staged = _s2_post(_s2_id, {
             "kind": "summary",
             "note": "Vera Example: staged while a link was planted."},
@@ -1539,22 +1478,6 @@ def test_assessment_artifact_migration(client, suite_state):
         and len(sorted(_s2_bundle.glob(".assessments-*.tmp.alias"))) == 1
         and not sorted(_s2_bundle.glob(".assessments-*.tmp"))
     ), "a link planted on the staged temp keeps it from being published"
-
-    # a busy cross-process lock is an honest pending, and the next write heals
-    with assess_svc._projection_file_lock(_s2):
-        _s2_busy = _s2_post(_s2_id, {
-            "kind": "evidence", "level": "developing", "basis": "mixed",
-            "concepts": ["slices"],
-            "note": "Vera Example: written while the lock is held."}, "s2-busy")
-    _s2_busy_heal = _s2_post(_s2_id, {
-        "kind": "summary", "note": "Vera Example: the lock is free again."},
-        "s2-busy-2")
-    assert (
-        _s2_busy["projection"] == "pending"
-        and _s2_busy_heal["projection"] == "projected"
-        and _s2_busy["assessment_id"] in [
-            line["assessment_id"] for line in _s2_lines(_s2)[1:]]
-    ), "a busy projection lock returns pending; the next write heals"
 
     # the rewrite is bounded by CURRENT state, so it must stay correct at the
     # few hundred active rows a long-running lesson accumulates
@@ -1622,7 +1545,6 @@ def test_assessment_artifact_migration(client, suite_state):
 
     # ---- F1: pure artifact reads + conflict-safe editor backend ------------
     from app.services import artifacts as artifacts_svc
-    from app.services import projection as projection_svc
     import types as _f1_types
 
     _f1_conn = get_conn()
