@@ -1,31 +1,14 @@
 """Learn track progress (#81): "N of M studied" per track, from lesson.json.
 
-Last file in the cumulative suite on purpose — it creates lessons, and the
-status counts every earlier file asserts on are already settled by then.
+Creates lessons of its own, after every earlier file's status counts are
+settled.
 """
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
-from conftest import ROOT
+from conftest import ROOT, write_lesson_manifest
 
-
-def _write_manifest(slug: str, uid: str, **extra) -> None:
-    """A valid v2 manifest for `slug`, plus whatever the case declares."""
-    from app.services import lessons as lessons_svc
-
-    bundle = Path(lessons_svc.LESSONS_DIR) / slug
-    bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "index.html").write_text("<p>page</p>", encoding="utf-8")
-    manifest = {
-        "schema_version": 2,
-        "lesson_uid": uid,
-        "entry": "index.html",
-        "pages": [{"id": "pg_track00001", "path": "index.html"}],
-    }
-    manifest.update(extra)
-    (bundle / "lesson.json").write_text(json.dumps(manifest), encoding="utf-8")
 
 
 def test_track_progress(client, suite_state):
@@ -53,17 +36,17 @@ def test_track_progress(client, suite_state):
     finally:
         conn.close()
 
-    _write_manifest(made["t1_a"]["slug"], made["t1_a"]["uid"],
+    write_lesson_manifest(made["t1_a"]["slug"], made["t1_a"]["uid"],
                     path="zz-track-one", step=101)
-    _write_manifest(made["t1_b"]["slug"], made["t1_b"]["uid"],
+    write_lesson_manifest(made["t1_b"]["slug"], made["t1_b"]["uid"],
                     path="zz-track-one", step=105)
-    _write_manifest(made["t1_c"]["slug"], made["t1_c"]["uid"],
+    write_lesson_manifest(made["t1_c"]["slug"], made["t1_c"]["uid"],
                     path="zz-track-one", step=110)
-    _write_manifest(made["t2_a"]["slug"], made["t2_a"]["uid"],
+    write_lesson_manifest(made["t2_a"]["slug"], made["t2_a"]["uid"],
                     path="zz-track-two", step=100)
     # Silent degradation: a manifest without `path` belongs to no track. The
     # lesson still renders in the list — it just never reaches the strip.
-    _write_manifest(made["loose"]["slug"], made["loose"]["uid"])
+    write_lesson_manifest(made["loose"]["slug"], made["loose"]["uid"])
 
     conn = get_conn()
     try:
@@ -115,12 +98,12 @@ def test_track_progress(client, suite_state):
     finally:
         conn.close()
     # duplicate page id: rejected on §9.2 grounds, `path` still parsed
-    _write_manifest(_bad["rejected"]["slug"], _bad["rejected"]["uid"],
+    write_lesson_manifest(_bad["rejected"]["slug"], _bad["rejected"]["uid"],
                     path="zz-track-one", step=120,
                     pages=[{"id": "pg_track00001", "path": "index.html"},
                            {"id": "pg_track00001", "path": "other.html"}])
     # a bundle whose manifest names a different lesson entirely
-    _write_manifest(_bad["foreign"]["slug"],
+    write_lesson_manifest(_bad["foreign"]["slug"],
                     "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
                     path="zz-track-one", step=130)
     conn = get_conn()

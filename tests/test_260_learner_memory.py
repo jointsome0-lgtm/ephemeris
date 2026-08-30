@@ -27,9 +27,7 @@ from app.services import (
 )
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _started_app(client):
-    yield
+pytestmark = pytest.mark.usefixtures("started_app")
 
 
 def _lesson(title: str, path: str | None = None, step: int | None = None) -> dict:

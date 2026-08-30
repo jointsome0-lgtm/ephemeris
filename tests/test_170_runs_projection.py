@@ -16,9 +16,7 @@ from app.services import bundle_schema, lessons, runs
 from app.services.runner_registry import RUNNER_REGISTRY
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _started_app(client):
-    yield
+pytestmark = pytest.mark.usefixtures("started_app")
 
 
 def _job(

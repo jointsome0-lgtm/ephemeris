@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import query
+
 from app.db import get_conn
 from app.services import export
 
@@ -298,19 +300,9 @@ def _restore(export_path: Path, target: Path) -> subprocess.CompletedProcess[str
     )
 
 
-def _query(db_path: Path, sql: str) -> list[tuple]:
-    import sqlite3
-
-    conn = sqlite3.connect(db_path)
-    try:
-        return conn.execute(sql).fetchall()
-    finally:
-        conn.close()
-
-
 def _counts(db_path: Path) -> dict[str, int]:
     return {
-        table: _query(db_path, f"SELECT COUNT(*) FROM {table}")[0][0]
+        table: query(db_path, f"SELECT COUNT(*) FROM {table}")[0][0]
         for table in ("events", "routine_items", "checkins",
                       "daily_notes", "calendar_events")
     }
@@ -384,7 +376,7 @@ def test_redelivery_preserves_the_original_event_ids(tmp_path):
     target = tmp_path / "restored-ids"
     assert _restore(source, target).returncode == 0
 
-    stored = [row[0] for row in _query(
+    stored = [row[0] for row in query(
         target / "activity.sqlite", "SELECT uuid FROM events ORDER BY id")]
     assert stored == [record["id"] for record in _STREAM]
 
@@ -397,11 +389,11 @@ def test_a_replayed_record_does_not_re_run_its_replay(tmp_path):
     target = tmp_path / "restored-replay"
     assert _restore(source, target).returncode == 0
 
-    edited = _query(target / "activity.sqlite",
+    edited = query(target / "activity.sqlite",
                     "SELECT title FROM routine_items WHERE id = 4001")
     assert edited == [("Invented Redelivery Walk",)]
     assert _restore(source, target).returncode == 0
-    assert _query(target / "activity.sqlite",
+    assert query(target / "activity.sqlite",
                   "SELECT id, title FROM routine_items") == [
         (4001, "Invented Redelivery Walk")]
 
@@ -413,7 +405,7 @@ def test_redelivery_upserts_calendar_snapshots_instead_of_duplicating(tmp_path):
     target = tmp_path / "restored-calendar"
     assert _restore(source, target).returncode == 0
 
-    columns = [row[1] for row in _query(
+    columns = [row[1] for row in query(
         target / "activity.sqlite", "PRAGMA table_info(calendar_events)")]
     series = dict.fromkeys(columns)
     series.update({"id": 7001, "title": "Invented Series", "all_day": 0,
@@ -424,13 +416,13 @@ def test_redelivery_upserts_calendar_snapshots_instead_of_duplicating(tmp_path):
                 "payload": series}
     _write_stream(source, [*_STREAM, snapshot])
     assert _restore(source, target).returncode == 0
-    assert _query(target / "activity.sqlite",
+    assert query(target / "activity.sqlite",
                   "SELECT id, title FROM calendar_events") == [(7001, "Invented Series")]
 
     revised = {**snapshot, "payload": {**series, "title": "Invented Series Revised"}}
     _write_stream(source, [*_STREAM, revised])
     assert _restore(source, target).returncode == 0
-    assert _query(target / "activity.sqlite",
+    assert query(target / "activity.sqlite",
                   "SELECT id, title FROM calendar_events") == [
         (7001, "Invented Series Revised")]
 
@@ -512,7 +504,7 @@ def test_an_unrelated_target_is_refused_before_any_snapshot_lands(tmp_path):
     target = tmp_path / "restored-other-history"
     assert _restore(other, target).returncode == 0
 
-    columns = [row[1] for row in _query(
+    columns = [row[1] for row in query(
         target / "activity.sqlite", "PRAGMA table_info(calendar_events)")]
     series = dict.fromkeys(columns)
     series.update({"id": 1, "title": "Invented Intruder", "all_day": 0,
@@ -526,9 +518,9 @@ def test_an_unrelated_target_is_refused_before_any_snapshot_lands(tmp_path):
     run = _restore(intruder, target)
     assert run.returncode != 0
     assert "shares no event id with this export" in run.stderr
-    assert _query(target / "activity.sqlite", "SELECT COUNT(*) FROM calendar_events") \
+    assert query(target / "activity.sqlite", "SELECT COUNT(*) FROM calendar_events") \
         == [(0,)]
-    assert _query(target / "activity.sqlite",
+    assert query(target / "activity.sqlite",
                   "SELECT text FROM daily_notes") == [("A different history",)]
 
 
@@ -539,7 +531,7 @@ def test_an_older_export_cannot_revert_a_target_that_is_ahead(tmp_path):
     quietly reverting calendar titles, recurrence and archive state."""
     columns_probe = tmp_path / "probe"
     assert _restore(_write_stream(tmp_path / "s.jsonl", _STREAM), columns_probe).returncode == 0
-    columns = [row[1] for row in _query(
+    columns = [row[1] for row in query(
         columns_probe / "activity.sqlite", "PRAGMA table_info(calendar_events)")]
 
     def series(title):
@@ -561,13 +553,13 @@ def test_an_older_export_cannot_revert_a_target_that_is_ahead(tmp_path):
 
     target = tmp_path / "restored-ahead"
     assert _restore(newer, target).returncode == 0
-    assert _query(target / "activity.sqlite",
+    assert query(target / "activity.sqlite",
                   "SELECT title FROM calendar_events") == [("Renamed Later",)]
 
     run = _restore(older, target)
     assert run.returncode != 0
     assert "ahead of this file or has diverged" in run.stderr
-    assert _query(target / "activity.sqlite",
+    assert query(target / "activity.sqlite",
                   "SELECT title FROM calendar_events") == [("Renamed Later",)], \
         "the older snapshot must not have reverted the series"
 
@@ -621,7 +613,7 @@ def test_the_summary_never_claims_zero_over_pre_existing_rows(tmp_path):
     assert second.returncode == 0, second.stderr
     assert "  lists: 1 pre-existing rows (untouched)" in second.stdout
     assert "  lists: 0 rows" not in second.stdout
-    assert _query(target / "activity.sqlite", "SELECT name FROM lists") == [("Invented",)]
+    assert query(target / "activity.sqlite", "SELECT name FROM lists") == [("Invented",)]
 
 
 def _restore_module():
@@ -698,9 +690,9 @@ def test_deleting_a_habit_on_replay_detaches_the_focus_it_earned(tmp_path):
 
     assert run.returncode == 0, run.stderr
     db = target / "activity.sqlite"
-    assert _query(db, "SELECT COUNT(*) FROM routine_items WHERE id = 4001")[0][0] == 0, \
+    assert query(db, "SELECT COUNT(*) FROM routine_items WHERE id = 4001")[0][0] == 0, \
         "the habit is gone"
-    assert _query(db, "SELECT seconds, habit_id FROM focus_sessions") == [(1500, None)], \
+    assert query(db, "SELECT seconds, habit_id FROM focus_sessions") == [(1500, None)], \
         "the time it was spent on survives it, detached"
 
 
@@ -832,7 +824,7 @@ def test_redelivery_applies_only_the_records_that_are_new(tmp_path):
     assert "events: 1 applied / 3 skipped" in run.stdout
     assert _counts(target / "activity.sqlite")["events"] == 4
     # The tail was replayed, not merely stored: the new note reached typed state.
-    assert _query(
+    assert query(
         target / "activity.sqlite",
         "SELECT text FROM daily_notes WHERE date = '2031-05-07'",
     ) == [("Invented note after the first export",)]

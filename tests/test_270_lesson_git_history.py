@@ -21,9 +21,7 @@ from app.db import get_conn
 from app.services import bundle_schema, lessons
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _started_app(client):
-    yield
+pytestmark = pytest.mark.usefixtures("started_app")
 
 
 def _lesson(title: str) -> dict:
