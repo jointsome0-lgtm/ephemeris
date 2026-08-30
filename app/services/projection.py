@@ -1,0 +1,262 @@
+"""Shared projection machinery for the lesson record services.
+
+One per-lesson lock registry, one idempotency-key grammar, one durable
+publisher (stage, fsync, replace, dirsync), one private cross-process lock
+under a projections directory, and one record skeleton parameterised by the
+per-kind pieces.  No rate state lives here.
+"""
+from __future__ import annotations
+
+import errno
+import os
+import sqlite3
+import stat as stat_module
+import threading
+from collections.abc import Callable
+from contextlib import contextmanager
+from pathlib import Path
+from uuid import uuid4
+
+from ..db import immediate
+
+MAX_KEY_LEN = 128
+
+DIRECTORY_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_DIRECTORY", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_CLOEXEC", 0)
+)
+READ_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_NONBLOCK", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_CLOEXEC", 0)
+)
+
+_lesson_locks_lock = threading.Lock()
+_lesson_locks: dict[str, threading.RLock] = {}
+
+
+def lesson_lock(slug: str) -> threading.RLock:
+    with _lesson_locks_lock:
+        lock = _lesson_locks.get(slug)
+        if lock is None:
+            lock = _lesson_locks[slug] = threading.RLock()
+        return lock
+
+
+def has_control_chars(value: str) -> bool:
+    return any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
+
+
+def valid_idempotency_key(value: object) -> bool:
+    if not isinstance(value, str) or not 1 <= len(value) <= MAX_KEY_LEN:
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return not has_control_chars(value)
+
+
+def require_eligible(
+    read, error: type[Exception], unavailable: str, affordance: str
+) -> None:
+    if read.rejected:
+        raise error(
+            "manifest-rejected", 409,
+            f"the lesson manifest is rejected; {affordance} access is refused",
+        )
+    if "identity-mismatch" in read.codes():
+        raise error(
+            "identity-mismatch", 409,
+            "manifest lesson_uid differs from the DB uid; resolve the mismatch first",
+        )
+    if not read.bridge_eligible:
+        raise error(
+            unavailable, 409,
+            f"this lesson's manifest/profile grants no {affordance} affordance",
+        )
+
+
+def safe_uid(lesson: dict) -> str:
+    from . import bundle_schema
+
+    uid = lesson.get("uid")
+    if not isinstance(uid, str) or bundle_schema.UUID_RE.match(uid) is None:
+        raise OSError("lesson has no safe projection identity")
+    return uid
+
+
+def ensure_state_dir(state_dir: Path) -> None:
+    state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not stat_module.S_ISDIR(os.lstat(state_dir).st_mode):
+        raise OSError("projection state root is not a directory")
+
+
+@contextmanager
+def file_lock(state_dir: Path, lesson: dict):
+    try:
+        import fcntl
+    except ImportError as exc:
+        raise OSError("advisory file locking (fcntl.flock) is unavailable") from exc
+
+    uid = safe_uid(lesson)
+    ensure_state_dir(state_dir)
+    fd = os.open(
+        state_dir / f"{uid}.lock",
+        os.O_RDWR | os.O_CREAT | os.O_NONBLOCK
+        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        0o600,
+    )
+    try:
+        st = os.fstat(fd)
+        if not stat_module.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            raise OSError("unsafe projection lock file")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def write_all(fd: int, data: bytes) -> os.stat_result:
+    view = memoryview(data)
+    while view:
+        count = os.write(fd, view)
+        if count <= 0:
+            raise OSError(errno.EIO, "short write on projection file")
+        view = view[count:]
+    return os.fstat(fd)
+
+
+def stage(
+    dir_fd: int, data: bytes | Callable[[int], None], *, prefix: str
+) -> tuple[str, int]:
+    for _ in range(20):
+        name = f"{prefix}{uuid4().hex}.tmp"
+        try:
+            fd = os.open(
+                name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL
+                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+                dir_fd=dir_fd,
+            )
+        except FileExistsError:
+            continue
+        try:
+            if callable(data):
+                data(fd)
+            else:
+                write_all(fd, data)
+            os.fsync(fd)
+            st = os.fstat(fd)
+            if not stat_module.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                raise OSError("staged projection is not a single-link regular file")
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(name, dir_fd=dir_fd)
+            except OSError:
+                pass
+            raise
+        return name, fd
+    raise OSError(errno.EEXIST, "could not allocate a projection temp file")
+
+
+def move_aside(dir_fd: int, name: str) -> str | None:
+    try:
+        st = os.lstat(name, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return None
+    if stat_module.S_ISREG(st.st_mode) and st.st_nlink == 1:
+        return None
+    if stat_module.S_ISDIR(st.st_mode):
+        try:
+            os.rmdir(name, dir_fd=dir_fd)
+            return None
+        except OSError:
+            pass
+    aside = f"{name}.collision-{uuid4().hex[:8]}"
+    os.rename(name, aside, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    return aside
+
+
+def publish(
+    dir_fd: int,
+    name: str,
+    data: bytes | Callable[[int], None],
+    *,
+    prefix: str,
+    verify: Callable[[int, os.stat_result], None] | None = None,
+) -> os.stat_result:
+    temp_name, fd = stage(dir_fd, data, prefix=prefix)
+    try:
+        staged = os.fstat(fd)
+        move_aside(dir_fd, name)
+        os.replace(temp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        temp_name = None
+        os.fsync(dir_fd)
+        published = os.fstat(fd)
+        holder = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        if (
+            (published.st_size, published.st_mtime_ns)
+            != (staged.st_size, staged.st_mtime_ns)
+            or (holder.st_dev, holder.st_ino)
+            != (published.st_dev, published.st_ino)
+        ):
+            raise OSError("projection changed during publication")
+        if verify is not None:
+            verify(fd, published)
+        return published
+    finally:
+        os.close(fd)
+        if temp_name is not None:
+            try:
+                os.unlink(temp_name, dir_fd=dir_fd)
+            except OSError:
+                pass
+
+
+def record(
+    conn: sqlite3.Connection,
+    lesson: dict,
+    error: type[Exception],
+    *,
+    replay: Callable[[], dict | None],
+    validate: Callable[[], object],
+    write: Callable[[object], object],
+    project: Callable[[object], dict],
+) -> dict:
+    with lesson_lock(lesson["slug"]):
+        found = replay()
+    if found is not None:
+        return found
+    try:
+        prepared = validate()
+    except error:
+        with lesson_lock(lesson["slug"]):
+            found = replay()
+        if found is not None:
+            return found
+        raise
+    with lesson_lock(lesson["slug"]):
+        found = replay()
+        if found is not None:
+            return found
+        try:
+            with immediate(conn):
+                committed = write(prepared)
+        except sqlite3.IntegrityError:
+            found = replay()
+            if found is None:
+                raise
+            return found
+        return project(committed)

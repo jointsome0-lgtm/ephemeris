@@ -6,19 +6,16 @@ save between validation and publication.
 """
 from __future__ import annotations
 
-import errno
 import hashlib
 import os
 import re
 import sqlite3
 import stat as stat_module
-import threading
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from uuid import uuid4
 
 from ..db import append_event
-from . import bundle_schema, lessons
+from . import bundle_schema, lessons, projection
 from .runner_registry import RUNNER_REGISTRY
 
 
@@ -26,23 +23,6 @@ MAX_FILE_BYTES = 64 * 1024
 MAX_BODY_BYTES = 512 * 1024
 MAX_DEPTH_BELOW_ROOT = 4
 FILE_REV_RE = re.compile(r"^sha256:[0-9a-f]{64}\Z")
-
-_bundle_locks_lock = threading.Lock()
-_bundle_locks: dict[str, threading.RLock] = {}
-
-_DIRECTORY_FLAGS = (
-    os.O_RDONLY
-    | getattr(os, "O_DIRECTORY", 0)
-    | getattr(os, "O_NOFOLLOW", 0)
-    | getattr(os, "O_CLOEXEC", 0)
-)
-_READ_FLAGS = (
-    os.O_RDONLY
-    | getattr(os, "O_NONBLOCK", 0)
-    | getattr(os, "O_NOFOLLOW", 0)
-    | getattr(os, "O_CLOEXEC", 0)
-)
-
 
 class ArtifactError(Exception):
     def __init__(
@@ -73,33 +53,6 @@ class RunSnapshot:
     filename: str
     file_rev: str
     data: bytes
-
-
-def bundle_lock(slug: str) -> threading.RLock:
-    """The phase-F per-bundle lock shared by save and later run admission."""
-    with _bundle_locks_lock:
-        lock = _bundle_locks.get(slug)
-        if lock is None:
-            lock = _bundle_locks[slug] = threading.RLock()
-        return lock
-
-
-def _require_eligible(read: bundle_schema.ManifestRead) -> None:
-    if read.rejected:
-        raise ArtifactError(
-            "manifest-rejected", 409,
-            "the lesson manifest is rejected; artifact access is refused",
-        )
-    if "identity-mismatch" in read.codes():
-        raise ArtifactError(
-            "identity-mismatch", 409,
-            "manifest lesson_uid differs from the DB uid",
-        )
-    if not read.bridge_eligible:
-        raise ArtifactError(
-            "blocks-unavailable", 409,
-            "this lesson's manifest/profile grants no editor affordance",
-        )
 
 
 def _resolve_block(
@@ -147,7 +100,7 @@ def _stat_identity(st: os.stat_result) -> tuple[int, ...]:
 
 def _open_lesson_root(lesson: dict) -> int:
     try:
-        return os.open(lessons._lesson_dir(lesson["slug"]), _DIRECTORY_FLAGS)
+        return os.open(lessons._lesson_dir(lesson["slug"]), projection.DIRECTORY_FLAGS)
     except (KeyError, OSError, lessons.LessonError) as exc:
         raise ArtifactError(
             "unsafe-file", 409, "lesson bundle root cannot be opened safely"
@@ -159,7 +112,7 @@ def _open_parent(root_fd: int, parts: tuple[str, ...], *, create: bool) -> int:
     try:
         for part in parts:
             try:
-                child = os.open(part, _DIRECTORY_FLAGS, dir_fd=current)
+                child = os.open(part, projection.DIRECTORY_FLAGS, dir_fd=current)
             except FileNotFoundError:
                 if not create:
                     raise _MissingPath from None
@@ -183,7 +136,7 @@ def _open_parent(root_fd: int, parts: tuple[str, ...], *, create: bool) -> int:
                             "artifact parent creation could not be made durable",
                         ) from exc
                 try:
-                    child = os.open(part, _DIRECTORY_FLAGS, dir_fd=current)
+                    child = os.open(part, projection.DIRECTORY_FLAGS, dir_fd=current)
                 except OSError as exc:
                     raise ArtifactError(
                         "unsafe-file", 409,
@@ -204,7 +157,7 @@ def _open_parent(root_fd: int, parts: tuple[str, ...], *, create: bool) -> int:
 
 def _open_artifact(parent_fd: int, name: str) -> _OpenArtifact | None:
     try:
-        fd = os.open(name, _READ_FLAGS, dir_fd=parent_fd)
+        fd = os.open(name, projection.READ_FLAGS, dir_fd=parent_fd)
     except FileNotFoundError:
         return None
     except OSError as exc:
@@ -300,9 +253,11 @@ def _read_location(
 
 def get_artifact(lesson: dict, block_id: str) -> dict:
     """Return one descriptor-bound UTF-8 artifact snapshot without mutation."""
-    with bundle_lock(lesson["slug"]):
+    with projection.lesson_lock(lesson["slug"]):
         read = lessons.read_bundle_readonly(lesson)
-        _require_eligible(read)
+        projection.require_eligible(
+            read, ArtifactError, "blocks-unavailable", "editor"
+        )
         _block, file_parts = _resolve_block(read, block_id, for_save=False)
         location = _read_location(lesson, file_parts, create=False)
         if location is None:
@@ -338,9 +293,11 @@ def get_run_snapshot(
             "invalid-file-rev", 400,
             "file_rev must be sha256:<64 lowercase hex>",
         )
-    with bundle_lock(lesson["slug"]):
+    with projection.lesson_lock(lesson["slug"]):
         read = lessons.read_bundle_readonly(lesson)
-        _require_eligible(read)
+        projection.require_eligible(
+            read, ArtifactError, "blocks-unavailable", "editor"
+        )
         block, file_parts = _resolve_block(read, block_id, for_save=False)
         runner_id = block.get("runner_id")
         spec = RUNNER_REGISTRY.get(runner_id) if isinstance(runner_id, str) else None
@@ -414,56 +371,16 @@ def _clean_save(payload: dict) -> tuple[bytes, str]:
     return data, base_rev
 
 
-def _write_all(fd: int, data: bytes) -> None:
-    view = memoryview(data)
-    written = 0
-    while written < len(view):
-        count = os.write(fd, view[written:])
-        if count <= 0:
-            raise OSError(errno.EIO, "short artifact write")
-        written += count
-
-
-def _stage_temp(parent_fd: int, data: bytes) -> str:
-    for _ in range(20):
-        name = f".artifact-{uuid4().hex}.tmp"
-        try:
-            fd = os.open(
-                name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
-                0o600,
-                dir_fd=parent_fd,
-            )
-        except FileExistsError:
-            continue
-        try:
-            _write_all(fd, data)
-            os.fsync(fd)
-            os.close(fd)
-            fd = -1
-        except BaseException:
-            if fd >= 0:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-            try:
-                os.unlink(name, dir_fd=parent_fd)
-            except OSError:
-                pass
-            raise
-        return name
-    raise OSError(errno.EEXIST, "could not allocate artifact temp file")
-
-
 def save_artifact(
     conn: sqlite3.Connection, lesson: dict, block_id: str, payload: dict
 ) -> dict:
-    """Compare and atomically publish one artifact under the phase-F lock."""
+    """Compare and atomically publish one artifact under the lesson lock."""
     data, base_rev = _clean_save(payload)
-    with bundle_lock(lesson["slug"]):
+    with projection.lesson_lock(lesson["slug"]):
         read = lessons.read_bundle_readonly(lesson)
-        _require_eligible(read)
+        projection.require_eligible(
+            read, ArtifactError, "blocks-unavailable", "editor"
+        )
         block, file_parts = _resolve_block(read, block_id, for_save=True)
         location = _read_location(lesson, file_parts, create=True)
         assert location is not None
@@ -493,7 +410,10 @@ def save_artifact(
                     file_rev=current_rev,
                 )
 
-            temp_name = _stage_temp(parent_fd, data)
+            temp_name, temp_fd = projection.stage(
+                parent_fd, data, prefix=".artifact-"
+            )
+            os.close(temp_fd)
             identity_ok = (
                 _name_matches(parent_fd, name, opened)
                 if opened is not None

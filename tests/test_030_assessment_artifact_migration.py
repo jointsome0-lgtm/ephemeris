@@ -1622,6 +1622,7 @@ def test_assessment_artifact_migration(client, suite_state):
 
     # ---- F1: pure artifact reads + conflict-safe editor backend ------------
     from app.services import artifacts as artifacts_svc
+    from app.services import projection as projection_svc
     import types as _f1_types
 
     _f1_conn = get_conn()
@@ -1890,15 +1891,15 @@ def test_assessment_artifact_migration(client, suite_state):
     # A direct writer changing the current descriptor after compare but before
     # publication is caught by the final identity check; its bytes win.
     _f1_current = c.get(_f1_url).json()["file_rev"]
-    _f1_real_stage = artifacts_svc._stage_temp
+    _f1_real_stage = projection_svc.stage
 
-    def _f1_stage_then_mutate(parent_fd, data):
-        name = _f1_real_stage(parent_fd, data)
+    def _f1_stage_then_mutate(parent_fd, data, *, prefix):
+        staged = _f1_real_stage(parent_fd, data, prefix=prefix)
         _f1_file.write_text("direct writer wins\n", encoding="utf-8")
-        return name
+        return staged
 
     with _mock.patch.object(
-            artifacts_svc, "_stage_temp", _f1_stage_then_mutate):
+            projection_svc, "stage", _f1_stage_then_mutate):
         _f1_identity_conflict = c.post(
             _f1_url,
             json={"content": "api writer loses\n", "base_rev": _f1_current},

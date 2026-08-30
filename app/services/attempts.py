@@ -26,6 +26,11 @@ to classify its own write, and none is added.
 No auto-agents: recording an attempt writes the row, the event, and the
 projection line — it never wakes or notifies an agent (Check v1 is
 save-only; a future agent subscribes to `lesson_attempt` events instead).
+
+The lock registry, the idempotency-key grammar, the eligibility check, the
+file lock, the publisher and the record skeleton are `projection`'s; this
+module keeps the attempts record shape, its cursor sidecar and the
+post-rebuild digest.
 """
 from __future__ import annotations
 
@@ -35,17 +40,15 @@ import os
 import re
 import sqlite3
 import stat as stat_module
-import tempfile
 import threading
 import time
 from collections import deque
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from ..db import DATA_DIR, append_event
-from . import bundle_schema, lessons
+from . import bundle_schema, lessons, projection
 
 PROJECTION_NAME = "attempts.jsonl"
 PROJECTION_STATE_DIR = DATA_DIR / "attempt-projections"
@@ -62,7 +65,6 @@ RECORD_VERSION = 1
 
 MAX_ANSWER_BYTES = 32 * 1024   # §6.2: answer ≤ 32 KiB UTF-8
 MAX_LINE_BYTES = 64 * 1024     # §6.2: whole projection line ≤ 64 KiB
-MAX_KEY_LEN = 128              # §6.3: opaque client token ≤ 128 chars
 
 PAGE_REV_RE = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 
@@ -80,13 +82,6 @@ _monotonic = time.monotonic  # separable for tests
 _rate_lock = threading.Lock()
 _rate: dict[int, deque[float]] = {}
 
-# One lock per bundle: the duplicate check, the transactional insert, and the
-# projection append serialize per lesson, so the projection's line count can
-# be compared against the table without racing sibling writers in-process.
-# RLock because reconcile is also a public entry point that takes it itself.
-_bundle_locks_lock = threading.Lock()
-_bundle_locks: dict[str, threading.RLock] = {}
-
 
 class AttemptError(Exception):
     """An attempt write was refused. `code` is the machine-readable reason
@@ -98,14 +93,6 @@ class AttemptError(Exception):
         self.code = code
         self.status = status
         self.detail = detail
-
-
-def _bundle_lock(slug: str) -> threading.RLock:
-    with _bundle_locks_lock:
-        lock = _bundle_locks.get(slug)
-        if lock is None:
-            lock = _bundle_locks[slug] = threading.RLock()
-        return lock
 
 
 def _check_rate(lesson_id: int) -> float:
@@ -174,15 +161,10 @@ def _clean_submission(payload: dict) -> dict:
     if not isinstance(page_rev, str) or not PAGE_REV_RE.match(page_rev):
         raise AttemptError("invalid-page-rev", 400, "page_rev must be sha256:<64 lowercase hex>")
     key = payload.get("idempotency_key")
-    if (
-        not isinstance(key, str)
-        or not 1 <= len(key) <= MAX_KEY_LEN
-        or _utf8_len(key) is None
-        or any(ord(ch) < 32 or ord(ch) == 127 for ch in key)
-    ):
+    if not projection.valid_idempotency_key(key):
         raise AttemptError(
             "invalid-idempotency-key", 400,
-            f"idempotency_key must be 1-{MAX_KEY_LEN} chars, no control characters",
+            f"idempotency_key must be 1-{projection.MAX_KEY_LEN} chars, no control characters",
         )
     answer = payload.get("answer")
     if not isinstance(answer, str):
@@ -201,30 +183,6 @@ def _clean_submission(payload: dict) -> dict:
         "idempotency_key": key,
         "answer": answer,
     }
-
-
-def _require_eligible(read: bundle_schema.ManifestRead) -> None:
-    """Attempt writes are refused for a rejected manifest (§9.2), for an
-    identity mismatch (§3 — resolved explicitly, never as a write side
-    effect), and for every profile without the attempts affordance (§5:
-    legacy-display and v1 carry none). `bridge_eligible` is exactly that
-    predicate minus the mismatch, which forces legacy anyway — the split
-    below only exists to give each refusal its own distinct code."""
-    if read.rejected:
-        raise AttemptError(
-            "manifest-rejected", 409,
-            "the lesson manifest is rejected; attempt writes are refused",
-        )
-    if "identity-mismatch" in read.codes():
-        raise AttemptError(
-            "identity-mismatch", 409,
-            "manifest lesson_uid differs from the DB uid; resolve the mismatch first",
-        )
-    if not read.bridge_eligible:
-        raise AttemptError(
-            "attempts-unavailable", 409,
-            "this lesson's manifest/profile grants no attempt affordance",
-        )
 
 
 def _derive_stale(
@@ -294,75 +252,8 @@ def _projection_path(lesson: dict) -> Path:
     return lessons.LESSONS_DIR / lesson["slug"] / PROJECTION_NAME
 
 
-def _state_paths(lesson: dict) -> tuple[Path, Path]:
-    uid = lesson.get("uid")
-    if not isinstance(uid, str) or bundle_schema.UUID_RE.match(uid) is None:
-        raise OSError("lesson has no safe projection-state identity")
-    return (
-        PROJECTION_STATE_DIR / f"{uid}.json",
-        PROJECTION_STATE_DIR / f"{uid}.lock",
-    )
-
-
-def _ensure_state_dir() -> None:
-    PROJECTION_STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    st = os.lstat(PROJECTION_STATE_DIR)
-    if not stat_module.S_ISDIR(st.st_mode):
-        raise OSError("projection state root is not a directory")
-
-
-@contextmanager
-def _projection_file_lock(lesson: dict):
-    """Private per-lesson cross-process exclusion for projection work.
-
-    PR-57 round 10 used SQLite's database-wide writer lock. The immutable
-    lesson uid now names a lock outside the agent-writable bundle, so only
-    sibling projection work serializes; unrelated SQLite writers remain free.
-    """
-    # Unix-only, and this module is on main.py's import chain, so it is imported
-    # here rather than at module level. Bound before the try: the finally below
-    # unlocks, and a failure between open and lock must surface its own error,
-    # not an UnboundLocalError from the cleanup path.
-    #
-    # A platform with no flock is an unavailable lock, not a crash: both callers
-    # already degrade that to a False return ("projection: pending"), and the
-    # attempt row is committed before projection runs. Raising OSError keeps that
-    # contract instead of an ImportError escaping past their handlers as a 500
-    # over an attempt that was in fact recorded.
-    try:
-        import fcntl
-    except ImportError as exc:
-        raise OSError("advisory file locking (fcntl.flock) is unavailable") from exc
-
-    _ensure_state_dir()
-    _, lock_path = _state_paths(lesson)
-    fd = os.open(
-        lock_path,
-        os.O_RDWR | os.O_CREAT | os.O_NONBLOCK
-        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
-        0o600,
-    )
-    try:
-        st = os.fstat(fd)
-        if not stat_module.S_ISREG(st.st_mode) or st.st_nlink != 1:
-            raise OSError("unsafe projection lock file")
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        yield
-    finally:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
-
-
-def _write_all(fd: int, data: bytes) -> os.stat_result:
-    view = memoryview(data)
-    while view:
-        count = os.write(fd, view)
-        if count <= 0:
-            raise OSError("short write on projection file")
-        view = view[count:]
-    return os.fstat(fd)
+def _state_path(lesson: dict) -> Path:
+    return PROJECTION_STATE_DIR / f"{projection.safe_uid(lesson)}.json"
 
 
 def _file_seal(st: os.stat_result) -> dict:
@@ -394,13 +285,8 @@ def _seal_matches(st: os.stat_result, seal: dict) -> bool:
 
 
 def _read_state(lesson: dict) -> dict | None:
-    state_path, _ = _state_paths(lesson)
     try:
-        fd = os.open(
-            state_path,
-            os.O_RDONLY | os.O_NONBLOCK
-            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
-        )
+        fd = os.open(_state_path(lesson), projection.READ_FLAGS)
     except OSError:
         return None
     try:
@@ -464,46 +350,19 @@ def _read_state(lesson: dict) -> dict | None:
 
 
 def _write_state(lesson: dict, state: dict) -> None:
-    _ensure_state_dir()
-    state_path, _ = _state_paths(lesson)
+    projection.ensure_state_dir(PROJECTION_STATE_DIR)
+    state_path = _state_path(lesson)
     data = (
         json.dumps(state, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
         + "\n"
     ).encode("ascii")
     if len(data) > PROJECTION_STATE_MAX_BYTES:
         raise OSError("projection state exceeds its fixed bound")
-    fd, tmp_name = tempfile.mkstemp(
-        dir=PROJECTION_STATE_DIR, prefix=".attempt-state-"
-    )
+    dir_fd = os.open(PROJECTION_STATE_DIR, projection.DIRECTORY_FLAGS)
     try:
-        try:
-            _write_all(fd, data)
-            os.fsync(fd)
-            closing_fd = fd
-            fd = -1
-            os.close(closing_fd)
-        except BaseException:
-            if fd >= 0:
-                closing_fd = fd
-                fd = -1
-                os.close(closing_fd)
-            raise
-        os.replace(tmp_name, state_path)
-        parent_fd = os.open(
-            PROJECTION_STATE_DIR,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_CLOEXEC", 0),
-        )
-        try:
-            os.fsync(parent_fd)
-        finally:
-            os.close(parent_fd)
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+        projection.publish(dir_fd, state_path.name, data, prefix=".attempt-state-")
+    finally:
+        os.close(dir_fd)
 
 
 def _projection_fd(lesson: dict, flags: int) -> int:
@@ -563,81 +422,43 @@ def _cursor_matches_authority(
 def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
     """Idempotent reconcile (§6.1): rewrite the whole projection from the
     authority in bounded memory: rows are rendered directly from the SQLite
-    cursor into one fsynced temporary file, ascending created_at with ties by
-    attempt_id, then atomically replaced. The rendered descriptor stays open
-    across publication: its pre/post identity, size, and mtime must be stable,
-    and its full post-replace seal must match the public name before the cursor
-    is published. A crash or bundle-side rewrite therefore leaves missing or
-    mismatched state and causes another safe rebuild, never a blind append."""
+    cursor into the staged file, ascending created_at with ties by
+    attempt_id, then atomically published. The rendered descriptor stays open
+    across publication: the published bytes are hashed back against what was
+    rendered, and the full post-replace seal must match the public name before
+    the cursor is published. A crash or bundle-side rewrite therefore leaves
+    missing or mismatched state and causes another safe rebuild, never a
+    blind append."""
     path = _projection_path(lesson)
-    try:
-        st = os.lstat(path)
-    except OSError:
-        st = None
-    if st is not None and stat_module.S_ISDIR(st.st_mode):
-        try:
-            os.rmdir(path)
-        except OSError:
-            os.rename(path, f"{path}.collision-{uuid4().hex[:8]}")
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".attempts-")
-    cursor_id = 0
-    cursor_attempt_id = None
-    tail_created_at = None
-    tail_attempt_id = None
-    try:
+    cursor = {
+        "cursor_id": 0,
+        "cursor_attempt_id": None,
+        "tail_created_at": None,
+        "tail_attempt_id": None,
+    }
+    rendered_hash = hashlib.sha256()
+
+    def render(fd: int) -> None:
         rows = conn.execute(
             "SELECT * FROM lesson_attempts WHERE lesson_id = ? "
             "ORDER BY created_at, attempt_id",
             (lesson["id"],),
         )
-        rendered_hash = hashlib.sha256()
         try:
             for sqlite_row in rows:
                 row = dict(sqlite_row)
                 line = _projection_line(row).encode("utf-8")
-                _write_all(fd, line)
+                projection.write_all(fd, line)
                 rendered_hash.update(line)
-                if row["id"] > cursor_id:
-                    cursor_id = row["id"]
-                    cursor_attempt_id = row["attempt_id"]
-                tail_created_at = row["created_at"]
-                tail_attempt_id = row["attempt_id"]
+                if row["id"] > cursor["cursor_id"]:
+                    cursor["cursor_id"] = row["id"]
+                    cursor["cursor_attempt_id"] = row["attempt_id"]
+                cursor["tail_created_at"] = row["created_at"]
+                cursor["tail_attempt_id"] = row["attempt_id"]
         finally:
             rows.close()
-        os.fsync(fd)
-        rendered_st = os.fstat(fd)
-        if (
-            not stat_module.S_ISREG(rendered_st.st_mode)
-            or rendered_st.st_nlink != 1
-        ):
-            raise OSError("unsafe rebuilt projection temp")
-        os.replace(tmp_name, path)
-        parent_fd = os.open(
-            path.parent,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_CLOEXEC", 0),
-        )
-        try:
-            os.fsync(parent_fd)
-        finally:
-            os.close(parent_fd)
-        published_st = os.fstat(fd)
-        if (
-            (published_st.st_dev, published_st.st_ino, published_st.st_size,
-             published_st.st_mtime_ns)
-            != (rendered_st.st_dev, rendered_st.st_ino, rendered_st.st_size,
-                rendered_st.st_mtime_ns)
-        ):
-            raise OSError("rebuilt projection changed during publication")
-        # A same-inode rewrite inside the publication window can restore size
-        # and mtime (utime), so the descriptor tuple above cannot see it. Its
-        # former detector — file ctime == parent-dir mtime — was not a real
-        # invariant: rename(2) stamps the two inodes with separate coarse-clock
-        # reads, so a timer tick between them fails legitimate publications
-        # (~0.34% of renames at HZ=1000; #109). Re-reading the published bytes
-        # against the rendered hash catches the rewrite without clocks; a
-        # rewrite after this read still moves ctime away from the seal captured
-        # above and fails the next _projection_matches_state.
+
+    def verify(fd: int, published_st: os.stat_result) -> None:
         remaining = published_st.st_size
         offset = 0
         published_hash = hashlib.sha256()
@@ -650,32 +471,23 @@ def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
             remaining -= len(chunk)
         if published_hash.digest() != rendered_hash.digest():
             raise OSError("rebuilt projection changed during publication")
-        state = {
-            "v": PROJECTION_STATE_VERSION,
-            "lesson_uid": lesson["uid"],
-            "cursor_id": cursor_id,
-            "cursor_attempt_id": cursor_attempt_id,
-            "tail_created_at": tail_created_at,
-            "tail_attempt_id": tail_attempt_id,
-            "file": _file_seal(published_st),
-        }
-        if not _seal_matches(os.lstat(path), state["file"]):
-            raise OSError("rebuilt projection changed during publication")
-        closing_fd = fd
-        fd = -1
-        os.close(closing_fd)
-        _write_state(lesson, state)
-    except BaseException:
-        if fd >= 0:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+
+    dir_fd = os.open(path.parent, projection.DIRECTORY_FLAGS)
+    try:
+        published_st = projection.publish(
+            dir_fd, PROJECTION_NAME, render, prefix=".attempts-", verify=verify
+        )
+    finally:
+        os.close(dir_fd)
+    state = {
+        "v": PROJECTION_STATE_VERSION,
+        "lesson_uid": lesson["uid"],
+        **cursor,
+        "file": _file_seal(published_st),
+    }
+    if not _seal_matches(os.lstat(path), state["file"]):
+        raise OSError("rebuilt projection changed during publication")
+    _write_state(lesson, state)
 
 
 def reconcile_projection(conn: sqlite3.Connection, lesson: dict) -> bool:
@@ -684,9 +496,9 @@ def reconcile_projection(conn: sqlite3.Connection, lesson: dict) -> bool:
     unavailable private cross-process lock."""
     if conn.in_transaction:
         return False
-    with _bundle_lock(lesson["slug"]):
+    with projection.lesson_lock(lesson["slug"]):
         try:
-            with _projection_file_lock(lesson):
+            with projection.file_lock(PROJECTION_STATE_DIR, lesson):
                 _rebuild_projection(conn, lesson)
         except (OSError, sqlite3.Error):
             return False
@@ -728,9 +540,9 @@ def reconcile_projection_if_stale(
     """
     if conn.in_transaction:
         return False
-    with _bundle_lock(lesson["slug"]):
+    with projection.lesson_lock(lesson["slug"]):
         try:
-            with _projection_file_lock(lesson):
+            with projection.file_lock(PROJECTION_STATE_DIR, lesson):
                 if not _projection_is_current(conn, lesson):
                     _rebuild_projection(conn, lesson)
         except (OSError, sqlite3.Error):
@@ -739,7 +551,7 @@ def reconcile_projection_if_stale(
 
 
 def _project_attempt(conn: sqlite3.Connection, lesson: dict, row: dict) -> bool:
-    """Synchronous projection append, called under the bundle lock after the
+    """Synchronous projection append, called under the lesson lock after the
     transaction committed. The fast path consults a private durable cursor,
     selects at most two authority rows after it, verifies the projection's
     descriptor seal and single-link guard, and renders at most one new line.
@@ -749,7 +561,7 @@ def _project_attempt(conn: sqlite3.Connection, lesson: dict, row: dict) -> bool:
     if conn.in_transaction:
         return False
     try:
-        with _projection_file_lock(lesson):
+        with projection.file_lock(PROJECTION_STATE_DIR, lesson):
             return _project_attempt_locked(conn, lesson, row)
     except (OSError, sqlite3.Error):
         return False
@@ -787,7 +599,7 @@ def _project_attempt_locked(
                 if not _seal_matches(before, state["file"]):
                     raise OSError("projection changed before append")
                 expected_size = before.st_size + len(line)
-                written_st = _write_all(fd, line)
+                written_st = projection.write_all(fd, line)
                 if (
                     not stat_module.S_ISREG(written_st.st_mode)
                     or written_st.st_nlink != 1
@@ -1078,30 +890,30 @@ def record_attempt(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dic
       recorded  -> {result, attempt_id, stale, kind, attempt_number, projection}
       duplicate -> {result, attempt_id, stale, kind}
     Refusals raise AttemptError with a distinct code per
-    docs/lesson-attempts-api.md."""
+    docs/lesson-attempts-api.md.
+
+    The skeleton is `projection.record`: §6.3 replay precedes every record-time
+    refusal, the rate limit included, so a client retry learns its attempt_id
+    even when the manifest has since rejected the bundle or the window is
+    exhausted. The window slot is charged in `validate` and refunded for every
+    outcome that was not a new write (a replay or a key conflict, round 12);
+    refusals of new writes stay charged.
+    """
     submission = _clean_submission(payload)
-
-    # §6.3 replay precedes every record-time refusal — the rate limit
-    # included (PR-57 rounds 1 & 9): the original write is already durable,
-    # so a client retry must learn its attempt_id even when the manifest has
-    # since rejected the bundle, retired the question, or the retry lands
-    # with the window exhausted — validation below governs only NEW writes.
-    # Replays and key conflicts consume no budget; the unmetered work is one
-    # indexed SELECT, far cheaper than the manifest/hash path the rate
-    # limit exists to protect.
-    with _bundle_lock(lesson["slug"]):
-        replay = _replay_or_conflict(conn, lesson, submission)
-    if replay is not None:
-        return replay
-
     rate_stamp: float | None = None
-    try:
+
+    def replay() -> dict | None:
+        return _replay_or_conflict(conn, lesson, submission)
+
+    def validate() -> tuple[bool, str]:
+        nonlocal rate_stamp
         rate_stamp = _check_rate(lesson["id"])
         read = lessons.read_bundle(lesson)
-        _require_eligible(read)
+        projection.require_eligible(
+            read, AttemptError, "attempts-unavailable", "attempt"
+        )
         if not lesson.get("uid"):  # unreachable post-v11 backfill; fail closed
             raise AttemptError("attempts-unavailable", 409, "lesson has no uid")
-
         question = next(
             (q for q in read.questions if q["id"] == submission["question_id"]), None
         )
@@ -1112,58 +924,74 @@ def record_attempt(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dic
                 "unknown-question", 422,
                 "question_id is not declared in the lesson manifest",
             )
-    except AttemptError:
-        # PR-57 rounds 2 & 11: a retry racing its own original request
-        # (timeout resend) can see the key uncommitted at the early check
-        # above, then hit a refusal here — the rate limit included — after
-        # the original committed. The durable outcome still wins (§6.3) —
-        # re-check before refusing. (A 429 that survives this re-check is
-        # fine: it is transient by contract, and the next retry after
-        # Retry-After finds the committed duplicate.)
-        try:
-            with _bundle_lock(lesson["slug"]):
-                replay = _replay_or_conflict(conn, lesson, submission)
-        except AttemptError:
-            _refund_rate(lesson["id"], rate_stamp)  # conflict: not a new write
-            raise
-        if replay is not None:
-            _refund_rate(lesson["id"], rate_stamp)
-            return replay
-        raise
-    stale = _derive_stale(
-        lesson, read, question, submission["page_id"], submission["page_rev"]
-    )
-    kind = _record_kind(question)
-
-    try:
-        with _bundle_lock(lesson["slug"]):
-            return _record_locked(
-                conn, lesson, submission, stale, kind, rate_stamp
+        stale = _derive_stale(
+            lesson, read, question, submission["page_id"], submission["page_rev"]
+        )
+        kind = _record_kind(question)
+        # §6.2 whole-line bound is a writer duty: an answer that fits the
+        # 32 KiB budget can still escape past 64 KiB (newlines, quotes). The
+        # ids and the timestamp have a fixed serialized width, so these
+        # placeholders make the probe exact.
+        probe = _projection_line({
+            **submission,
+            "attempt_id": "0" * 36,
+            "event_uuid": "0" * 36,
+            "lesson_uid": lesson["uid"],
+            "created_at": _utc_now_iso(),
+            "stale": stale,
+            "kind": kind,
+        })
+        if len(probe.encode("utf-8")) > MAX_LINE_BYTES:
+            raise AttemptError(
+                "answer-too-large", 400,
+                f"projection record exceeds {MAX_LINE_BYTES} bytes",
             )
-    except AttemptError as exc:
-        if exc.code == "idempotency-conflict":  # not a new write (round 12)
-            _refund_rate(lesson["id"], rate_stamp)
-        raise
+        return stale, kind
 
-
-def _record_locked(
-    conn: sqlite3.Connection,
-    lesson: dict,
-    submission: dict,
-    stale: bool,
-    kind: str,
-    rate_stamp: float | None,
-) -> dict:
-    """The bundle-locked write section of `record_attempt`. Every replay
-    outcome refunds the window slot — it was not a new write (round 12)."""
-    # Re-check under the lock: another in-process writer may have landed
-    # the same key between the early replay check and here.
-    replay = _replay_or_conflict(conn, lesson, submission)
-    if replay is None:
+    def write(prepared: tuple[bool, str]) -> tuple[dict, int]:
+        stale, kind = prepared
         attempt_id = str(uuid4())
         created_at = _utc_now_iso()
-        row = {
+        event_uuid = append_event(conn, "lesson_attempt", {
+            # §8 echo policy: identity and the record itself — never
+            # title/path/step/concepts/pages.
+            "lesson_uid": lesson["uid"],
+            "lesson_id": lesson["id"],
+            "slug": lesson["slug"],
             "attempt_id": attempt_id,
+            "page_id": submission["page_id"],
+            "question_id": submission["question_id"],
+            "page_rev": submission["page_rev"],
+            "answer": submission["answer"],
+            "stale": stale,
+            "kind": kind,
+        })
+        insert_cursor = conn.execute(
+            "INSERT INTO lesson_attempts "
+            "(attempt_id, event_uuid, lesson_id, lesson_uid, "
+            " idempotency_key, page_id, question_id, page_rev, "
+            " answer, stale, kind, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                attempt_id, event_uuid, lesson["id"], lesson["uid"],
+                submission["idempotency_key"],
+                submission["page_id"], submission["question_id"],
+                submission["page_rev"], submission["answer"],
+                int(stale), kind, created_at,
+            ),
+        )
+        # attempt_number is the 1-based number of THIS attempt: counted inside
+        # the write transaction, while SQLite still excludes competing
+        # processes — after commit a sibling process could inflate the count.
+        attempt_number = conn.execute(
+            "SELECT COUNT(*) FROM lesson_attempts "
+            "WHERE lesson_id = ? AND question_id = ?",
+            (lesson["id"], submission["question_id"]),
+        ).fetchone()[0]
+        row = {
+            "id": insert_cursor.lastrowid,
+            "attempt_id": attempt_id,
+            "event_uuid": event_uuid,
             "lesson_uid": lesson["uid"],
             "page_id": submission["page_id"],
             "question_id": submission["question_id"],
@@ -1173,83 +1001,30 @@ def _record_locked(
             "stale": stale,
             "kind": kind,
         }
-        # §6.2 whole-line bound is a writer duty: an answer that fits the
-        # 32 KiB budget can still escape past 64 KiB (newlines, quotes).
-        # The event uuid is minted in the transaction below but has a
-        # fixed serialized width, so this placeholder length is exact.
-        probe = _projection_line({**row, "event_uuid": "0" * 36})
-        if len(probe.encode("utf-8")) > MAX_LINE_BYTES:
-            raise AttemptError(
-                "answer-too-large", 400,
-                f"projection record exceeds {MAX_LINE_BYTES} bytes",
-            )
-        try:
-            with conn:
-                # ONE transaction (§6.1): the event and the row commit or
-                # roll back together; the row stores the event's uuid so
-                # the projection can echo it (§6.2).
-                event_uuid = append_event(conn, "lesson_attempt", {
-                    # §8 echo policy: identity and the record itself —
-                    # never title/path/step/concepts/pages.
-                    "lesson_uid": lesson["uid"],
-                    "lesson_id": lesson["id"],
-                    "slug": lesson["slug"],
-                    "attempt_id": attempt_id,
-                    "page_id": submission["page_id"],
-                    "question_id": submission["question_id"],
-                    "page_rev": submission["page_rev"],
-                    "answer": submission["answer"],
-                    "stale": stale,
-                    # The record's own direction, and therefore inside the §8
-                    # echo policy: identity and the record itself, never
-                    # title/path/step/concepts/pages.
-                    "kind": kind,
-                })
-                insert_cursor = conn.execute(
-                    "INSERT INTO lesson_attempts "
-                    "(attempt_id, event_uuid, lesson_id, lesson_uid, "
-                    " idempotency_key, page_id, question_id, page_rev, "
-                    " answer, stale, kind, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        attempt_id, event_uuid, lesson["id"], lesson["uid"],
-                        submission["idempotency_key"],
-                        submission["page_id"], submission["question_id"],
-                        submission["page_rev"], submission["answer"],
-                        int(stale), kind, created_at,
-                    ),
-                )
-                # attempt_number is the 1-based number of THIS attempt:
-                # counted inside the write transaction, while SQLite
-                # still excludes competing processes — after commit a
-                # sibling process could inflate the count (PR-57 r7).
-                attempt_number = conn.execute(
-                    "SELECT COUNT(*) FROM lesson_attempts "
-                    "WHERE lesson_id = ? AND question_id = ?",
-                    (lesson["id"], submission["question_id"]),
-                ).fetchone()[0]
-        except sqlite3.IntegrityError:
-            # Same idempotency key landed from another PROCESS (a stale
-            # second server; in-process writers serialize on the bundle
-            # lock) — answer with its outcome instead of a 500.
-            replay = _replay_or_conflict(conn, lesson, submission)
-            if replay is None:
-                raise
-        else:
-            projected = _project_attempt(
-                conn, lesson, {
-                    **row,
-                    "id": insert_cursor.lastrowid,
-                    "event_uuid": event_uuid,
-                }
-            )
-            return {
-                "result": "recorded",
-                "attempt_id": attempt_id,
-                "stale": stale,
-                "kind": kind,
-                "attempt_number": attempt_number,
-                "projection": "projected" if projected else "pending",
-            }
-    _refund_rate(lesson["id"], rate_stamp)
-    return replay
+        return row, attempt_number
+
+    def project(committed: tuple[dict, int]) -> dict:
+        row, attempt_number = committed
+        return {
+            "result": "recorded",
+            "attempt_id": row["attempt_id"],
+            "stale": row["stale"],
+            "kind": row["kind"],
+            "attempt_number": attempt_number,
+            "projection": (
+                "projected" if _project_attempt(conn, lesson, row) else "pending"
+            ),
+        }
+
+    try:
+        result = projection.record(
+            conn, lesson, AttemptError,
+            replay=replay, validate=validate, write=write, project=project,
+        )
+    except AttemptError as exc:
+        if exc.code == "idempotency-conflict":
+            _refund_rate(lesson["id"], rate_stamp)
+        raise
+    if result["result"] == "duplicate":
+        _refund_rate(lesson["id"], rate_stamp)
+    return result

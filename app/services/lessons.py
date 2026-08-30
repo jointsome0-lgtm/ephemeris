@@ -27,7 +27,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from ..db import DATA_DIR, append_event, get_conn, now_iso
-from . import bundle_schema
+from . import bundle_schema, projection
 
 STATUSES = ("backlog", "studying", "paused", "studied")
 STATUS_LABELS = {
@@ -195,7 +195,7 @@ def _clean_bundle_ref(value: str | None, *, html_only: bool = False) -> str:
     if value is not None and not isinstance(value, str):
         raise LessonError("invalid lesson entry")
     value = (value or DEFAULT_ENTRY).strip()
-    if not value or "\\" in value or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+    if not value or "\\" in value or projection.has_control_chars(value):
         raise LessonError("invalid lesson entry")
     # A name neither the filesystem nor a URL can carry is not a name in this
     # bundle. A JSON body may hold a lone surrogate — `"assets/\ud800.js"` —
