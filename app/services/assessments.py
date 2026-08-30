@@ -1,37 +1,18 @@
-"""Lesson assessment recording — the authority half of the tutor-memory
-channel (S-DESIGN D-S1-1 … D-S1-4, phase S slice s1).
+"""Lesson assessment recording: what the tutor concluded, where
+`lesson_attempts` records what the learner did.
 
-`lesson_attempts` records what the learner did; this module records what the
-TUTOR concluded. One table with a `kind` discriminator (`review`, `evidence`,
-`summary`, `retraction`), one `lesson_assessment` ledger event, both written in
-ONE transaction — the repo's standard write idiom, with no filesystem work
-inside it (D-S1-5).
+One row plus one `lesson_assessment` ledger event per record, written in one
+transaction with no filesystem work inside it. The caller supplies no identity
+it does not own: `lesson_uid` comes from the DB row, `question_id` from the
+referenced attempt row, `seq` is the rowid, `sitting_id` from the session's
+write capability (none means the owner/manual path, admitted, no sitting).
+Not bridge-gated, so tutor memory also works on `legacy-display` bundles.
 
-Trust model: the caller is the lesson-agent terminal session (curl or any
-HTTP-capable tool in that shell), admitted by the app perimeter
-(`app/security.py`). It supplies no identity it does not own: `lesson_uid`
-comes from the DB row, `question_id` is copied from the referenced attempt row,
-`seq` is the rowid, and `sitting_id` is resolved from the session's write
-capability (s3) — the token names the lesson and the sitting, the body never
-does. A request without a capability is the owner/manual path: still admitted
-inside the documented loopback perimeter, with no sitting recorded.
-
-Not bridge-gated, deliberately (D-S1-4): assessments require no interactive
-profile and read no manifest on the admission path. The tutor's memory must
-work on every lesson, including `legacy-display` bundles that can never record
-attempts — gating it on the bridge would disable tutor memory exactly where it
-starts.
-
-Ordering: the rowid, exposed as `seq`, is the sole recency authority;
-`created_at` is UTC-microsecond display metadata. Rows are append-only — a
-wrong record is corrected by a later row naming it in `supersedes` (or by a
-`retraction`), and `active_state` folds that into the current view.
-
-Projection (s2): `assessments.jsonl` at the bundle root is the ACTIVE-STATE
-read model — the next tutor's resume artifact, not a history log. It is
-rewritten in full after the transaction commits and never inside it; a
-projection failure never fails the durable write, and the response says
-`projected` or `pending` honestly (docs/lesson-assessments-api.md).
+Rows are append-only and `seq` is the sole recency authority; a later row
+corrects an earlier one by naming it in `supersedes` (or by a `retraction`).
+`assessments.jsonl` at the bundle root is the folded active state, rewritten
+after the transaction commits and never inside it; a projection failure never
+fails the durable write (docs/lesson-assessments-api.md).
 """
 from __future__ import annotations
 
@@ -50,14 +31,10 @@ from . import bundle_schema, lessons, projection
 KINDS = ("review", "evidence", "summary", "retraction")
 MODES = ("tutoring", "exam")
 REVIEW_LEVELS = ("correct", "partial", "incorrect", "unclear")
-# D-S1-2 / S-H6: ONE mutually exclusive current-judgment scale. `seen` = covered,
-# no judgment yet; the rest are judgments. Practice volume is derivable from the
-# attempts/runs record and is deliberately not restated here.
+# `seen` = covered, no judgment yet; the rest are mutually exclusive judgments.
 EVIDENCE_LEVELS = ("seen", "weak", "developing", "passed")
 LEVELS_BY_KIND = {"review": REVIEW_LEVELS, "evidence": EVIDENCE_LEVELS}
-# S-H3: what grounded an evidence judgment. `live` marks a non-replayable tutor
-# observation and is admissible for ANY level — a single-user trust posture: the
-# record is honest about its grounding rather than gatekept.
+# `live` is a non-replayable tutor observation, admissible for any level.
 BASES = ("attempts", "artifacts", "runs", "live", "mixed")
 
 MAX_NOTE_BYTES = 8 * 1024        # D-S1-3/S-M4: notes diagnose BY REFERENCE
@@ -67,27 +44,20 @@ MAX_CONCEPTS = 8                 # D-S1-2: 1–8 opaque refs per evidence row
 PROJECTION_PENDING = "pending"
 PROJECTION_PROJECTED = "projected"
 
-# The bundle projection (D-S1-5, spec §6.5). The lock file lives OUTSIDE the
-# agent-writable bundle and is this file's own — the attempts projection keeps
-# its separate lock, so assessment work never makes an attempt write report
-# `pending` and the freshly drained #58 machinery is not touched.
+# The lock file lives outside the agent-writable bundle, separate from the
+# attempts projection's, so assessment work never makes an attempt write `pending`.
 PROJECTION_NAME = "assessments.jsonl"
 PROJECTION_STATE_DIR = DATA_DIR / "assessment-projections"
 META_KIND = "assessments_meta"
 META_VERSION = 1
 
-# The write capability (D-S1-3 / D-S2-2, slice s3). The lesson-agent terminal
-# session hands its token back in this header; the registry that answers for it
-# lives in `app/terminal.py` and dies with the session and the process. A
-# request without the header is the owner/manual path and is still admitted —
-# it simply records no sitting.
+# The session write capability. The registry that answers for the token lives
+# in `app/terminal.py` and dies with the session; no header is the owner path.
 CAPABILITY_HEADER = "X-Ephemeris-Assess-Token"
 
-# Accepted top-level request fields. Anything else is a 400 (strict, unlike the
-# attempt endpoint's forward-compatible stance): a tutor typo such as
-# "conepts" must fail loudly, not silently drop the mastery statement. Note
-# what is absent: `question_id` (copied from the attempt row) and `sitting_id`
-# (s3, resolved from the write capability) are never client-supplied.
+# Fields outside this set are a 400 (strict, unlike the attempt endpoint): a
+# tutor typo such as "conepts" must fail loudly. `question_id` and `sitting_id`
+# are never client-supplied.
 _FIELDS = frozenset({
     "kind", "mode", "level", "basis", "attempt_id", "concepts",
     "note", "next_action", "supersedes", "idempotency_key",
@@ -95,9 +65,7 @@ _FIELDS = frozenset({
 
 
 class AssessmentError(Exception):
-    """An assessment write was refused. `code` is the machine-readable reason
-    (docs/lesson-assessments-api.md), `status` the HTTP status the route maps
-    it to."""
+    """A refused write: `code` per docs/lesson-assessments-api.md, `status` the HTTP status."""
 
     def __init__(self, code: str, status: int, detail: str = "") -> None:
         super().__init__(detail or code)
@@ -107,17 +75,12 @@ class AssessmentError(Exception):
 
 
 def _utc_now_iso() -> str:
-    """UTC ISO-8601 with microseconds — the attempts idiom. Display metadata
-    only: `seq` (the rowid) is the recency authority, because the general
-    `now_iso()` is second-precision and two writes in one second would
-    otherwise have no causal order (S-M2)."""
+    """Microsecond UTC, display only: `seq` (the rowid) is the recency authority."""
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def _utf8_len(value: str) -> int | None:
-    """UTF-8 byte length, or None when the string is not encodable (lone
-    surrogates from JSON \\uD800 escapes) — such a value could never be written
-    to the ledger or the s2 projection. Same guard as the attempts writer."""
+    """UTF-8 byte length, or None for lone surrogates (JSON \\uD800 escapes)."""
     try:
         return len(value.encode("utf-8"))
     except UnicodeEncodeError:
@@ -125,9 +88,7 @@ def _utf8_len(value: str) -> int | None:
 
 
 def _opt(payload: dict, name: str) -> object | None:
-    """Optional field access: an explicit JSON `null` reads as absent, so a
-    generator that emits every key uniformly is not punished for it. Nothing is
-    ever coerced — a present non-null value is validated as given."""
+    """An explicit JSON `null` reads as absent; a present value is never coerced."""
     value = payload.get(name)
     return None if value is None else value
 
@@ -135,9 +96,7 @@ def _opt(payload: dict, name: str) -> object | None:
 def _text(
     value: object, code: str, oversize_code: str, name: str, limit: int
 ) -> str:
-    """A required non-blank UTF-8 text field within its byte bound. Blank is
-    refused where the schema only demands non-empty: a whitespace-only
-    diagnosis is not a diagnosis, and the column is the record's whole point."""
+    """Non-blank UTF-8 text within its byte bound; whitespace-only is refused."""
     if not isinstance(value, str) or not value.strip():
         raise AssessmentError(code, 400, f"{name} must be non-blank text")
     size = _utf8_len(value)
@@ -162,9 +121,7 @@ def _only_for(kind: str, allowed: tuple[str, ...], code: str, name: str) -> None
 
 
 def _clean_concepts(value: object) -> list[str]:
-    """§4.5 opaque refs: 1–200 chars, no control characters, never resolved.
-    Deduplicated server-side preserving first occurrence (the manifest's own
-    `duplicate-concept` rule), so a repeated tag cannot inflate the fold."""
+    """§4.5 opaque refs, deduplicated so a repeated tag cannot inflate the fold."""
     if not isinstance(value, list) or not value:
         raise AssessmentError(
             "invalid-concepts", 400, "concepts must be a non-empty list of refs"
@@ -186,9 +143,7 @@ def _clean_concepts(value: object) -> list[str]:
 
 
 def _clean_submission(payload: dict) -> dict:
-    """Validate the client-supplied submission per D-S1-2. Nothing here touches
-    the database: every check is grammar, vocabulary, or per-kind shape, so the
-    canonical fingerprint below is a pure function of the request."""
+    """Pure validation: nothing here touches the database."""
     unknown = sorted(k for k in payload if k not in _FIELDS)
     if unknown:
         raise AssessmentError(
@@ -298,15 +253,9 @@ def _clean_submission(payload: dict) -> dict:
 
 
 def _fingerprint(submission: dict) -> str:
-    """SHA-256 over the canonical form of the complete validated submission
-    (D-S1-3 / S-M3): absent fields omitted, concepts already deduplicated in
-    first-occurrence order, exact note/next_action bytes, sorted keys. The
-    idempotency key is the lookup, not the content, so it is not part of what
-    the key identifies.
-
-    D4's "same key + same question/page" shortcut is deliberately NOT inherited:
-    an assessment carries a free-text judgment, and a key replayed with a
-    different judgment must be a visible conflict, never a silent coalesce."""
+    """SHA-256 over the canonical validated submission, idempotency key excluded
+    (it is the lookup, not the content). A key replayed with a different judgment
+    must be a visible conflict, never a silent coalesce."""
     canonical = {
         name: value for name, value in submission.items()
         if name != "idempotency_key" and value is not None
@@ -320,16 +269,9 @@ def _fingerprint(submission: dict) -> str:
 def _row_response(
     conn: sqlite3.Connection, lesson: dict, row: sqlite3.Row | dict, result: str
 ) -> dict:
-    """The endpoint's response body for one outcome, projection included.
-
-    This is the projection seam. Both callers hold the committed authority row
-    when they get here — the replay path reads it back from SQLite, the write
-    path has just inserted it — and the projection runs from here, after the
-    transaction, never inside it (D-S1-5). Routing the REPLAY path through the
-    same seam is what D-S1-3 asks for: a lost-response retry heals a projection
-    left pending, or a session-closing summary stays invisible to the next
-    tutor. The rewrite renders the whole committed active state, so healing
-    needs no record of which write was left unprojected."""
+    """The response body for one outcome. Both callers hold the committed row here
+    and the projection runs after the transaction, never inside it; the replay
+    path shares the seam so a lost-response retry heals a pending projection."""
     return {
         "result": result,
         "assessment_id": row["assessment_id"],
@@ -341,9 +283,8 @@ def _row_response(
 def _replay_or_conflict(
     conn: sqlite3.Connection, lesson: dict, submission: dict, fingerprint: str
 ) -> dict | None:
-    """Known-key handling (D-S1-3): a replay of the same submission returns the
-    original row untouched; the same key carrying a different submission is a
-    client bug — a distinct conflict, never coalesced. None = fresh key."""
+    """A replay of the same submission returns the original row; the same key with
+    a different submission is a 409 conflict, never coalesced. None = fresh key."""
     existing = conn.execute(
         "SELECT * FROM lesson_assessments WHERE lesson_id = ? AND idempotency_key = ?",
         (lesson["id"], submission["idempotency_key"]),
@@ -359,33 +300,18 @@ def _replay_or_conflict(
 
 
 def _capability_registry_lookup(token: str) -> dict | None:
-    """The narrow accessor into the terminal module's session registry.
-
-    Imported at the point of use: `app/terminal.py` imports this package's
-    lessons module, so a module-level import here would close a cycle. The
-    terminal is also optional at runtime — an app started without it simply has
-    no live capabilities, and every token then resolves to nothing.
-    """
+    """Imported at the point of use: `app/terminal.py` imports this package's
+    lessons module, so a module-level import would close a cycle."""
     from .. import terminal
 
     return terminal.resolve_assessment_capability(token)
 
 
 def resolve_capability(lesson: dict, token: str | None) -> str | None:
-    """The sitting a write came from, derived SERVER-SIDE (D-S1-3).
-
-    No token → None: the owner/manual `curl` path stays admitted inside the
-    documented loopback single-user perimeter, and its rows simply carry no
-    sitting. This is a memo decision, not an oversight.
-
-    A token that resolves → the lesson-agent session's SID, plus a hard check
-    that the URL's lesson is the token's lesson. A token that does not resolve
-    (never minted, or its session ended — including every token from before an
-    app restart) → a visible 403. There is deliberately no silent fallback to
-    the tokenless path: an agent whose writes have quietly lost their
-    provenance would keep recording verdicts that no longer say where they came
-    from, and the brief tells it to degrade openly instead.
-    """
+    """The sitting a write came from, derived server-side. No token is the owner
+    path: admitted, no sitting. A token must name the URL's lesson; one that does
+    not resolve (never minted, or its session ended, including before a restart)
+    is a visible 403, with deliberately no silent fallback to the tokenless path."""
     if token is None:
         return None
     capability = _capability_registry_lookup(token.strip())
@@ -405,19 +331,10 @@ def resolve_capability(lesson: dict, token: str | None) -> str | None:
 def _require_summary_slot(
     conn: sqlite3.Connection, lesson: dict, submission: dict, sitting_id: str | None
 ) -> None:
-    """One ACTIVE summary per sitting (D-S0-1 / D-S1-2).
-
-    A tutoring session closes with ONE synthesis; a second one is either a
-    correction of the first — which says so in `supersedes` — or a mistake. The
-    refusal names the row to supersede, so the agent can comply without
-    querying anything.
-
-    The rule is scoped to a sitting because that is what it is about: with no
-    sitting (the owner path) there is nothing to be the second summary OF, and
-    a lesson accumulates one summary per tutoring session by design. Runs
-    inside the write transaction: the fold it reads must be the committed one
-    this insert is ordered against.
-    """
+    """One active summary per sitting: a second one is either a correction naming
+    the first in `supersedes` or a mistake, and the refusal names the row to
+    supersede. No sitting (the owner path) means no rule. Runs inside the write
+    transaction, so the fold it reads is the one this insert is ordered against."""
     if submission["kind"] != "summary" or sitting_id is None:
         return
     row = conn.execute(
@@ -441,9 +358,7 @@ def _require_summary_slot(
 def _resolve_attempt(
     conn: sqlite3.Connection, lesson: dict, attempt_id: str | None
 ) -> str | None:
-    """The referenced attempt must be a recorded attempt OF THIS LESSON, and
-    its `question_id` is copied from the row — the client never supplies
-    identity it does not own (the D2/D5 idiom applied to the agent)."""
+    """Must be this lesson's attempt; `question_id` is copied from its row."""
     if attempt_id is None:
         return None
     row = conn.execute(
@@ -462,9 +377,7 @@ def _resolve_attempt(
 def _require_supersedes(
     conn: sqlite3.Connection, lesson: dict, supersedes: str | None
 ) -> None:
-    """`supersedes` must name an existing assessment of the same lesson. Append
-    order then makes correction chains acyclic for free: a row can only name
-    rows that already exist, so every chain runs strictly backwards in `seq`."""
+    """Same lesson only; append order then keeps correction chains acyclic."""
     if supersedes is None:
         return
     row = conn.execute(
@@ -484,33 +397,18 @@ def record_assessment(
     payload: dict,
     capability_token: str | None = None,
 ) -> dict:
-    """Record one assessment for `lesson` (a lessons service view dict).
-
-    `capability_token` is the caller's session write capability, or None for the
-    owner/manual path; the sitting it names is resolved here and never read from
-    the request body.
-
-    Returns the response body fields for the endpoint:
-      recorded  -> {result, assessment_id, seq, projection}
-      duplicate -> the original row's, same shape
-    Refusals raise AssessmentError with a distinct code per
-    docs/lesson-assessments-api.md."""
+    """Record one assessment for `lesson` (a lessons service view dict) and
+    return {result, assessment_id, seq, projection}, `result` being `recorded`
+    or `duplicate`. `capability_token` is None on the owner/manual path.
+    Refusals raise AssessmentError with a code per docs/lesson-assessments-api.md."""
     submission = _clean_submission(payload)
-    # Before any state work, like the rest of validation: a dead capability is a
-    # fact about the request, and answering it costs no filesystem or DB work.
-    # A replay is refused too — an agent retrying with a capability that has
-    # since died must learn that, not receive a quiet duplicate.
+    # A dead capability refuses even a replay: an agent retrying with a dead
+    # capability must learn that, not receive a quiet duplicate.
     sitting_id = resolve_capability(lesson, capability_token)
     fingerprint = _fingerprint(submission)
 
-    # Reconcile trigger (c) — first write per lesson per process (D-S1-5). The
-    # write paths below rewrite the projection themselves, so this sweep exists
-    # for the outcomes that do NOT write: a process that restarted while a
-    # projection was pending heals it on the next assessment call for that
-    # lesson even when the call turns out to be a refusal. It runs after
-    # validation (a malformed body does no filesystem work) and once per lesson
-    # per process whether or not it succeeds — the other two triggers are the
-    # retry mechanism.
+    # Once per lesson per process, after validation: heals a projection left
+    # pending by a restart even when this call turns out to be a refusal.
     _sweep_once(conn, lesson)
 
     def replay() -> dict | None:
@@ -518,9 +416,7 @@ def record_assessment(
 
     def validate() -> str | None:
         if lesson.get("archived"):
-            # D-S1-4: the owner unarchives first — a distinct 409, never a
-            # silent write into a lesson that has been put away. This is the
-            # cheap early refusal on the caller's view of the lesson; the
+            # The cheap early refusal on the caller's view of the lesson; the
             # binding one runs inside the write transaction (_record_locked).
             raise AssessmentError(
                 "lesson-archived", 409,
@@ -538,18 +434,11 @@ def record_assessment(
         )
 
     def project(row: dict) -> dict:
-        # Post-commit, outside the transaction: the projection reads the
-        # freshly committed state itself rather than this row (D-S1-5).
         return _row_response(conn, lesson, row, "recorded")
 
-    # D-S1-3: the replay lookup precedes every mutable-state refusal — the
-    # archive check and the attempt/supersedes references. The original write
-    # is already durable, so a client retry must learn its assessment_id even
-    # if the lesson was archived meanwhile; the refusals govern only NEW
-    # writes. The work a replay can repeat stays cheap: one indexed SELECT
-    # here, and a reconcile that returns after reading a watermark unless the
-    # state actually moved since this process last published (see
-    # `_published`).
+    # The replay lookup precedes the archive and reference refusals: the
+    # original write is durable, so a retry must learn its assessment_id even
+    # if the lesson was archived meanwhile. The refusals govern only new writes.
     return projection.record(
         conn, lesson, AssessmentError,
         replay=replay, validate=validate, write=write, project=project,
@@ -564,22 +453,16 @@ def _record_locked(
     question_id: str | None,
     sitting_id: str | None,
 ) -> dict:
-    """The write transaction of `record_assessment`: runs under the lesson
-    lock, inside `BEGIN IMMEDIATE`, and returns the row identity the response
-    echoes."""
+    """The write transaction of `record_assessment`: runs under the lesson lock,
+    inside `BEGIN IMMEDIATE`, and returns the row identity the response echoes."""
     assessment_id = str(uuid4())
-    # The event echoes `seq`, which is the row's own rowid, so the row must
-    # be inserted before the event — hence the uuid is minted here and
-    # handed to the ledger writer rather than returned by it.
+    # The event echoes `seq`, the row's rowid, so the row is inserted first and
+    # the event uuid is minted here rather than returned by the ledger writer.
     event_uuid = str(uuid4())
     created_at = _utc_now_iso()
     concepts = submission["concepts"]
-    # ONE transaction (D-S1-1): the row and its `lesson_assessment` event
-    # commit or roll back together. No filesystem work runs inside it
-    # (D-S1-5) — the s2 projection is post-commit work. The writer lock is
-    # taken up front (BEGIN IMMEDIATE) so the archive re-check below is part
-    # of THIS transaction and the archive and this write have a definitive
-    # order.
+    # The writer lock is already held (BEGIN IMMEDIATE), so the archive re-check
+    # below and this write have a definitive order.
     current = conn.execute(
         "SELECT archived_at FROM lessons WHERE id = ?",
         (lesson["id"],),
@@ -589,8 +472,7 @@ def _record_locked(
             "unknown-lesson", 404, "the lesson no longer exists"
         )
     if current["archived_at"] is not None:
-        # The binding refusal: whatever the caller's view said, the
-        # committed state at write time is what decides.
+        # The binding refusal: the committed state at write time decides.
         raise AssessmentError(
             "lesson-archived", 409,
             "this lesson is archived; restore it before recording",
@@ -605,8 +487,6 @@ def _record_locked(
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             assessment_id, event_uuid, lesson["id"], lesson["uid"],
-            # The sitting comes from the write capability, resolved
-            # server-side; NULL is the owner/manual path.
             sitting_id,
             submission["mode"], submission["idempotency_key"],
             fingerprint, submission["kind"], submission["level"],
@@ -620,7 +500,6 @@ def _record_locked(
     )
     seq = cursor.lastrowid
     append_event(conn, "lesson_assessment", {
-        # D-S1-1 echo policy: identity and the record itself.
         "lesson_uid": lesson["uid"],
         "lesson_id": lesson["id"],
         "slug": lesson["slug"],
@@ -642,15 +521,11 @@ def _record_locked(
     return {"assessment_id": assessment_id, "event_uuid": event_uuid, "id": seq}
 
 
-# --- read model: the active-state fold (D-S1-2) ------------------------------
+# --- read model: the active-state fold ---------------------------------------
 
 
-# The columns `fold_rows` decides on, and nothing else. The fold has to visit
-# every active row, but it KEEPS at most one per concept, one per attempt and
-# one summary — so a reader that only wants the fold's winners can walk the
-# lesson on these five columns and pay for `note` (8 KiB a row) once per row it
-# will actually show. `row_view` builds on the same keys so the two shapes
-# cannot drift.
+# The columns `fold_rows` decides on: a reader can walk these five and pay for
+# `note` (8 KiB a row) only per winner it will show.
 FOLD_KEYS_COLUMNS = "a.id, a.assessment_id, a.kind, a.attempt_id, a.concepts_json"
 
 
@@ -672,12 +547,8 @@ def _fold_keys(row: sqlite3.Row | dict) -> dict:
 
 
 def row_view(row: sqlite3.Row | dict) -> dict:
-    """One authority row as the record shape its consumers read: the s2
-    projection line, the s4 panel, and the verifier. `seq` is the rowid;
-    `concepts` is decoded back into a list (a stored value that no longer
-    parses reads as no concepts rather than raising — the column is written
-    only by this module, so that is a corrupt-database guard, not a
-    contract)."""
+    """One authority row as the record shape its consumers read. A `concepts_json`
+    that no longer parses reads as no concepts (a corrupt-database guard)."""
     return {
         **_fold_keys(row),
         "event_uuid": row["event_uuid"],
@@ -694,9 +565,8 @@ def row_view(row: sqlite3.Row | dict) -> dict:
     }
 
 
-# The deactivation lookup is correlated, so it needs `idx_assessments_lesson_
-# supersedes` to stay bounded — without that index it rescans the lesson's whole
-# history per row and the fold goes quadratic. verify asserts the query plan.
+# The correlated deactivation lookup needs `idx_assessments_lesson_supersedes`
+# to stay bounded; without it the fold goes quadratic. verify asserts the plan.
 _ACTIVE_SQL = (
     "SELECT {columns} FROM lesson_assessments a WHERE a.lesson_id = ? "
     "AND NOT EXISTS (SELECT 1 FROM lesson_assessments s "
@@ -704,30 +574,20 @@ _ACTIVE_SQL = (
     "                  AND s.supersedes = a.assessment_id) "
     "ORDER BY a.id"
 )
-# One definition of "active", two column lists: whoever reads narrow rows reads
-# exactly the rows the wide query would have returned.
+# One definition of "active", two column lists.
 ACTIVE_ROWS_SQL = _ACTIVE_SQL.format(columns="*")
 ACTIVE_FOLD_KEYS_SQL = _ACTIVE_SQL.format(columns=FOLD_KEYS_COLUMNS)
 
 
 def active_rows(conn: sqlite3.Connection, lesson_id: int) -> list[dict]:
-    """Rows not targeted by any `supersedes`, ascending `seq` (D-S1-2).
-
-    A retraction and a one-write correction deactivate their target the same
-    way; `supersedes` is validated same-lesson at write time, so the join
-    cannot reach across lessons."""
+    """Rows not targeted by any `supersedes`, ascending `seq`."""
     rows = conn.execute(ACTIVE_ROWS_SQL, (lesson_id,)).fetchall()
     return [row_view(row) for row in rows]
 
 
 def fold_rows(rows: list[dict]) -> dict:
-    """The current-state fold over already-read ACTIVE rows, ascending `seq`.
-
-    Pure, so the two readers that need it — the s2 projection and the s4 panel
-    — share one definition of "current" instead of two that can drift.
-    Retractions carry no state of their own: they only deactivate, so they
-    never appear in the fold. Evidence spanning several concepts is the latest
-    for each of them."""
+    """The current-state fold over active rows, ascending `seq`; pure, so the
+    projection and the panel share one definition of "current"."""
     evidence_by_concept: dict[str, dict] = {}
     reviews_by_attempt: dict[str, dict] = {}
     summary: dict | None = None
@@ -747,18 +607,10 @@ def fold_rows(rows: list[dict]) -> dict:
 
 
 def history_watermark(conn: sqlite3.Connection, lesson_id: int) -> int:
-    """The newest rowid of the lesson's WHOLE assessment history, or 0.
-
-    The same authority stamp `_fold_records` publishes on the projection, and
-    for the same reason: rows are insert-only, so `MAX(id)` is an exact
-    version of the active state — but unlike a fold-derived cursor it also
-    moves when a row is REMOVED from view. A retraction of the newest standing
-    review deletes a panel line and adds a higher rowid, so a watermark
-    advances where "newest review still standing" would silently go backwards.
-
-    Read it inside the caller's snapshot when there is one, so the watermark
-    and the fold it stamps can never come from two committed versions.
-    """
+    """The newest rowid of the lesson's whole history, or 0. Rows are insert-only,
+    so `MAX(id)` is an exact version of the active state, and unlike a fold-derived
+    cursor it also moves when a retraction removes a row from view. Read it inside
+    the caller's snapshot, so watermark and fold come from one committed version."""
     row = conn.execute(
         "SELECT MAX(id) FROM lesson_assessments WHERE lesson_id = ?",
         (lesson_id,),
@@ -767,22 +619,13 @@ def history_watermark(conn: sqlite3.Connection, lesson_id: int) -> int:
 
 
 def active_state(conn: sqlite3.Connection, lesson_id: int) -> dict:
-    """The current-state fold consumed by the s2 projection and the s4 panel:
-    the latest active evidence per concept, the latest active review per
-    attempt, and the latest active summary — all by `seq`."""
     return fold_rows(active_rows(conn, lesson_id))
 
 
-# The number of earlier readings behind each DISPLAYED review winner. The
-# active fold has already selected exactly one standing winner per attempt, so
-# pass those `(attempt_id, winner_id)` pairs through a bounded VALUES CTE
-# instead of rediscovering winners for every historical attempt in the lesson.
-#
-# Only rows before that winner count. Reviews corrected by another review stay
-# in the count — replaced readings are exactly what the marker acknowledges —
-# while reviews struck by a retraction are excluded outright, in either write
-# order. The correlated lookup rides `idx_assessments_lesson_supersedes`; the
-# join seeks reviews through `idx_assessments_lesson_kind`.
+# Earlier readings behind each displayed review winner, via a bounded VALUES CTE
+# of `(attempt_id, winner_id)` pairs. Reviews corrected by another review stay in
+# the count; reviews struck by a retraction are excluded, in either write order.
+# Rides `idx_assessments_lesson_supersedes` and `idx_assessments_lesson_kind`.
 _EARLIER_REVIEW_COUNTS_SQL = (
     "WITH winners(attempt_id, winner_id) AS (VALUES {winners}) "
     "SELECT w.attempt_id AS attempt_id, COUNT(r.id) AS earlier_count "
@@ -797,19 +640,14 @@ _EARLIER_REVIEW_COUNTS_SQL = (
     "GROUP BY w.attempt_id"
 )
 
-# Leave ample room below SQLite's traditional 999-variable default: each
-# hydration statement also binds the lesson id. The fold has no winner-count
-# ceiling, so this is a statement-size bound, not a record-view bound.
+# Statement-size bounds under SQLite's traditional 999-variable default; each
+# statement also binds the lesson id, and a review winner costs two variables.
 _HYDRATE_IDS_PER_QUERY = 500
-# Two variables per displayed winner plus the lesson id. Keep the fixed batch
-# comfortably below SQLite's traditional 999-variable default.
 _REVIEW_COUNTS_PER_QUERY = 250
 
 
 def _hydrate(conn: sqlite3.Connection, lesson_id: int, state: dict) -> dict:
-    """Re-read the fold's winners whole in bounded statements, then put them
-    back where the narrow rows were. Same connection and no write between the
-    reads, so they see the state the first query folded."""
+    """Re-read the winners whole; no write intervenes, so one state throughout."""
     wanted = {row["seq"] for row in state["evidence_by_concept"].values()}
     wanted |= {row["seq"] for row in state["reviews_by_attempt"].values()}
     if state["summary"] is not None:
@@ -840,7 +678,6 @@ def _earlier_review_counts(
     lesson_id: int,
     reviews_by_attempt: dict,
 ) -> dict[str, int]:
-    """Count earlier, non-retracted readings for displayed review winners."""
     winners = sorted(
         (attempt_id, row["seq"])
         for attempt_id, row in reviews_by_attempt.items()
@@ -866,26 +703,12 @@ def panel_state(
     *,
     review_attempt_ids: set[str] | None = None,
 ) -> dict:
-    """Everything the s4 record panel folds out of the authority rows (D-S3-1).
-
-    Read-only: the D-S1-2 fold, how many active records stand behind it, and
-    when each attempt's reviews were written. `active_count` counts records
-    that carry state — a retraction is an active row but says only that
-    another record was wrong, so counting it would inflate what the panel
-    claims to know.
-
-    This runs on every `/learn` render, and the active fold has no cardinality
-    ceiling (spec §6.5 calls the projection a compaction, not a cap), so the
-    walk is deliberately narrow: the fold decides on five small columns;
-    evidence winners, the summary, and only review winners named by
-    `review_attempt_ids` are read whole. An 8 KiB note is therefore paid for
-    once per displayed record instead of once per active row or reviewed
-    historical attempt.
-
-    The helper owns a read snapshot when its caller does not already have one.
-    `_record_panel` starts the wider snapshot that also covers its attempt and
-    focus reads; direct callers still cannot mix fold/hydration/count versions.
-    """
+    """Everything the record panel folds out of the authority rows, read-only.
+    `active_count` excludes retractions, which only say another record was wrong.
+    This runs on every `/learn` render and the fold has no cardinality ceiling, so
+    the fold decides on five narrow columns and only the winners (reviews limited
+    to `review_attempt_ids`) are read whole. Owns a read snapshot when the caller
+    does not already hold one, so fold, hydration and counts cannot mix versions."""
     own_snapshot = not conn.in_transaction
     if own_snapshot:
         conn.execute("BEGIN")
@@ -893,12 +716,8 @@ def panel_state(
         keys = [_fold_keys(row) for row
                 in conn.execute(ACTIVE_FOLD_KEYS_SQL, (lesson_id,)).fetchall()]
         state = fold_rows(keys)
-        # Which attempts carry a standing verdict AT ALL, before the display
-        # filter below narrows the fold to the rows the panel will draw. The
-        # fold already knows this and used to throw it away; the ask-the-tutor
-        # debt (#136) is exactly "a question attempt no review answers", and it
-        # must see reviews on attempts the panel does not display — an older
-        # question on a control that has since been asked again.
+        # Before the display filter narrows the fold: "a question attempt no
+        # review answers" must see reviews on attempts the panel does not display.
         reviewed_attempt_ids = set(state["reviews_by_attempt"])
         if review_attempt_ids is not None:
             state["reviews_by_attempt"] = {
@@ -915,9 +734,8 @@ def panel_state(
         state["earlier_review_counts"] = _earlier_review_counts(
             conn, lesson_id, state["reviews_by_attempt"]
         )
-        # Stamped from the same snapshot as the fold above: the version of the
-        # panel this state renders, for readers that must notice a REMOVAL
-        # (#133 tier 1's poll) and not only a new standing record.
+        # From the same snapshot as the fold: a reader polling for change must
+        # notice a removal, not only a new standing record.
         state["watermark"] = history_watermark(conn, lesson_id)
         return state
     finally:
@@ -925,52 +743,25 @@ def panel_state(
             conn.rollback()
 
 
-# --- projection: `assessments.jsonl`, the active-state read model (D-S1-5) ---
-#
-# Purpose (spec §6.5): the file is the next tutor's RESUME ARTIFACT — the
-# current state, not the history. Full history stays in SQLite and rides the
-# JSONL export. Its size therefore tracks current state (concepts + reviewed
-# attempts + 1), not lifetime writes, which is why this is a plain full
-# rewrite: no append fast path, no cursor, no seal, no prefix verification,
-# and none of the #58 attempts machinery.
-#
-# That is a compaction, not a cap (spec §6.5): a lesson that keeps naming new
-# concepts and attempts keeps growing, and the rewrite is linear in the active
-# fold. Repeating identical work is what has to be avoided, not the size — see
-# `_published` below.
-#
-# Ordering invariant (S-H1): commit first, project after. The transaction is
-# short and touches no filesystem; the entry point below refuses an
-# in-transaction connection outright. The per-lesson flock is an app-private
-# file outside the agent-writable bundle — never SQLite's writer lock — and the
-# committed state is re-read FRESH under it, so whoever holds the lock renders
-# the newest fold and a slow writer cannot publish an older file last.
+# --- projection: `assessments.jsonl`, the active-state read model ------------
+# The file is the next tutor's resume artifact: current state, not history (spec
+# §6.5), so it is a plain full rewrite, linear in the active fold: a compaction,
+# not a cap. Commit first, project after: the entry point refuses an
+# in-transaction connection, and the committed state is re-read fresh under the
+# per-lesson flock, so a slow writer cannot publish an older file last.
 
-# Reconcile trigger (c): the lessons already swept in this process. Membership
-# is recorded before the sweep runs, so a failing sweep is not retried on every
-# subsequent write — triggers (a) and (b) are the retry mechanism.
+# Lessons already swept in this process. Membership is recorded before the
+# sweep runs, so a failing sweep is not retried on every write.
 _swept_lock = threading.Lock()
 _swept: set[int] = set()
 
-# What this process last PUBLISHED, per lesson uid: the watermark it rendered
-# and the identity of the file it left behind (device, inode, size, mtime,
-# ctime). It exists
-# to keep a reconcile that would republish identical bytes from doing the
-# work — an idempotent replay is deliberately outside the rate budget (D-S1-3:
-# a retry must learn its assessment_id even when the window is exhausted), so
-# without this a client looping one duplicate key would drive an unlimited
-# number of full rewrites and fsyncs of a file that grows with the lesson's
-# active state.
-#
-# The skip is verified, not assumed, because the replay heal (D-S1-3) has to
-# keep healing: only a watermark this process published itself counts (one
-# left `pending`, or written before a restart, is never skipped), and the
-# published file must still be there with its full metadata seal. Device and
-# ctime are load-bearing: a same-size in-place edit can preserve inode and
-# restore mtime, but cannot restore the kernel change time. The agent owns the
-# bundle and can delete or replace the file; that is a rewrite, not a skip.
-# Metadata only — the file's bytes are never read here or anywhere else in
-# this module.
+# What this process last published, per lesson uid: the watermark it rendered
+# and the identity of the file it left (device, inode, size, mtime, ctime). An
+# idempotent replay is outside the rate budget, so without this a client looping
+# one duplicate key would drive unlimited full rewrites and fsyncs. The skip is
+# verified: only a watermark this process published itself counts, and the file
+# must still carry its full seal. Device and ctime are load-bearing: a same-size
+# in-place edit can preserve inode and restore mtime, not the kernel change time.
 _published_lock = threading.Lock()
 _published: dict[str, tuple[int, int, int, int, int, int]] = {}
 
@@ -999,32 +790,13 @@ def _projection_unchanged(
 def _fold_records(
     conn: sqlite3.Connection, lesson_id: int, already_seq: int | None = None
 ) -> tuple[int, list[dict] | None]:
-    """The lines the file projects: the active-state fold, deduplicated by
-    `seq` and ascending.
-
-    One evidence row can cover several concepts and would appear once per
-    concept in the fold's index — it is ONE record and is written once.
-    Retractions are active rows that carry no state of their own, so the fold
-    never yields them; superseded and retracted rows never appear at all.
-
-    `as_of_seq` is the newest rowid of the lesson's whole history, not of the
-    fold: it is the authority watermark the rendered state was taken at, so a
-    retraction (which removes a line) still advances it.
-
-    Both reads share ONE snapshot. A sibling process — the documented
-    rolling-restart overlap — can commit between two autocommit statements,
-    and the file would then advertise a watermark it does not contain: the
-    fold would miss the new row while `as_of_seq` named it, and the sibling's
-    own write would report `pending` after losing the non-blocking lock, so
-    the inconsistency could outlive the request. The transaction is a
-    read-only snapshot (WAL: it blocks no writer) and is closed before any
-    filesystem work begins.
-
-    `already_seq` short-circuits inside that snapshot: the watermark is read
-    first, and when it matches what this process last published the fold is
-    never materialized at all. Rows are insert-only, so the watermark is an
-    exact version stamp of the fold — an unchanged `MAX(id)` cannot hide a
-    changed active state."""
+    """The lines the file projects: the active-state fold, deduplicated by `seq`
+    and ascending. `as_of_seq` is the newest rowid of the whole history, not of
+    the fold, so a retraction still advances it. Both reads share one read-only
+    snapshot, closed before any filesystem work: a sibling process committing
+    between two autocommit statements would otherwise leave the file advertising
+    a watermark it does not contain. `already_seq` short-circuits inside that
+    snapshot, so a watermark this process already published skips the fold."""
     conn.execute("BEGIN")
     try:
         as_of_seq = conn.execute(
@@ -1047,10 +819,8 @@ def _fold_records(
 
 
 def _render(lesson: dict, as_of_seq: int, records: list[dict]) -> bytes:
-    """The file's bytes: one `assessments_meta` line, then one line per active
-    record, ascending `seq` (spec §6.5). Each record line is the full authority
-    record — the same shape the ledger event echoes — so a reader needs no
-    join to know what was concluded."""
+    """One `assessments_meta` line, then one full authority record per active
+    row, ascending `seq` (spec §6.5)."""
     lines = [{
         "kind": META_KIND,
         "v": META_VERSION,
@@ -1065,13 +835,9 @@ def _render(lesson: dict, as_of_seq: int, records: list[dict]) -> bytes:
 
 
 def _publish(lesson: dict, data: bytes) -> os.stat_result:
-    """Atomically replace the projection over the verified bundle root,
-    and report the identity of the file left behind.
-
-    The bundle directory is opened once with `O_NOFOLLOW | O_DIRECTORY` — a
-    symlinked or non-directory bundle root refuses here rather than being
-    followed — and every later step is relative to that descriptor, so the
-    published name cannot be redirected between the checks and the rename."""
+    """The bundle root is opened once with `O_NOFOLLOW | O_DIRECTORY` and every
+    later step is relative to that descriptor, so the published name cannot be
+    redirected between the checks and the rename."""
     dir_fd = os.open(lessons._lesson_dir(lesson["slug"]), projection.DIRECTORY_FLAGS)
     try:
         return projection.publish(
@@ -1088,30 +854,22 @@ def _rewrite_locked(conn: sqlite3.Connection, lesson: dict) -> bool:
     if isinstance(uid, str) and uid:
         with _published_lock:
             stamp = _published.get(uid)
-        # The identity gate runs on the skip path too. The manifest can be
-        # rewritten between two calls at the same watermark, and S-H7 governs
-        # what the RESPONSE may claim, not only what gets written: a bundle
-        # that now names another lesson is `pending` whether or not this
-        # process would have had bytes to publish. One small manifest read is
-        # still nothing against the rewrite it replaces.
+        # The identity gate runs on the skip path too: the manifest can change
+        # between two calls at the same watermark, and a bundle that now names
+        # another lesson is `pending` whether or not there are bytes to publish.
         if stamp is not None and _projection_unchanged(lesson, stamp):
             if projection.identity_contradicts(lesson):
-                # Answer here rather than falling through as a cache miss: the
-                # fall-through would fold the whole active state only to refuse
-                # on the same ground below, and replays that reach this are
-                # unmetered.
+                # Answered here: the fall-through would fold the whole active
+                # state only to refuse on the same ground below.
                 return False
             already_seq = stamp[0]
     as_of_seq, records = _fold_records(conn, lesson["id"], already_seq)
     if records is None:
-        # Same watermark as the bytes this process published: republishing
-        # would produce the same file but for the meta line's `generated_at`.
+        # Same watermark as the bytes this process published.
         return True
     if as_of_seq == 0 and not projection.projection_exists(lesson, PROJECTION_NAME):
-        # Nothing was ever recorded for this lesson and nothing occupies the
-        # name: the absent file already IS the state. Reconcile runs at every
-        # lesson-agent terminal open, and it must not litter every bundle —
-        # including the legacy ones — with an empty projection.
+        # Nothing recorded and nothing occupies the name: the absent file is the
+        # state. Reconcile must not litter every bundle with an empty projection.
         return True
     if projection.identity_contradicts(lesson):
         return False
@@ -1130,44 +888,27 @@ def _rewrite_locked(conn: sqlite3.Connection, lesson: dict) -> bool:
 
 
 def reconcile_projection(conn: sqlite3.Connection, lesson: dict) -> bool:
-    """Rewrite `assessments.jsonl` from the committed authority.
-
-    The single projection entry point: the write path, the replay heal, the
-    first-write sweep, and the lesson-agent terminal open all land here.
-    Idempotent by construction — it renders current state, so running it twice
-    publishes the same bytes but for the meta line's `generated_at`.
-
-    A reconcile that would republish exactly what this process last published
-    does nothing instead (it does not even materialize the fold); the metadata
-    seal detects a missing or changed file.
-
-    Returns True when the bundle now reflects the authority, False when it does
-    not: an active transaction (filesystem work must never run inside one), an
-    unavailable or busy lock, a bundle root that cannot be opened safely, a
-    manifest whose identity contradicts the lesson, or any filesystem error.
-    False is the honest `projection: pending` — never an exception past a
-    durable write."""
+    """Rewrite `assessments.jsonl` from the committed authority: the single
+    projection entry point, idempotent. True when the bundle now reflects the
+    authority; False (the honest `projection: pending`, never an exception past
+    a durable write) on an active transaction, an unavailable or busy lock, a
+    bundle root that cannot be opened safely, a manifest whose identity
+    contradicts the lesson, or any filesystem error."""
     if conn.in_transaction:
         return False
     try:
-        # The in-process lesson lock first (it is re-entrant, and the write
-        # path already holds it), so concurrent same-lesson requests in this
-        # worker queue instead of losing the non-blocking flock to each other.
+        # The re-entrant in-process lock first, so concurrent same-lesson requests
+        # in this worker queue instead of losing the non-blocking flock to each other.
         with projection.lesson_lock(lesson["slug"]):
             with projection.file_lock(PROJECTION_STATE_DIR, lesson):
                 return _rewrite_locked(conn, lesson)
     except Exception:
-        # Deliberately every exception, not a curated list. The projection is
-        # derived and best-effort; the durable write it follows has already
-        # committed. Any failure here — a filesystem error, an unencodable row
-        # written by something other than this module, a bug in the renderer —
-        # must degrade to `pending` and heal at the next trigger, never turn a
-        # successful write into a 500.
+        # Every exception: the durable write has already committed, so any
+        # failure here degrades to `pending`, never turns the write into a 500.
         return False
 
 
 def _project(conn: sqlite3.Connection, lesson: dict) -> str:
-    """The response's `projection` field for one outcome."""
     return (
         PROJECTION_PROJECTED if reconcile_projection(conn, lesson)
         else PROJECTION_PENDING
@@ -1175,7 +916,7 @@ def _project(conn: sqlite3.Connection, lesson: dict) -> str:
 
 
 def _sweep_once(conn: sqlite3.Connection, lesson: dict) -> None:
-    """Reconcile trigger (c): once per lesson per process, best effort."""
+    """Once per lesson per process, best effort."""
     lesson_id = lesson.get("id")
     if not isinstance(lesson_id, int):
         return
