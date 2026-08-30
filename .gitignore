@@ -30,12 +30,6 @@ playwright-report/
 
 # --- TickTick UX-reference captures: keep LOCAL, never commit (private data) ---
 docs/reference/screenshots/
-ticktick-*.png
-ticktick-*.jpeg
-ticktick-*.jpg
-tt-*.png
-tt-*.jpeg
-tt-*.jpg
 
 # --- Local visual-QA captures of our own app (working artifacts) ---
 my-*.png

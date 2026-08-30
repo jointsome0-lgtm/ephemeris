@@ -117,8 +117,8 @@ mechanical.
 ## 8. Privacy posture
 
 The diary concentrates the most sensitive personal text in a deliberately
-no-auth app. The operational rules live in `docs/system-design.md` §20 and
-sec10.2: a diary-bearing instance stays on `127.0.0.1`. Diary content stays out
+no-auth app. The operational rules live in `docs/security-model.md` and
+`docs/system-design.md` sec10.2: a diary-bearing instance stays on `127.0.0.1`. Diary content stays out
 of agent context by default (selfos AGENTS.md → cloud-context data boundary;
 the repo-side note is in AGENTS.md). The pre-ship adversarial pass over the
 combined surface (terminal + diary + export + strip) was delegated to Codex per

@@ -211,9 +211,30 @@ These are documented limitations, not fixes made in this pass:
   not a network carve-out. The host network also reaches any other loopback
   listener — concretely the Playwright MCP server on `localhost:9223`, whose
   tool set includes arbitrary host-side code execution. The owner accepted
-  that reach (2026-08-17, [system-design.md](system-design.md) security
-  checklist): the brief's read-only rule stays prose, and no restricted
-  server or per-lesson capability is planned.
+  that reach (2026-08-17, see Accepted risks below): the brief's read-only
+  rule stays prose, and no restricted server or per-lesson capability is
+  planned.
 
 Until those fixes exist, keep the documented deployment boundary on loopback
 and never expose it to the public internet.
+
+## Accepted risks
+
+Owner decisions, dated. They stand until the owner revisits them.
+
+- 2026-08-14 (#191): the diary cloud-context boundary (AGENTS.md) is
+  convention, not enforcement. Lesson-agent shells share the host network and
+  can read `/diary` and the export over loopback; no egress block or route
+  gate is planned.
+- 2026-08-17: lesson shells reach the shared Playwright MCP listener on
+  `localhost:9223`, whose core tool set includes arbitrary host-side code
+  execution. The brief's read-only rule stays prose; no per-lesson capability
+  or separate restricted server is planned. The shared browser is deliberate
+  architecture on a single-owner host (queue entries 2026-08-09/#177+#178 and
+  2026-08-11/#181; reviews of 2026-08-11/-12/-16).
+- 2026-08-17: the reusable year-long Claude token (`DATA_DIR/claude-token`)
+  rides in the lesson-agent shell environment while that shell reads untrusted
+  source material and has outbound network. No broker or process boundary is
+  planned: with the shared-browser risk above accepted, host-side code
+  execution would reach the token file past any broker anyway (queue entry
+  2026-08-12/#189; reviews of 2026-08-12/-16).
