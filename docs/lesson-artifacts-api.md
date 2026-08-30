@@ -68,7 +68,7 @@ Success (HTTP 200):
 ```
 
 `result` is `saved` or `unchanged`. Content-equal retries are `unchanged`
-without a filesystem write, ledger event, or rate charge. Other saves compare
+without a filesystem write or ledger event. Other saves compare
 and publish under a per-bundle lock. Conflict exclusion is strict among
 artifact-API writers. Direct terminal writers are detected when their change
 is visible during compare or the final descriptor-identity check, but a
@@ -89,10 +89,6 @@ publication can lose telemetry, and an identical retry remains `unchanged`,
 so `event_recorded` makes that limitation observable. This path never writes
 `attempts.jsonl`.
 
-The in-process single-worker abuse damper permits 30 save attempts per lesson
-per 60 seconds. Validation/conflict outcomes are charged because they consume
-the manifest/filesystem path; `unchanged` and `rate-limited` are uncharged.
-
 ## Artifact refusal matrix
 
 Every refusal is:
@@ -102,7 +98,7 @@ Every refusal is:
 ```
 
 `file-conflict` additionally carries the current `file_rev` (JSON `null` when
-the file is absent). A 429 carries `Retry-After`.
+the file is absent).
 
 | status | error | condition |
 |--------|-------|-----------|
@@ -122,7 +118,6 @@ the file is absent). A 429 carries `Retry-After`.
 | 422 | `unknown-block` | block did not survive the record-time manifest read |
 | 422 | `invalid-encoding` | stored bytes are not strict UTF-8 |
 | 422 | `undiscoverable-path` | save target is outside/deeper than the artifact discovery contract |
-| 429 | `rate-limited` | more than 30 save attempts in the lesson's 60-second window |
 
 ## Run routes
 
@@ -157,20 +152,17 @@ A start succeeds with the in-memory job identity and current state:
 
 `(lesson_uid, idempotency_key)` retains `(block_id, file_rev, job_id)` with the
 job. An identical replay returns the same job with `replayed: true`, before
-health, rate, capacity, manifest, or filesystem work. Reuse for another block
+health, capacity, manifest, or filesystem work. Reuse for another block
 or revision is `idempotency-conflict`. A count-evicted job keeps a tombstone
 until its 15-minute retention deadline and answers `job-missing`.
 
 All admission decisions live in the runner service: at most one active job per
-lesson and two globally. Starts permit 10 charged validations/admissions per
-lesson per 60 seconds. Grammar/manifest/hash/file refusals and every admitted
-job are charged; replay, idempotency conflict, rate-limit refusal, and a busy
-preflight are uncharged. A capacity race or runner-health/pre-reservation
-admission failure after validation refunds its slot.
+lesson and two globally, checked before manifest and filesystem work and again
+before the job is reserved.
 
 Cold runner-health probes execute on a worker thread outside the service lock,
 so they do not stall status, stream, or cancel handling on the ASGI event loop.
-Admission rechecks replay, lifecycle, rate, and capacity after the probe before
+Admission rechecks replay, lifecycle, and capacity after the probe before
 reserving a job.
 
 Status is `Cache-Control: no-store` and returns the job/block/runner/revision,
@@ -265,4 +257,3 @@ is activated; the iframe never receives raw HTTP status as authority.
 | 422 | `unknown-block` | block did not survive the record-time manifest read |
 | 422 | `unknown-runner`, `incompatible-runner` | runner is absent/unregistered or rejects the suffix |
 | 422 | `invalid-encoding`, `undiscoverable-path` | artifact text/path is outside the contract |
-| 429 | `rate-limited` | save or start window is exhausted; `Retry-After` is present |

@@ -441,7 +441,7 @@ parent → child   { "op": "artifact.save", "request_id": "s1",
   generation and port. The artifact endpoint then independently repeats the
   manifest, block, revision, path, and file-node checks.
 - Endpoint refusals are relayed by code (`file-conflict`, `unsafe-file`,
-  `rate-limited`, and the rest of the artifact refusal matrix). Parent-local
+  and the rest of the artifact refusal matrix). Parent-local
   refusals are `capability-not-granted`, `unsupported-version`,
   `invalid-block-id`, `invalid-content`, `invalid-base-rev`, `file-too-large`,
   `artifact-read-denied`, `unknown-block`, `stale-page`, `busy`, and

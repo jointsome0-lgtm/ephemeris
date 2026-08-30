@@ -52,12 +52,9 @@ def test_run_api(client, suite_state):
         _asyncio.create_task(complete())
         return process
 
-    _runs._reset_rate_limit()
     _f4_service = _runner.RunnerService(
         spawn_hook=_f4_spawn,
         health_hook=lambda: None,
-        rate_hook=_runs._check_rate,
-        rate_refund_hook=_runs._refund_rate,
         finish_hook=_runs._record_finish,
     )
     _f4_original_service = app.state.runner_service
@@ -201,37 +198,24 @@ def test_run_api(client, suite_state):
         def _f4_unhealthy():
             raise _runner.RunnerUnavailableError("invented unavailable runtime")
 
-        _f4_unhealthy_rate_max = _runs.RATE_MAX_PER_WINDOW
-        _runs.RATE_MAX_PER_WINDOW = 1
-        _runs._reset_rate_limit()
-        try:
-            app.state.runner_service = _runner.RunnerService(
-                spawn_hook=_f4_spawn, health_hook=_f4_unhealthy,
-                rate_hook=_runs._check_rate,
-                rate_refund_hook=_runs._refund_rate,
-            )
-            _f4_unhealthy_responses = [
-                c.post(_f4_run_url, json={
-                    "file_rev": _f4_file_rev,
-                    "idempotency_key": f"invented-unhealthy-run-{index}",
-                })
-                for index in range(2)
-            ]
-            _f4_unhealthy_rate_size = len(
-                _runs._rate.get(_f1["uid"], ())
-            )
-        finally:
-            _runs.RATE_MAX_PER_WINDOW = _f4_unhealthy_rate_max
-            _runs._reset_rate_limit()
+        app.state.runner_service = _runner.RunnerService(
+            spawn_hook=_f4_spawn, health_hook=_f4_unhealthy,
+        )
+        _f4_unhealthy_responses = [
+            c.post(_f4_run_url, json={
+                "file_rev": _f4_file_rev,
+                "idempotency_key": f"invented-unhealthy-run-{index}",
+            })
+            for index in range(2)
+        ]
         assert (
             all(
                 response.status_code == 409
                 and response.json().get("error") == "runner-unavailable"
                 for response in _f4_unhealthy_responses
             )
-            and _f4_unhealthy_rate_size == 0
             and len(_f4_observed_jobs) == 1
-        ), "F4 unhealthy runner refuses visibly and refunds rate permits"
+        ), "F4 unhealthy runner refuses visibly"
 
         _f4_cancel_processes = []
 
@@ -240,11 +224,8 @@ def test_run_api(client, suite_state):
             _f4_cancel_processes.append(process)
             return process
 
-        _runs._reset_rate_limit()
         _f4_cancel_service = _runner.RunnerService(
             spawn_hook=_f4_slow_spawn, health_hook=lambda: None,
-            rate_hook=_runs._check_rate,
-            rate_refund_hook=_runs._refund_rate,
             finish_hook=_runs._record_finish,
         )
         app.state.runner_service = _f4_cancel_service
@@ -292,40 +273,19 @@ def test_run_api(client, suite_state):
             ) == 1
         ), "F4 cancel is guarded, idempotent, and still emits cancelled exit"
 
-        _f4_rate_max = _runs.RATE_MAX_PER_WINDOW
-        _runs.RATE_MAX_PER_WINDOW = 1
-        _runs._reset_rate_limit()
-        try:
-            app.state.runner_service = _runner.RunnerService(
-                spawn_hook=_f4_spawn, health_hook=lambda: None,
-                rate_hook=_runs._check_rate,
-                rate_refund_hook=_runs._refund_rate,
-            )
+        with _mock.patch.object(
+                _runs.artifacts, "get_run_snapshot",
+                wraps=_runs.artifacts.get_run_snapshot) as snapshot_read:
             _f4_bad_grammar = c.post(_f4_run_url, json={
                 "file_rev": "bad",
-                "idempotency_key": "invented-rate-invalid",
+                "idempotency_key": "invented-bad-grammar",
             })
-            with _mock.patch.object(
-                    _runs.artifacts, "get_run_snapshot",
-                    wraps=_runs.artifacts.get_run_snapshot) as snapshot_read:
-                _f4_rate_hit = c.post(_f4_run_url, json={
-                    "file_rev": _f4_file_rev,
-                    "idempotency_key": "invented-rate-valid",
-                })
-                _f4_rate_snapshot_reads = snapshot_read.call_count
-            _f4_rate_size = len(_runs._rate.get(_f1["uid"], ()))
-        finally:
-            _runs.RATE_MAX_PER_WINDOW = _f4_rate_max
-            _runs._reset_rate_limit()
+            _f4_bad_grammar_snapshot_reads = snapshot_read.call_count
         assert (
             _f4_bad_grammar.status_code == 400
             and _f4_bad_grammar.json().get("error") == "invalid-file-rev"
-            and _f4_rate_hit.status_code == 429
-            and _f4_rate_hit.json().get("error") == "rate-limited"
-            and _f4_rate_hit.headers.get("retry-after") is not None
-            and _f4_rate_snapshot_reads == 0
-            and _f4_rate_size == 1
-        ), "F4 validation refusals charge; rate-limited itself is uncharged"
+            and _f4_bad_grammar_snapshot_reads == 0
+        ), "F4 grammar refusals never reach the filesystem"
 
         _f4_learn = c.get(f"/learn?lesson={_f1_id}").text
         assert (
@@ -333,8 +293,6 @@ def test_run_api(client, suite_state):
         ), "F4 Learn template advertises the runs route prefix"
     finally:
         app.state.runner_service = _f4_original_service
-        _runs.RATE_MAX_PER_WINDOW = 10
-        _runs._reset_rate_limit()
 
     suite_state.update({
         name: value for name, value in locals().items()

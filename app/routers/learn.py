@@ -957,15 +957,10 @@ def get_lesson_record_counts(lesson_id: int, since: str | None = None,
 
 
 def _artifact_refusal(exc: artifacts.ArtifactError) -> JSONResponse:
-    headers = {"Cache-Control": "no-store"}
-    if exc.status == 429:
-        headers["Retry-After"] = str(
-            int(exc.fields.get("retry_after", artifacts.RATE_WINDOW_SECONDS))
-        )
     return JSONResponse(
         {"ok": False, "error": exc.code, "detail": exc.detail, **exc.fields},
         status_code=exc.status,
-        headers=headers,
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -1074,22 +1069,14 @@ async def post_lesson_artifact(request: Request, lesson_id: int, block_id: str):
 
 
 def _run_refusal(code: str, status: int, detail: str = "", **fields) -> JSONResponse:
-    headers = {"Cache-Control": "no-store"}
-    if status == 429:
-        headers["Retry-After"] = str(int(fields.get("retry_after", 1)))
     return JSONResponse(
         {"ok": False, "error": code, "detail": detail, **fields},
         status_code=status,
-        headers=headers,
+        headers={"Cache-Control": "no-store"},
     )
 
 
 def _runner_refusal(exc: runner_core.RunnerError) -> JSONResponse:
-    if isinstance(exc, runner_core.RateLimitedError):
-        return _run_refusal(
-            "rate-limited", 429, "run start rate limit exceeded",
-            retry_after=int(getattr(exc, "retry_after", runs.RATE_WINDOW_SECONDS)),
-        )
     if isinstance(exc, runner_core.JobMissingError):
         return _run_refusal("job-missing", 404, "runner job is no longer retained")
     if isinstance(exc, runner_core.IdempotencyConflictError):
@@ -1415,9 +1402,6 @@ _ASSESSMENT_MAX_BODY = 64 * 1024
 
 
 def _assessment_refusal(code: str, status: int, detail: str = "") -> JSONResponse:
-    headers = {"Cache-Control": "no-store"}
-    if status == 429:
-        headers["Retry-After"] = str(int(assessments.RATE_WINDOW_SECONDS))
     # JSON accepts escaped lone surrogates in object keys. The strict
     # unknown-field error names those keys, but Starlette deliberately renders
     # JSON with ensure_ascii=False and cannot UTF-8 encode a surrogate. Keep the
@@ -1427,7 +1411,7 @@ def _assessment_refusal(code: str, status: int, detail: str = "") -> JSONRespons
     return JSONResponse(
         {"ok": False, "error": code, "detail": detail},
         status_code=status,
-        headers=headers,
+        headers={"Cache-Control": "no-store"},
     )
 
 

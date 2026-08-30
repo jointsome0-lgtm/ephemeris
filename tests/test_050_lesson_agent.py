@@ -533,7 +533,6 @@ def test_lesson_agent_learning(client, suite_state):
         (_s4_dir / "index.html").read_bytes()).hexdigest()
     _s4_url = f"/learn/lessons/{_s4_id}/assessments"
     attempts_svc._rate.clear()
-    assess_svc._rate.clear()
 
     def _s4_attempt(question_id, answer, key):
         return c.post(f"/learn/lessons/{_s4_id}/attempts", json={

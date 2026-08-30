@@ -202,7 +202,6 @@ def test_assessment_artifact_migration(client, suite_state):
         "idempotency_key": "vera-as-att-1"}).json()
     _as_attempt_id = _as_attempt["attempt_id"]
     _as_url = f"/learn/lessons/{_as_id}/assessments"
-    assess_svc._rate.clear()
 
     def _as_rows(lesson_id=None):
         conn_ = get_conn()
@@ -705,49 +704,10 @@ def test_assessment_artifact_migration(client, suite_state):
                 "error") == "unknown-supersedes"
     ), "supersedes is validated against the same lesson (422 across lessons)"
 
-    # rate limit + refund table (D-S1-3): replays are not new writes
-    _as_rate_url = f"/learn/lessons/{_as_fold_id}/assessments"
-    assess_svc._rate.clear()
-    _as_rate_first = c.post(_as_rate_url, json={
-        "kind": "summary", "note": "Vera Example: rate window seed.",
-        "idempotency_key": "rate-seed"})
-    for _as_i in range(assess_svc.RATE_MAX_PER_WINDOW - 2):
-        c.post(_as_rate_url, json={
-            "kind": "summary", "note": f"Vera Example: filler {_as_i}.",
-            "idempotency_key": f"rate-fill-{_as_i}"})
-    _as_rate_replay = c.post(_as_rate_url, json={
-        "kind": "summary", "note": "Vera Example: rate window seed.",
-        "idempotency_key": "rate-seed"})
-    _as_rate_last = c.post(_as_rate_url, json={
-        "kind": "summary", "note": "Vera Example: the refunded slot.",
-        "idempotency_key": "rate-last"})
-    _as_rate_over = c.post(_as_rate_url, json={
-        "kind": "summary", "note": "Vera Example: over the window.",
-        "idempotency_key": "rate-over"})
-    _as_rate_replay_over = c.post(_as_rate_url, json={
-        "kind": "summary", "note": "Vera Example: rate window seed.",
-        "idempotency_key": "rate-seed"})
-    assert (
-        _as_rate_first.status_code == 200
-        and _as_rate_replay.json()["result"] == "duplicate"
-        # without the refund this write would have been the 31st charge
-        and _as_rate_last.status_code == 200
-        and _as_rate_last.json()["result"] == "recorded"
-        and _as_rate_over.status_code == 429
-        and _as_rate_over.json()["error"] == "rate-limited"
-        and _as_rate_over.headers.get("Retry-After") == "60"
-        # replay precedes the rate limit: a retry never loses its outcome
-        and _as_rate_replay_over.status_code == 200
-        and _as_rate_replay_over.json()["result"] == "duplicate"
-    ), "rate limit is 30/60s per lesson; replays cost no window budget"
-    assess_svc._rate.clear()
-
-    # The refund table proper: the checks above only prove that a replay found
-    # BEFORE the rate charge costs nothing. A retry racing its own original
-    # sees the key uncommitted at that early check, gets charged, and only
-    # discovers the duplicate under the write lock — that slot must come back,
-    # or retries against a slow original starve real writes. Staged by making
-    # the first replay lookup of the request miss.
+    # A retry racing its own original sees the key uncommitted at the early
+    # replay check and only discovers the duplicate under the write lock; it
+    # must still learn its original's outcome. Staged by making the first
+    # replay lookup of the request miss.
     _as_real_replay = assess_svc._replay_or_conflict
     _as_replay_calls = {"n": 0}
 
@@ -757,32 +717,23 @@ def test_assessment_artifact_migration(client, suite_state):
             return None  # the racing retry cannot see its original yet
         return _as_real_replay(*args, **kwargs)
 
-    _as_refund_body = {
+    _as_late_body = {
         "kind": "summary", "note": "Vera Example: the racing retry.",
-        "idempotency_key": "vera-as-refund-1"}
-    assess_svc._rate.clear()
-    _as_refund_first = c.post(_as_url, json=_as_refund_body)
-    _as_window_before = len(assess_svc._rate.get(_as_id, ()))
+        "idempotency_key": "vera-as-late-1"}
+    _as_late_first = c.post(_as_url, json=_as_late_body)
     with _mock.patch.object(
             assess_svc, "_replay_or_conflict", _as_late_replay):
-        _as_refund_late = c.post(_as_url, json=_as_refund_body)
-    _as_window_after = len(assess_svc._rate.get(_as_id, ()))
+        _as_late_second = c.post(_as_url, json=_as_late_body)
     assert (
-        _as_refund_first.json()["result"] == "recorded"
+        _as_late_first.json()["result"] == "recorded"
         and _as_replay_calls["n"] >= 2
-        and _as_refund_late.status_code == 200
-        and _as_refund_late.json() == dict(
-            _as_refund_first.json(), result="duplicate")
-        and _as_window_before == 1 and _as_window_after == 1
+        and _as_late_second.status_code == 200
+        and _as_late_second.json() == dict(
+            _as_late_first.json(), result="duplicate")
     ), (
-        "a replay that only surfaces under the write lock refunds its slot"
-        + "  -- "
-        + (
-            f"calls={_as_replay_calls['n']} "
-            f"window {_as_window_before}->{_as_window_after}"
-        )
+        "a replay that only surfaces under the write lock is still a duplicate"
+        f"  -- calls={_as_replay_calls['n']}"
     )
-    assess_svc._rate.clear()
 
     # body admission (64 KiB)
     assert (
@@ -838,7 +789,6 @@ def test_assessment_artifact_migration(client, suite_state):
     finally:
         _s3_conn.close()
     _s3_les_url = f"/learn/lessons/{_s3_les_id}/assessments"
-    assess_svc._rate.clear()
 
     def _s3_open_sitting(sid, lesson_id, lesson_uid):
         """Register a capability exactly as a lesson-agent session mints one."""
@@ -1016,7 +966,6 @@ def test_assessment_artifact_migration(client, suite_state):
         _s2_rep = lessons_svc.get_lesson(_s2_conn, _s2_rep_id)
     finally:
         _s2_conn.close()
-    assess_svc._rate.clear()
 
     def _s2_path(lesson_view):
         return (Path(lessons_svc.LESSONS_DIR) / lesson_view["slug"]
@@ -1705,7 +1654,6 @@ def test_assessment_artifact_migration(client, suite_state):
     (_f1_dir / "index.html").write_text(
         "<html>Vera Example editor page</html>", encoding="utf-8")
     _f1_url = f"/learn/lessons/{_f1_id}/blocks/blk_editor01/file"
-    artifacts_svc._rate.clear()
 
     # The phase-F reader treats missing bundle state as a refusal and does not
     # recreate any of the preview path's historical skeleton/directories.
@@ -1985,36 +1933,6 @@ def test_assessment_artifact_migration(client, suite_state):
         _f1_huge_file.status_code == 413
         and _f1_huge_file.json()["error"] == "file-too-large"
     ), "F1 save refuses content over 64 KiB by raw UTF-8 bytes"
-
-    artifacts_svc._rate.clear()
-    _f1_rate_max = artifacts_svc.RATE_MAX_PER_WINDOW
-    artifacts_svc.RATE_MAX_PER_WINDOW = 1
-    try:
-        _f1_same1 = c.post(
-            _f1_url,
-            json={"content": "direct writer wins\n", "base_rev": "absent"},
-        )
-        _f1_same2 = c.post(
-            _f1_url,
-            json={"content": "direct writer wins\n", "base_rev": "absent"},
-        )
-        _f1_charge = c.post(
-            _f1_url, json={"content": "new bytes", "base_rev": "absent"})
-        _f1_rate_hit = c.post(
-            _f1_url, json={"content": "more bytes", "base_rev": "absent"})
-    finally:
-        artifacts_svc.RATE_MAX_PER_WINDOW = _f1_rate_max
-        artifacts_svc._rate.clear()
-    assert (
-        _f1_same1.json().get("result") == "unchanged"
-        and _f1_same2.json().get("result") == "unchanged"
-    ), "F1 unchanged saves refund the per-lesson rate slot"
-    assert (
-        _f1_charge.status_code == 409
-        and _f1_rate_hit.status_code == 429
-        and _f1_rate_hit.json()["error"] == "rate-limited"
-        and _f1_rate_hit.headers.get("retry-after") is not None
-    ), "F1 conflicts stay charged and rate-limited itself is uncharged"
 
     with _mock.patch(
             "app.runner.runner_health",
