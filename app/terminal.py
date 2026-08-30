@@ -27,7 +27,6 @@ import json
 import logging
 import os
 import signal
-import socket
 import struct
 import subprocess
 import sys
@@ -214,117 +213,6 @@ def _child_setup_for(slave_fd: int):
     return setup
 
 
-# --- egress proxy for agent CLIs -------------------------------------------------
-# Auto-detection probes ONLY the xray client the user actually runs (10809 http /
-# 10808 socks). Any other setup must be named via EPHEMERIS_TERM_PROXY or the
-# service env — a wider port scan (8080 & friends) too easily latches onto some
-# unrelated dev server and silently breaks the shell's egress.
-_HTTP_PROXY_PORT = 10809
-_SOCKS_PROXY_PORT = 10808
-# Loopback literals are honored by every client and cover this app's own calls;
-# _with_loopback_direct appends them to every proxied set, composed or inherited.
-_LOOPBACK_NO_PROXY = ("localhost", "127.0.0.1", "::1")
-# Presence of any of these => "already configured"; the full set is what we clear/re-emit.
-_PROXY_SET_VARS = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
-_PROXY_ENV_VARS = _PROXY_SET_VARS + ("NO_PROXY", "no_proxy", "FTP_PROXY", "ftp_proxy")
-
-
-def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.15) -> bool:
-    """Cheap liveness probe for a local proxy listener."""
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
-def _socks5h(url: str) -> str:
-    """Upgrade socks5:// -> socks5h:// so the proxy resolves DNS remotely. Local DNS
-    can be poisoned/blocked on a censored network, which would defeat the bypass."""
-    return "socks5h://" + url[len("socks5://"):] if url.startswith("socks5://") else url
-
-
-def _with_loopback_direct(env: dict[str, str]) -> dict[str, str]:
-    """Guarantee a proxied child still reaches this app directly.
-
-    Ordinary HTTP clients (curl and friends) honour these variables, and the
-    lesson-agent session is now handed a loopback URL to POST its verdicts to
-    (D-S2-2). A proxy inherited from the service can arrive without any
-    NO_PROXY at all — "preserve it verbatim" has nothing to preserve — and the
-    verdict, its note and its token would then be sent to the proxy instead of
-    the app, which is a failed write in a configuration this module explicitly
-    supports.
-
-    Nothing configured is dropped or rewritten: both spellings are merged (a
-    service may carry different lists in NO_PROXY and no_proxy, and clients
-    disagree about which one they read), the loopback literals are appended only
-    when absent, and a child with no proxy at all is left alone.
-    """
-    if not any(env.get(name) for name in _PROXY_SET_VARS):
-        return env
-    entries: list[str] = []
-    for spelling in ("NO_PROXY", "no_proxy"):
-        for part in (env.get(spelling) or "").split(","):
-            part = part.strip()
-            if part and part not in entries:
-                entries.append(part)
-    entries += [host for host in _LOOPBACK_NO_PROXY if host not in entries]
-    env["NO_PROXY"] = env["no_proxy"] = ",".join(entries)
-    return env
-
-
-def _detect_proxy_env() -> dict[str, str]:
-    """Pick an egress so agent CLIs (codex, claude) work from a geo-blocked network.
-
-    The systemd service runs with NO proxy, so by default the agents dial
-    OpenAI/Anthropic on the raw public IP — which a country-level block (e.g. RU)
-    answers with HTTP 403. We instead route them through the user's existing local
-    proxy. Precedence:
-
-      1. ``EPHEMERIS_TERM_PROXY=off``   -> force a direct connection (no proxy);
-      2. ``EPHEMERIS_TERM_PROXY=<url>`` -> use exactly this (``http://…`` / ``socks5h://…``);
-      3. a proxy already in the service env -> inherit it verbatim;
-      4. else auto-detect the xray client on its default loopback ports.
-
-    Contract: the return value is the COMPLETE set of proxy vars the child shell
-    should have. The child env is built from _child_env(), whose allowlist admits
-    no proxy vars, then this is applied on top — so an empty dict reliably means
-    "connect directly". Every role gets the same answer.
-    """
-    override = os.environ.get("EPHEMERIS_TERM_PROXY", "").strip()
-    if override.lower() in {"off", "none", "0", "false"}:
-        return {}
-
-    http_url = socks_url = ""
-    if override:
-        if override.startswith("socks"):
-            socks_url = _socks5h(override)
-        else:
-            http_url = override
-    elif any(os.environ.get(v) for v in _PROXY_SET_VARS):
-        # already configured upstream — preserve it verbatim (incl. NO_PROXY),
-        # with this app's own address kept direct whatever it does or does not say
-        return _with_loopback_direct(
-            {k: os.environ[k] for k in _PROXY_ENV_VARS if k in os.environ})
-    else:
-        if _port_open(_HTTP_PROXY_PORT):
-            http_url = f"http://127.0.0.1:{_HTTP_PROXY_PORT}"
-        if _port_open(_SOCKS_PROXY_PORT):
-            socks_url = f"socks5h://127.0.0.1:{_SOCKS_PROXY_PORT}"
-
-    if not (http_url or socks_url):
-        return {}
-    http_url = http_url or socks_url  # let HTTP(S) ride the socks proxy if that's all we found
-
-    env = {
-        "HTTP_PROXY": http_url, "http_proxy": http_url,
-        "HTTPS_PROXY": http_url, "https_proxy": http_url,
-    }
-    if socks_url:
-        env["ALL_PROXY"] = env["all_proxy"] = socks_url
-    return _with_loopback_direct(env)
-
-
 # --- the assessment write capability (S-DESIGN D-S1-3 / D-S2-2) ------------------
 # A lesson-agent session is the tutor's shell, and the tutor records its verdicts
 # through the app's HTTP endpoint. Two variables — and only these two, and only for
@@ -415,14 +303,14 @@ def resolve_assessment_capability(token: str | None) -> dict | None:
 # The child shell starts from this allowlist, NOT the full service environment:
 # the service env carries app config (data paths, trust lists, deploy toggles)
 # that a shell — and any agent launched from it — has no business inheriting.
-# Identity, locale, and session paths pass through; TERM/PATH are normalized in
-# _child_env; proxy vars are deliberately absent here and re-derived afterwards
-# by _detect_proxy_env, which reads the service env itself — so a proxy set on
-# the service (the xray egress) still reaches the shell.
+# Identity, locale, session paths and the service's own proxy variables pass
+# through; TERM/PATH are normalized in _child_env.
 _ENV_ALLOWLIST = frozenset({
     "HOME", "USER", "LOGNAME", "SHELL", "PATH", "LANG", "LANGUAGE", "TZ",
     "XDG_RUNTIME_DIR", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
     "XDG_STATE_HOME", "SSH_AUTH_SOCK",
+    "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy",
+    "NO_PROXY", "no_proxy",
 })
 _ENV_ALLOW_PREFIXES = ("LC_",)
 
@@ -430,8 +318,7 @@ _ENV_ALLOW_PREFIXES = ("LC_",)
 def _child_env(
     role: TerminalRole = "plain", shell: str = "/bin/bash",
 ) -> dict[str, str]:
-    """Allowlisted base environment for the child `shell` (proxy vars are layered
-    on top by the caller from _detect_proxy_env)."""
+    """Allowlisted base environment for the child `shell`."""
     env = {
         k: v for k, v in os.environ.items()
         if k in _ENV_ALLOWLIST or k.startswith(_ENV_ALLOW_PREFIXES)
@@ -466,16 +353,6 @@ def _child_env(
         env["PATH"] = f"{home}/.local/bin:/usr/local/bin:" + env.get(
             "PATH", "/usr/bin:/bin")
     return env
-
-
-def _redact_userinfo(url: str) -> str:
-    """Strip any user:password@ from a URL's authority for display: an inherited
-    proxy URL may carry credentials that must not land in the banner/scrollback."""
-    scheme, sep, rest = url.partition("://")
-    if not sep:
-        scheme, sep, rest = "", "", url
-    netloc, slash, tail = rest.partition("/")
-    return scheme + sep + netloc.rpartition("@")[2] + slash + tail
 
 
 # --- persistent terminal sessions -----------------------------------------------
@@ -774,13 +651,6 @@ async def _create_session(
             else (os.environ.get("SHELL") or "/bin/bash")
         )
         env = _child_env(role, shell)
-        # Route agent CLIs around country-level blocks via the user's local proxy (if
-        # any); the allowlisted base env has no proxy vars, so what _detect_proxy_env
-        # returns is the whole story and EPHEMERIS_TERM_PROXY=off truly means direct.
-        # Detection runs in a worker thread: its socket probes block (up to ~0.15s/port),
-        # which must not stall the event loop (and every other PTY pump) mid-detect.
-        proxy = await asyncio.to_thread(_detect_proxy_env)
-        env.update(proxy)
         if role == "lesson-agent":
             # Unconditional on this role, unlike the capability pair below: auth
             # is not tied to having a base_url or a registered lesson id. Read
@@ -821,7 +691,7 @@ async def _create_session(
 
         try:
             return await _spawn_on_pty(
-                role, sid, shell, env, workspace, workspace_dir, proxy, capability,
+                role, sid, shell, env, workspace, workspace_dir, capability,
             )
         finally:
             if capability is not None and _SESSIONS.get(sid) is None:
@@ -837,7 +707,6 @@ async def _spawn_on_pty(
     env: dict[str, str],
     workspace: dict | None,
     workspace_dir: str,
-    proxy: dict[str, str],
     capability: dict | None,
 ) -> "_TermSession | None":
     """Open a PTY, spawn `shell` on it, and register the session that owns it.
@@ -889,16 +758,12 @@ async def _spawn_on_pty(
     _SESSIONS[sess.sid] = sess
     # One informational line, replayed with the scrollback. It costs screen in a
     # drawer that is mostly one screen tall, so it carries only what the session
-    # cannot show otherwise: the role is invisible, the proxy is invisible,
-    # and whether AGENTS.md was just rewritten is invisible. The cwd is not on
-    # it — the prompt and `pwd` both answer that.
+    # cannot show otherwise: the role is invisible, and whether AGENTS.md was
+    # just rewritten is invisible. The cwd is not on it — the prompt and `pwd`
+    # both answer that.
     facts: list[str] = []
     if workspace is not None:
         facts.append(f"{role} shell")
-    if proxy.get("HTTP_PROXY"):
-        # Redact credentials, then defang control bytes.
-        shown = "".join(c for c in _redact_userinfo(proxy["HTTP_PROXY"]) if c.isprintable())
-        facts.append(f"proxy {shown}")
     if workspace is not None and role == "lesson-agent":
         facts.append("AGENTS.md refreshed")
     if facts:

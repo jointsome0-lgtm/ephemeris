@@ -1265,7 +1265,7 @@ def test_002_ui_and_workspace(client, suite_state):
         and "tab.term.paste(text + " not in terminal_js
     ),"paste button routes the clipboard through xterm's paste, send-only"
 
-    # Fail-closed lesson sessions, allowlisted child env, redacted proxy banner.
+    # Fail-closed lesson sessions, allowlisted child env.
     import asyncio as _asyncio
     import app.terminal as _term
     _ws_refused = 0
@@ -1304,14 +1304,6 @@ def test_002_ui_and_workspace(client, suite_state):
         == r"PS1='\W $ '"
         and "PROMPT_COMMAND" not in _term._child_env("lesson-agent", "/usr/bin/zsh")
     ), "lesson shells carry a short role-shaped prompt; the plain shell keeps its own"
-    assert (
-        _term._redact_userinfo("http://user:secret@127.0.0.1:10809")
-        == "http://127.0.0.1:10809"
-        and _term._redact_userinfo("socks5h://u:p@[::1]:10808/x")
-        == "socks5h://[::1]:10808/x"
-        and _term._redact_userinfo("http://127.0.0.1:10809")
-        == "http://127.0.0.1:10809"
-    ), "proxy banner drops URL userinfo"
     _lt_file = lessons_svc.lesson_file_info(_lt)
     assert (
         _lt_file["rel_path"] == f"{_lt['slug']}/{_lt_file['entry']}"

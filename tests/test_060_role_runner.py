@@ -123,8 +123,6 @@ def test_role_runner(client, suite_state):
                 _mock.patch.object(
                     _terminal, "prepare_terminal_workspace") as prepare, \
                 _mock.patch.object(
-                    _terminal, "_detect_proxy_env", return_value={}) as proxy, \
-                _mock.patch.object(
                     _terminal.asyncio, "create_subprocess_exec",
                     new=_mock.AsyncMock(return_value=proc)) as spawn, \
                 _mock.patch.object(_terminal._TermSession, "start"):
@@ -133,18 +131,16 @@ def test_role_runner(client, suite_state):
         call = spawn.call_args
         result = (
             resolve.call_count == 1 and prepare.call_count == 0
-            and proxy.call_count == 1
             and call.args == ("/bin/bash", "-i")
             and call.kwargs["cwd"] == workspace["dir"]
             and session.role == "lesson-learner"
             and session.sid.startswith(_terminal._LEARNER_SID_PREFIX)
-            and not any(name in call.kwargs["env"] for name in _terminal._PROXY_ENV_VARS)
         )
         _terminal._SESSIONS.pop(session.sid, None)
         os.close(session.master_fd)
         return result
 
-    assert _asyncio.run(_e3_learner_plumbing()), "E3 learner spawn is bash in the bundle, briefs untouched, no proxy env"
+    assert _asyncio.run(_e3_learner_plumbing()), "E3 learner spawn is bash in the bundle, briefs untouched"
 
     # --- F3: fixed runner registry, process limits, job owner ---------------
     from app import runner as _runner
